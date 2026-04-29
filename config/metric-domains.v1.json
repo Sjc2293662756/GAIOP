@@ -1,0 +1,27 @@
+{
+  "NetworkQuality": {
+    "primaryMetrics": ["RTTI", "PLI"],
+    "auxMetrics": ["RTXI"],
+    "baseline": "yesterday_same_window"
+  },
+  "TcpStability": {
+    "primaryMetrics": ["CSTI", "RFCI", "RSTI"],
+    "auxMetrics": ["RFCO", "RSTO", "RFRI", "RFRO"],
+    "baseline": "yesterday_same_window"
+  },
+  "ApplicationPerformance": {
+    "primaryMetrics": ["TRTI", "T2FBI"],
+    "auxMetrics": ["RTTI"],
+    "baseline": "yesterday_same_window"
+  },
+  "WebExperience": {
+    "primaryMetrics": ["PGTME"],
+    "auxMetrics": ["RTTI", "TRTI", "PGHTTP500PCT", "PGSLPCT"],
+    "baseline": "yesterday_same_window"
+  },
+  "Composite": {
+    "primaryMetrics": ["RTTI", "PLI", "TRTI", "PGTME"],
+    "auxMetrics": ["RTXI", "PGHTTP500PCT"],
+    "baseline": "yesterday_same_window"
+  }
+}

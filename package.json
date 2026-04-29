@@ -1,0 +1,34 @@
+{
+  "name": "intelligence-reports-js",
+  "version": "1.0.0",
+  "description": "NAPM OpenClaw skill direct-query runtime",
+  "scripts": {
+    "query": "node skills/openclaw-napm-query/scripts/run_napm_query.js",
+    "test": "jest",
+    "lint": "eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query/services/**/*.js src/constants/**/*.js src/utils/**/*.js"
+  },
+  "keywords": [
+    "network",
+    "analytics",
+    "ai",
+    "skill"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "js-yaml": "^4.1.0",
+    "winston": "^3.11.0",
+    "node-cache": "^5.1.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.54.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

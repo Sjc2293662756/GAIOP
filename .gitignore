@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+package-lock.json
+__pycache__/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temp / local probes
+tmp_*
+tmp_remote/
+.tmp_payload.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build
+dist/
+build/

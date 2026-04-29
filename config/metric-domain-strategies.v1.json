@@ -1,0 +1,237 @@
+{
+  "version": "1.0.0",
+  "domainAliases": {
+    "network_performance": "NetworkQuality",
+    "connection_stability": "TcpStability",
+    "application_performance": "ApplicationPerformance",
+    "traffic": "TrafficVolume",
+    "trafficvolume": "TrafficVolume",
+    "web_experience": "WebExperience",
+    "network_usage": "Composite",
+    "optimization": "WebExperience"
+  },
+  "domains": {
+    "Composite": {
+      "label": "整体体验",
+      "overview": {
+        "leadText": "我先从整体运行情况帮你看了一眼。",
+        "summaryMetrics": ["RTTI", "PLI", "TRTI", "PGTME"],
+        "summaryProbes": [
+          { "key": "network_rtt", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RTTI"] },
+          { "key": "network_loss", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["PLI"] },
+          { "key": "app_response", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["TRTI"] },
+          { "key": "web_page_delay", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["PGTME"] }
+        ],
+        "summarySections": [
+          { "key": "network", "title": "网络质量", "probeKeys": ["network_rtt", "network_loss"] },
+          { "key": "application", "title": "应用性能", "probeKeys": ["app_response"] },
+          { "key": "web", "title": "页面体验", "probeKeys": ["web_page_delay"] }
+        ],
+        "topFindings": [
+          { "key": "slow_vlans", "service": "topValues", "groups": [{ "type": "VLAN" }], "metric": "RTTI", "metrics": ["RTTI"], "topCount": 3 },
+          { "key": "loss_hosts", "service": "topValues", "groups": [{ "type": "IPAddress" }], "metric": "PLI", "metrics": ["PLI"], "topCount": 3 },
+          { "key": "slow_webapps", "service": "topValues", "groups": [{ "type": "WebApplication" }], "metric": "PGTME", "metrics": ["PGTME"], "topCount": 3 }
+        ],
+        "nextActions": [
+          "查看 RTT / 丢包趋势",
+          "查看最慢页面 Top10",
+          "查看昨日同时间对比",
+          "查看连接失败对象"
+        ]
+      },
+      "diagnose": {
+        "responseType": "diagnose",
+        "category": "Composite",
+        "steps": [
+          { "label": "先看网络质量", "metricFocusKey": "response_time", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看连接稳定性", "metricFocusKey": "communication", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "最后看页面体验", "metricFocusKey": "errors", "queryModeKey": "average", "timeRangeKey": "last24hours" }
+        ]
+      },
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["RTTI", "PLI", "TRTI", "PGTME"],
+        "nextActions": [
+          "查看昨日同时间对比",
+          "继续看峰值时段对象明细"
+        ]
+      }
+    },
+    "TrafficVolume": {
+      "label": "流量",
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["TPIO"],
+        "nextActions": [
+          "查看昨日同时间流量差异",
+          "继续看最近24小时流量变化"
+        ]
+      }
+    },
+    "NetworkQuality": {
+      "label": "网络质量",
+      "overview": {
+        "leadText": "我先从网络质量角度帮你看了一眼。",
+        "summaryMetrics": ["RTTI", "PLI", "RTXI"],
+        "summaryProbes": [
+          { "key": "network_rtt", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RTTI"] },
+          { "key": "network_loss", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["PLI"] },
+          { "key": "network_retransmission", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RTXI"] }
+        ],
+        "summarySections": [
+          { "key": "network", "title": "网络质量", "probeKeys": ["network_rtt", "network_loss", "network_retransmission"] }
+        ],
+        "topFindings": [
+          { "key": "slow_vlans", "service": "topValues", "groups": [{ "type": "VLAN" }], "metric": "RTTI", "metrics": ["RTTI"], "topCount": 3 },
+          { "key": "loss_hosts", "service": "topValues", "groups": [{ "type": "IPAddress" }], "metric": "PLI", "metrics": ["PLI"], "topCount": 3 }
+        ],
+        "nextActions": [
+          "查看 RTT / 丢包趋势",
+          "查看最慢链路对象"
+        ]
+      },
+      "diagnose": {
+        "responseType": "diagnose",
+        "category": "Network",
+        "steps": [
+          { "label": "先看 RTT", "metricFocusKey": "response_time", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看丢包", "metricFocusKey": "errors", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看重传趋势", "metricFocusKey": "traffic", "queryModeKey": "trend", "timeRangeKey": "last1hour" }
+        ]
+      },
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["RTTI", "PLI", "RDTO"],
+        "nextActions": [
+          "查看昨日同时间 RTT / 丢包变化",
+          "继续下钻异常 VLAN 或 IP"
+        ]
+      }
+    },
+    "TcpStability": {
+      "label": "连接稳定性",
+      "overview": {
+        "leadText": "我先从连接稳定性角度帮你看了一眼。",
+        "summaryMetrics": ["CSTI", "RFCI", "RSTI"],
+        "summaryProbes": [
+          { "key": "connect_fail", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["CSTI"] },
+          { "key": "reset_in", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RFCI"] },
+          { "key": "rst_in", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RSTI"] }
+        ],
+        "summarySections": [
+          { "key": "connection", "title": "连接稳定性", "probeKeys": ["connect_fail", "reset_in", "rst_in"] }
+        ],
+        "topFindings": [
+          { "key": "reset_ports", "service": "topValues", "groups": [{ "type": "Port" }], "metric": "RFCI", "metrics": ["RFCI"], "topCount": 3 },
+          { "key": "rst_apps", "service": "topValues", "groups": [{ "type": "Application" }], "metric": "RSTI", "metrics": ["RSTI"], "topCount": 3 }
+        ],
+        "nextActions": [
+          "查看连接失败对象",
+          "查看 Reset / RST 变化趋势"
+        ]
+      },
+      "diagnose": {
+        "responseType": "diagnose",
+        "category": "Connection",
+        "steps": [
+          { "label": "先看连接失败", "metricFocusKey": "communication", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看 Reset", "metricFocusKey": "errors", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "最后看端口排行", "metricFocusKey": "communication", "queryModeKey": "ranking", "timeRangeKey": "last1hour" }
+        ]
+      },
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["CSTI", "RFRI", "CONI"],
+        "nextActions": [
+          "查看昨日同时间连接异常差异",
+          "继续排查异常端口与应用"
+        ]
+      }
+    },
+      "ApplicationPerformance": {
+        "label": "应用性能",
+        "overview": {
+          "leadText": "我先从应用性能角度帮你看了一眼。",
+          "summaryMetrics": ["TRTI", "T2FBI", "RTTI"],
+          "summaryProbes": [
+            { "key": "app_response", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["TRTI"] },
+            { "key": "app_first_byte", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["T2FBI"] },
+            { "key": "network_rtt", "service": "averageValues", "groups": [{ "type": "TotalTraffic" }], "metrics": ["RTTI"] }
+          ],
+        "summarySections": [
+          { "key": "application", "title": "应用性能", "probeKeys": ["app_response", "app_first_byte", "network_rtt"] }
+        ],
+        "topFindings": [
+          { "key": "slow_apps", "service": "topValues", "groups": [{ "type": "Application" }], "metric": "TRTI", "metrics": ["TRTI"], "topCount": 3 }
+        ],
+        "nextActions": [
+          "查看慢应用 Top10",
+          "继续对比网络 RTT 与服务器响应时间"
+        ]
+      },
+      "diagnose": {
+        "responseType": "diagnose",
+        "category": "Application",
+        "steps": [
+          { "label": "先看响应时间", "metricFocusKey": "response_time", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看首包时间", "metricFocusKey": "response_time", "queryModeKey": "trend", "timeRangeKey": "last1hour" },
+          { "label": "最后看网络 RTT", "metricFocusKey": "traffic", "queryModeKey": "average", "timeRangeKey": "last1hour" }
+        ]
+      },
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["TRTI", "T2FBI", "RTTI"],
+        "nextActions": [
+          "查看昨日同时间应用响应差异",
+          "继续定位是网络还是服务器处理更慢"
+        ]
+      }
+    },
+    "WebExperience": {
+      "label": "页面体验",
+      "overview": {
+        "leadText": "我先从页面体验角度帮你看了一眼。",
+        "summaryMetrics": ["PGTME", "PGHTTP500PCT", "PGSLPCT"],
+        "summaryProbes": [
+          { "key": "web_page_delay", "service": "averageValues", "groups": [{ "type": "WebApplication" }], "metrics": ["PGTME"] },
+          { "key": "web_server_error", "service": "averageValues", "groups": [{ "type": "WebApplication" }], "metrics": ["PGHTTP500PCT"] },
+          { "key": "web_slow_ratio", "service": "averageValues", "groups": [{ "type": "WebApplication" }], "metrics": ["PGSLPCT"] }
+        ],
+        "summarySections": [
+          { "key": "web", "title": "页面体验", "probeKeys": ["web_page_delay", "web_server_error", "web_slow_ratio"] }
+        ],
+        "topFindings": [
+          { "key": "slow_webapps", "service": "topValues", "groups": [{ "type": "WebApplication" }], "metric": "PGTME", "metrics": ["PGTME"], "topCount": 3 },
+          { "key": "error_webapps", "service": "topValues", "groups": [{ "type": "WebApplication" }], "metric": "PGHTTP500PCT", "metrics": ["PGHTTP500PCT"], "topCount": 3 }
+        ],
+        "nextActions": [
+          "查看最慢页面 Top10",
+          "查看 5xx / 慢页面比例趋势"
+        ]
+      },
+      "diagnose": {
+        "responseType": "diagnose",
+        "category": "Web",
+        "steps": [
+          { "label": "先看页面时延", "metricFocusKey": "response_time", "queryModeKey": "average", "timeRangeKey": "last1hour" },
+          { "label": "再看错误率", "metricFocusKey": "errors", "queryModeKey": "average", "timeRangeKey": "last24hours" },
+          { "label": "最后看慢页面比例", "metricFocusKey": "errors", "queryModeKey": "trend", "timeRangeKey": "last24hours" }
+        ]
+      },
+      "compare": {
+        "responseType": "compare",
+        "baseline": "yesterday_same_window",
+        "focusMetrics": ["PGTME", "PGHTTP500PCT", "PGSLPCT"],
+        "nextActions": [
+          "查看昨日同时间页面时延差异",
+          "继续定位 5xx 或慢页面比例变化"
+        ]
+      }
+    }
+  }
+}

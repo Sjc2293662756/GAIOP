@@ -1,0 +1,105 @@
+metrics:
+  - code: TPI
+    description: 吞吐量(入站)
+  - code: TPO
+    description: 吞吐量(出站)
+  - code: TPIO
+    description: 吞吐量(总)
+  - code: PGHTTP500
+    description: HTTP 500错误
+  - code: PGHTTP400
+    description: HTTP 400错误
+  - code: PGHTTP500PCT
+    description: HTTP 500错误率
+  - code: PGHTTP400PCT
+    description: HTTP 400错误率
+  - code: PGHTTP300PCT
+    description: HTTP 300数量百分比
+  - code: PGHTTP200PCT
+    description: HTTP 200成功率
+  - code: PGHTTP100PCT
+    description: HTTP 100数量百分比
+  - code: PGTME
+    description: 响应时间
+  - code: TRTI
+    description: 服务器响应时间（服务器）
+  - code: RTTI
+    description: 往返时间（流入）
+  - code: RDTI
+    description: 重传时延（流入）
+  - code: PGNPGE
+    description: 页面数量
+  - code: PGNOBJE
+    description: HTTP响应数
+  - code: CSTI
+    description: 连接建立时间 (TCP 服务器)
+  - code: PGSLPCTS
+    description: 慢页面百分比（客户端）
+  - code: NRTO
+    description: 数据传输时间（服务器）
+  - code: NRTI
+    description: 数据传输时间（客户端）
+  - code: PGNPGC
+    description: 页面访问数（服务器）
+  - code: BYTI
+    description: 流量（流入）
+  - code: BYTO
+    description: 流量（流出）
+  - code: BYTIO
+    description: 流量（流入和流出）
+  - code: PLI
+    description: 丢包情况 (流入)
+  - code: PLO
+    description: 丢包情况 (流出)
+  - code: RDTO
+    description: 重传时延（流出）
+  - code: GPI
+    description: 有效吞吐 (流入)
+  - code: GPO
+    description: 有效吞吐 (流出)
+  - code: CONO
+    description: 连接请求数 (TCP 客户端)
+  - code: CONI
+    description: 连接请求数 (TCP 服务器)
+  - code: RFCI
+    description: Connection failure count (TCP server)
+  - code: RFCO
+    description: Connection failure count (TCP client)
+  - code: CCNI
+    description: New connection count (TCP server)
+  - code: CCNO
+    description: New connection count (TCP client)
+  - code: RFRO
+    description: 连接失败率 (TCP 客户端)
+  - code: RFRI
+    description: 连接失败率 (TCP 服务器)
+  - code: T2FBI
+    description: 第一字节时间（TCP 客户端）
+  - code: T2FBO
+    description: 第一字节时间（TCP 服务器）
+  - code: TRNO
+    description: 交互数（客户端）
+  - code: TRNI
+    description: 交互数（服务器）
+  - code: PKTI
+    description: 包吞吐量（流入）
+  - code: PKTO
+    description: 包吞吐量（流出）
+  - code: FSI_B
+    description: 净荷（客户端）
+  - code: FSO_B
+    description: 净荷（服务器）
+  - code: FSI_P
+    description: 数据包净荷（客户端）
+  - code: FSO_P
+    description: 数据包净荷（服务器）
+  - code: PGRT
+    description: 页面访问率
+  - code: PGSLRTS
+    description: 慢页面率（客户端）
+  - code: PGHTTP200
+    description: HTTP 200 数量
+  - code: PGHTTP300
+    description: HTTP 300 数量
+  - code: PGHTTP100
+    description: HTTP 100 数量

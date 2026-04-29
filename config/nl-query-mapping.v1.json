@@ -1,0 +1,179 @@
+{
+  "defaults": {
+    "service": "topValues",
+    "metric": "TPIO",
+    "topCount": 10,
+    "format": "json"
+  },
+  "services": [
+    {
+      "service": "metrics",
+      "aliases": ["指标", "metric", "metrics", "有哪些指标", "可用指标"]
+    },
+    {
+      "service": "groups",
+      "aliases": ["维度", "分组", "对象", "group", "groups", "有哪些对象", "有哪些维度"]
+    },
+    {
+      "service": "topValues",
+      "aliases": ["top", "前十", "前五", "前10", "排行", "排名", "最高", "最大", "最多", "活跃", "最活跃", "频繁", "最频繁"]
+    },
+    {
+      "service": "timeValues",
+      "aliases": ["趋势", "走势", "变化", "曲线", "时序", "波动", "历史"]
+    },
+    {
+      "service": "averageValues",
+      "aliases": ["平均", "均值", "avg", "average"]
+    }
+  ],
+  "groupTypes": [
+    {
+      "type": "ClientIPs",
+      "aliases": ["客户端IP", "客户端ip", "client ip", "clientip"]
+    },
+    {
+      "type": "BusinessGroup",
+      "aliases": ["业务组", "工作组", "业务分组", "分组"]
+    },
+    {
+      "type": "WebApplication",
+      "aliases": ["业务", "业务系统", "Web应用", "web应用", "网站", "web application", "web"]
+    },
+    {
+      "type": "DefinedApp",
+      "aliases": ["应用", "业务应用", "服务器应用", "服务应用", "app", "application", "server application"]
+    },
+    {
+      "type": "Prefix24",
+      "aliases": ["网段", "prefix24", "/24"]
+    },
+    {
+      "type": "IPConversation",
+      "aliases": ["会话", "ip会话", "会话对"]
+    },
+    {
+      "type": "TotalTraffic",
+      "aliases": ["总流量", "全局"]
+    },
+    {
+      "type": "IPAddress",
+      "aliases": ["IP地址", "ip地址", "IP", "ip", "主机"]
+    }
+  ],
+  "metricFamilies": [
+    {
+      "family": "throughput",
+      "defaultMetric": "TPIO",
+      "inboundMetric": "TPI",
+      "outboundMetric": "TPO",
+      "aliases": ["吞吐", "吞吐量", "带宽", "总带宽"]
+    },
+    {
+      "family": "traffic",
+      "defaultMetric": "BYTIO",
+      "inboundMetric": "BYTI",
+      "outboundMetric": "BYTO",
+      "aliases": ["流量", "总流量"]
+    },
+    {
+      "family": "packet_loss",
+      "defaultMetric": "PLI",
+      "inboundMetric": "PLI",
+      "outboundMetric": "PLO",
+      "aliases": ["丢包", "丢包率", "丢包情况"]
+    },
+    {
+      "metric": "PGTME",
+      "aliases": ["页面时延", "页面响应", "页面耗时", "页面响应时间", "页面慢", "网站慢", "网页慢"]
+    },
+    {
+      "metric": "PGNPGE",
+      "aliases": ["访问量", "访问次数", "页面访问", "页面数量"]
+    },
+    {
+      "metric": "TRTI",
+      "aliases": ["服务器响应时间", "响应时间", "系统慢", "业务系统慢", "服务端响应时间"]
+    },
+    {
+      "metric": "RTTI",
+      "aliases": ["往返时间", "rtt"]
+    },
+    {
+      "metric": "RDTI",
+      "aliases": ["重传", "重传时延"]
+    },
+    {
+      "metric": "PGHTTP500",
+      "aliases": ["http500", "http 500", "5xx", "500错误", "500异常"]
+    },
+    {
+      "metric": "PGHTTP500PCT",
+      "aliases": ["http 500错误率", "500错误率", "5xx错误率", "5xx rate", "http 500 rate", "服务器错误率"]
+    },
+    {
+      "metric": "PGHTTP400",
+      "aliases": ["http400", "http 400", "4xx", "400错误", "400异常"]
+    },
+    {
+      "metric": "PGHTTP400PCT",
+      "aliases": ["http 400错误率", "400错误率", "4xx错误率", "4xx rate", "http 400 rate", "客户端错误率"]
+    },
+    {
+      "metric": "PGHTTP200",
+      "aliases": ["http200", "http 200", "200数量", "成功数", "成功响应数"]
+    },
+    {
+      "metric": "PGHTTP200PCT",
+      "aliases": ["http成功率", "http 200成功率", "200成功率", "成功率"]
+    },
+    {
+      "metric": "PGNOBJE",
+      "aliases": ["http响应数", "响应数", "response count", "http responses"]
+    }
+  ],
+  "directionAliases": {
+    "inbound": ["流入", "入站", "入方向", "上行"],
+    "outbound": ["流出", "出站", "出方向", "下行"]
+  },
+  "timeRanges": [
+    {
+      "key": "today",
+      "aliases": ["今天", "今日"]
+    },
+    {
+      "key": "yesterday",
+      "aliases": ["昨天", "昨日"]
+    },
+    {
+      "key": "last7days",
+      "aliases": ["最近7天", "近7天", "过去7天", "最近七天", "近七天", "过去七天"]
+    },
+    {
+      "key": "last30days",
+      "aliases": ["最近30天", "近30天", "过去30天", "最近三十天", "近三十天", "过去三十天"]
+    },
+    {
+      "key": "last1hour",
+      "aliases": ["最近1小时", "近1小时", "过去1小时", "最近一小时", "近一小时", "过去一小时"]
+    },
+    {
+      "key": "last24hours",
+      "aliases": ["最近一天", "近一天", "过去一天", "最近1天", "近1天", "过去1天", "最近24小时", "近24小时", "过去24小时"]
+    }
+  ],
+  "granularityRules": [
+    {
+      "maxSpanSeconds": 21600,
+      "granularity": 60
+    },
+    {
+      "maxSpanSeconds": 259200,
+      "granularity": 300
+    },
+    {
+      "maxSpanSeconds": 2592000,
+      "granularity": 3600
+    }
+  ]
+}
