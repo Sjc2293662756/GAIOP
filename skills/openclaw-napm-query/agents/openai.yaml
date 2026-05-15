@@ -1,7 +1,61 @@
 interface:
-  display_name: "OpenClaw NAPM Decision Query"
-  short_description: "Decision-first NAPM semantic routing with query execution and multi-turn follow-up."
-  default_prompt: "Use $openclaw-napm-query as a decision-first skill. First decide whether the request is continuation / in-scope / explanation / query / analysis_entry / result_interpretation and produce a structured decision object. Then pass the prompt plus that decision into the skill executor so that only GO_DIRECT_QUERY and GO_OVERVIEW_QUERY continue to query execution. Subject disambiguation is mandatory for inventory/list queries: (1) \"业务组/工作组/业务分组\" => BusinessGroup; (2) \"业务/业务系统/Web应用/网站/站点\" => WebApplication; (3) plain \"业务\" must NOT be mapped to BusinessGroup unless explicit \"组\" signal exists. Special handling for WebApplication access questions: when the user asks for \"访问量/访问次数/页面访问\" and also mentions \"客户端/客户端IP\", prefer metric `PGNPGE` and target object `ClientIPs`; when the prompt also contains \"其他web应用/其它web应用/未注册web应用/Other Web Application\", treat it as an explicit WebApplication argument instead of asking for clarification. For questions like \"访问其他web应用次数最多的客户端是谁\", prefer GO_DIRECT_QUERY with a resolvedQuerySeed equivalent to `service=topValues`, `metric=PGNPGE`, `topMetric=PGNPGE`, `groups=[{type:\"WebApplication\",argument:\"Other Web Application\"},{type:\"ClientIPs\"}]`, and singular questions such as \"谁\" should prefer `topCount=1`. Prefer machine payload narration: when the executor returns narrationInput, you must produce the final Chinese user-facing answer in the same turn. Prefer narrationInput.result.narrationStructure first, then narrationInput.summary and narrationInput.result (rows/structuredRows/structuredSeries/overview). When responseMode=machine_narration_input and narrationInput.narrationRequired=true, do not stop at acknowledging the tool result and do not ask the user to interpret the JSON manually. Only fallback to displayText/replyText when narrationInput is missing."
+  display_name: "OpenClaw NAPM Direct Query"
+  short_description: "Direct NAPM structured query execution and Chinese narration contract without the removed gateway layer."
+  default_prompt: |-
+    Use $openclaw-napm-query as the direct runtime for NAPM / NetInside requests.
+
+    OpenClaw is the sole owner of:
+    - domain boundary judgment
+    - out-of-scope refusal and redirect guidance
+    - follow-up understanding
+    - clarification policy
+    - resolvedQuery construction
+
+    Do not route through project gateway code, src/routes, or project-level src/services.
+    Do not reintroduce local gateway-era policy wording.
+
+    Runtime contract:
+    - Prefer structured resolvedQuery from OpenClaw.
+    - The skill executes the NAPM API request and returns machine-readable narration input.
+    - OpenClaw must produce the final Chinese answer in the same turn.
+    - If resolvedQuery is missing, do not invent a query from stale context. Return a Chinese decision-style reply that says the current request still needs OpenClaw to finish intent resolution or scope clarification.
+    - Every data answer must include the data time range. Prefer narrationInput.result.timeRange.displayText or narrationInput.summary.timeRange.displayText near the beginning of the answer, and include it even when the query result is empty.
+
+    Object guardrails:
+    - business group / workgroup / grouped business => BusinessGroup
+    - web application / website / site / plain business system => WebApplication unless the user explicitly says business group
+    - application / known application / protocol application => DefinedApp or Application according to runtime support
+    - Other Web Application is an explicit WebApplication argument
+
+    Metric guardrails:
+    - packet count / packet volume => PKIO
+    - server response time => TRTI, not RTTI
+    - RTT / latency / delay => RTT-family latency metrics
+    - web visits / page visits => PGNPGE
+
+    Ranking guardrails:
+    - When the user asks who has the highest packet loss or loss rate, keep the semantic metric and sort metric aligned to PLI or PLO unless the user explicitly asks to rank by throughput, bandwidth, byte volume, or another named metric.
+    - Do not silently rewrite packet-loss ranking into TPIO sorting.
+    - Singular ranking asks such as “谁 / 哪个 / 最高的是谁” should usually prefer topCount=1.
+
+    Composite analysis guardrails:
+    - Requests such as “先找最…的对象，再分析它”, “找到失败最多的地址，然后综合分析”, or “对最高/最多的对象做深度分析” are not a single averageValues or timeValues query.
+    - For these asks, construct a service=overview resolvedQuery and put the discovery step into analysisPipeline.discoveryQuery.
+    - Prefer topValues for discovery when the user is selecting “谁 / 哪个 / 最多 / 最高 / 最慢 / 最差” from multiple objects.
+    - Keep the discovery metric aligned with the selection condition. For example, packet loss ranking must discover by PLI/PLO, connection failure ranking must discover by RFCI, and HTTP error ranking must discover by the corresponding error metric. Do not discover by throughput unless the user asked for throughput.
+    - If the object is already explicit, skip discovery and go directly to a focused overview on that object.
+    - Preserve the same time range across discovery and focused overview unless the user explicitly changes time.
+
+    Inventory and business guardrails:
+    - For plain business metric-list questions, answer strictly from the WebApplication view and keep the user-facing metric list centered on PG* web/page metrics plus page optimization metrics.
+    - Do not advertise PLI/PLO/RTTI/RTTO/RDTI/RDTO/RTXI/RTXO/CONI/CCNI/RFCI/TPIO/BYTIO there unless the user explicitly asked for BusinessGroup / workgroup scope or changed scope away from WebApplication.
+    - For questions asking which web applications exist in the system, query the WebApplication object list rather than the broad protocol applications endpoint.
+    - For questions asking which client visits Other Web Application the most, prefer topValues with metric PGNPGE, groups WebApplication("Other Web Application") -> ClientIPs, and topCount=1.
+
+    Narration guardrails:
+    - When the executor returns narrationInput, OpenClaw should produce the final Chinese answer from narrationInput and result rows.
+    - Do not stop at JSON, Groups list completed, Average query completed, or [object Object].
+    - Do not leak English reasoning or tool-thought text to the end user.
 
 policy:
   allow_implicit_invocation: true

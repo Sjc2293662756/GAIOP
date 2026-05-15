@@ -1,15 +1,69 @@
-function buildOverviewDisplayText(overview) {
-  const lines = [
-    '[OpenClaw overview execution completed]',
-    `scene=${overview.scene}, depth=${overview.depth}, time=${overview.start}~${overview.end}`,
-    `selected=${Array.isArray(overview.selectedCandidates) ? overview.selectedCandidates.length : 0}, skipped=${Array.isArray(overview.skippedCandidates) ? overview.skippedCandidates.length : 0}`,
-    `queries=${overview.executionMeta.queryCount}, success=${overview.executionMeta.successCount}, failed=${overview.executionMeta.failedCount}`
-  ];
+function formatOverviewTimeRange(overview) {
+  const start = Number(overview?.start || 0);
+  const end = Number(overview?.end || 0);
+  if (!start || !end || end <= start) {
+    return null;
+  }
 
-  const modules = Array.isArray(overview.modules) ? overview.modules : [];
-  modules.forEach((moduleItem, index) => {
-    lines.push(`${index + 1}. ${moduleItem.key} ${moduleItem.ok ? 'ok' : 'failed'} rows=${moduleItem.rowCount || 0}`);
+  const formatter = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
   });
+
+  return `数据时间：${formatter.format(new Date(start * 1000))} 至 ${formatter.format(new Date(end * 1000))}`;
+}
+
+function buildOverviewDisplayText(overview) {
+  const timeRangeText = formatOverviewTimeRange(overview);
+  const scene = String(overview?.scene || '').trim();
+  const discoveryObject = String(overview?.discovery?.selectedObject || '').trim();
+  const discoveryMetric = String(overview?.discovery?.metric || '').trim();
+  const sceneLabelMap = {
+    system: '系统整体概览',
+    business: '业务整体概览',
+    business_group: '业务组整体概览',
+    application: '应用整体概览',
+    network: '网络整体概览',
+    security: '安全整体概览'
+  };
+  const sceneLabel = sceneLabelMap[scene] || '整体概览';
+  const successCount = Number(overview?.executionMeta?.successCount || 0);
+  const failedCount = Number(overview?.executionMeta?.failedCount || 0);
+  const queryCount = Number(overview?.executionMeta?.queryCount || 0);
+  const modules = Array.isArray(overview?.modules) ? overview.modules : [];
+  const okModules = modules.filter((item) => item?.ok);
+  const topModuleSummaries = okModules
+    .map((item) => String(item?.summary || '').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+
+  if (successCount <= 0) {
+    return [
+      timeRangeText,
+      `${sceneLabel}已执行，但当前没有拿到可用结果。`,
+      `本次共执行 ${queryCount} 个概览查询，成功 ${successCount} 个，失败 ${failedCount} 个。`,
+      '建议优先检查 NAPM 上游接口与当前时间窗数据是否可用。'
+    ].filter(Boolean).join('\n');
+  }
+
+  const lines = [
+    timeRangeText,
+    discoveryObject
+      ? `本次先锁定到重点对象：${discoveryObject}${discoveryMetric ? `（依据 ${discoveryMetric}）` : ''}。`
+      : null,
+    `当前${sceneLabel}如下：`,
+    ...topModuleSummaries
+  ].filter(Boolean);
+
+  if (topModuleSummaries.length === 0) {
+    lines.push(`本次共执行 ${queryCount} 个概览查询，成功 ${successCount} 个，失败 ${failedCount} 个。`);
+  }
 
   return lines.join('\n');
 }
@@ -64,13 +118,13 @@ function reduceOverviewResults({
       score: candidateSelection?.score || null,
       children: Array.isArray(executionItem.children)
         ? executionItem.children.map((child) => ({
-            key: child.candidateId,
-            label: child.label,
-            ok: child.ok,
-            rowCount: child.rowCount,
-            argumentValue: child.argumentValue,
-            summary: child.ok ? `${child.label} ${child.argumentValue || ''}`.trim() : `${child.label} 执行失败`
-          }))
+          key: child.candidateId,
+          label: child.label,
+          ok: child.ok,
+          rowCount: child.rowCount,
+          argumentValue: child.argumentValue,
+          summary: child.ok ? `${child.label} ${child.argumentValue || ''}`.trim() : `${child.label} 执行失败`
+        }))
         : []
     };
 
@@ -92,6 +146,7 @@ function reduceOverviewResults({
     queries: Array.isArray(executionResult?.executionItems) ? executionResult.executionItems.slice() : [],
     warnings: Array.isArray(executionResult?.warnings) ? executionResult.warnings.slice() : [],
     topFindings,
+    discovery: executionResult?.discovery || null,
     executionMeta: {
       queryCount: Number(executionResult?.executionMeta?.queryCount || 0),
       successCount: Number(executionResult?.executionMeta?.successCount || 0),

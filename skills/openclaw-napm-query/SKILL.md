@@ -1,101 +1,277 @@
 ---
 name: openclaw-napm-query
-description: NAPM semantic decision and query execution skill. Use when OpenClaw needs to handle NAPM or NetInside concept explanations, broad analysis entry questions, direct query requests, multi-turn refinements, or result follow-ups, and route them through decision, intent structuring, metadata resolution, query execution, and stable output formatting. Avoid using it for pure non-NAPM operation tasks.
+description: Direct OpenClaw NAPM query skill. Use for NAPM or NetInside concept explanations, metadata inventory, metric-ownership and scope questions such as “业务都可以查哪些指标 / 业务组都可以查哪些指标 / WebApplication 和 BusinessGroup 区别”, structured semantic query execution, ranking/average/trend/overview analysis, multi-turn refinements, and result narration. The skill owns structured query execution, metadata resolution, API construction, execution, and Chinese narration contract without relying on the removed gateway layer.
 ---
 
-# OpenClaw NAPM Semantic Decision + Query
+# OpenClaw NAPM Direct Query Skill
 
-Use this skill as a decision-first NAPM runtime. Do not start from `topValues/averageValues/timeValues` classification. Always decide first, then execute only when the decision allows query execution.
+This skill is the runtime entry for NAPM / NetInside questions. OpenClaw should call this skill directly, provide structured `resolvedQuery`, and let the skill execute NAPM queries and return machine-readable narration input.
 
-## Layered Architecture
+Do not route NAPM requests through the removed project gateway layer. Do not depend on `src/routes`, project-level `src/services`, gateway policy, or upstream decision approval before querying.
 
-1. Decision Layer
-2. Intent Structuring Layer
-3. Metadata Resolution Layer
-4. Query Execution Layer
-5. Result Interpretation / Output Layer
+## Core Policy
 
-Execution resources from the old skill (metric mapping, group mapping, time normalization, validation, execution, formatting) are preserved, but they are post-decision capabilities.
+- OpenClaw is the required owner of natural-language understanding, domain boundary judgment, follow-up understanding, clarification policy, and `resolvedQuery` construction.
+- The skill consumes executable `resolvedQuery`; it is no longer the formal owner of prompt-to-query parsing, out-of-scope refusal, or redirect guidance in the active runtime.
+- `decision` is a trace and guardrail, not an upstream blocking contract.
+- Ask a clarification question only when multiple plausible NAPM queries would produce materially different answers.
+- Do not answer with "upstream decision failed", "policy blocked", or similar gateway-era wording.
+- Do not reuse stale historical data as the current answer when a fresh query fails.
+- Every data answer must include the data time range, for example `数据时间：2026-04-29 00:00:00 至 2026-04-30 00:00:00`.
+- If `resolvedQuery` is missing, return a Chinese decision-style fallback that asks OpenClaw to finish intent resolution or scope clarification first. Do not silently invent a new query from raw prompt text.
 
-## Workflow (Decision-First)
+## Direct Architecture
 
-1. Determine whether the request continues an existing NAPM session.
-2. Determine whether the request is in scope for NAPM.
-3. Classify the task as `explanation`, `query`, `analysis_entry`, or `result_interpretation`.
-4. Determine whether information is sufficient: `S1_DIRECT_QUERY`, `S2_OVERVIEW_FIRST`, `S3_NEED_CLARIFICATION`, `S4_UNMAPPABLE`.
-5. Produce a decision object.
-6. If next action is query-related, build an intermediate intent object.
-7. Resolve metadata using metric, dimension, and validation resources.
-8. Execute the final NAPM query only after resolution succeeds.
-9. Format the answer or next-step prompt.
+Runtime path:
 
-## Decision Layer Rules (Mandatory)
+```text
+OpenClaw user request
+  -> openclaw-napm-query skill
+  -> skill services and scripts
+  -> NapmClient
+  -> NetInside / NAPM WebService
+  -> OpenClaw Chinese narration
+```
 
-### 1) Continuation before scope
+Skill-owned layers:
 
-Always run continuation detection before scope detection. If current input is a continuation of an active NAPM session, keep it in NAPM domain even when current utterance has no explicit NAPM keywords.
+1. Structured query normalization
+2. Execution guard and validation
+3. NAPM API construction and execution
+4. Overview query expansion and aggregation
+5. Result interpretation and Chinese output
 
-### 2) Continuation type enum
+## Workflow
 
-- `subject_switch`
-- `time_switch`
-- `metric_switch`
-- `view_switch`
-- `result_follow_up`
-- `query_refinement`
-- `step_forward`
+1. Receive `resolvedQuery` and optional session context from OpenClaw.
+2. Normalize the structured query into the runtime execution shape.
+3. Validate the query and apply execution guardrails.
+4. Execute the query through the skill script or OpenClaw tool.
+5. Return machine-readable result data and narration input.
 
-### 3) Scope policy
+## Composite Analysis Chain
 
-In-scope:
+For composite asks such as:
 
-- NAPM concept explanation
-- NAPM query request
-- NAPM performance analysis entry
-- NAPM result interpretation
+- `先找最...的对象，再分析它`
+- `找到失败最多的地址，然后综合分析`
+- `报错最多的是哪个业务，继续分析它`
 
-Out-of-scope:
+use this project-aligned chain:
 
-- restart services
-- code debugging and code-level RCA
-- generic DBA/operation action
-- non-NAPM generic QA
+1. Discover the target object first.
+2. Lock the discovered object as the analysis focus.
+3. Convert the request into a focused `overview`.
+4. Return Chinese narration with both the discovery result and the focused analysis result.
 
-### 4) Task-type policy and priority
+Construction rules:
 
-Task enum:
+- Use outer `service=overview` for the final task.
+- Put the discovery step into `analysisPipeline.discoveryQuery`.
+- Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最多 / 最高 / 最差”.
+- Keep the discovery metric aligned with the selection condition.
+- If the object is already explicit, skip discovery and go directly to focused `overview`.
+- Keep discovery and focused overview on the same time range unless the user explicitly changes time.
 
-- `explanation`
-- `query`
-- `analysis_entry`
-- `result_interpretation`
+The skill is not the owner of:
 
-Priority order (high to low):
+- deciding whether a question is in NAPM scope
+- deciding whether a broad question should be refused and redirected
+- deciding whether a short follow-up such as `继续` or `需要` should inherit previous context
 
-1. `explanation`
-2. `result_interpretation`
-3. `query`
-4. `analysis_entry`
+Those decisions must stay in OpenClaw mainflow.
 
-### 5) Information sufficiency policy
+## Execution Interface
 
-Apply only to `query` and `analysis_entry`:
+Prefer the OpenClaw tool command `napm-skill-query` when it is available.
 
-- `S1_DIRECT_QUERY`
-- `S2_OVERVIEW_FIRST`
-- `S3_NEED_CLARIFICATION`
-- `S4_UNMAPPABLE`
+Fallback command:
 
-### 6) Action enum
+```bash
+node skills/openclaw-napm-query/scripts/run_napm_query.js --resolvedQuery "{\"service\":\"groups\",\"groups\":[{\"type\":\"WebApplication\"}],\"format\":\"json\"}"
+```
 
-- `ANSWER_CONCEPTUALLY`
-- `GO_DIRECT_QUERY`
-- `GO_OVERVIEW_QUERY`
-- `ASK_CLARIFYING_QUESTION`
-- `INTERPRET_RESULT`
-- `REJECT_AND_REDIRECT`
+Supported payload fields:
 
-## Session State Contract
+- `resolvedQuery`: required fully resolved query
+- `session`: optional continuation state
+- `sessionState`: optional alias for continuation state
+- `decision`: optional hint from OpenClaw
+- `intent`: optional structured intent
+
+The executor requires executable `resolvedQuery`. A missing `decision` must not block execution, but a missing `resolvedQuery` must return a Chinese fallback contract instead of exposing low-level English errors to the user.
+
+## Drilldown Hierarchy Questions
+
+For questions such as:
+
+- `IPAddress 支持哪些下钻路径`
+- `BusinessGroup 可以往下钻到哪里`
+- `有哪些顶层对象，以及各自支持哪些下钻`
+
+prefer the local static groups tree at `config/groups-tree.static.json` as the primary source of truth for structural drill-down hierarchy.
+
+Important rules:
+
+- Do not answer these questions with `403`-style metadata failure wording when the static groups tree is available locally.
+- Treat the static tree as authoritative for "structure / hierarchy / reachable paths" questions, even when runtime metadata APIs are blocked.
+- Distinguish between:
+  - structural drill-down reachability from the group tree
+  - runtime executability and metric compatibility, which may still require `metricsForGroup` or live API validation
+- When listing paths, prefer runtime-normalized names used by the current skill:
+  - normalize `Application` to `DefinedApp` where the runtime has already converged on `DefinedApp`
+- If the user asks for all top-level drill-down hierarchies, summarize by top-level object and then list the direct children or common reachable paths rather than only one example.
+
+## Metric Ownership
+
+When the task is really asking "这个维度下该用什么指标", treat it as a metric-ownership question rather than a plain alias-mapping question.
+
+Important rules:
+
+- `groups` decide the query subject; `metrics` decide the value being queried.
+- Semantic categories such as `业务数据`, `网络流量数据`, `连接数据`, `应用性能数据` are explanatory groupings, not legal `groupType`.
+- Use static ownership rules only to choose candidates. Final execution must still validate metric compatibility through `metricsForGroup` or `NapmMetadataService.getMetricsForGroupPath()`.
+- Distinguish throughput metrics such as `TPIO` from byte-volume metrics such as `BYTIO`.
+- Distinguish server-side metrics such as `CONI`, `CCNI`, `RFCI`, `TRTI` from client-side metrics such as `CONO`, `CCNO`, `RFCO`, `TRTO`.
+- Prefer `PG*` metrics for `WebApplication` / `PageFamily` / `User`, and prefer generic traffic / network / connection metrics for `TotalTraffic` / `IPAddress` / `IPConversation` / `BusinessGroup` unless runtime metadata says otherwise.
+- Treat plain `业务都可以查哪些指标` and similar metric-inventory wording as a strict `WebApplication` ownership answer. Do not advertise `PLI`, `PLO`, `RTTI`, `RTTO`, `RDTI`, `RDTO`, `RTXI`, `RTXO`, `CONI`, `CCNI`, `RFCI`, `TPIO`, or `BYTIO` under plain `业务` unless the user explicitly asked for `业务组` / `工作组` or clearly changed scope away from `WebApplication`.
+- For plain `业务` / `业务系统` / `WebApplication`, user-facing metric lists should stay centered on `PG*` page/business metrics plus page optimization metrics, even if runtime metadata also exposes broader cross-domain metrics.
+- If the user is asking `某个指标分类下有哪些指标` or `某个分类对应哪些 metric code`, read `references/metric-category-mapping.md` as the primary category-to-code table.
+- When ownership or compatibility is unclear, read `references/top-level-metric-ownership.md` first, then `references/metric-category-mapping.md`, then `references/metric-dimension-ownership.md` before constructing the final query.
+
+## Skill Services
+
+Use the services under `skills/openclaw-napm-query/services/` as the active runtime implementation. These are skill-local capabilities, not the removed gateway layer.
+
+Primary services:
+
+- `RequirementParserService`
+- `MetricMappingService`
+- `DimensionMappingService`
+- `QueryValidator`
+- `NapmMetadataService`
+- `NapmClient`
+- `ClarificationGateService`
+- `OpenClawNarrationContractService`
+
+## Semantic Mapping Guardrails
+
+These are known NAPM semantics, not a gateway rule layer. Use them to avoid common wrong API construction.
+
+### Object / Dimension
+
+- `业务组`, `工作组`, `业务分组` -> `BusinessGroup`
+- `Web应用`, `web应用`, `网站`, `站点`, `业务系统` -> `WebApplication`
+- Plain `业务` usually means `WebApplication` unless the user explicitly says `业务组`
+- `业务都可以查哪些指标` should be answered from the `WebApplication` view, not the `BusinessGroup` view
+- `应用`, `已知应用`, `协议应用` -> `DefinedApp` / `Application` according to runtime support
+- `客户端`, `客户端IP` -> `ClientIPs`
+- `服务端`, `服务端IP`, explicit IP address -> `IPAddress` or server-side IP dimension according to query path
+- `其他web应用`, `其它web应用`, `未注册web应用`, `Other Web Application` -> explicit `WebApplication` argument, not a vague pronoun
+
+Inventory wording such as `系统中有哪些web应用` should query the `WebApplication` object list / arguments. Do not answer it by calling the protocol-style `applications` list when the user asked for Web applications.
+
+### Metrics
+
+- `数据包数量`, `包数量`, `包个数`, `数据包个数`, `包流量` -> `PKIO`
+- `流量`, `吞吐`, `吞吐量`, `带宽` -> throughput metrics such as `TPIO` unless the user explicitly asks for packets or bytes
+- `字节流量`, `字节数` -> byte traffic metrics such as `BYTIO`
+- Web `访问量`, `访问次数`, `页面访问` -> `PGNPGE`
+- `服务器响应时间`, `服务端响应时间` -> `TRTI`
+- `客户端响应时间` -> client-side response time metric when supported
+- `RTT`, `往返时延`, `网络时延`, `延迟` -> RTT / latency metrics such as `RTTI`, not `TRTI`
+- `页面响应时间`, `页面耗时`, `页面时延` -> page timing metric such as `PGTME`
+- `丢包`, `丢包率` -> packet loss metrics
+- `重传` -> retransmission metrics
+- `HTTP 4xx`, `HTTP 5xx`, `500错误`, `报错`, `错误率` -> HTTP error metrics or error ratio metrics
+
+### Service Mode
+
+- `有哪些`, `列表`, `清单`, `系统中有哪些...` -> inventory / metadata listing
+- `最多`, `最少`, `最高`, `最低`, `最慢`, `前N`, `TopN`, `是谁`, `哪个` -> ranking
+- Singular ranking questions such as `是谁` or `哪个` should prefer `topCount=1`
+- `是多少`, `平均`, `均值`, `整体`, `概览` -> average / overview
+- `趋势`, `走势`, `变化`, `曲线`, `按时间` -> time series
+- Broad performance questions with a known subject and missing metric should run overview-first rather than asking for every detail
+
+## Important Query Examples
+
+`系统中有哪些web应用`
+
+- Intent: inventory
+- Object: `WebApplication`
+- Expected behavior: return registered Web applications / business systems with Chinese narration
+
+`访问其他web应用次数最多的客户端是谁`
+
+- Service mode: ranking
+- Metric: `PGNPGE`
+- Groups: `WebApplication("Other Web Application") -> ClientIPs`
+- Prefer `topCount=1`
+
+`数据包数量最多的前5个应用分别是谁`
+
+- Service mode: ranking
+- Metric: `PKIO`
+- Object: use `DefinedApp` / `Application` unless context says Web application
+- `topCount=5`
+
+`101.254.114.238 的服务器响应时间是多少`
+
+- Service mode: average
+- Metric: `TRTI`
+- Group argument: IP address `101.254.114.238`
+- Do not map this wording to `RTTI`
+
+## Output Contract
+
+The executor may return a machine payload, but OpenClaw must produce the final user-facing Chinese answer in the same turn.
+
+Preferred output payload:
+
+```json
+{
+  "ok": true,
+  "decision": {},
+  "intent": {},
+  "resolvedQuery": {},
+  "data": [],
+  "responseMode": "machine_narration_input",
+  "narrationBy": "openclaw",
+  "narrationInput": {
+    "schema": "openclaw_napm_narration.v1",
+    "type": "query_result|decision_result",
+    "summary": {},
+    "result": {
+      "narrationStructure": {}
+    },
+    "renderPolicy": {},
+    "followUp": {}
+  },
+  "summary": {},
+  "error": null
+}
+```
+
+Narration priority:
+
+1. `narrationInput.result.narrationStructure`
+2. `narrationInput.result.timeRange` or `narrationInput.summary.timeRange`
+3. structured rows / series / overview data
+4. `narrationInput.summary`
+5. `displayText` or `replyText` only when narration input is missing
+
+Do not stop at `Groups list completed`, `Average query completed`, raw JSON acknowledgement, or `[object Object]`. Turn returned data into a readable Chinese answer.
+
+Always include the time range represented by the data. If `timeRange.displayText` exists, put it near the beginning of the answer. If the query returned empty data, still say the queried time range.
+
+For empty results, say what was queried: metric, object, time range, and scope. Do not invent an answer from previous runs.
+
+Show debug API URLs only when the runtime explicitly enables that behavior. Always mask credentials.
+
+## Session State
+
+Suggested session state:
 
 ```json
 {
@@ -116,239 +292,35 @@ Apply only to `query` and `analysis_entry`:
 }
 ```
 
-### Inheritance rules
+Continuation inheritance:
 
-- `subject`: inherit when continuation is `time_switch`, `metric_switch`, `view_switch`, `step_forward`, or `result_follow_up`
-- `time_range`: inherit unless user explicitly switches time
-- `metric`: inherit for result follow-up and view switch when no new metric is supplied
-- `group_path`: inherit when follow-up narrows or expands view without replacing subject
-- `result_context`: inherit only when `last_result_available = true` and `turn_expiry > 0`
-
-## Decision Object Schema
-
-Use this structure inside the skill:
-
-```json
-{
-  "is_continuation": true,
-  "continuation_type": "result_follow_up",
-  "in_scope": true,
-  "scope_reason": "",
-  "task_type": "result_interpretation",
-  "task_reason": "",
-  "information_sufficiency": "not_applicable",
-  "sufficiency_reason": null,
-  "recognized_subject_hint": "239web",
-  "recognized_time_hint": "yesterday",
-  "recognized_goal_hint": "interpret_result",
-  "inherit_subject": true,
-  "inherit_time_range": true,
-  "inherit_metric": true,
-  "next_action": "INTERPRET_RESULT",
-  "need_clarification": false,
-  "clarifying_question": null
-}
-```
-
-OpenClaw runtime rule:
-
-- The upper planner/model should produce this `decision` object first.
-- The executor script validates the contract and only uses local fallback rules when the incoming `decision` is missing or invalid.
-- Do not let the executor become the primary boundary judge; boundary judgement belongs to the skill-side model following this schema.
-
-## Intent Structuring Layer
-
-Input: user request + decision object + session state  
-Output: intermediate `intent` object only. Do not output final execution JSON here.
-
-Recommended intent fields:
-
-```json
-{
-  "intent_type": "query",
-  "goal": "topn|trend|average|overview|diagnose|interpret",
-  "subject_hint": "239web",
-  "time_hint": "today",
-  "metric_hint": "吞吐",
-  "view_hint": "group_by_ip",
-  "constraints": {},
-  "use_context_inheritance": true
-}
-```
-
-## Metadata Resolution Layer
-
-Responsibilities:
-
-- resolve subject existence
-- resolve object type and group path
-- resolve metric mapping
-- resolve service mode
-- apply validation and safe repair strategy
-
-Output: `resolvedQuery` only after resolution completes.
-
-## Query Execution Layer
-
-Run query only when action is `GO_DIRECT_QUERY` or `GO_OVERVIEW_QUERY`.  
-Reuse existing workspace capabilities:
-
-- RequirementParserService
-- MetricMappingService
-- GroupBuilder
-- QueryValidator
-- NapmClient
-- TimeUtils
-
-Supported execution service remains:
-
-- `topValues`
-- `averageValues`
-- `timeValues`
-
-These service types are execution-layer internals, not skill entry classification.
-
-## Result Interpretation / Output Layer
-
-Always return stable structure and include one of:
-
-- direct result summary
-- empty result explanation
-- result interpretation from existing context
-- next-step suggestion
-- clarifying question
-- rejection and redirection
-
-## Invocation Rules
-
-Prefer this skill when requests involve:
-
-- NAPM / NetInside concepts or metrics
-- broad analysis entry (`最近情况怎么样`, `为什么最近慢`)
-- query execution requests
-- result follow-up and multi-turn refinement
-- interpretation of NAPM result snippets/tables
-
-Do not use this skill for:
-
-- non-NAPM generic tasks
-- operation actions (restart/deploy/config change)
-- code-level troubleshooting requests
-
-## Script Interface
-
-Use [scripts/run_napm_query.js](./scripts/run_napm_query.js).
-Decision logic is implemented in [scripts/decision-layer.js](./scripts/decision-layer.js).
-
-OpenClaw runtime preference:
-
-- Prefer the OpenClaw plugin/tool command `napm-skill-query` when it is available.
-- Pass the raw user prompt plus optional structured `decision`, `intent`, `resolvedQuery`, and `sessionState`.
-- Use the local script only as the execution reference implementation or fallback runtime.
-- Prefer machine-payload narration: when the executor returns `narrationInput`, generate the final user-facing reply from `narrationInput.result.narrationStructure` first, then `narrationInput.summary` + `narrationInput.result` (rows/structuredRows/structuredSeries/overview). When `responseMode=machine_narration_input` and `narrationInput.narrationRequired=true`, you must output the final Chinese answer in the same turn instead of stopping at JSON acknowledgement. Only fall back to `displayText`/`replyText` when `narrationInput` is missing.
-- Web access ranking rule: when the user asks for `访问量 / 访问次数 / 页面访问` and also mentions `客户端 / 客户端IP`, prefer `PGNPGE` plus target object `ClientIPs`, not default throughput metrics. If the same request contains `其他web应用 / 其它web应用 / 未注册web应用 / Other Web Application`, treat that phrase as an explicit `WebApplication` argument and keep the request executable instead of forcing clarification.
-
-Supported inputs:
-
-1. raw prompt
-2. structured payload with any of `decision`, `intent`, `resolvedQuery`, `sessionState`
-
-When OpenClaw already produced a `decision`, pass it through `payload.decision`. The executor will:
-
-- validate enum values and required fields
-- reject unsupported action families such as restart/deploy/config/code/db-internal actions
-- preserve model-produced `response_text` / `clarifying_question` when present
-- block execution when `decision` is missing/invalid and return a clarification prompt
-- do not fallback to local heuristic decision/scoring
-
-Example:
-
-```bash
-node skills/openclaw-napm-query/scripts/run_napm_query.js --prompt "239web 最近异常吗"
-```
-
-```bash
-node skills/openclaw-napm-query/scripts/run_napm_query.js --payload "{\"decision\":{\"next_action\":\"GO_DIRECT_QUERY\"},\"resolvedQuery\":{\"service\":\"topValues\",\"metric\":\"TPIO\",\"groups\":[{\"type\":\"IPAddress\"}],\"start\":1762732800,\"end\":1762819199,\"topCount\":10}}"
-```
-
-## Output Contract (v2)
-
-```json
-{
-  "ok": true,
-  "decision": {},
-  "intent": {},
-  "resolvedQuery": {},
-  "data": [],
-  "displayText": null,
-  "replyText": null,
-  "responseMode": "machine_narration_input",
-  "narrationBy": "openclaw",
-  "narrationInput": {
-    "schema": "openclaw_napm_narration.v1",
-    "type": "query_result|decision_result",
-    "summary": {},
-    "result": {
-      "narrationStructure": {}
-    },
-    "renderPolicy": {},
-    "followUp": {}
-  },
-  "summary": {},
-  "error": null
-}
-```
-
-For `ANSWER_CONCEPTUALLY`, `ASK_CLARIFYING_QUESTION`, `REJECT_AND_REDIRECT`, and `INTERPRET_RESULT`, `resolvedQuery` and `data` may be `null`.
+- Inherit subject for time switch, metric switch, view switch, result follow-up, and step-forward turns.
+- Inherit time range unless the user explicitly changes time.
+- Inherit metric for result follow-up or view switch when no new metric is supplied.
+- Inherit group path when the user narrows or expands scope without replacing the subject.
+- Inherit result context only when a previous result exists and `turn_expiry > 0`.
 
 ## References
 
-Use the `references/` directory progressively. Do not load everything by default. Read the minimum file needed for the current phase while keeping the decision-first architecture intact.
+Use the `references/` directory progressively. Read only the minimum file needed for the current question.
 
-- [references/source-index.md](./references/source-index.md)
-  Use as the index for the reference set. Read this first when you need to decide which reference file to consult next.
-  Stage: explanation, metadata resolution, execution
-- [references/capability-mapping.md](./references/capability-mapping.md)
-  Use for the mapping between the decision-first skill layers and the existing gateway/runtime modules. Read this when you need to understand which existing implementation capability should be reused instead of inventing a new path.
-  Stage: metadata resolution, execution
-- [references/metric-definitions.md](./references/metric-definitions.md)
-  Use for metric meaning, metric aliases, and concept-level interpretation of NAPM indicators. This is the primary reference for explanation answers and for narrowing metric hints before resolution.
-  Stage: explanation, metadata resolution
-- [references/group-hierarchy.md](./references/group-hierarchy.md)
-  Use for object scope, group hierarchy, drill-down path, and subject-to-group understanding. Read this when resolving object type, group path, or follow-up scope inheritance.
-  Stage: metadata resolution
-- [references/service-modes.md](./references/service-modes.md)
-  Use for choosing execution mode semantics and for understanding when a request should become ranking, average, trend, overview, or similar execution behavior without making service-first the entry architecture.
-  Stage: metadata resolution, execution
-- [references/query-construction.md](./references/query-construction.md)
-  Use for final resolved-query construction rules, parameter assembly, and execution payload shape after decision and intent are already settled.
-  Stage: metadata resolution, execution
-- [references/runtime-lookup-notes.md](./references/runtime-lookup-notes.md)
-  Use for runtime lookup notes, safe resolution behavior, and practical constraints when turning intermediate intent into live metadata/runtime lookups.
-  Stage: metadata resolution, execution
-- [references/openclaw-integration.md](./references/openclaw-integration.md)
-  Use for OpenClaw-side routing, trigger policy, and tool registration expectations. Read this when adjusting how the skill is invoked from the upper planner while preserving the decision-first entry policy.
-  Stage: explanation, metadata resolution, execution
+- [references/source-index.md](./references/source-index.md): reference index
+- [references/top-level-metric-ownership.md](./references/top-level-metric-ownership.md): top-level object ownership split between business and non-business metric categories
+- [references/metric-definitions.md](./references/metric-definitions.md): metric meanings and aliases
+- [references/group-hierarchy.md](./references/group-hierarchy.md): object scope and group hierarchy
+- [references/metric-dimension-ownership.md](./references/metric-dimension-ownership.md): which metric families belong to which group dimensions and how to validate them
+- [references/service-modes.md](./references/service-modes.md): ranking, average, trend, overview semantics
+- [references/query-construction.md](./references/query-construction.md): final query construction
+- [references/runtime-lookup-notes.md](./references/runtime-lookup-notes.md): runtime lookup constraints
+- [references/openclaw-integration.md](./references/openclaw-integration.md): OpenClaw invocation notes
+- [references/capability-mapping.md](./references/capability-mapping.md): historical capability mapping; ignore any old gateway wording when it conflicts with this direct-skill policy
 
-Use [scripts/run_napm_query.js](./scripts/run_napm_query.js) to execute the actual query path.
+## Anti-Patterns
 
-## Decision Examples (Request -> Decision)
-
-1. `什么是 NAPM 的吞吐量指标？` -> `ANSWER_CONCEPTUALLY`
-2. `这个结果说明什么问题？` (session has last result) -> `INTERPRET_RESULT`
-3. `查今天吞吐量前10的客户端IP` -> `GO_DIRECT_QUERY`
-4. `访问其他web应用次数最多的客户端是谁` -> `GO_DIRECT_QUERY` with `metric=PGNPGE`, `groups=[WebApplication(\"Other Web Application\"), ClientIPs]`, prefer `topCount=1`
-5. `239web 最近异常吗` -> `GO_OVERVIEW_QUERY`
-6. `为什么最近慢` (with active subject in session) -> `GO_OVERVIEW_QUERY`
-7. `改成最近24小时` -> continuation `time_switch`, `GO_DIRECT_QUERY`
-8. `换成响应时间看趋势` -> continuation `metric_switch`, `GO_DIRECT_QUERY`
-9. `只看这个对象` -> continuation `subject_switch`, `GO_DIRECT_QUERY`
-10. `再下一步` -> continuation `step_forward`, `GO_DIRECT_QUERY`
-11. `帮我重启 239web 服务` -> out-of-scope, `REJECT_AND_REDIRECT`
-12. `查一下最近情况` (no subject) -> `ASK_CLARIFYING_QUESTION`
-13. `分析一下数据库慢 SQL` -> out-of-scope, `REJECT_AND_REDIRECT`
-
-## Anti-Pattern
-
-Do not implement entry routing as: "first classify into `topValues/averageValues/timeValues`".
-That logic belongs to query execution only and must not bypass decision-first flow.
+- Do not depend on project gateway routes or old `src/services` for NAPM query execution.
+- Do not require an upstream planner decision before querying.
+- Do not treat service modes (`topValues`, `averageValues`, `timeValues`) as the first-level intent.
+- Do not map `Web应用` inventory to the broad protocol `applications` endpoint.
+- Do not map `服务器响应时间` to `RTTI`.
+- Do not map `数据包数量` to throughput; it is `PKIO`.
+- Do not ask for clarification when the semantic target is already clear enough to query.

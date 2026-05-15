@@ -13,7 +13,6 @@ const OVERVIEW_CANDIDATES = [
       topMetric: 'TPIO',
       topCount: 5
     },
-    childCandidateIds: ['appThroughputTrend'],
     capability: {
       questionTypes: ['overview', 'topn'],
       metricDomains: ['traffic', 'application'],
@@ -85,7 +84,7 @@ const OVERVIEW_CANDIDATES = [
   {
     id: 'topIpThroughput',
     label: 'IP 吞吐排行',
-    scenes: ['system', 'network'],
+    scenes: ['network'],
     role: 'primary',
     priority: 94,
     minDepth: 'fast',
@@ -100,6 +99,27 @@ const OVERVIEW_CANDIDATES = [
     capability: {
       questionTypes: ['overview', 'topn'],
       metricDomains: ['traffic', 'network'],
+      objectTypes: ['IPAddress']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'topIpConnectionFailures',
+    label: 'IP 连接失败排行',
+    scenes: ['network'],
+    role: 'standalone',
+    priority: 95,
+    minDepth: 'standard',
+    request: {
+      service: 'topValues',
+      groups: [{ type: 'IPAddress' }],
+      metrics: ['RFCI'],
+      topMetric: 'RFCI',
+      topCount: 5
+    },
+    capability: {
+      questionTypes: ['overview', 'topn', 'error'],
+      metricDomains: ['network', 'session', 'error'],
       objectTypes: ['IPAddress']
     },
     cost: { rootQueries: 1 }
@@ -123,6 +143,64 @@ const OVERVIEW_CANDIDATES = [
       questionTypes: ['overview', 'topn'],
       metricDomains: ['business', 'session', 'error'],
       objectTypes: ['WebApplication']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'topBusinessGroupThroughput',
+    label: '业务组吞吐排行',
+    scenes: ['business_group'],
+    role: 'primary',
+    priority: 100,
+    minDepth: 'fast',
+    request: {
+      service: 'topValues',
+      groups: [{ type: 'BusinessGroup' }],
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
+      topCount: 8
+    },
+    childCandidateIds: ['businessGroupThroughputTrend'],
+    capability: {
+      questionTypes: ['overview', 'topn'],
+      metricDomains: ['business', 'traffic'],
+      objectTypes: ['BusinessGroup']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'topBusinessGroupConnections',
+    label: '业务组连接请求排行',
+    scenes: ['business_group'],
+    role: 'standalone',
+    priority: 94,
+    minDepth: 'fast',
+    request: {
+      service: 'topValues',
+      groups: [{ type: 'BusinessGroup' }],
+      metrics: ['CONI'],
+      topMetric: 'CONI',
+      topCount: 5
+    },
+    capability: {
+      questionTypes: ['overview', 'topn'],
+      metricDomains: ['business', 'session'],
+      objectTypes: ['BusinessGroup']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'businessGroupAlertSummary',
+    label: '业务组告警概况',
+    scenes: ['business_group'],
+    role: 'standalone',
+    priority: 90,
+    minDepth: 'fast',
+    request: { service: 'alertsSummary' },
+    capability: {
+      questionTypes: ['overview', 'error'],
+      metricDomains: ['error', 'business'],
+      objectTypes: []
     },
     cost: { rootQueries: 1 }
   },
@@ -285,8 +363,8 @@ const OVERVIEW_CANDIDATES = [
   },
   {
     id: 'topApplicationThroughput',
-    label: '应用吞吐排行',
-    scenes: ['application', 'network'],
+    label: '?????????',
+    scenes: ['network'],
     role: 'primary',
     priority: 92,
     minDepth: 'fast',
@@ -297,13 +375,126 @@ const OVERVIEW_CANDIDATES = [
       topMetric: 'TPIO',
       topCount: 5
     },
-    childCandidateIds: ['appThroughputTrend'],
     capability: {
       questionTypes: ['overview', 'topn'],
       metricDomains: ['application', 'traffic'],
       objectTypes: ['DefinedApp']
     },
     cost: { rootQueries: 1 }
+  },
+  {
+    id: 'appTrafficAnalysisTop',
+    label: '\u5e94\u7528\u6d41\u91cf\u5206\u6790',
+    scenes: ['application'],
+    role: 'child',
+    priority: 82,
+    minDepth: 'standard',
+    dependsOnCandidateIds: ['appDistributionTop'],
+    recommendedMaxChildren: 1,
+    request: {
+      service: 'topValues',
+      groups: [
+        { type: 'DefinedApp' },
+        { type: 'ExternalIPs' },
+        { type: 'IPAddress' }
+      ],
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
+      topCount: 5
+    },
+    deriveArgument: {
+      source: 'group',
+      targetParam: 'groupArgument1'
+    },
+    capability: {
+      questionTypes: ['overview', 'topn'],
+      metricDomains: ['application', 'traffic', 'network'],
+      objectTypes: ['DefinedApp', 'IPAddress']
+    },
+    cost: { childQueries: 1 }
+  },
+  {
+    id: 'appAccessTrendByTopApp',
+    label: '\u5e94\u7528\u8bbf\u95ee\u8d8b\u52bf',
+    scenes: ['application'],
+    role: 'child',
+    priority: 80,
+    minDepth: 'deep',
+    dependsOnCandidateIds: ['appDistributionTop'],
+    recommendedMaxChildren: 1,
+    request: {
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp' }],
+      metrics: ['CONI', 'CCNI', 'RFCI'],
+      granularity: 3600
+    },
+    deriveArgument: {
+      source: 'group',
+      targetParam: 'groupArgument1'
+    },
+    capability: {
+      questionTypes: ['overview', 'trend'],
+      metricDomains: ['application', 'session', 'error'],
+      objectTypes: ['DefinedApp']
+    },
+    cost: { childQueries: 1 }
+  },
+  {
+    id: 'appExperienceTrendByTopApp',
+    label: '\u5e94\u7528\u4f53\u9a8c\u8d8b\u52bf',
+    scenes: ['application'],
+    role: 'child',
+    priority: 78,
+    minDepth: 'deep',
+    dependsOnCandidateIds: ['appDistributionTop'],
+    recommendedMaxChildren: 1,
+    request: {
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp' }],
+      metrics: ['UEII', 'CSTI', 'TRTI', 'PTTO', 'RDTO'],
+      granularity: 3600
+    },
+    deriveArgument: {
+      source: 'group',
+      targetParam: 'groupArgument1'
+    },
+    capability: {
+      questionTypes: ['overview', 'trend', 'slow'],
+      metricDomains: ['application', 'experience'],
+      objectTypes: ['DefinedApp']
+    },
+    cost: { childQueries: 1 }
+  },
+  {
+    id: 'appSessionTopByTopApp',
+    label: '\u5e94\u7528\u4f1a\u8bdd\u5206\u6790',
+    scenes: ['application'],
+    role: 'child',
+    priority: 76,
+    minDepth: 'deep',
+    dependsOnCandidateIds: ['appDistributionTop'],
+    recommendedMaxChildren: 1,
+    request: {
+      service: 'topValues',
+      groups: [
+        { type: 'DefinedApp' },
+        { type: 'IPConversations' },
+        { type: 'IPConversation' }
+      ],
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
+      topCount: 5
+    },
+    deriveArgument: {
+      source: 'group',
+      targetParam: 'groupArgument1'
+    },
+    capability: {
+      questionTypes: ['overview', 'topn'],
+      metricDomains: ['application', 'traffic', 'session'],
+      objectTypes: ['DefinedApp', 'IPConversation']
+    },
+    cost: { childQueries: 1 }
   },
   {
     id: 'appAccessTrend',
@@ -418,9 +609,9 @@ const OVERVIEW_CANDIDATES = [
     minDepth: 'fast',
     request: {
       service: 'topValues',
-      groups: [{ type: 'IPAddress' }],
+      groups: [{ type: 'TotalTraffic' }],
       metrics: ['PLI'],
-      topMetric: 'PLI',
+      topMetric: 'TPIO',
       topCount: 5
     },
     capability: {
@@ -439,9 +630,9 @@ const OVERVIEW_CANDIDATES = [
     minDepth: 'fast',
     request: {
       service: 'topValues',
-      groups: [{ type: 'IPAddress' }],
+      groups: [{ type: 'TotalTraffic' }],
       metrics: ['PLO'],
-      topMetric: 'PLO',
+      topMetric: 'TPIO',
       topCount: 5
     },
     capability: {
@@ -511,6 +702,99 @@ const OVERVIEW_CANDIDATES = [
       questionTypes: ['overview', 'topn'],
       metricDomains: ['network', 'traffic', 'session'],
       objectTypes: ['IPConversation']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'focusedIpConnectionSnapshot',
+    label: '目标 IP 连接概览',
+    scenes: ['network'],
+    role: 'standalone',
+    priority: 99,
+    minDepth: 'standard',
+    slotRequirements: ['focusIpAddress'],
+    request: {
+      service: 'averageValues',
+      groups: [{ type: 'IPAddress', argumentFromSlot: 'focusIpAddress' }],
+      metrics: ['CONI', 'CCNI', 'RFCI']
+    },
+    capability: {
+      questionTypes: ['overview', 'error', 'topn'],
+      metricDomains: ['network', 'session', 'error'],
+      objectTypes: ['IPAddress']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'focusedIpConnectionTrend',
+    label: '目标 IP 连接趋势',
+    scenes: ['network'],
+    role: 'standalone',
+    priority: 94,
+    minDepth: 'standard',
+    slotRequirements: ['focusIpAddress'],
+    request: {
+      service: 'timeValues',
+      groups: [{ type: 'IPAddress', argumentFromSlot: 'focusIpAddress' }],
+      metrics: ['CONI', 'CCNI', 'RFCI'],
+      granularity: 3600
+    },
+    capability: {
+      questionTypes: ['overview', 'trend', 'error'],
+      metricDomains: ['network', 'session', 'error'],
+      objectTypes: ['IPAddress']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'focusedIpApplicationTop',
+    label: '目标 IP 关联应用排行',
+    scenes: ['network'],
+    role: 'standalone',
+    priority: 88,
+    minDepth: 'deep',
+    slotRequirements: ['focusIpAddress'],
+    request: {
+      service: 'topValues',
+      groups: [
+        { type: 'IPAddress', argumentFromSlot: 'focusIpAddress' },
+        { type: 'Applications' },
+        { type: 'DefinedApp' }
+      ],
+      metrics: ['CONI'],
+      topMetric: 'CONI',
+      topCount: 5
+    },
+    capability: {
+      questionTypes: ['overview', 'topn', 'error'],
+      metricDomains: ['network', 'session', 'application'],
+      objectTypes: ['IPAddress', 'DefinedApp']
+    },
+    cost: { rootQueries: 1 }
+  },
+  {
+    id: 'focusedIpConversationTop',
+    label: '目标 IP 对端会话排行',
+    scenes: ['network'],
+    role: 'standalone',
+    priority: 86,
+    minDepth: 'deep',
+    slotRequirements: ['focusIpAddress'],
+    request: {
+      service: 'topValues',
+      groups: [
+        { type: 'IPAddress', argumentFromSlot: 'focusIpAddress' },
+        { type: 'IPConversations' },
+        { type: 'IPConversation' }
+      ],
+      metrics: ['RFCI'],
+      topMetric: 'RFCI',
+      topCount: 5
+    },
+    capability: {
+      questionTypes: ['overview', 'topn', 'error'],
+      metricDomains: ['network', 'session', 'error'],
+      objectTypes: ['IPAddress', 'IPConversation']
     },
     cost: { rootQueries: 1 }
   },
@@ -662,7 +946,7 @@ const OVERVIEW_CANDIDATES = [
   {
     id: 'ipThroughputTrend',
     label: 'IP 吞吐趋势',
-    scenes: ['system', 'network'],
+    scenes: ['network'],
     role: 'child',
     priority: 72,
     minDepth: 'standard',
@@ -688,11 +972,11 @@ const OVERVIEW_CANDIDATES = [
   {
     id: 'appThroughputTrend',
     label: '应用吞吐趋势',
-    scenes: ['system', 'application', 'network'],
+    scenes: ['network'],
     role: 'child',
     priority: 70,
     minDepth: 'standard',
-    dependsOnCandidateIds: ['topDefinedAppThroughput', 'topApplicationThroughput'],
+    dependsOnCandidateIds: ['topApplicationThroughput'],
     recommendedMaxChildren: 5,
     request: {
       service: 'timeValues',
@@ -734,6 +1018,32 @@ const OVERVIEW_CANDIDATES = [
       questionTypes: ['overview', 'trend'],
       metricDomains: ['business', 'session'],
       objectTypes: ['WebApplication']
+    },
+    cost: { childQueries: 1 }
+  },
+  {
+    id: 'businessGroupThroughputTrend',
+    label: '业务组吞吐趋势',
+    scenes: ['business_group'],
+    role: 'child',
+    priority: 68,
+    minDepth: 'standard',
+    dependsOnCandidateIds: ['topBusinessGroupThroughput'],
+    recommendedMaxChildren: 5,
+    request: {
+      service: 'timeValues',
+      groups: [{ type: 'BusinessGroup' }],
+      metrics: ['TPIO'],
+      granularity: 3600
+    },
+    deriveArgument: {
+      source: 'group',
+      targetParam: 'groupArgument1'
+    },
+    capability: {
+      questionTypes: ['overview', 'trend'],
+      metricDomains: ['business', 'traffic'],
+      objectTypes: ['BusinessGroup']
     },
     cost: { childQueries: 1 }
   },
@@ -791,10 +1101,111 @@ const OVERVIEW_CANDIDATES = [
   }
 ];
 
+const OVERVIEW_SCENE_PROFILES = {
+  system: {
+    depthRoots: {
+      fast: ['topDefinedAppThroughput', 'overallTrafficTrend', 'systemAlertSummary'],
+      standard: ['topDefinedAppThroughput', 'unknownTcpConnectionTop', 'overallTrafficTrend', 'systemAlertSummary'],
+      deep: ['topDefinedAppThroughput', 'unknownTcpConnectionTop', 'overallTrafficTrend', 'systemAlertSummary']
+    },
+    depthChildren: {
+      fast: [],
+      standard: [],
+      deep: []
+    }
+  },
+  business: {
+    depthRoots: {
+      fast: ['topBusinessRealtime', 'topBusinessVisits'],
+      standard: ['topBusinessRealtime', 'topBusinessVisits'],
+      deep: [
+        'topBusinessRealtime',
+        'topBusinessVisits',
+        'topWebApplicationResponseTime',
+        'topWebApplicationSlowPages',
+        'topWebApplicationHttp500',
+        'topWebApplicationHttp400'
+      ]
+    },
+    depthChildren: {
+      fast: [],
+      standard: ['businessRealtimeTrend', 'businessVisitTrend'],
+      deep: ['businessRealtimeTrend', 'businessVisitTrend']
+    }
+  },
+  business_group: {
+    depthRoots: {
+      fast: ['topBusinessGroupThroughput', 'topBusinessGroupConnections'],
+      standard: ['topBusinessGroupThroughput', 'topBusinessGroupConnections'],
+      deep: ['topBusinessGroupThroughput', 'topBusinessGroupConnections']
+    },
+    depthChildren: {
+      fast: [],
+      standard: ['businessGroupThroughputTrend'],
+      deep: ['businessGroupThroughputTrend']
+    }
+  },
+  application: {
+    depthRoots: {
+      fast: ['applicationAlertSummary', 'appDistributionTop', 'appFailureTop'],
+      standard: ['applicationAlertSummary', 'appDistributionTop', 'appFailureTop'],
+      deep: ['applicationAlertSummary', 'appDistributionTop', 'appFailureTop']
+    },
+    depthChildren: {
+      fast: [],
+      standard: ['appTrafficAnalysisTop'],
+      deep: ['appTrafficAnalysisTop', 'appAccessTrendByTopApp', 'appExperienceTrendByTopApp', 'appSessionTopByTopApp']
+    }
+  },
+  network: {
+    depthRoots: {
+      fast: ['networkAlertSummary', 'packetLossInboundTop', 'packetLossOutboundTop'],
+      standard: ['networkAlertSummary', 'packetLossInboundTop', 'packetLossOutboundTop', 'overallTrafficTrend', 'topIpThroughput', 'topIpConnectionFailures', 'focusedIpConnectionSnapshot', 'focusedIpConnectionTrend'],
+      deep: [
+        'networkAlertSummary',
+        'packetLossInboundTop',
+        'packetLossOutboundTop',
+        'overallTrafficTrend',
+        'topIpThroughput',
+        'topIpConnectionFailures',
+        'focusedIpConnectionSnapshot',
+        'focusedIpConnectionTrend',
+        'focusedIpApplicationTop',
+        'focusedIpConversationTop',
+        'topApplicationThroughput',
+        'subnetDistributionTop',
+        'businessNodeDistributionTop',
+        'sessionDistributionTop'
+      ]
+    },
+    depthChildren: {
+      fast: [],
+      standard: ['ipThroughputTrend'],
+      deep: ['ipThroughputTrend', 'appThroughputTrend']
+    }
+  },
+  security: {
+    depthRoots: {
+      fast: ['activeOutboundServer', 'securityAlertSummary', 'unknownTcpTop'],
+      standard: ['activeOutboundServer', 'securityAlertSummary', 'unknownTcpTop', 'unknownUdpTop', 'unknownTcpBytesTop'],
+      deep: ['activeOutboundServer', 'securityAlertSummary', 'unknownTcpTop', 'unknownUdpTop', 'unknownTcpBytesTop', 'unknownUdpBytesTop']
+    },
+    depthChildren: {
+      fast: [],
+      standard: ['ipConnectionTrend'],
+      deep: ['ipConnectionTrend']
+    }
+  }
+};
+
 const CANDIDATE_MAP = new Map(OVERVIEW_CANDIDATES.map((candidate) => [candidate.id, candidate]));
 
 function cloneCandidate(candidate) {
   return candidate ? JSON.parse(JSON.stringify(candidate)) : null;
+}
+
+function cloneSceneProfile(profile) {
+  return profile ? JSON.parse(JSON.stringify(profile)) : null;
 }
 
 function listOverviewCandidates(scene = null) {
@@ -808,8 +1219,15 @@ function getOverviewCandidate(candidateId) {
   return cloneCandidate(CANDIDATE_MAP.get(candidateId));
 }
 
+function getOverviewSceneProfile(scene = null) {
+  const normalizedScene = String(scene || '').trim();
+  return cloneSceneProfile(OVERVIEW_SCENE_PROFILES[normalizedScene]);
+}
+
 module.exports = {
   OVERVIEW_CANDIDATES,
+  OVERVIEW_SCENE_PROFILES,
   listOverviewCandidates,
-  getOverviewCandidate
+  getOverviewCandidate,
+  getOverviewSceneProfile
 };

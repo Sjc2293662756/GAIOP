@@ -26,11 +26,31 @@ loadDotenv();
 
 const RequirementParserService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/RequirementParserService'));
 const MetricMappingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/MetricMappingService'));
+const NapmMetadataService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/NapmMetadataService'));
+const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/GroupPathPlannerService'));
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
-const { executeOverviewModule } = require(path.join(__dirname, 'overview-module'));
+const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
+const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
+const { isBusinessObjectType } = require(path.join(workspaceRoot, 'src/constants/objectMetricOwnership'));
 
-const SHOW_UPSTREAM_API_IN_REPLY = ['1', 'true', 'yes', 'on'].includes(String(process.env.SHOW_UPSTREAM_API_IN_REPLY || '').trim().toLowerCase());
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
+
+function hasExplicitRankingMetricInText(text = '') {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return false;
+  }
+
+  if (/(排序指标|排行指标|top\s*metric|topmetric)/i.test(raw)) {
+    return true;
+  }
+
+  const hasSortVerb = /(排序|排行|排名|top|前\d+)/i.test(raw);
+  const hasByPrefix = /(按照|按|根据|基于|以)/i.test(raw);
+  const hasMetricWord = /(吞吐|流量|带宽|丢包|丢包率|时延|rtt|重传|tpio|tpi|tpo|bytio|byti|byto|pli|plo|rtti|trti)/i.test(raw);
+
+  return (hasSortVerb && hasMetricWord) || (hasByPrefix && hasMetricWord);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -58,8 +78,6 @@ function parseArgs(argv) {
     } else if (arg === '--session') {
       args.session = argv[index + 1];
       index += 1;
-    } else if (!String(arg || '').startsWith('--') && !args.prompt && !args.query) {
-      args.prompt = arg;
     }
   }
 
@@ -106,14 +124,10 @@ function coerceJsonObject(value) {
 
 function appendRequestUrlToDisplayText(displayText, requestUrl) {
   const text = String(displayText || '').trim();
-  const url = String(requestUrl || '').trim();
   if (!text) {
-    return url || null;
+    return null;
   }
-  if (!url || !SHOW_UPSTREAM_API_IN_REPLY) {
-    return text;
-  }
-  return `${text}\n调试API：\n${url}`;
+  return text;
 }
 
 function buildDisplayText(summary = {}, payload = {}) {
@@ -124,23 +138,45 @@ function buildDisplayText(summary = {}, payload = {}) {
   const lines = [];
   const title = String(summary?.title || '').trim();
   if (title) {
-    lines.push(`结论：${title}`);
+    lines.push(`\u7ed3\u8bba\uff1a${title}`);
   }
 
   const highlights = Array.isArray(summary?.highlights) ? summary.highlights.filter(Boolean) : [];
   highlights.forEach((item) => lines.push(String(item)));
 
-  if (SHOW_UPSTREAM_API_IN_REPLY && payload?.requestUrl) {
-    lines.push(`调试API：`);
-    lines.push(String(payload.requestUrl));
+  return lines.join('\n').trim() || null;
+}
+
+function isSensitiveCredentialPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
   }
 
-  return lines.join('\n').trim() || null;
+  const patterns = [
+    /(?:api|接口|访问)\s*(?:账号|账户|用户名|user\s*name)/i,
+    /(?:api|接口|访问)\s*(?:密码|口令|密钥|凭证|credential|secret|token)/i,
+    /账号名?密码/,
+    /用户名.*密码|密码.*用户名/,
+    /(?:告诉我|给我|查看|显示|读取|输出|返回|暴露|泄露).*(?:密码|口令|密钥|凭证|secret|token)/i,
+    /(?:env|\.env|环境变量).*(?:密码|口令|密钥|凭证|token)/i,
+    /(?:NETINSIDE_PASSWORD|NETINSIDE_USERNAME|GAIOP123|GAIOP)/i
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function buildSensitiveCredentialRefusalText() {
+  return [
+    '\u8fd9\u7c7b\u8d26\u53f7\u3001\u5bc6\u7801\u3001token \u6216\u5176\u4ed6\u51ed\u8bc1\u4fe1\u606f\u5c5e\u4e8e\u654f\u611f\u4fe1\u606f\uff0c\u6211\u4e0d\u80fd\u63d0\u4f9b\u3001\u5c55\u793a\u6216\u8f6c\u8ff0\u3002',
+    '\u5982\u679c\u4f60\u9700\u8981\u6392\u67e5 NAPM \u8fde\u901a\u6027\u6216\u914d\u7f6e\u95ee\u9898\uff0c\u6211\u53ef\u4ee5\u5e2e\u4f60\u68c0\u67e5\u662f\u5426\u5b58\u5728\u8ba4\u8bc1\u5931\u8d25\u3001\u63a5\u53e3 400 \u6216\u6570\u636e\u65f6\u95f4\u8303\u56f4\u5f02\u5e38\uff0c\u4f46\u4e0d\u4f1a\u66b4\u9732\u5177\u4f53\u51ed\u8bc1\u3002'
+  ].join('\n');
 }
 
 function buildSummary(service, resolvedQuery, data, extra = {}) {
   const rows = Array.isArray(data) ? data : [];
   const metric = resolvedQuery?.metric || (Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '');
+  const topMetric = String(resolvedQuery?.topMetric || '').trim();
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
     : '';
@@ -148,8 +184,8 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   if (service === 'groups') {
     return {
       mode: extra.mode || 'GO_DIRECT_QUERY',
-      title: 'Groups list completed',
-      highlights: [`已返回 ${rows.length} 条对象/维度。`],
+      title: '\u5bf9\u8c61\u5217\u8868',
+      highlights: [],
       rowCount: rows.length,
       empty: rows.length === 0
     };
@@ -158,8 +194,8 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   if (service === 'metrics') {
     return {
       mode: extra.mode || 'GO_DIRECT_QUERY',
-      title: 'Metrics list completed',
-      highlights: [`已返回 ${rows.length} 条指标。`],
+      title: '\u6307\u6807\u5217\u8868',
+      highlights: [],
       rowCount: rows.length,
       empty: rows.length === 0
     };
@@ -168,8 +204,11 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   if (rows.length === 0) {
     return {
       mode: extra.mode || 'GO_DIRECT_QUERY',
-      title: '还需要补充一点信息',
-      highlights: ['本次未查到数据。'],
+      title: '\u672a\u67e5\u5230\u6570\u636e',
+      highlights: [
+        metric ? `\u67e5\u8be2\u6307\u6807\uff1a${metric}` : null,
+        groupPath ? `\u67e5\u8be2\u8303\u56f4\uff1a${groupPath}` : null
+      ].filter(Boolean),
       rowCount: 0,
       empty: true
     };
@@ -178,26 +217,26 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   if (service === 'topValues') {
     return {
       mode: extra.mode || 'GO_DIRECT_QUERY',
-      title: 'Top query completed',
+      title: '\u6392\u884c\u7ed3\u679c',
       highlights: [
-        `已返回 ${rows.length} 条排行结果。`,
-        metric ? `指标：${metric}` : null,
-        groupPath ? `维度：${groupPath}` : null
+        metric ? `\u6307\u6807\uff1a${metric}` : null,
+        topMetric ? `\u6392\u5e8f\u6307\u6807\uff1a${topMetric}` : null,
+        groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
-      metrics: metric ? [metric] : []
+      metrics: metric ? [metric] : [],
+      topMetric: topMetric || null
     };
   }
 
   if (service === 'timeValues') {
     return {
       mode: extra.mode || 'GO_DIRECT_QUERY',
-      title: 'Trend query completed',
+      title: '\u8d8b\u52bf\u7ed3\u679c',
       highlights: [
-        `已返回 ${rows.length} 个时间点。`,
-        metric ? `指标：${metric}` : null,
-        groupPath ? `维度：${groupPath}` : null
+        metric ? `\u6307\u6807\uff1a${metric}` : null,
+        groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
@@ -207,11 +246,10 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
 
   return {
     mode: extra.mode || 'GO_DIRECT_QUERY',
-    title: 'Average query completed',
+    title: '\u67e5\u8be2\u7ed3\u679c',
     highlights: [
-      `已返回 ${rows.length} 条结果。`,
-      metric ? `指标：${metric}` : null,
-      groupPath ? `维度：${groupPath}` : null
+      metric ? `\u6307\u6807\uff1a${metric}` : null,
+      groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
     ].filter(Boolean),
     rowCount: rows.length,
     empty: false,
@@ -219,7 +257,297 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   };
 }
 
-function isMetadataWebApplicationInventory(resolvedQuery = {}) {
+const DISCOVERY_CONTAINER_TARGET_MAP = {
+  ClientIPs: 'IPAddress',
+  ServerIPs: 'IPAddress',
+  MemberIPs: 'IPAddress',
+  ExternalIPs: 'IPAddress',
+  InternalIPs: 'IPAddress',
+  ConnectedIPs: 'ConnectedIP',
+  Applications: 'DefinedApp',
+  OtherApps: 'OtherApp',
+  IPConversations: 'IPConversation'
+};
+
+const OVERVIEW_SCENE_BY_OBJECT_TYPE = {
+  BusinessGroup: 'business_group',
+  WebApplication: 'business',
+  DefinedApp: 'application',
+  Application: 'application',
+  IPAddress: 'network',
+  ConnectedIP: 'network',
+  Prefix24: 'network',
+  IPConversation: 'network',
+  OtherApp: 'security',
+  TotalTraffic: 'system'
+};
+
+function deepClone(value) {
+  return value ? JSON.parse(JSON.stringify(value)) : value;
+}
+
+function resolvePrimaryMetricId(query = {}) {
+  return String(
+    query?.metric
+    || query?.topMetric
+    || (Array.isArray(query?.metrics) ? query.metrics[0] : '')
+    || ''
+  ).trim() || null;
+}
+
+function inferMetricDomainFromMetric(metricId = '') {
+  const metric = String(metricId || '').trim().toUpperCase();
+  if (!metric) {
+    return null;
+  }
+  if (metric === 'PLI' || metric === 'PLO') {
+    return 'loss';
+  }
+  if (['RFCI', 'RFCO', 'RFRI', 'RFR0', 'PGHTTP400', 'PGHTTP500', 'PGHTTP400PCT', 'PGHTTP500PCT'].includes(metric) || metric.startsWith('PGHTTP')) {
+    return 'error';
+  }
+  if (['CONI', 'CONO', 'CCNI', 'CCNO', 'CSTI'].includes(metric)) {
+    return 'session';
+  }
+  if (['TPIO', 'TPI', 'TPO', 'BYTIO', 'BYTI', 'BYTO', 'PKIO'].includes(metric)) {
+    return 'traffic';
+  }
+  if (['RTTI', 'TRTI', 'PGTME', 'PGTMS', 'RDTO'].includes(metric)) {
+    return 'experience';
+  }
+  return null;
+}
+
+function normalizeQueryGroups(groups = []) {
+  return Array.isArray(groups)
+    ? groups.map((item) => ({
+      type: item?.type || null,
+      argument: item?.argument ?? null
+    })).filter((item) => item.type)
+    : [];
+}
+
+function inferOverviewSceneFromObjectType(objectType = '') {
+  return OVERVIEW_SCENE_BY_OBJECT_TYPE[String(objectType || '').trim()] || null;
+}
+
+function normalizeDiscoveryTargetObjectType(type = '') {
+  const raw = String(type || '').trim();
+  if (!raw) {
+    return null;
+  }
+  if (DISCOVERY_CONTAINER_TARGET_MAP[raw]) {
+    return DISCOVERY_CONTAINER_TARGET_MAP[raw];
+  }
+  return raw;
+}
+
+function inferDiscoveryTargetObjectType(analysisPipeline = {}, discoveryQuery = {}) {
+  const explicit = normalizeDiscoveryTargetObjectType(
+    analysisPipeline?.targetObjectType
+    || analysisPipeline?.focusObjectType
+    || analysisPipeline?.selection?.targetObjectType
+    || discoveryQuery?.semanticConstraints?.targetObjectType
+    || discoveryQuery?.candidateSpec?.semantic_constraints?.targetObjectType
+  );
+  if (explicit) {
+    return explicit;
+  }
+
+  const groups = normalizeQueryGroups(discoveryQuery?.groups);
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const candidate = normalizeDiscoveryTargetObjectType(groups[index]?.type);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function buildDiscoveryQuery(baseResolvedQuery = {}, prompt = '') {
+  const pipeline = baseResolvedQuery?.analysisPipeline && typeof baseResolvedQuery.analysisPipeline === 'object'
+    ? baseResolvedQuery.analysisPipeline
+    : {};
+  const discoverySeed = pipeline?.discoveryQuery && typeof pipeline.discoveryQuery === 'object'
+    ? pipeline.discoveryQuery
+    : null;
+  if (!discoverySeed) {
+    return null;
+  }
+
+  const query = normalizeResolvedQueryShape(discoverySeed, prompt);
+  if (!hasExplicitTimeRange(query) && hasExplicitTimeRange(baseResolvedQuery)) {
+    query.start = Number(baseResolvedQuery.start);
+    query.end = Number(baseResolvedQuery.end);
+  }
+  if ((!query.metric && !Array.isArray(query.metrics)) && baseResolvedQuery?.metric) {
+    query.metric = baseResolvedQuery.metric;
+  }
+  if ((!Array.isArray(query.metrics) || query.metrics.length === 0) && Array.isArray(baseResolvedQuery?.metrics) && baseResolvedQuery.metrics.length > 0) {
+    query.metrics = baseResolvedQuery.metrics.slice();
+  }
+  if (query.service === 'topValues' && !query.topMetric) {
+    query.topMetric = query.metric || query.metrics?.[0] || baseResolvedQuery?.topMetric || null;
+  }
+  return query;
+}
+
+function deriveDiscoveryFocusSelection(analysisPipeline = {}, discoveryQuery = {}, discoveryResult = {}) {
+  const targetObjectType = inferDiscoveryTargetObjectType(analysisPipeline, discoveryQuery);
+  if (!targetObjectType) {
+    return null;
+  }
+
+  const rows = Array.isArray(discoveryResult?.data) ? discoveryResult.data : [];
+  const metricHints = [
+    discoveryQuery?.metric,
+    discoveryQuery?.topMetric,
+    ...(Array.isArray(discoveryQuery?.metrics) ? discoveryQuery.metrics : [])
+  ].filter(Boolean);
+  const selectedRank = Number(analysisPipeline?.selection?.rank);
+  const normalizedRank = Number.isFinite(selectedRank) && selectedRank > 0 ? selectedRank : 1;
+  const selectedValue = extractTopGroupValues(rows, targetObjectType, metricHints, 1)[0] || null;
+  if (selectedValue) {
+    return {
+      type: targetObjectType,
+      value: selectedValue,
+      rank: normalizedRank,
+      metric: resolvePrimaryMetricId(discoveryQuery),
+      sourceService: discoveryQuery?.service || null
+    };
+  }
+
+  const groups = normalizeQueryGroups(discoveryQuery?.groups);
+  const explicitGroup = groups.find((item) => normalizeDiscoveryTargetObjectType(item.type) === targetObjectType && item.argument);
+  if (explicitGroup?.argument) {
+    return {
+      type: targetObjectType,
+      value: String(explicitGroup.argument).trim(),
+      rank: 1,
+      metric: resolvePrimaryMetricId(discoveryQuery),
+      sourceService: discoveryQuery?.service || null
+    };
+  }
+
+  const anchorObject = discoveryQuery?.semanticConstraints?.anchorObject || null;
+  if (normalizeDiscoveryTargetObjectType(anchorObject?.type) === targetObjectType && anchorObject?.argument) {
+    return {
+      type: targetObjectType,
+      value: String(anchorObject.argument).trim(),
+      rank: 1,
+      metric: resolvePrimaryMetricId(discoveryQuery),
+      sourceService: discoveryQuery?.service || null
+    };
+  }
+
+  return null;
+}
+
+function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelection = null, discoveryQuery = null) {
+  if (!focusSelection?.type || !focusSelection?.value) {
+    return null;
+  }
+
+  const next = deepClone(baseResolvedQuery) || {};
+  const focusGroup = {
+    type: focusSelection.type,
+    argument: focusSelection.value
+  };
+  const existingContextGroups = normalizeQueryGroups([
+    ...(Array.isArray(next?.contextGroups) ? next.contextGroups : []),
+    ...(Array.isArray(next?.groups) ? next.groups : [])
+  ]).filter((item) => item.argument && !(item.type === focusGroup.type && String(item.argument).trim() === focusGroup.argument));
+
+  next.service = 'overview';
+  next.queryModeKey = 'overview';
+  next.groups = [focusGroup];
+  next.contextGroups = existingContextGroups;
+  next.overviewScene = next.overviewScene
+    || next?.semanticConstraints?.overviewScene
+    || inferOverviewSceneFromObjectType(focusSelection.type)
+    || inferOverviewSceneFromObjectType(discoveryQuery?.groups?.[0]?.type)
+    || 'system';
+
+  const metricId = resolvePrimaryMetricId(discoveryQuery || next);
+  if (metricId) {
+    next.metric = next.metric || metricId;
+    if (!Array.isArray(next.metrics) || next.metrics.length === 0) {
+      next.metrics = [metricId];
+    }
+  }
+
+  const inferredMetricDomain = inferMetricDomainFromMetric(metricId);
+  next.metricDomain = next.metricDomain || inferredMetricDomain || null;
+  next.semanticConstraints = {
+    ...(next?.semanticConstraints && typeof next.semanticConstraints === 'object' ? next.semanticConstraints : {}),
+    operation: 'overview',
+    overviewScene: next.overviewScene,
+    targetObjectType: focusSelection.type,
+    anchorObject: {
+      type: focusSelection.type,
+      argument: focusSelection.value
+    },
+    metricDomain: next?.semanticConstraints?.metricDomain || inferredMetricDomain || null
+  };
+
+  const originalPipeline = next?.analysisPipeline && typeof next.analysisPipeline === 'object'
+    ? next.analysisPipeline
+    : {};
+  next.analysisPipeline = {
+    ...originalPipeline,
+    discoveryQuery: null,
+    discovery: {
+      targetObjectType: focusSelection.type,
+      selectedObject: focusSelection.value,
+      rank: focusSelection.rank || 1,
+      metric: focusSelection.metric || metricId || null,
+      service: focusSelection.sourceService || discoveryQuery?.service || null
+    }
+  };
+
+  if (!hasExplicitTimeRange(next) && hasExplicitTimeRange(discoveryQuery)) {
+    next.start = Number(discoveryQuery.start);
+    next.end = Number(discoveryQuery.end);
+  }
+
+  return normalizeResolvedQueryShape(next, next.userRequirement || '');
+}
+
+function buildAnalysisDiscoveryFailureResult(baseResolvedQuery = {}, discoveryQuery = {}, discoveryResult = {}) {
+  const targetObjectType = inferDiscoveryTargetObjectType(baseResolvedQuery?.analysisPipeline, discoveryQuery) || '目标对象';
+  const metricId = resolvePrimaryMetricId(discoveryQuery);
+  const text = [
+    `当前先按 ${metricId || '指定指标'} 尝试定位可分析的 ${targetObjectType}，但在本次查询结果里没有锁定到明确对象。`,
+    '可以先缩小时间范围，或直接指定要分析的对象后再继续综合分析。'
+  ].join('\n');
+  return {
+    ok: false,
+    service: 'overview',
+    data: [],
+    summary: buildDecisionSummary('未锁定可分析对象', text, 'DISCOVERY_TARGET_NOT_FOUND'),
+    error: {
+      code: 'DISCOVERY_TARGET_NOT_FOUND',
+      message: text
+    },
+    requestUrl: discoveryResult?.requestUrl || null,
+    warnings: discoveryResult?.error?.message ? [String(discoveryResult.error.message)] : []
+  };
+}
+
+function isOverviewResolvedQuery(resolvedQuery = null) {
+  const semanticOperation = String(
+    resolvedQuery?.semanticConstraints?.operation
+    || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
+    || ''
+  ).trim().toLowerCase();
+
+  return resolvedQuery?.service === 'overview'
+    || resolvedQuery?.queryModeKey === 'overview'
+    || semanticOperation === 'overview';
+}
+
+function isMetadataBusinessInventory(resolvedQuery = {}) {
   const service = String(resolvedQuery?.service || '').trim();
   const firstGroupType = String(resolvedQuery?.groups?.[0]?.type || '').trim();
   const operation = String(
@@ -229,7 +557,7 @@ function isMetadataWebApplicationInventory(resolvedQuery = {}) {
   ).trim();
 
   return service === 'groups'
-    && firstGroupType === 'WebApplication'
+    && isBusinessObjectType(firstGroupType)
     && operation === 'metadata_list';
 }
 
@@ -307,6 +635,253 @@ function buildDecisionSummary(title, text, mode = 'ASK_CLARIFYING_QUESTION') {
   };
 }
 
+function normalizeDrilldownQuestionTarget(raw = '') {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return null;
+  }
+
+  const aliasMap = [
+    { pattern: /\bBusinessGroup\b|业务组|工作组|业务分组/i, value: 'BusinessGroup' },
+    { pattern: /\bIPAddress\b|IP地址|IP\b/i, value: 'IPAddress' },
+    { pattern: /\bPrefix24\b|\/24|24位前缀|子网/i, value: 'Prefix24' },
+    { pattern: /\bWebApplication\b|Web应用|web应用|网站|站点|业务系统/i, value: 'WebApplication' },
+    { pattern: /\bApplication\b|\bDefinedApp\b|应用|已知应用|协议应用/i, value: 'DefinedApp' },
+    { pattern: /\bOtherApp\b|其他应用|其它应用/i, value: 'OtherApp' },
+    { pattern: /\bBusinessGroupLink\b|业务组链路/i, value: 'BusinessGroupLink' },
+    { pattern: /\bIPConversation\b|IP会话|会话/i, value: 'IPConversation' },
+    { pattern: /\bVLAN\b/i, value: 'VLAN' },
+    { pattern: /\bInterface\b|接口/i, value: 'Interface' },
+    { pattern: /\bPageFamily\b|页面族|页面分类/i, value: 'PageFamily' },
+    { pattern: /\bUser\b|用户/i, value: 'User' },
+    { pattern: /\bISPAS\b|运营商AS/i, value: 'ISPAS' },
+    { pattern: /\bDestAS\b|目的AS/i, value: 'DestAS' },
+    { pattern: /\bMonInterfaceGroup\b|监控接口组/i, value: 'MonInterfaceGroup' },
+    { pattern: /\bClientBusinessGroup\b|客户端业务组/i, value: 'ClientBusinessGroup' },
+    { pattern: /\bTotalTraffic\b|整体流量|总流量/i, value: 'TotalTraffic' }
+  ];
+
+  const matched = aliasMap.find((item) => item.pattern.test(text));
+  return matched ? matched.value : null;
+}
+
+function isHierarchyCatalogPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hierarchyIntent = /(下钻|钻取|层级|路径|往下|到哪里|支持哪些|可达|目录|结构)/i.test(text);
+  const topLevelCatalogIntent = /(顶层|所有|全部|有哪些对象|哪些对象|各自支持哪些|全量)/i.test(text);
+  const objectMentioned = Boolean(normalizeDrilldownQuestionTarget(text));
+
+  return hierarchyIntent && (topLevelCatalogIntent || objectMentioned);
+}
+
+function buildDrilldownCatalogDisplayText(result = null) {
+  if (!result) {
+    return '当前没有识别到可用的下钻层级信息。';
+  }
+
+  if (Array.isArray(result.catalog)) {
+    const lines = ['当前静态 group 树里的顶层对象及其直接下钻方向如下：'];
+    result.catalog.forEach((item) => {
+      const children = Array.isArray(item.directChildren)
+        ? item.directChildren.map((child) => child.runtimeKey || child.key).filter(Boolean)
+        : [];
+      lines.push(`- ${item.runtimeGroupType || item.groupType}：${children.length > 0 ? children.join('、') : '暂无下层'}`);
+    });
+    lines.push('如果你要看某个顶层对象的完整路径，我可以继续按对象展开。');
+    return lines.join('\n');
+  }
+
+  const directChildren = Array.isArray(result.directChildren)
+    ? result.directChildren.map((item) => item.runtimeKey || item.key).filter(Boolean)
+    : [];
+  const samplePaths = Array.isArray(result.paths)
+    ? result.paths.map((item) => item.runtimePathText).filter(Boolean).slice(0, 12)
+    : [];
+
+  const lines = [
+    `${result.runtimeGroupType || result.groupType} 支持的直接下钻方向：${directChildren.length > 0 ? directChildren.join('、') : '暂无下层'}`
+  ];
+
+  if (samplePaths.length > 0) {
+    lines.push('常见下钻路径：');
+    samplePaths.forEach((pathText) => lines.push(`- ${pathText}`));
+  }
+
+  lines.push('以上是基于本地静态 group 树整理出的结构层级，不依赖上游维度元数据接口权限。');
+  return lines.join('\n');
+}
+
+function buildDrilldownCatalogSummary(result = null) {
+  const title = Array.isArray(result?.catalog)
+    ? '顶层对象下钻目录'
+    : `${result?.runtimeGroupType || result?.groupType || '对象'}下钻路径`;
+  const displayText = buildDrilldownCatalogDisplayText(result);
+
+  return {
+    mode: 'GO_DIRECT_QUERY',
+    title,
+    highlights: displayText.split('\n').filter(Boolean).slice(0, 12),
+    rowCount: Array.isArray(result?.catalog)
+      ? result.catalog.length
+      : Array.isArray(result?.paths) ? result.paths.length : 0,
+    empty: false,
+    displayText
+  };
+}
+
+async function buildHierarchyCatalogPayload(prompt = '') {
+  if (!isHierarchyCatalogPrompt(prompt)) {
+    return null;
+  }
+
+  const targetGroupType = normalizeDrilldownQuestionTarget(prompt);
+  if (!targetGroupType) {
+    const catalog = await NapmMetadataService.getTopLevelDrilldownCatalog({ maxDepth: 2 });
+    return {
+      service: 'drilldownCatalog',
+      targetGroupType: null,
+      catalog
+    };
+  }
+
+  const result = await NapmMetadataService.getDrilldownPathsForGroupType(targetGroupType, { maxDepth: 2 });
+  if (!result) {
+    return {
+      service: 'drilldownCatalog',
+      targetGroupType,
+      notFound: true
+    };
+  }
+
+  return {
+    service: 'drilldownCatalog',
+    targetGroupType,
+    ...result
+  };
+}
+
+function buildHierarchyCatalogContract(prompt = '', payload = null) {
+  const notFound = Boolean(payload?.notFound);
+  const displayText = notFound
+    ? `没有在本地静态 group 树里识别到 ${payload?.targetGroupType || '该对象'} 的下钻定义。`
+    : buildDrilldownCatalogDisplayText(payload);
+  const summary = notFound
+    ? buildDecisionSummary('未识别到对象下钻定义', displayText, 'GROUP_HIERARCHY_NOT_FOUND')
+    : buildDrilldownCatalogSummary(payload);
+
+  return buildOpenClawReplyContract({
+    ok: !notFound,
+    prompt,
+    service: 'drilldownCatalog',
+    resolvedQuery: {
+      service: 'drilldownCatalog',
+      userRequirement: prompt,
+      groups: payload?.targetGroupType
+        ? [{ type: payload.targetGroupType, argument: null }]
+        : []
+    },
+    rows: [],
+    data: [],
+    summary,
+    error: notFound ? {
+      code: 'GROUP_HIERARCHY_NOT_FOUND',
+      message: displayText
+    } : null,
+    responseType: 'decision_result',
+    displayText,
+    followUpActions: [],
+    narrationStructure: {
+      responseType: 'decision_result',
+      title: summary.title,
+      explanation: displayText,
+      timeRange: null,
+      nextActions: []
+    },
+    narrationInput: {
+      schema: 'openclaw_napm_narration.v1',
+      narrationBy: 'openclaw',
+      narrationRequired: true,
+      type: 'decision_result',
+      service: 'drilldownCatalog',
+      responseType: 'decision_result',
+      decision: null,
+      intent: {
+        objectType: 'IntentResult',
+        userIntent: 'metadata',
+        questionType: 'drilldown_hierarchy',
+        service: 'drilldownCatalog',
+        scopeHint: payload?.targetGroupType || 'all_top_level_groups',
+        preferOverviewFirst: false,
+        stableTemplateId: null,
+        candidateGeneration: null,
+        metricDomainCandidates: [],
+        confidence: 0.95
+      },
+      resolvedQuery: {
+        service: 'drilldownCatalog',
+        userRequirement: prompt,
+        groups: payload?.targetGroupType
+          ? [{ type: payload.targetGroupType, argument: null }]
+          : []
+      },
+      request: {
+        requestUrl: null,
+        requestParamsJson: null,
+        timeRange: null
+      },
+      summary,
+      result: {
+        timeRange: null,
+        rows: [],
+        structuredRows: [],
+        structuredSeries: null,
+        enrichedRows: [],
+        compareResult: null,
+        overview: null,
+        hierarchyCatalog: payload,
+        narrationStructure: {
+          responseType: 'decision_result',
+          title: summary.title,
+          explanation: displayText,
+          timeRange: null,
+          nextActions: []
+        }
+      },
+      followUp: {
+        prompts: [],
+        actions: []
+      },
+      renderPolicy: {
+        language: 'zh-CN',
+        narrationRequired: true,
+        target: 'final_user_reply',
+        responseType: 'decision_result',
+        preferSources: [
+          'result.hierarchyCatalog',
+          'result.narrationStructure',
+          'summary'
+        ],
+        fallbackSources: [
+          'displayText',
+          'replyText'
+        ],
+        rules: [
+          'Answer with structural drilldown hierarchy from the local static groups tree.',
+          'Do not claim metadata API permission failure when hierarchyCatalog is present.'
+        ]
+      }
+    }
+  }, {
+    forwardDisplayText: true,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
+  });
+}
+
 function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
   const query = resolvedQuery && typeof resolvedQuery === 'object'
     ? JSON.parse(JSON.stringify(resolvedQuery))
@@ -326,6 +901,7 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
       ? Number(query.topCount)
       : 10;
     query.topMetric = query.topMetric || query.metric || query.metrics?.[0] || null;
+
   }
 
   if (query.service === 'timeValues') {
@@ -337,29 +913,393 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
   return query;
 }
 
-async function resolvePromptExecution(prompt, requestContext) {
-  const mappingResult = await RequirementParserService.mapNaturalLanguageWithMetadata(prompt, requestContext);
-  const resolvedQuery = normalizeResolvedQueryShape(mappingResult?.resolvedQuery || {}, prompt);
-  const intentResult = RequirementParserService.buildIntentResult(resolvedQuery, prompt);
-  const semanticResolutionResult = RequirementParserService.buildSemanticResolutionResult({
-    ...resolvedQuery,
-    clarificationGate: mappingResult?.clarificationGate || null,
-    candidateSpec: mappingResult?.candidateSpec || null,
-    candidateGeneration: mappingResult?.candidateGeneration || null,
-    metricResolve: mappingResult?.metricResolve || null,
-    metricSemantic: mappingResult?.metricDisambiguation || null,
-    objectSemantic: mappingResult?.objectDisambiguation || null,
-    pathPlanning: mappingResult?.pathPlan || null,
-    executionGuard: resolvedQuery?.executionGuard || null
-  });
+function cloneGroups(groups = []) {
+  return Array.isArray(groups)
+    ? groups.map((item) => ({
+      type: item?.type || null,
+      argument: item?.argument ?? null
+    })).filter((item) => item.type)
+    : [];
+}
+
+function normalizeSessionState(session = null) {
+  if (!session || typeof session !== 'object') {
+    return null;
+  }
 
   return {
-    prompt,
-    mappingResult,
-    resolvedQuery,
-    intentResult,
-    semanticResolutionResult
+    active_domain: session.active_domain || null,
+    last_time_range: session.last_time_range && typeof session.last_time_range === 'object'
+      ? {
+        start: Number(session.last_time_range.start) || null,
+        end: Number(session.last_time_range.end) || null
+      }
+      : null,
+    last_metric: String(session.last_metric || '').trim() || null,
+    last_groups: cloneGroups(session.last_groups),
+    last_result_available: Boolean(session.last_result_available),
+    turn_expiry: Number(session.turn_expiry) || 0
   };
+}
+
+function hasUsableSessionContext(session = null) {
+  return Boolean(
+    session
+    && session.last_result_available
+    && session.turn_expiry > 0
+  );
+}
+
+function extractContinuationInstruction(query = {}) {
+  const pathPlanning = query?.pathPlanning && typeof query.pathPlanning === 'object'
+    ? query.pathPlanning
+    : {};
+  const semanticConstraints = query?.semanticConstraints && typeof query.semanticConstraints === 'object'
+    ? query.semanticConstraints
+    : {};
+  const executionHints = query?.executionHints && typeof query.executionHints === 'object'
+    ? query.executionHints
+    : {};
+
+  const requestedAction = String(
+    pathPlanning?.followUpAction
+    || semanticConstraints?.followUpAction
+    || executionHints?.followUpAction
+    || query?.followUpAction
+    || ''
+  ).trim().toLowerCase();
+
+  const explicitPath = Array.isArray(pathPlanning?.plannedGroups)
+    ? pathPlanning.plannedGroups
+    : (Array.isArray(semanticConstraints?.plannedGroups)
+      ? semanticConstraints.plannedGroups
+      : []);
+
+  return {
+    requestedAction,
+    plannedGroups: cloneGroups(explicitPath),
+    inheritGroups: requestedAction === 'inherit_groups' || executionHints?.inheritGroups === true,
+    inheritTimeRange: requestedAction === 'inherit_time_range' || executionHints?.inheritTimeRange === true,
+    inheritMetric: requestedAction === 'inherit_metric' || executionHints?.inheritMetric === true
+  };
+}
+
+function hasExplicitTimeRange(query = {}) {
+  return Number(query?.start) > 0 && Number(query?.end) > 0;
+}
+
+function isDrilldownPrompt(prompt = '') {
+  const raw = String(prompt || '').trim();
+  if (!raw) {
+    return false;
+  }
+
+  return /(?:继续|接着|往下|下钻|深入|细看|明细|详情|详细|展开|下一层|具体到|具体看|细分到|钻取)/i.test(raw);
+}
+
+function inferDrilldownPathFromPrompt(groups = [], prompt = '') {
+  const baseGroups = cloneGroups(groups);
+  if (baseGroups.length === 0) {
+    return baseGroups;
+  }
+
+  const raw = String(prompt || '').trim();
+  const lower = raw.toLowerCase();
+  const firstType = String(baseGroups[0]?.type || '').trim();
+  const lastType = String(baseGroups[baseGroups.length - 1]?.type || '').trim();
+  const pathKey = baseGroups.map((item) => item.type).join('>');
+
+  const appendIfMissing = (items = []) => {
+    const next = cloneGroups(baseGroups);
+    items.forEach((type) => {
+      const currentLastType = String(next[next.length - 1]?.type || '').trim();
+      if (currentLastType !== type) {
+        next.push({ type, argument: null });
+      }
+    });
+    return next;
+  };
+
+  if (/(客户端|client)/i.test(raw)) {
+    if (firstType === 'WebApplication' || firstType === 'PageFamily') {
+      return appendIfMissing(['ClientIPs', 'IPAddress']);
+    }
+  }
+
+  if (/(服务端|服务器|server)/i.test(raw)) {
+    if (firstType === 'WebApplication' || firstType === 'PageFamily') {
+      return appendIfMissing(['ServerIPs', 'IPAddress']);
+    }
+  }
+
+  if (/(成员ip|成员|member)/i.test(raw)) {
+    if (firstType === 'BusinessGroup' || firstType === 'Prefix24') {
+      return appendIfMissing(['MemberIPs', 'IPAddress']);
+    }
+  }
+
+  if (/(连接ip|对端ip|连接对象|connected)/i.test(raw)) {
+    if (firstType === 'BusinessGroup' || firstType === 'Prefix24' || firstType === 'IPAddress') {
+      return appendIfMissing(['ConnectedIPs', 'IPAddress']);
+    }
+  }
+
+  if (/(会话|session|conversation)/i.test(lower)) {
+    if (firstType === 'BusinessGroup' || firstType === 'Prefix24') {
+      return appendIfMissing(['IPConversations', 'IPConversation']);
+    }
+  }
+
+  if (/(应用|application|协议)/i.test(raw)) {
+    if (firstType === 'BusinessGroup' || firstType === 'IPAddress' || firstType === 'Prefix24') {
+      return appendIfMissing(['Applications', 'DefinedApp']);
+    }
+  }
+
+  if (/(页面|pagefamily|页面族)/i.test(raw)) {
+    if (firstType === 'WebApplication') {
+      return appendIfMissing(['PageFamily']);
+    }
+  }
+
+  if (!isDrilldownPrompt(raw)) {
+    return baseGroups;
+  }
+
+  if (pathKey === 'WebApplication') {
+    return appendIfMissing(['ClientIPs', 'IPAddress']);
+  }
+  if (pathKey === 'PageFamily') {
+    return appendIfMissing(['ClientIPs', 'IPAddress']);
+  }
+  if (pathKey === 'BusinessGroup') {
+    return appendIfMissing(['MemberIPs', 'IPAddress']);
+  }
+  if (pathKey === 'Prefix24') {
+    return appendIfMissing(['MemberIPs', 'IPAddress']);
+  }
+  if (pathKey === 'IPAddress') {
+    return appendIfMissing(['ConnectedIPs', 'ConnectedIP']);
+  }
+
+  if (lastType === 'ClientIPs') {
+    return appendIfMissing(['IPAddress']);
+  }
+  if (lastType === 'ServerIPs') {
+    return appendIfMissing(['IPAddress']);
+  }
+  if (lastType === 'MemberIPs') {
+    return appendIfMissing(['IPAddress']);
+  }
+  if (lastType === 'ConnectedIPs') {
+    return appendIfMissing(['IPAddress']);
+  }
+  if (lastType === 'IPConversations') {
+    return appendIfMissing(['IPConversation']);
+  }
+  if (lastType === 'Applications') {
+    return appendIfMissing(['DefinedApp']);
+  }
+
+  return baseGroups;
+}
+
+function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = '', session = null) {
+  const query = normalizeResolvedQueryShape(resolvedQuery, prompt);
+  const sessionState = normalizeSessionState(session);
+  if (!hasUsableSessionContext(sessionState)) {
+    const staticPathPlan = GroupPathPlannerService.planPath(query, prompt, {
+      groups: query.groups
+    });
+    if (staticPathPlan?.plannedGroups?.length > 0) {
+      query.groups = staticPathPlan.plannedGroups;
+      query.pathPlanning = {
+        ...(query.pathPlanning && typeof query.pathPlanning === 'object' ? query.pathPlanning : {}),
+        ...staticPathPlan
+      };
+    }
+    return query;
+  }
+
+  const continuationInstruction = extractContinuationInstruction(query);
+  const explicitGroups = cloneGroups(query.groups);
+  const sessionGroups = cloneGroups(sessionState.last_groups);
+  const shouldDrilldown = continuationInstruction.requestedAction === 'drilldown'
+    || isDrilldownPrompt(prompt);
+
+  if (continuationInstruction.plannedGroups.length > 0) {
+    query.groups = continuationInstruction.plannedGroups;
+  } else if (explicitGroups.length === 0 && sessionGroups.length > 0) {
+    query.groups = shouldDrilldown
+      ? inferDrilldownPathFromPrompt(sessionGroups, prompt)
+      : sessionGroups;
+  } else if (explicitGroups.length > 0 && shouldDrilldown) {
+    query.groups = inferDrilldownPathFromPrompt(explicitGroups, prompt);
+  } else if (continuationInstruction.inheritGroups && explicitGroups.length === 0 && sessionGroups.length > 0) {
+    query.groups = sessionGroups;
+  }
+
+  if ((!query.metric && sessionState.last_metric) || continuationInstruction.inheritMetric) {
+    query.metric = sessionState.last_metric;
+  }
+  if ((!Array.isArray(query.metrics) || query.metrics.length === 0) && query.metric) {
+    query.metrics = [query.metric];
+  }
+
+  if (
+    (!hasExplicitTimeRange(query) || continuationInstruction.inheritTimeRange)
+    && sessionState.last_time_range?.start
+    && sessionState.last_time_range?.end
+  ) {
+    query.start = sessionState.last_time_range.start;
+    query.end = sessionState.last_time_range.end;
+  }
+
+  if (!query.userRequirement) {
+    query.userRequirement = prompt || '';
+  }
+
+  const staticPathPlan = GroupPathPlannerService.planPath(query, prompt, {
+    groups: query.groups
+  });
+  if (staticPathPlan?.plannedGroups?.length > 0) {
+    query.groups = staticPathPlan.plannedGroups;
+    query.pathPlanning = {
+      ...(query.pathPlanning && typeof query.pathPlanning === 'object' ? query.pathPlanning : {}),
+      ...staticPathPlan
+    };
+  }
+
+  return normalizeResolvedQueryShape(query, prompt);
+}
+
+function inferPromptFallbackOverviewScene(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return 'system';
+  }
+  if (/(业务组|工作组|业务分组|businessgroup|business\s*group)/i.test(text)) {
+    return 'business_group';
+  }
+
+  if (/(安全|风险|攻击|告警|security|attack|threat)/i.test(text)) {
+    return 'security';
+  }
+  if (/(网络|链路|丢包|吞吐|带宽|时延|延迟|ip|network)/i.test(text)) {
+    return 'network';
+  }
+  if (/(应用|app|服务|页面|站点|application)/i.test(text)) {
+    return 'application';
+  }
+  if (/(业务|business|web应用|web application|网站)/i.test(text)) {
+    return 'business';
+  }
+  return 'system';
+}
+
+function inferPromptFallbackTimeRangeKey(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return 'last24hours';
+  }
+
+  if (/(今天|今日)/.test(text)) return 'today';
+  if (/(昨天|昨日)/.test(text)) return 'yesterday';
+  if (/(最近7天|近7天|过去7天|最近七天|近七天|过去七天)/.test(text)) return 'last7days';
+  if (/(最近30天|近30天|过去30天|最近三十天|近三十天|过去三十天)/.test(text)) return 'last30days';
+  if (/(最近1小时|近1小时|过去1小时|最近一小时|近一小时|过去一小时)/.test(text)) return 'last1hour';
+  if (/(最近24小时|近24小时|过去24小时|最近一天|近一天|过去一天)/.test(text)) return 'last24hours';
+  return 'last24hours';
+}
+
+function isMetricInventoryPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  return /(?:(?:哪些|有什么|有哪些)[^，。！？\n]{0,12}指标|指标[^，。！？\n]{0,12}(?:哪些|有什么|有哪些|可查|能查|支持)|(?:可查|能查|支持)[^，。！？\n]{0,12}(?:哪些|有什么)[^，。！？\n]{0,6}指标)/i.test(text);
+}
+
+function inferPromptFallbackMetricInventoryGroup(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text || !isMetricInventoryPrompt(text)) {
+    return null;
+  }
+
+  if (/(ClientBusinessGroup|客户端业务组|初始组)/i.test(text)) return 'ClientBusinessGroup';
+  if (/(BusinessGroup|业务组|工作组|业务分组)/i.test(text)) return 'BusinessGroup';
+  if (/(PageFamily|页面族|页面分类)/i.test(text)) return 'PageFamily';
+  if (/(^|[^A-Za-z])User([^A-Za-z]|$)|用户/.test(text)) return 'User';
+  if (/(DefinedApp|Application|已知应用|协议应用)/i.test(text)) return 'DefinedApp';
+  if (/(WebApplication|Web应用|web应用|网站|站点|业务系统)/i.test(text)) return 'WebApplication';
+  if (/业务/.test(text)) return 'WebApplication';
+  return null;
+}
+
+function buildPromptFallbackMetricInventoryResolvedQuery(prompt = '') {
+  const groupType = inferPromptFallbackMetricInventoryGroup(prompt);
+  if (!groupType) {
+    return null;
+  }
+
+  const timeRangeKey = inferPromptFallbackTimeRangeKey(prompt);
+  const range = TimeUtils.parseTimeRange(timeRangeKey);
+
+  return normalizeResolvedQueryShape({
+    service: 'metrics',
+    queryModeKey: 'metadata',
+    semanticConstraints: {
+      operation: 'metadata_list',
+      targetObjectType: groupType
+    },
+    start: Math.floor(Number(range.start || 0) / 60) * 60,
+    end: Math.floor(Number(range.end || 0) / 60) * 60,
+    groups: [{ type: groupType }],
+    format: 'json',
+    userRequirement: prompt
+  }, prompt);
+}
+
+function looksLikePromptOnlyOverview(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasOverviewIntent = /(整体|总体|概览|总览|overall|overview|global|怎么样|情况|状态)/i.test(text);
+  const hasNapmDomain = /(napm|netinside|系统|网络|应用|业务|web应用|网站|页面|流量|吞吐|时延|响应|异常|告警|丢包|重传|性能|监控)/i.test(text);
+  return hasOverviewIntent && hasNapmDomain;
+}
+
+function buildPromptFallbackResolvedQuery(prompt = '') {
+  const metricInventoryResolvedQuery = buildPromptFallbackMetricInventoryResolvedQuery(prompt);
+  if (metricInventoryResolvedQuery) {
+    return metricInventoryResolvedQuery;
+  }
+
+  if (!looksLikePromptOnlyOverview(prompt)) {
+    return null;
+  }
+
+  const timeRangeKey = inferPromptFallbackTimeRangeKey(prompt);
+  const range = TimeUtils.parseTimeRange(timeRangeKey);
+  const scene = inferPromptFallbackOverviewScene(prompt);
+
+  return normalizeResolvedQueryShape({
+    service: 'overview',
+    queryModeKey: 'overview',
+    overviewScene: scene,
+    semanticConstraints: {
+      operation: 'overview',
+      overviewScene: scene
+    },
+    start: Math.floor(Number(range.start || 0) / 60) * 60,
+    end: Math.floor(Number(range.end || 0) / 60) * 60,
+    groups: [],
+    format: 'json',
+    userRequirement: prompt
+  }, prompt);
 }
 
 async function resolveInput(args, payload) {
@@ -367,14 +1307,67 @@ async function resolveInput(args, payload) {
     args.prompt
     || payload?.prompt
     || payload?.query
+    || payload?.userQuery
+    || payload?.text
     || ''
   ).trim();
 
   const requestContext = {
     decision: parseJsonArg('--decision', args.decision) || payload?.decision || null,
     intent: parseJsonArg('--intent', args.intent) || payload?.intent || null,
-    session: parseJsonArg('--session', args.session) || payload?.session || null
+    session: parseJsonArg('--session', args.session) || payload?.session || payload?.sessionState || null
   };
+
+  if (isSensitiveCredentialPrompt(prompt)) {
+    return {
+      prompt,
+      mappingResult: null,
+      resolvedQuery: {
+        service: 'security_refusal',
+        userRequirement: prompt
+      },
+      intentResult: {
+        objectType: 'IntentResult',
+        userIntent: 'security_refusal',
+        questionType: 'sensitive_credentials',
+        service: 'security_refusal',
+        scopeHint: null,
+        preferOverviewFirst: false,
+        stableTemplateId: null,
+        candidateGeneration: null,
+        metricDomainCandidates: [],
+        confidence: 0.99
+      },
+      semanticResolutionResult: {
+        objectType: 'SemanticResolutionResult',
+        object: null,
+        groupPath: [],
+        metric: null,
+        metrics: [],
+        metricDomain: null,
+        timeRange: {
+          start: null,
+          end: null
+        },
+        baseline: {
+          type: 'none',
+          timeRangeKey: null,
+          start: null,
+          end: null,
+          compareTo: null
+        },
+        metricSemantic: null,
+        objectSemantic: null,
+        pathPlanning: null,
+        stableTemplateId: null,
+        confidence: 0.99,
+        needsClarification: false
+      },
+      requestContext,
+      payload,
+      sensitiveCredentialRequest: true
+    };
+  }
 
   const explicitResolvedQuery = coerceJsonObject(args.query)
     || parseJsonArg('--resolvedQuery', args.resolvedQuery)
@@ -382,7 +1375,11 @@ async function resolveInput(args, payload) {
     || null;
 
   if (explicitResolvedQuery) {
-    const resolvedQuery = normalizeResolvedQueryShape(explicitResolvedQuery, prompt);
+    const resolvedQuery = applySessionContinuationToResolvedQuery(
+      explicitResolvedQuery,
+      prompt,
+      requestContext.session
+    );
     return {
       prompt: prompt || String(resolvedQuery?.userRequirement || '').trim(),
       mappingResult: null,
@@ -394,26 +1391,98 @@ async function resolveInput(args, payload) {
     };
   }
 
-  if (!prompt) {
-    throw new Error('Provide either --prompt, --query, --resolvedQuery, or --payload with resolvedQuery.');
+  const promptFallbackResolvedQuery = buildPromptFallbackResolvedQuery(prompt);
+  if (promptFallbackResolvedQuery) {
+    const resolvedQuery = applySessionContinuationToResolvedQuery(
+      promptFallbackResolvedQuery,
+      prompt,
+      requestContext.session
+    );
+    return {
+      prompt,
+      mappingResult: null,
+      resolvedQuery,
+      intentResult: RequirementParserService.buildIntentResult(resolvedQuery, prompt),
+      semanticResolutionResult: RequirementParserService.buildSemanticResolutionResult(resolvedQuery),
+      requestContext,
+      payload
+    };
   }
 
-  const localResolution = await resolvePromptExecution(prompt, requestContext);
-  return {
-    ...localResolution,
-    requestContext,
-    payload
+  const hierarchyCatalogPayload = await buildHierarchyCatalogPayload(prompt);
+  if (hierarchyCatalogPayload) {
+    return {
+      prompt,
+      mappingResult: null,
+      resolvedQuery: {
+        service: 'drilldownCatalog',
+        userRequirement: prompt,
+        groups: hierarchyCatalogPayload?.targetGroupType
+          ? [{ type: hierarchyCatalogPayload.targetGroupType, argument: null }]
+          : []
+      },
+      intentResult: {
+        objectType: 'IntentResult',
+        userIntent: 'metadata',
+        questionType: 'drilldown_hierarchy',
+        service: 'drilldownCatalog',
+        scopeHint: hierarchyCatalogPayload?.targetGroupType || 'all_top_level_groups',
+        preferOverviewFirst: false,
+        stableTemplateId: null,
+        candidateGeneration: null,
+        metricDomainCandidates: [],
+        confidence: 0.95
+      },
+      semanticResolutionResult: {
+        objectType: 'SemanticResolutionResult',
+        object: hierarchyCatalogPayload?.targetGroupType
+          ? { type: hierarchyCatalogPayload.targetGroupType, value: null }
+          : null,
+        groupPath: hierarchyCatalogPayload?.targetGroupType ? [hierarchyCatalogPayload.targetGroupType] : [],
+        metric: null,
+        metrics: [],
+        metricDomain: null,
+        timeRange: {
+          start: null,
+          end: null
+        },
+        baseline: {
+          type: 'none',
+          timeRangeKey: null,
+          start: null,
+          end: null,
+          compareTo: null
+        },
+        metricSemantic: null,
+        objectSemantic: 'drilldown_hierarchy',
+        pathPlanning: null,
+        stableTemplateId: null,
+        confidence: 0.95,
+        needsClarification: false
+      },
+      hierarchyCatalogPayload,
+      requestContext,
+      payload
+    };
+  }
+
+  const error = new Error('Structured resolvedQuery is required in upstream-execution mode; local prompt parsing is disabled.');
+  error.code = 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
+  error.details = {
+    acceptedInputs: ['--query', '--resolvedQuery', '--payload.resolvedQuery'],
+    promptReceived: Boolean(prompt)
   };
+  throw error;
 }
 
 function buildClarificationContract(base = {}, gate = null) {
   const question = String(
     gate?.question
     || base?.resolvedQuery?.executionGuard?.message
-    || '当前信息还不够，我需要你再明确一点。'
+    || '\u5f53\u524d\u4fe1\u606f\u8fd8\u4e0d\u591f\uff0c\u6211\u9700\u8981\u4f60\u518d\u660e\u786e\u4e00\u70b9\u3002'
   ).trim();
   const followUpActions = buildFollowUpActionsFromGate(gate);
-  const summary = buildDecisionSummary('还需要补充一点信息', question);
+  const summary = buildDecisionSummary('\u8fd8\u9700\u8981\u8865\u5145\u4e00\u70b9\u4fe1\u606f', question);
 
   return buildOpenClawReplyContract({
     ...base,
@@ -430,8 +1499,120 @@ function buildClarificationContract(base = {}, gate = null) {
   });
 }
 
+function buildSensitiveCredentialRefusalContract(base = {}) {
+  const text = buildSensitiveCredentialRefusalText();
+  const summary = buildDecisionSummary('\u654f\u611f\u4fe1\u606f\u4fdd\u62a4', text, 'SECURITY_REFUSAL');
+
+  return buildOpenClawReplyContract({
+    ...base,
+    ok: false,
+    error: {
+      code: 'SENSITIVE_CREDENTIAL_REQUEST_BLOCKED',
+      message: text
+    },
+    rows: [],
+    summary,
+    displayText: text,
+    followUpActions: [],
+    responseType: 'decision_result'
+  }, {
+    forwardDisplayText: true,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
+  });
+}
+
+function buildMissingResolvedQueryContract(base = {}) {
+  const text = [
+    '\u5f53\u524d\u8fd9\u4e2a\u95ee\u9898\u8fd8\u6ca1\u6709\u5f62\u6210\u53ef\u6267\u884c\u7684 NAPM \u67e5\u8be2\u6761\u4ef6\u3002',
+    '\u8bf7\u5148\u7531 OpenClaw \u4e3b\u94fe\u5b8c\u6210\u610f\u56fe\u5224\u5b9a\u3001\u8303\u56f4\u786e\u8ba4\u6216\u5fc5\u8981\u7684\u6f84\u6e05\u540e\uff0c\u518d\u4e0b\u53d1 structured resolvedQuery \u7ed9 NAPM skill \u6267\u884c\u3002'
+  ].join('\n');
+  const summary = buildDecisionSummary('\u8fd8\u9700\u8981 OpenClaw \u5148\u5b8c\u6210\u7406\u89e3', text, 'UPSTREAM_RESOLUTION_REQUIRED');
+
+  return buildOpenClawReplyContract({
+    ...base,
+    ok: false,
+    error: {
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      message: text
+    },
+    rows: [],
+    summary,
+    displayText: text,
+    followUpActions: [],
+    responseType: 'decision_result'
+  }, {
+    forwardDisplayText: true,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
+  });
+}
+
 async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult) {
-  const isOverview = resolvedQuery?.service === 'overview' || resolvedQuery?.queryModeKey === 'overview';
+  const isOverview = isOverviewResolvedQuery(resolvedQuery);
+  const analysisPipeline = resolvedQuery?.analysisPipeline && typeof resolvedQuery.analysisPipeline === 'object'
+    ? resolvedQuery.analysisPipeline
+    : null;
+  const hasDiscoveryStage = Boolean(analysisPipeline?.discoveryQuery);
+
+  if (isOverview && hasDiscoveryStage) {
+    const discoveryQuery = buildDiscoveryQuery(resolvedQuery, prompt);
+    if (!discoveryQuery) {
+      return buildAnalysisDiscoveryFailureResult(resolvedQuery, {}, {});
+    }
+    const discoveryResult = await RequirementParserService.executeGatewayRequest(discoveryQuery);
+    const focusSelection = deriveDiscoveryFocusSelection(analysisPipeline, discoveryQuery, discoveryResult);
+    if (!focusSelection) {
+      return buildAnalysisDiscoveryFailureResult(resolvedQuery, discoveryQuery, discoveryResult);
+    }
+
+    const focusedOverviewResolvedQuery = buildFocusedOverviewResolvedQuery(
+      resolvedQuery,
+      focusSelection,
+      discoveryQuery
+    );
+    const overviewResult = await executeOverviewModule({
+      prompt,
+      payload,
+      intent: intentResult,
+      resolvedQuery: focusedOverviewResolvedQuery,
+      executeGatewayRequest: RequirementParserService.executeGatewayRequest.bind(RequirementParserService)
+    });
+
+    return {
+      ...overviewResult,
+      resolvedQuery: focusedOverviewResolvedQuery,
+      requestUrl: overviewResult?.requestUrl || discoveryResult?.requestUrl || null,
+      discovery: {
+        service: discoveryQuery.service,
+        targetObjectType: focusSelection.type,
+        selectedObject: focusSelection.value,
+        rank: focusSelection.rank || 1,
+        metric: focusSelection.metric || resolvePrimaryMetricId(discoveryQuery) || null,
+        request: discoveryQuery,
+        rowCount: Array.isArray(discoveryResult?.data) ? discoveryResult.data.length : 0
+      },
+      overview: overviewResult?.overview
+        ? {
+            ...overviewResult.overview,
+            discovery: {
+              service: discoveryQuery.service,
+              targetObjectType: focusSelection.type,
+              selectedObject: focusSelection.value,
+              rank: focusSelection.rank || 1,
+              metric: focusSelection.metric || resolvePrimaryMetricId(discoveryQuery) || null,
+              request: discoveryQuery,
+              rowCount: Array.isArray(discoveryResult?.data) ? discoveryResult.data.length : 0
+            }
+          }
+        : overviewResult?.overview || null,
+      warnings: [
+        ...(Array.isArray(discoveryResult?.warnings) ? discoveryResult.warnings : []),
+        ...(Array.isArray(overviewResult?.warnings) ? overviewResult.warnings : [])
+      ]
+    };
+  }
+
   if (isOverview) {
     return executeOverviewModule({
       prompt,
@@ -454,6 +1635,20 @@ async function main() {
   const mappingResult = input.mappingResult || null;
   const intentResult = input.intentResult || null;
   const semanticResolutionResult = input.semanticResolutionResult || null;
+  const hierarchyCatalogPayload = input.hierarchyCatalogPayload || null;
+
+  if (input.sensitiveCredentialRequest) {
+    const output = buildSensitiveCredentialRefusalContract({
+      prompt,
+      service: 'security_refusal',
+      resolvedQuery,
+      intentResult,
+      semanticResolutionResult,
+      supportedMetrics: MetricMappingService.getAllMetricCodes().length
+    });
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    return;
+  }
 
   const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
   if (clarificationGate?.required) {
@@ -470,7 +1665,7 @@ async function main() {
     return;
   }
 
-  if (resolvedQuery?.executionGuard?.blockExecution) {
+  if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
     const output = buildClarificationContract({
       prompt,
       service: resolvedQuery?.service || null,
@@ -491,9 +1686,15 @@ async function main() {
     return;
   }
 
+  if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
+    const output = buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    return;
+  }
+
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
   const rawRows = Array.isArray(executionResult?.data) ? executionResult.data : [];
-  const rows = isMetadataWebApplicationInventory(resolvedQuery)
+  const rows = isMetadataBusinessInventory(resolvedQuery)
     ? filterBusinessSystemRows(rawRows)
     : rawRows;
   const service = executionResult?.service || resolvedQuery?.service || null;
@@ -516,34 +1717,75 @@ async function main() {
     semanticResolutionResult,
     assistantDecision: clarificationGate || null
   }, {
-    forwardDisplayText: SKILL_FORWARD_DISPLAY_TEXT,
+    forwardDisplayText: isOverviewResolvedQuery(resolvedQuery) ? true : SKILL_FORWARD_DISPLAY_TEXT,
     appendRequestUrlToDisplayText,
-    defaultDisplayTextBuilder: buildDisplayText
+    defaultDisplayTextBuilder: buildDisplayText,
+    includeRequestUrl: false
   });
 
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
 }
 
-main().catch((error) => {
-  const summary = buildDecisionSummary('Skill execution failed', error.message, 'FAILED');
-  const output = buildOpenClawReplyContract({
-    ok: false,
-    service: null,
-    resolvedQuery: null,
-    rows: [],
-    data: [],
-    summary,
-    error: {
-      code: error.code || 'SKILL_EXECUTION_ERROR',
-      message: error.message
-    },
-    responseType: 'decision_result',
-    displayText: error.message
-  }, {
-    forwardDisplayText: true,
-    appendRequestUrlToDisplayText
-  });
+if (require.main === module) {
+  main().catch((error) => {
+    const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
+    if (isMissingResolvedQuery) {
+      const output = buildMissingResolvedQueryContract({
+        prompt: null,
+        service: null,
+        resolvedQuery: null,
+        rows: [],
+        data: [],
+        supportedMetrics: MetricMappingService.getAllMetricCodes().length
+      });
+      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+      return;
+    }
 
-  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-  process.exit(1);
-});
+    const summary = buildDecisionSummary('Skill execution failed', error.message, 'FAILED');
+    const output = buildOpenClawReplyContract({
+      ok: false,
+      service: null,
+      resolvedQuery: null,
+      rows: [],
+      data: [],
+      summary,
+      error: {
+        code: error.code || 'SKILL_EXECUTION_ERROR',
+        message: error.message
+      },
+      responseType: 'decision_result',
+      displayText: error.message
+    }, {
+      forwardDisplayText: true,
+      appendRequestUrlToDisplayText,
+      includeRequestUrl: false
+    });
+
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  __test__: {
+    hasExplicitRankingMetricInText,
+    normalizeResolvedQueryShape,
+    normalizeSessionState,
+    extractContinuationInstruction,
+    isDrilldownPrompt,
+    inferDrilldownPathFromPrompt,
+    applySessionContinuationToResolvedQuery,
+    buildPromptFallbackResolvedQuery,
+    buildPromptFallbackMetricInventoryResolvedQuery,
+    inferPromptFallbackMetricInventoryGroup,
+    isMetricInventoryPrompt,
+    isHierarchyCatalogPrompt,
+    normalizeDrilldownQuestionTarget,
+    buildDrilldownCatalogDisplayText,
+    resolveInput,
+    buildFocusedOverviewResolvedQuery,
+    deriveDiscoveryFocusSelection,
+    executeResolvedQuery
+  }
+};

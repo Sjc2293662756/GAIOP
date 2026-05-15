@@ -1,4 +1,9 @@
 const { DEPTH_LEVELS } = require('./OverviewBudget');
+const { getOverviewSceneProfile } = require('./OverviewCandidateRegistry');
+const {
+  normalizeSemanticMetricDomainToken,
+  getSemanticMetricDomainAliases
+} = require('../../../src/constants/metricDomains');
 
 const DEFAULT_OVERVIEW_PLANNING_POLICY = {
   hardMetadataIssuePrefixes: [
@@ -76,22 +81,7 @@ function inferQuestionType(prompt = '', intent = {}, resolvedQuery = {}) {
 }
 
 function normalizeMetricDomainToken(value) {
-  const raw = normalizeText(value);
-  if (!raw) {
-    return null;
-  }
-
-  if (/(alert|alarm|error|fail|异常|失败|告警|http4|http5)/.test(raw)) return 'error';
-  if (/(security|attack|risk|threat|安全|攻击|风险)/.test(raw)) return 'security';
-  if (/(loss|drop|packet|丢包)/.test(raw)) return 'loss';
-  if (/(latency|delay|slow|response|experience|rtt|时延|响应)/.test(raw)) return 'experience';
-  if (/(session|conversation|connect|request|visit|会话|访问|连接)/.test(raw)) return 'session';
-  if (/(traffic|throughput|flow|byte|bandwidth|流量|吞吐)/.test(raw)) return 'traffic';
-  if (/(business|web|page|业务|页面)/.test(raw)) return 'business';
-  if (/(application|app|service|应用)/.test(raw)) return 'application';
-  if (/(network|ip|subnet|prefix|网络|地址|网段)/.test(raw)) return 'network';
-
-  return raw;
+  return normalizeSemanticMetricDomainToken(value);
 }
 
 function inferMetricDomains(prompt = '', intent = {}, resolvedQuery = {}) {
@@ -117,6 +107,8 @@ function inferMetricDomains(prompt = '', intent = {}, resolvedQuery = {}) {
     push(item?.metricDomain);
     push(item?.name);
     push(item?.label);
+    const aliases = getSemanticMetricDomainAliases(item?.metricDomain || item?.domain || item?.name || item?.label);
+    aliases.forEach((alias) => push(alias));
   });
   push(prompt);
   return uniqueStrings(values);
@@ -157,11 +149,15 @@ function inferObjectTypes(resolvedQuery = {}) {
 
 function extractOverviewSlots({ prompt = '', resolvedQuery = {}, intent = {}, scene = null, metadataReview = null } = {}) {
   const groups = Array.isArray(resolvedQuery?.groups) ? resolvedQuery.groups : [];
+  const contextGroups = Array.isArray(resolvedQuery?.contextGroups) ? resolvedQuery.contextGroups : [];
+  const anchorObject = resolvedQuery?.semanticConstraints?.anchorObject || resolvedQuery?.candidateSpec?.semantic_constraints?.anchorObject || null;
+  const anchorArgument = String(anchorObject?.argument || anchorObject?.value || '').trim() || null;
   const focusGroup = groups.find((group) => group?.argument)
-    || (resolvedQuery?.semanticConstraints?.anchorObject?.value
+    || contextGroups.find((group) => group?.argument)
+    || (anchorArgument
       ? {
-          type: resolvedQuery.semanticConstraints.anchorObject.type,
-          argument: resolvedQuery.semanticConstraints.anchorObject.value
+          type: anchorObject?.type || null,
+          argument: anchorArgument
         }
       : null);
 
@@ -185,10 +181,12 @@ function extractOverviewSlots({ prompt = '', resolvedQuery = {}, intent = {}, sc
     objectTypes: inferObjectTypes(resolvedQuery),
     requestedTopCount: parseRequestedTopCount(prompt),
     focusObject: focusGroup ? { type: focusGroup.type || null, value: focusGroup.argument || null } : null,
-    anchorGroups: groups.filter((group) => group?.type && group?.argument).map((group) => ({
+    anchorGroups: [...groups, ...contextGroups]
+      .filter((group) => group?.type && group?.argument)
+      .map((group) => ({
       type: group.type,
       argument: group.argument
-    })),
+      })),
     slotValues,
     metadataAvailableGroupTypes: Array.isArray(metadataReview?.flattenedGroups)
       ? uniqueStrings(metadataReview.flattenedGroups.map((item) => item?.type))
@@ -203,6 +201,13 @@ function getDepthRank(depth = 'standard') {
 function getCandidateMetricCodes(candidate) {
   const metrics = Array.isArray(candidate?.request?.metrics) ? candidate.request.metrics : [];
   return uniqueStrings(metrics).map((item) => String(item).toUpperCase());
+}
+
+function getDepthProfileCandidates(depthProfiles = {}, depth = 'standard') {
+  if (!depthProfiles || typeof depthProfiles !== 'object') {
+    return [];
+  }
+  return Array.isArray(depthProfiles[depth]) ? depthProfiles[depth] : [];
 }
 
 function getMetadataHealth(candidateId, metadataReview = {}, planningPolicy = DEFAULT_OVERVIEW_PLANNING_POLICY) {
@@ -375,13 +380,31 @@ function buildOverviewPlan({
   const rootCandidates = candidates.filter((candidate) => candidate.role !== 'child');
   const childCandidates = candidates.filter((candidate) => candidate.role === 'child');
   const context = { scene, depth, budget, metadataReview, slots, planningPolicy };
+  const sceneProfile = getOverviewSceneProfile(scene);
+  const rootTemplateOrder = getDepthProfileCandidates(sceneProfile?.depthRoots, depth);
+  const childTemplateOrder = getDepthProfileCandidates(sceneProfile?.depthChildren, depth);
+  const rootOrderMap = new Map(rootTemplateOrder.map((candidateId, index) => [candidateId, index]));
+  const childOrderMap = new Map(childTemplateOrder.map((candidateId, index) => [candidateId, index]));
 
   const selectedRootCandidates = [];
   const skippedCandidates = [];
 
   const rankedRoots = rootCandidates
+    .filter((candidate) => rootTemplateOrder.length === 0 || rootOrderMap.has(candidate.id))
     .map((candidate) => ({ candidate, evaluation: evaluateRootCandidate(candidate, context) }))
     .sort((left, right) => {
+      const leftHasSlotRequirement = Array.isArray(left.candidate?.slotRequirements) && left.candidate.slotRequirements.length > 0;
+      const rightHasSlotRequirement = Array.isArray(right.candidate?.slotRequirements) && right.candidate.slotRequirements.length > 0;
+      if (context.slots?.focusObject?.type && leftHasSlotRequirement !== rightHasSlotRequirement) {
+        return rightHasSlotRequirement ? 1 : -1;
+      }
+      if (rootTemplateOrder.length > 0) {
+        const leftIndex = rootOrderMap.has(left.candidate.id) ? rootOrderMap.get(left.candidate.id) : Number.MAX_SAFE_INTEGER;
+        const rightIndex = rootOrderMap.has(right.candidate.id) ? rootOrderMap.get(right.candidate.id) : Number.MAX_SAFE_INTEGER;
+        if (leftIndex !== rightIndex) {
+          return leftIndex - rightIndex;
+        }
+      }
       const leftScore = Number(left.evaluation.score || -Infinity);
       const rightScore = Number(right.evaluation.score || -Infinity);
       if (rightScore !== leftScore) {
@@ -423,8 +446,23 @@ function buildOverviewPlan({
     });
   }
 
+  if (rootTemplateOrder.length > 0) {
+    rootCandidates
+      .filter((candidate) => !rootOrderMap.has(candidate.id))
+      .forEach((candidate) => {
+        skippedCandidates.push({
+          candidateId: candidate.id,
+          label: candidate.label,
+          role: candidate.role,
+          reason: 'scene_profile_filtered',
+          details: { scene, depth }
+        });
+      });
+  }
+
   const selectedChildCandidates = [];
   const rankedChildren = childCandidates
+    .filter((candidate) => childTemplateOrder.length === 0 || childOrderMap.has(candidate.id))
     .map((candidate) => {
       const parentSelection = selectedRootCandidates.find((selected) => (
         Array.isArray(candidate.dependsOnCandidateIds) && candidate.dependsOnCandidateIds.includes(selected.candidateId)
@@ -443,6 +481,13 @@ function buildOverviewPlan({
       };
     })
     .sort((left, right) => {
+      if (childTemplateOrder.length > 0) {
+        const leftIndex = childOrderMap.has(left.candidate.id) ? childOrderMap.get(left.candidate.id) : Number.MAX_SAFE_INTEGER;
+        const rightIndex = childOrderMap.has(right.candidate.id) ? childOrderMap.get(right.candidate.id) : Number.MAX_SAFE_INTEGER;
+        if (leftIndex !== rightIndex) {
+          return leftIndex - rightIndex;
+        }
+      }
       const leftScore = Number(left.evaluation.score || -Infinity);
       const rightScore = Number(right.evaluation.score || -Infinity);
       if (rightScore !== leftScore) {
@@ -464,6 +509,10 @@ function buildOverviewPlan({
       continue;
     }
 
+    if (selectedChildCandidates.some((selected) => selected.candidateId === item.candidate.id)) {
+      continue;
+    }
+
     selectedChildCandidates.push({
       candidateId: item.candidate.id,
       label: item.candidate.label,
@@ -473,6 +522,20 @@ function buildOverviewPlan({
       scoreReasons: item.evaluation.reasons,
       candidate: item.candidate
     });
+  }
+
+  if (childTemplateOrder.length > 0) {
+    childCandidates
+      .filter((candidate) => !childOrderMap.has(candidate.id))
+      .forEach((candidate) => {
+        skippedCandidates.push({
+          candidateId: candidate.id,
+          label: candidate.label,
+          role: candidate.role,
+          reason: 'scene_profile_filtered',
+          details: { scene, depth }
+        });
+      });
   }
 
   return {

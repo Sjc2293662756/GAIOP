@@ -1,5 +1,5 @@
 const NapmMetadataService = require('../services/NapmMetadataService');
-const { listOverviewCandidates } = require('./OverviewCandidateRegistry');
+const { listOverviewCandidates, getOverviewSceneProfile } = require('./OverviewCandidateRegistry');
 const { resolveOverviewDepth, getOverviewBudget } = require('./OverviewBudget');
 const { extractOverviewSlots, buildOverviewPlan, DEFAULT_OVERVIEW_PLANNING_POLICY } = require('./OverviewPlanner');
 const { compileOverviewPlan, buildBaseQueryFromCandidate } = require('./OverviewPlanCompiler');
@@ -10,7 +10,7 @@ const DEFAULT_TOP_COUNT = 5;
 const DEFAULT_OVERVIEW_WINDOW_SECONDS = 24 * 60 * 60;
 
 const GROUP_TYPE_SCENE_MAP = {
-  BusinessGroup: 'business',
+  BusinessGroup: 'business_group',
   WebApplication: 'business',
   DefinedApp: 'application',
   Application: 'application',
@@ -22,6 +22,7 @@ const GROUP_TYPE_SCENE_MAP = {
 };
 
 const SCENE_HINT_PATTERNS = [
+  { scene: 'business_group', regex: /(业务组|工作组|业务分组|businessgroup|business group)/i },
   { scene: 'security', regex: /(安全|风险|攻击|告警|security|attack|threat)/i },
   { scene: 'network', regex: /(网络|链路|丢包|吞吐|带宽|时延|地址|ip|network)/i },
   { scene: 'application', regex: /(应用|app|服务|网页|站点|application)/i },
@@ -40,6 +41,14 @@ function normalizeText(value) {
 function toFiniteNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function roundToNearestMinute(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  return Math.floor(numeric / 60) * 60;
 }
 
 function formatCompactNumber(value, digits = 2) {
@@ -225,18 +234,74 @@ function summarizeTimeTrendRows(label, rows = [], preferredMetricId = null) {
   };
 }
 
+function summarizeAverageMetricRows(label, rows = [], preferredMetricIds = []) {
+  const firstRow = Array.isArray(rows) ? rows[0] : null;
+  const metricValues = Array.isArray(firstRow?.metricValues) ? firstRow.metricValues : [];
+  const preferredIds = Array.isArray(preferredMetricIds)
+    ? preferredMetricIds.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const candidates = metricValues.length > 0
+    ? metricValues
+    : preferredIds
+      .map((metricId) => {
+        if (Object.prototype.hasOwnProperty.call(firstRow || {}, metricId)) {
+          return {
+            metric: { id: metricId },
+            value: firstRow?.[metricId],
+            unit: firstRow?.units?.[metricId] || firstRow?.unit || null
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+  const preview = candidates
+    .map((item, index) => {
+      const metricId = String(item?.metric?.id || preferredIds[index] || '').trim() || null;
+      const rawValue = toFiniteNumber(item?.value ?? item?.Value);
+      const unit = String(item?.unit || item?.metric?.unit || '').trim() || null;
+      if (!metricId || rawValue === null) {
+        return null;
+      }
+      return {
+        rank: index + 1,
+        object: metricId,
+        rawValue,
+        unit,
+        valueText: `${formatCompactNumber(rawValue)}${unit ? ` ${unit}` : ''}`
+      };
+    })
+    .filter(Boolean);
+
+  if (preview.length === 0) {
+    return {
+      label,
+      summary: `${label} 暂无有效均值数据`,
+      preview: []
+    };
+  }
+
+  return {
+    label,
+    summary: `${label}：${preview.map((item) => `${item.object} ${item.valueText}`).join('；')}`,
+    preview
+  };
+}
+
 function buildOverviewModuleInsight(candidate = {}, rows = []) {
   const label = String(candidate?.label || candidate?.candidateId || '').trim() || 'overview';
   const service = String(candidate?.service || '').trim();
-  const metricId = Array.isArray(candidate?.metrics) && candidate.metrics.length > 0
-    ? candidate.metrics[0]
-    : null;
+  const metricIds = Array.isArray(candidate?.metrics) ? candidate.metrics.filter(Boolean) : [];
+  const metricId = metricIds.length > 0 ? metricIds[0] : null;
 
   if (service === 'alertsSummary') {
     return summarizeAlertRows(label, rows);
   }
   if (service === 'timeValues') {
     return summarizeTimeTrendRows(label, rows, metricId);
+  }
+  if (service === 'averageValues') {
+    return summarizeAverageMetricRows(label, rows, metricIds);
   }
   if (service === 'topValues') {
     return summarizeTopMetricRows(label, rows, candidate?.topMetric || metricId);
@@ -259,6 +324,8 @@ function normalizeSceneKey(scene) {
     system: 'system',
     global: 'system',
     overall: 'system',
+    business_group: 'business_group',
+    businessgroup: 'business_group',
     business: 'business',
     app: 'application',
     application: 'application',
@@ -269,6 +336,9 @@ function normalizeSceneKey(scene) {
     整体: 'system',
     总览: 'system',
     概览: 'system',
+    业务组: 'business_group',
+    工作组: 'business_group',
+    业务分组: 'business_group',
     业务: 'business',
     应用: 'application',
     网络: 'network',
@@ -279,12 +349,12 @@ function normalizeSceneKey(scene) {
 }
 
 function resolveOverviewTimeRange(start, end) {
-  const safeStart = toFiniteNumber(start);
-  const safeEnd = toFiniteNumber(end);
+  const safeStart = roundToNearestMinute(start);
+  const safeEnd = roundToNearestMinute(end);
   if (safeStart && safeEnd && safeEnd > safeStart) {
     return { start: safeStart, end: safeEnd };
   }
-  const now = Math.floor(Date.now() / 1000);
+  const now = roundToNearestMinute(Math.floor(Date.now() / 1000));
   return {
     start: now - DEFAULT_OVERVIEW_WINDOW_SECONDS,
     end: now
@@ -320,15 +390,23 @@ function resolveOverviewScene({ prompt, payload, intent, resolvedQuery } = {}) {
     return fromIntent;
   }
 
+  const fromResolvedQuery = normalizeSceneKey(
+    resolvedQuery?.overviewScene
+    || resolvedQuery?.semanticConstraints?.overviewScene
+  );
+  if (fromResolvedQuery) {
+    return fromResolvedQuery;
+  }
+
   const text = String(prompt || '').trim();
   const hint = SCENE_HINT_PATTERNS.find((item) => item.regex.test(text));
   if (hint) {
     return hint.scene;
   }
 
-  const fromResolvedQuery = mapResolvedQueryToScene(resolvedQuery);
-  if (fromResolvedQuery) {
-    return fromResolvedQuery;
+  const fromResolvedGroups = mapResolvedQueryToScene(resolvedQuery);
+  if (fromResolvedGroups) {
+    return fromResolvedGroups;
   }
 
   return 'system';
@@ -562,7 +640,18 @@ async function loadOverviewMetadataReviewSafely(candidates = [], timeRange = nul
 
 function buildOverviewQueries(scene, start, end) {
   const timeRange = resolveOverviewTimeRange(start, end);
-  const candidates = listOverviewCandidates(scene).filter((candidate) => candidate.role !== 'child');
+  const sceneProfile = getOverviewSceneProfile(scene);
+  const rootTemplateOrder = Array.isArray(sceneProfile?.depthRoots?.standard)
+    ? sceneProfile.depthRoots.standard
+    : [];
+  const orderedCandidateIds = rootTemplateOrder.length > 0
+    ? rootTemplateOrder
+    : listOverviewCandidates(scene)
+      .filter((candidate) => candidate.role !== 'child')
+      .map((candidate) => candidate.id);
+  const candidates = orderedCandidateIds
+    .map((candidateId) => listOverviewCandidates(scene).find((candidate) => candidate.id === candidateId))
+    .filter((candidate) => candidate && candidate.role !== 'child');
   return candidates.map((candidate) => ({
     key: candidate.id,
     role: candidate.role,
@@ -680,11 +769,13 @@ module.exports = {
   reduceOverviewResults,
   buildOverviewQueries,
   executeOverviewModule,
+  extractTopGroupValues,
   __test__: {
     resolveOverviewTimeRange,
     extractTopGroupValues,
     applyArgumentByTargetParam,
     pickBestGroupValue,
-    buildOverviewModuleInsight
+    buildOverviewModuleInsight,
+    summarizeAverageMetricRows
   }
 };

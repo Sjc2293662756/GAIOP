@@ -1,3 +1,8 @@
+const {
+  isBusinessObjectType,
+  getMetricCategoriesForObjectType
+} = require('../../../src/constants/objectMetricOwnership');
+
 function toFiniteNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
@@ -17,6 +22,124 @@ function formatMetricValue(value, unit = null) {
   }
   const formatted = formatNumber(value);
   return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function formatTimestamp(timestamp) {
+  const numeric = toFiniteNumber(timestamp);
+  if (numeric === null) {
+    return null;
+  }
+
+  const date = new Date(numeric * 1000);
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(date).reduce((acc, part) => {
+    if (part.type !== 'literal') {
+      acc[part.type] = part.value;
+    }
+    return acc;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function normalizeTimeRange(payload = {}, summary = {}) {
+  const resolvedQuery = payload?.resolvedQuery || {};
+  const summaryRange = summary?.timeRange && typeof summary.timeRange === 'object'
+    ? summary.timeRange
+    : {};
+  const hintRange = resolvedQuery?.resolutionHints?.time || {};
+  const candidateRange = resolvedQuery?.candidateSpec?.hints?.time_range || {};
+
+  const start = toFiniteNumber(
+    summaryRange.start
+    ?? resolvedQuery.start
+    ?? hintRange.start
+    ?? candidateRange.start
+  );
+  const end = toFiniteNumber(
+    summaryRange.end
+    ?? resolvedQuery.end
+    ?? hintRange.end
+    ?? candidateRange.end
+  );
+
+  if (start === null || end === null) {
+    return null;
+  }
+
+  const key = String(
+    summaryRange.key
+    || resolvedQuery.timeRangeKey
+    || hintRange.key
+    || candidateRange.key
+    || ''
+  ).trim() || null;
+  const startText = formatTimestamp(start);
+  const endText = formatTimestamp(end);
+
+  return {
+    key,
+    start,
+    end,
+    startText,
+    endText,
+    timezone: 'Asia/Shanghai',
+    displayText: startText && endText
+      ? `数据时间：${startText} 至 ${endText}`
+      : null
+  };
+}
+
+function ensureSummaryTimeRange(summary = {}, timeRange = null) {
+  if (!timeRange) {
+    return summary;
+  }
+
+  const nextSummary = {
+    ...summary,
+    timeRange
+  };
+  const displayText = String(timeRange.displayText || '').trim();
+  if (!displayText) {
+    return nextSummary;
+  }
+
+  const highlights = Array.isArray(nextSummary.highlights)
+    ? nextSummary.highlights.filter(Boolean).map(item => String(item))
+    : [];
+  if (!highlights.some(item => item.includes(displayText))) {
+    nextSummary.highlights = [displayText, ...highlights];
+  } else {
+    nextSummary.highlights = highlights;
+  }
+
+  return nextSummary;
+}
+
+function ensureDisplayTextTimeRange(displayText = null, timeRange = null) {
+  const text = String(displayText || '').trim();
+  if (!text) {
+    return null;
+  }
+
+  const timeRangeText = String(timeRange?.displayText || '').trim();
+  if (!timeRangeText) {
+    return text;
+  }
+
+  if (text.includes(timeRangeText)) {
+    return text;
+  }
+
+  return `${timeRangeText}\n${text}`;
 }
 
 function pickFirstNonEmptyValue(source = {}, keys = []) {
@@ -49,7 +172,8 @@ function toPlainSummary(summary = {}) {
     title: summary.title || null,
     highlights: Array.isArray(summary.highlights) ? summary.highlights.filter(Boolean) : [],
     rowCount: Number.isFinite(Number(summary.rowCount)) ? Number(summary.rowCount) : 0,
-    empty: typeof summary.empty === 'boolean' ? summary.empty : null
+    empty: typeof summary.empty === 'boolean' ? summary.empty : null,
+    timeRange: summary.timeRange || null
   };
 }
 
@@ -131,8 +255,20 @@ function extractMetricId(payload = {}) {
   const summaryMetrics = Array.isArray(payload?.summary?.metrics) ? payload.summary.metrics : [];
   return String(
     resolvedQuery.metric
-    || resolvedQuery.topMetric
     || summaryMetrics[0]
+    || resolvedQuery.topMetric
+    || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
+    || ''
+  ).trim() || null;
+}
+
+function extractSortMetricId(payload = {}) {
+  const resolvedQuery = payload?.resolvedQuery || {};
+  const summaryTopMetric = String(payload?.summary?.topMetric || '').trim();
+  return String(
+    resolvedQuery.topMetric
+    || summaryTopMetric
+    || resolvedQuery.metric
     || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
     || ''
   ).trim() || null;
@@ -199,10 +335,19 @@ function resolveResponseType(payload = {}, hasResultData = false) {
 
 function buildTopnStructure(payload, rows, followUpPrompts) {
   const metricId = extractMetricId(payload);
+  const sortMetricId = extractSortMetricId(payload);
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
+  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const explanationMetricText = metricId && sortMetricId && metricId !== sortMetricId
+    ? `查询指标为 ${metricId}，排序指标为 ${sortMetricId}`
+    : (metricId ? `围绕 ${metricId} 指标` : null);
   return {
     responseType: 'topn',
-    title: payload?.summary?.title || 'NAPM ranking results',
-    explanation: payload?.summary?.title || 'Returned the current ranking result.',
+    title: payload?.summary?.title || '排行结果',
+    explanation: objectType && explanationMetricText
+      ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。请直接概括前列对象、领先程度和明显差距。`
+      : '这是一个排行结果。请直接概括前列对象、领先程度和明显差距。',
+    timeRange,
     items: rows.slice(0, 10).map((row, index) => ({
       rank: Number.isFinite(Number(row.rank)) ? Number(row.rank) : index + 1,
       object: row?.object || `object_${index + 1}`,
@@ -221,13 +366,15 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
 function buildTrendStructure(payload, rows, structuredSeries, followUpPrompts) {
   const metricId = extractMetricId(payload);
   const points = Array.isArray(structuredSeries?.points) ? structuredSeries.points : rows;
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
     responseType: 'trend',
-    title: payload?.summary?.title || 'NAPM trend results',
+    title: payload?.summary?.title || '趋势结果',
     explanation: points.length > 0
-      ? `Returned ${points.length} trend points.`
-      : 'No trend points were returned.',
+      ? `这是一个时间趋势结果，共 ${points.length} 个时间点。请概括整体走势、峰值、低谷和最新值。`
+      : '这是一个时间趋势结果，但当前时间范围内没有返回有效时间点。',
     metric: metricId,
+    timeRange,
     pointCount: points.length,
     firstPoint: points[0] || null,
     lastPoint: points.length > 0 ? points[points.length - 1] : null,
@@ -235,31 +382,182 @@ function buildTrendStructure(payload, rows, structuredSeries, followUpPrompts) {
   };
 }
 
+function buildPreviewText(preview = [], limit = 3) {
+  return (Array.isArray(preview) ? preview.slice(0, limit) : [])
+    .map((item) => String(item?.object || '').trim())
+    .filter(Boolean)
+    .join('、');
+}
+
+function findOverviewModule(modules = [], key) {
+  return Array.isArray(modules)
+    ? modules.find((item) => String(item?.key || '').trim() === key) || null
+    : null;
+}
+
+function buildApplicationOverviewSummary(modules = []) {
+  const lines = [];
+
+  const alertModule = findOverviewModule(modules, 'applicationAlertSummary');
+  if (alertModule?.summary) {
+    const topApps = buildPreviewText(alertModule.preview, 3);
+    if (topApps) {
+      lines.push(`今天应用侧告警较多，重点涉及 ${topApps}。`);
+    } else {
+      lines.push(String(alertModule.summary).trim());
+    }
+  }
+
+  const throughputModule = findOverviewModule(modules, 'topApplicationThroughput');
+  if (throughputModule?.preview?.length) {
+    const [top1, top2, top3] = throughputModule.preview;
+    const names = [top1?.object, top2?.object, top3?.object]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    if (names.length > 0) {
+      const leadValue = String(top1?.valueText || '').trim();
+      lines.push(
+        leadValue
+          ? `当前流量主要集中在 ${names.join('、')}，其中 ${top1.object} 吞吐最高，约 ${leadValue}。`
+          : `当前流量主要集中在 ${names.join('、')}。`
+      );
+    }
+  }
+
+  const accessModule = findOverviewModule(modules, 'appAccessTrend');
+  const experienceModule = findOverviewModule(modules, 'appExperienceTrend');
+  if (accessModule?.summary || experienceModule?.summary) {
+    const accessText = String(accessModule?.summary || '').trim().replace(/^应用访问趋势：?/, '');
+    const experienceText = String(experienceModule?.summary || '').trim().replace(/^应用体验趋势：?/, '');
+    if (accessText && experienceText) {
+      lines.push(`访问与体验方面，${accessText}；${experienceText}。`);
+    } else if (accessText) {
+      lines.push(`访问情况方面，${accessText}。`);
+    } else if (experienceText) {
+      lines.push(`体验情况方面，${experienceText}。`);
+    }
+  }
+
+  const failureModule = findOverviewModule(modules, 'appFailureTop');
+  if (failureModule?.preview?.length) {
+    const failureApps = buildPreviewText(failureModule.preview, 3);
+    if (failureApps) {
+      lines.push(`失败量靠前的应用主要是 ${failureApps}，建议优先关注这些对象。`);
+    }
+  }
+
+  return lines.slice(0, 4);
+}
+
 function buildOverviewStructure(payload, followUpPrompts) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
+  const scene = String(payload?.overview?.scene || '').trim();
+  const discovery = payload?.overview?.discovery && typeof payload.overview.discovery === 'object'
+    ? payload.overview.discovery
+    : null;
+  const discoveryObject = String(discovery?.selectedObject || '').trim();
+  const discoveryMetric = String(discovery?.metric || '').trim();
+  const sceneLabelMap = {
+    system: '????',
+    business: '????',
+    business_group: '?????',
+    application: '????',
+    network: '????',
+    security: '????'
+  };
+  const sceneLabel = sceneLabelMap[scene] || '????';
+  const overviewQueries = Array.isArray(payload?.overview?.queries) ? payload.overview.queries : [];
+  const summaryHighlights = Array.isArray(payload?.summary?.highlights)
+    ? payload.summary.highlights.filter(Boolean).map((item) => String(item))
+    : [];
+  const topFindings = Array.isArray(payload?.overview?.topFindings)
+    ? payload.overview.topFindings.filter(Boolean).map((item) => String(item))
+    : [];
+  const modules = Array.isArray(payload?.overview?.modules)
+    ? payload.overview.modules.map((item) => ({
+      key: item?.key || null,
+      label: item?.label || item?.key || null,
+      ok: item?.ok !== false,
+      rowCount: Number.isFinite(Number(item?.rowCount)) ? Number(item.rowCount) : 0,
+      summary: item?.summary || null,
+      preview: Array.isArray(item?.preview) ? item.preview.slice(0, 3) : []
+    }))
+    : [];
+  const applicationSummary = scene === 'application'
+    ? buildApplicationOverviewSummary(modules)
+    : [];
+  const keyFindings = applicationSummary.length > 0
+    ? applicationSummary
+    : [...summaryHighlights, ...topFindings].slice(0, 8);
+  const explanation = scene === 'application'
+    ? '?????????????????????????????????????'
+    : '??' + sceneLabel + '??????????????????????????????';
+
   return {
     responseType: 'overview',
-    title: payload?.summary?.title || 'NAPM overview results',
-    summary: Array.isArray(payload?.overview?.topFindings) ? payload.overview.topFindings : [],
+    title: sceneLabel + '??',
+    explanation,
+    timeRange,
+    scene,
+    sceneLabel,
+    discovery: discoveryObject
+      ? {
+          object: discoveryObject,
+          metric: discoveryMetric || null,
+          rank: Number.isFinite(Number(discovery?.rank)) ? Number(discovery.rank) : 1,
+          targetObjectType: discovery?.targetObjectType || null
+        }
+      : null,
+    queryCount: overviewQueries.length,
+    summary: keyFindings,
+    modules,
     nextActions: followUpPrompts.length > 0
       ? followUpPrompts
       : (Array.isArray(payload?.overview?.nextActions) ? payload.overview.nextActions.slice(0, 6) : [])
   };
 }
-
 function buildCompareStructure(payload, followUpPrompts) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
     responseType: 'compare',
-    title: payload?.summary?.title || 'NAPM compare results',
-    explanation: payload?.summary?.title || 'Returned the compare result.',
+    title: payload?.summary?.title || '对比结果',
+    explanation: '这是一个对比结果。请直接概括谁更高、差距多大，以及是否存在明显异常。',
+    timeRange,
     compare: payload?.compareResult || null,
     nextActions: followUpPrompts
   };
 }
 
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
+  const listTypeLabel = responseType === 'group_list' ? '对象列表' : '指标列表';
+  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const itemIds = rows.map((row) => String(row?.id || '').trim()).filter(Boolean);
+  const sampleMetricIds = itemIds.slice(0, 12);
+  const businessOwnedMetricList = sampleMetricIds.join('、');
+  const businessCategoryText = getMetricCategoriesForObjectType(objectType).join('、');
+
+  const explanation = (() => {
+    if (rows.length === 0) {
+      return `这是一个${listTypeLabel}，但当前没有返回有效结果。`;
+    }
+
+    if (responseType === 'metric_list' && isBusinessObjectType(objectType)) {
+      return `这是 ${objectType} 视角的指标列表。最终回答只能基于已返回的指标项来总结，归属口径为 ${businessCategoryText || '业务类指标'}。可以围绕业务网络、业务访问、业务性能、响应代码和页面优化来总结，不要提及列表里未出现的非业务类网络指标，包括丢包、RTT、重传、吞吐、网络连接或告警类宣称。当前返回的代表指标包括：${businessOwnedMetricList || '见结果列表'}。`;
+    }
+
+    if (responseType === 'metric_list') {
+      return `这是一个${listTypeLabel}，请优先基于已返回的指标项来总结，不要扩展到列表中没有出现的其他指标类别。`;
+    }
+
+    return `这是一个${listTypeLabel}，请优先概括总数、代表性对象，以及是否更像业务系统列表还是协议类列表。`;
+  })();
+
   return {
     responseType,
-    title: payload?.summary?.title || 'NAPM list results',
+    title: payload?.summary?.title || listTypeLabel,
+    explanation,
+    timeRange,
     items: rows.slice(0, 20).map((row, index) => ({
       rank: index + 1,
       value: row?.[labelKey] || row?.object || row?.value || null,
@@ -271,9 +569,14 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
 }
 
 function buildGenericStructure(payload, rows, followUpPrompts) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
     responseType: 'query',
-    title: payload?.summary?.title || 'NAPM query results',
+    title: payload?.summary?.title || '查询结果',
+    explanation: rows.length > 0
+      ? '这是一个普通查询结果。请结合时间范围、指标和值直接说结论，不要复述机器状态。'
+      : '这是一个普通查询结果，但当前没有返回数据。请明确说明查询范围、时间范围和未命中的事实。',
+    timeRange,
     summary: Array.isArray(payload?.summary?.highlights) ? payload.summary.highlights.slice(0, 8) : [],
     rowCount: rows.length,
     nextActions: followUpPrompts
@@ -281,10 +584,12 @@ function buildGenericStructure(payload, rows, followUpPrompts) {
 }
 
 function buildDecisionStructure(payload, followUpPrompts) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
     responseType: 'decision_result',
-    title: payload?.summary?.title || 'NAPM decision result',
+    title: payload?.summary?.title || '处理结果',
     explanation: payload?.displayText || payload?.replyText || payload?.summary?.displayText || null,
+    timeRange,
     nextActions: followUpPrompts
   };
 }
@@ -340,6 +645,7 @@ function buildRenderPolicy(payload = {}) {
     ],
     rules: [
       'Prefer narrationStructure for final wording.',
+      'Always include result timeRange/displayText when present.',
       'Use summary and structured result data before raw rows.',
       'Only fall back to displayText when verbatim forwarding is requested.'
     ]
@@ -351,14 +657,17 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     return data;
   }
 
-  const summary = data.summary && typeof data.summary === 'object'
+  let summary = data.summary && typeof data.summary === 'object'
     ? { ...data.summary }
     : {};
+  const timeRange = normalizeTimeRange(data, summary);
+  summary = ensureSummaryTimeRange(summary, timeRange);
   const requestUrl = String(
     data.requestUrl
     || summary.requestUrl
     || ''
   ).trim() || null;
+  const includeRequestUrl = options.includeRequestUrl === true;
 
   const rawDisplayText = String(
     data.replyText
@@ -369,7 +678,10 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
   const fallbackDisplayText = typeof options.defaultDisplayTextBuilder === 'function'
     ? String(options.defaultDisplayTextBuilder(summary, data) || '').trim() || null
     : null;
-  const computedDisplayText = rawDisplayText || fallbackDisplayText;
+  const computedDisplayText = ensureDisplayTextTimeRange(
+    rawDisplayText || fallbackDisplayText,
+    timeRange
+  );
   const forwardDisplayText = Boolean(options.forwardDisplayText);
   const displayText = forwardDisplayText
     ? (
@@ -384,8 +696,10 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
   } else if (Object.prototype.hasOwnProperty.call(summary, 'displayText')) {
     delete summary.displayText;
   }
-  if (requestUrl) {
+  if (includeRequestUrl && requestUrl) {
     summary.requestUrl = requestUrl;
+  } else if (Object.prototype.hasOwnProperty.call(summary, 'requestUrl')) {
+    delete summary.requestUrl;
   }
 
   const service = data.service || data?.resolvedQuery?.service || null;
@@ -408,7 +722,6 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
   return {
     ...data,
     summary,
-    requestUrl,
     displayText,
     replyText: displayText,
     responseMode: displayText ? 'verbatim_display_text' : 'machine_narration_input',
@@ -425,11 +738,13 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       intent: data.intentResult || data.intent || null,
       resolvedQuery: data.resolvedQuery || null,
       request: {
-        requestUrl,
-        requestParamsJson: data.requestParamsJson || summary.requestParamsJson || null
+        requestUrl: includeRequestUrl ? requestUrl : null,
+        requestParamsJson: data.requestParamsJson || summary.requestParamsJson || null,
+        timeRange
       },
       summary: toPlainSummary(summary),
       result: {
+        timeRange,
         rows,
         structuredRows,
         structuredSeries,

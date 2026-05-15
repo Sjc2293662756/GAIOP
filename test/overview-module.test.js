@@ -1,8 +1,35 @@
+process.env.NETINSIDE_HOST = process.env.NETINSIDE_HOST || 'https://example.invalid/webservice/NetInside';
+process.env.NETINSIDE_USERNAME = process.env.NETINSIDE_USERNAME || 'test-user';
+process.env.NETINSIDE_PASSWORD = process.env.NETINSIDE_PASSWORD || 'test-password';
+
+jest.mock('../skills/openclaw-napm-query/services/NapmMetadataService', () => ({
+  getFlattenedGroups: jest.fn(async () => ([
+    { type: 'DefinedApp' },
+    { type: 'WebApplication' },
+    { type: 'BusinessGroup' },
+    { type: 'IPAddress' },
+    { type: 'Prefix24' },
+    { type: 'IPConversation' },
+    { type: 'TotalTraffic' },
+    { type: 'ExternalIPs' },
+    { type: 'OtherApp' },
+    { type: 'MemberIPs' }
+  ])),
+  getGranularities: jest.fn(async () => ([3600])),
+  reviewQuery: jest.fn(async () => ({
+    issues: [],
+    suggestions: [],
+    granularities: [3600]
+  }))
+}));
+
 const {
   resolveOverviewScene,
   resolveOverviewDepth,
   buildOverviewQueries,
   executeOverviewModule,
+  extractOverviewSlots,
+  compileOverviewPlan,
   __test__
 } = require('../skills/openclaw-napm-query/scripts/overview-module');
 const ClarificationGateService = require('../skills/openclaw-napm-query/services/ClarificationGateService');
@@ -37,7 +64,108 @@ describe('overview-module', () => {
     const keys = queries.map((item) => item.key);
     expect(keys).toContain('applicationAlertSummary');
     expect(keys).toContain('appDistributionTop');
-    expect(keys).toContain('topApplicationThroughput');
+    expect(keys).toContain('appFailureTop');
+    expect(keys).not.toContain('topApplicationThroughput');
+  });
+
+  test('should build distinct root query bundles for system and network scenes', () => {
+    const systemKeys = buildOverviewQueries('system', 1774339020, 1776844620).map((item) => item.key);
+    const networkKeys = buildOverviewQueries('network', 1774339020, 1776844620).map((item) => item.key);
+
+    expect(systemKeys).toEqual([
+      'topDefinedAppThroughput',
+      'unknownTcpConnectionTop',
+      'overallTrafficTrend',
+      'systemAlertSummary'
+    ]);
+    expect(networkKeys).toEqual([
+      'networkAlertSummary',
+      'packetLossInboundTop',
+      'packetLossOutboundTop',
+      'overallTrafficTrend',
+      'topIpThroughput',
+      'topIpConnectionFailures',
+      'focusedIpConnectionSnapshot',
+      'focusedIpConnectionTrend'
+    ]);
+    expect(systemKeys).not.toContain('topIpThroughput');
+    expect(networkKeys).not.toContain('topDefinedAppThroughput');
+  });
+
+  test('should not include alertsSummary roots in business or business_group overview scenes', () => {
+    const businessKeys = buildOverviewQueries('business', 1774339020, 1776844620).map((item) => item.key);
+    const businessGroupKeys = buildOverviewQueries('business_group', 1774339020, 1776844620).map((item) => item.key);
+
+    expect(businessKeys).not.toContain('businessAlertSummary');
+    expect(businessGroupKeys).not.toContain('businessGroupAlertSummary');
+    expect(businessKeys).toEqual([
+      'topBusinessRealtime',
+      'topBusinessVisits'
+    ]);
+    expect(businessGroupKeys).toEqual([
+      'topBusinessGroupThroughput',
+      'topBusinessGroupConnections'
+    ]);
+  });
+
+  test('should follow scene profile for application deep overview', async () => {
+    const executeGatewayRequest = jest.fn(async (query) => ({
+      ok: true,
+      service: query.service,
+      data: query.service === 'topValues'
+        ? [
+            {
+              group: { argument: 'HTTP' },
+              metricValues: [{ metric: { id: query.topMetric || query.metric || query.metrics?.[0] }, value: 10, unit: 'kb/s' }]
+            }
+          ]
+        : [
+            {
+              metricValues: [
+                {
+                  metric: { id: query.metric || query.metrics?.[0] || 'TPIO' },
+                  values: [1, 2, 3],
+                  unit: 'kb/s'
+                }
+              ]
+            }
+          ],
+      requestUrl: 'http://fake/overview',
+      error: null
+    }));
+
+    const result = await executeOverviewModule({
+      prompt: '请给我一个深入的应用整体概览',
+      payload: { overviewScene: 'application', overviewDepth: 'deep' },
+      intent: { goal: 'overview' },
+      resolvedQuery: {
+        start: 1774339020,
+        end: 1776844620,
+        groups: []
+      },
+      executeGatewayRequest
+    });
+
+    const selectedRootKeys = (result?.overview?.selectedCandidates || [])
+      .filter((item) => item.role !== 'child')
+      .map((item) => item.candidateId);
+    const selectedChildKeys = (result?.overview?.selectedCandidates || [])
+      .filter((item) => item.role === 'child')
+      .map((item) => item.candidateId);
+
+    expect(selectedRootKeys).toEqual([
+      'applicationAlertSummary',
+      'appDistributionTop',
+      'appFailureTop'
+    ]);
+    expect(selectedChildKeys).toEqual([
+      'appTrafficAnalysisTop',
+      'appAccessTrendByTopApp',
+      'appExperienceTrendByTopApp',
+      'appSessionTopByTopApp'
+    ]);
+    expect(selectedRootKeys).not.toContain('topBusinessGroupThroughput');
+    expect(selectedRootKeys).not.toContain('topApplicationThroughput');
   });
 
   test('should not block overview query with object clarification gate', () => {
@@ -130,6 +258,59 @@ describe('overview-module', () => {
     expect(ipParent.children.map((item) => item.argumentValue)).toContain('1.1.1.1');
   });
 
+  test('should prioritize focused IP analysis modules when overview has focusIpAddress', async () => {
+    const executeGatewayRequest = jest.fn(async (query) => ({
+      ok: true,
+      service: query.service,
+      data: query.service === 'timeValues'
+        ? [{
+            metricValues: (query.metrics || []).map((metricId) => ({
+              metric: { id: metricId },
+              values: [1, 2, 3],
+              unit: metricId === 'RFCI' ? 'files' : 'count'
+            }))
+          }]
+        : [{
+            metricValues: (query.metrics || []).map((metricId) => ({
+              metric: { id: metricId },
+              value: metricId === 'RFCI' ? 2100677 : 2470337,
+              unit: 'count'
+            }))
+          }],
+      requestUrl: 'http://fake/focused-ip',
+      error: null
+    }));
+
+    const result = await executeOverviewModule({
+      prompt: '对 101.254.114.237 做连接失败综合分析',
+      payload: { overviewScene: 'network', overviewDepth: 'deep' },
+      intent: { goal: 'overview' },
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'network',
+        start: 1774339020,
+        end: 1776844620,
+        groups: [{ type: 'IPAddress', argument: '101.254.114.237' }],
+        semanticConstraints: {
+          operation: 'overview',
+          anchorObject: {
+            type: 'IPAddress',
+            argument: '101.254.114.237'
+          }
+        }
+      },
+      executeGatewayRequest
+    });
+
+    const selectedRootKeys = (result?.overview?.selectedCandidates || [])
+      .filter((item) => item.role !== 'child')
+      .map((item) => item.candidateId);
+
+    expect(selectedRootKeys).toContain('focusedIpConnectionSnapshot');
+    expect(selectedRootKeys).toContain('focusedIpConnectionTrend');
+  });
+
   test('should build module summaries and partial render policy', async () => {
     const executeGatewayRequest = jest.fn(async (query) => {
       if (query.service === 'alertsSummary') {
@@ -198,5 +379,108 @@ describe('overview-module', () => {
     expect(Array.isArray(result?.overview?.skippedCandidates)).toBe(true);
     expect(result?.overview?.renderPolicy?.allowPartialResult).toBe(true);
     expect(result?.overview?.executionMeta?.queryCount).toBeGreaterThan(0);
+  });
+
+  test('should read focus anchor from contextGroups and anchorObject.argument', () => {
+    const slots = extractOverviewSlots({
+      prompt: '今天应用的情况怎么样？',
+      resolvedQuery: {
+        groups: [{ type: 'DefinedApp' }],
+        contextGroups: [{ type: 'DefinedApp', argument: '办公OA' }],
+        semanticConstraints: {
+          anchorObject: {
+            type: 'DefinedApp',
+            argument: '办公OA'
+          }
+        }
+      }
+    });
+
+    expect(slots.focusObject).toEqual({
+      type: 'DefinedApp',
+      value: '办公OA'
+    });
+    expect(slots.slotValues.focusDefinedApp).toBe('办公OA');
+    expect(slots.anchorGroups).toEqual([
+      { type: 'DefinedApp', argument: '办公OA' }
+    ]);
+  });
+
+  test('should inherit scoped context group into overview root query', () => {
+    const compiled = compileOverviewPlan({
+      overviewPlan: {
+        scene: 'application',
+        depth: 'standard',
+        budget: { maxChildren: 0 },
+        planningPolicy: {},
+        slots: {
+          scene: 'application',
+          questionType: 'overview',
+          metricCodes: ['TPIO'],
+          metricDomains: ['traffic'],
+          objectTypes: ['DefinedApp'],
+          requestedTopCount: null,
+          focusObject: { type: 'DefinedApp', value: '办公OA' },
+          anchorGroups: [{ type: 'DefinedApp', argument: '办公OA' }],
+          slotValues: {
+            focusDefinedApp: '办公OA'
+          }
+        },
+        selectedRootCandidates: [
+          {
+            score: 100,
+            scoreReasons: ['test'],
+            candidate: {
+              id: 'topApplicationThroughput',
+              label: 'Top Application Throughput',
+              role: 'root',
+              request: {
+                service: 'topValues',
+                metric: 'TPIO',
+                metrics: ['TPIO'],
+                groups: [{ type: 'DefinedApp' }],
+                topCount: 5
+              }
+            }
+          }
+        ],
+        selectedChildCandidates: [],
+        skippedCandidates: []
+      },
+      timeRange: {
+        start: 1774339020,
+        end: 1776844620
+      },
+      seedGroups: [{ type: 'DefinedApp' }]
+    });
+
+    expect(compiled.executionItems[0].query.groups).toEqual([
+      { type: 'DefinedApp', argument: '办公OA' }
+    ]);
+  });
+
+  test('should normalize legacy metricDomain names into overview planner tokens', () => {
+    const slots = extractOverviewSlots({
+      prompt: '请给我网络质量概览',
+      intent: {
+        metricDomain: 'NetworkQuality',
+        metricDomainCandidates: [
+          { metricDomain: 'WebExperience' },
+          { metricDomain: 'ApplicationPerformance' }
+        ]
+      },
+      resolvedQuery: {
+        metricDomain: 'TcpStability'
+      }
+    });
+
+    expect(slots.metricDomains).toEqual(expect.arrayContaining([
+      'network',
+      'experience',
+      'session',
+      'error',
+      'business',
+      'application'
+    ]));
   });
 });
