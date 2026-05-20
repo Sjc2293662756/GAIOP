@@ -63,6 +63,13 @@
   ],
   "metricFamilies": [
     {
+      "family": "packet_traffic",
+      "defaultMetric": "PKIO",
+      "inboundMetric": "PKI",
+      "outboundMetric": "PKO",
+      "aliases": ["数据包数量", "包数量", "包个数", "数据包个数", "包流量", "总包流量"]
+    },
+    {
       "family": "throughput",
       "defaultMetric": "TPIO",
       "inboundMetric": "TPI",
@@ -75,6 +82,22 @@
       "inboundMetric": "BYTI",
       "outboundMetric": "BYTO",
       "aliases": ["流量", "总流量"]
+    },
+    {
+      "metric": "PGBYTO",
+      "aliases": ["页面流量", "业务页面流量", "web页面流量", "网站流量"]
+    },
+    {
+      "metric": "PGBYTI",
+      "aliases": ["请求流量", "页面请求流量", "请求数据量"]
+    },
+    {
+      "metric": "PGSIZEO",
+      "aliases": ["页面大小", "页面响应大小"]
+    },
+    {
+      "metric": "PGSIZEI",
+      "aliases": ["请求大小", "页面请求大小"]
     },
     {
       "family": "packet_loss",

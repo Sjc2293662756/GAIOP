@@ -1,105 +1,322 @@
 metrics:
-  - code: TPI
-    description: 吞吐量(入站)
-  - code: TPO
-    description: 吞吐量(出站)
-  - code: TPIO
-    description: 吞吐量(总)
-  - code: PGHTTP500
-    description: HTTP 500错误
-  - code: PGHTTP400
-    description: HTTP 400错误
-  - code: PGHTTP500PCT
-    description: HTTP 500错误率
-  - code: PGHTTP400PCT
-    description: HTTP 400错误率
-  - code: PGHTTP300PCT
-    description: HTTP 300数量百分比
-  - code: PGHTTP200PCT
-    description: HTTP 200成功率
-  - code: PGHTTP100PCT
-    description: HTTP 100数量百分比
-  - code: PGTME
-    description: 响应时间
-  - code: TRTI
-    description: 服务器响应时间（服务器）
-  - code: RTTI
-    description: 往返时间（流入）
-  - code: RDTI
-    description: 重传时延（流入）
-  - code: PGNPGE
-    description: 页面数量
-  - code: PGNOBJE
-    description: HTTP响应数
   - code: CSTI
-    description: 连接建立时间 (TCP 服务器)
+    description: 连接建立时间(TCP服务器)
+    unit: t
   - code: PGSLPCTS
     description: 慢页面百分比（客户端）
+    unit: '%'
   - code: NRTO
     description: 数据传输时间（服务器）
+    unit: t
   - code: NRTI
     description: 数据传输时间（客户端）
+    unit: t
   - code: PGNPGC
     description: 页面访问数（服务器）
+    unit: '#'
+  - code: PGNPGE
+    description: 页面访问数
+    unit: '#'
+  - code: PGSLRT
+    description: 慢页面率
+    unit: 个/分钟
+  - code: CSTO
+    description: 连接建立时间(TCP客户端)
+    unit: t
+  - code: PGNSLPGS
+    description: 慢页面数量（客户端）
+    unit: '#'
+  - code: RFCO
+    description: 连接失败数(TCP客户端)
+    unit: '#'
+  - code: PKIO
+    description: 包流量 （流入和流出）
+    unit: '#'
+  - code: POPT
+    description: 优化的页面数量百分比
+    unit: '%'
+  - code: PGHTTP500PCT
+    description: '% HTTP 500数量'
+    unit: '%'
+  - code: PGNSLPGC
+    description: 慢页面数量（服务器）
+    unit: '#'
+  - code: PGNSLPGE
+    description: 慢页面数量
+    unit: '#'
+  - code: TRTO
+    description: 服务器响应时间（客户端）
+    unit: t
+  - code: RTXO
+    description: 重传率（流出）
+    unit: 千bits/秒
+  - code: ROPT
+    description: 优化的响应百分比
+    unit: '%'
+  - code: TRTT
+    description: Traceroute往返时间
+    unit: t
+  - code: PKZO
+    description: 数据包大小（流出）
+    unit: data
+  - code: TRTI
+    description: 服务器响应时间（服务器）
+    unit: t
+  - code: RTXI
+    description: 重传率（流入）
+    unit: 千bits/秒
+  - code: RFCI
+    description: 连接失败数(TCP服务器)
+    unit: '#'
+  - code: PKZI
+    description: 数据包大小（流入）
+    unit: data
+  - code: PGNPGS
+    description: 页面访问数（客户端）
+    unit: '#'
+  - code: PNOPT
+    description: 未优化的页面数量百分比
+    unit: '%'
+  - code: PKTIO
+    description: 包吞吐量 （流入和流出）
+    unit: 个/秒
+  - code: PGHTTP100PCT
+    description: '% HTTP 100数量'
+    unit: '%'
+  - code: UEIO
+    description: 用户体验时间（客户端）
+    unit: t
+  - code: UEII
+    description: 用户体验时间（服务器）
+    unit: t
+  - code: PGHTTP200PCT
+    description: '% HTTP 200数量'
+    unit: '%'
+  - code: PGNOBJE
+    description: HTTP响应数
+    unit: '#'
+  - code: CDI
+    description: 连接时长(TCP服务器)
+    unit: t
+  - code: PPOPT
+    description: 部分优化的页面数量百分比
+    unit: '%'
+  - code: PGHTTP400PCT
+    description: '% HTTP 400数量'
+    unit: '%'
+  - code: CDO
+    description: 连接时长(TCP客户端)
+    unit: t
+  - code: RPKO
+    description: 包重传率（流出）
+    unit: 个/秒
+  - code: PGHTTP100
+    description: HTTP 100数量
+    unit: '#'
+  - code: RPKI
+    description: 包重传率（流入）
+    unit: 个/秒
+  - code: RSTSI
+    description: 服务器端重置率（TCP服务器）
+    unit: 个/秒
+  - code: RSTSO
+    description: 服务器端重置率（TCP客户端）
+    unit: 个/秒
+  - code: TRRO
+    description: 交互率（客户端）
+    unit: 个/秒
+  - code: TRRI
+    description: 交互率（服务器）
+    unit: 个/秒
+  - code: PTTI
+    description: 净荷传输时间（客户端）
+    unit: t
+  - code: TPIO
+    description: 吞吐量（流入和流出）
+    unit: 千bits/秒
+  - code: PTTO
+    description: 净荷传输时间（服务器）
+    unit: t
+  - code: PGSLPCTC
+    description: 慢页面百分比（服务器）
+    unit: '%'
+  - code: PFOPT
+    description: 全优化的页面百分比
+    unit: '%'
+  - code: PGHTTP300
+    description: HTTP 300数量
+    unit: '#'
+  - code: PGTMS
+    description: 页面延时（客户端）
+    unit: t
+  - code: TPI
+    description: 吞吐量（流入）
+    unit: 千bits/秒
+  - code: PKI
+    description: 包流量（流入）
+    unit: '#'
+  - code: UTO
+    description: 利用率 (流出)
+    unit: '%'
+  - code: PGSLPCT
+    description: 慢页面百分比
+    unit: '%'
+  - code: PGBYTI
+    description: 请求流量
+    unit: data
+  - code: UTI
+    description: 利用率 (流入)
+    unit: '%'
+  - code: CRTI
+    description: 连接率(TCP服务器)
+    unit: 个/秒
+  - code: PKO
+    description: 包流量（流出）
+    unit: '#'
+  - code: CRTO
+    description: 连接率(TCP客户端)
+    unit: 个/秒
+  - code: TPO
+    description: 吞吐量（流出）
+    unit: 千bits/秒
+  - code: PGSIZEO
+    description: 页面大小
+    unit: data
+  - code: PGBYTO
+    description: 页面流量
+    unit: data
+  - code: PGSLRTC
+    description: 慢页面率（服务器）
+    unit: 个/分钟
+  - code: CCNO
+    description: 连接数(TCP客户端)
+    unit: '#'
+  - code: PGSIZEI
+    description: 请求大小
+    unit: data
+  - code: TRTT1
+    description: 通过ISP网络的往返时间
+    unit: t
+  - code: RSTO
+    description: 客户端重置率(TCP客户端)
+    unit: 个/秒
+  - code: ARTI
+    description: 初始应用响应时间（TCP客户端）
+    unit: t
+  - code: CCNI
+    description: 连接数(TCP服务器)
+    unit: '#'
+  - code: RTTI
+    description: 往返时间（流入）
+    unit: t
+  - code: TRTT2
+    description: ISP对等点往返时间
+    unit: t
+  - code: RSTI
+    description: 客户端重置率(TCP服务器)
+    unit: 个/秒
+  - code: FILI
+    description: 连接请求率(TCP服务器)
+    unit: 个/秒
+  - code: FILO
+    description: 连接请求率(TCP客户端)
+    unit: 个/秒
+  - code: RTTO
+    description: 往返时间（流出）
+    unit: t
+  - code: ARTO
+    description: 初始应用响应时间（TCP服务器）
+    unit: t
+  - code: PGTME
+    description: 页面延时
+    unit: t
+  - code: PGHTTP300PCT
+    description: '% HTTP 300数量'
+    unit: '%'
+  - code: PGHTTP500
+    description: HTTP 500数量
+    unit: '#'
+  - code: PGTMC
+    description: 页面延时（服务器）
+    unit: t
+  - code: RDTI
+    description: 重传时延（流入）
+    unit: t
   - code: BYTI
     description: 流量（流入）
-  - code: BYTO
-    description: 流量（流出）
-  - code: BYTIO
-    description: 流量（流入和流出）
-  - code: PLI
-    description: 丢包情况 (流入)
-  - code: PLO
-    description: 丢包情况 (流出)
+    unit: data
   - code: RDTO
     description: 重传时延（流出）
-  - code: GPI
-    description: 有效吞吐 (流入)
-  - code: GPO
-    description: 有效吞吐 (流出)
-  - code: CONO
-    description: 连接请求数 (TCP 客户端)
-  - code: CONI
-    description: 连接请求数 (TCP 服务器)
-  - code: RFCI
-    description: Connection failure count (TCP server)
-  - code: RFCO
-    description: Connection failure count (TCP client)
-  - code: CCNI
-    description: New connection count (TCP server)
-  - code: CCNO
-    description: New connection count (TCP client)
-  - code: RFRO
-    description: 连接失败率 (TCP 客户端)
-  - code: RFRI
-    description: 连接失败率 (TCP 服务器)
-  - code: T2FBI
-    description: 第一字节时间（TCP 客户端）
-  - code: T2FBO
-    description: 第一字节时间（TCP 服务器）
-  - code: TRNO
-    description: 交互数（客户端）
-  - code: TRNI
-    description: 交互数（服务器）
-  - code: PKTI
-    description: 包吞吐量（流入）
-  - code: PKTO
-    description: 包吞吐量（流出）
-  - code: FSI_B
-    description: 净荷（客户端）
+    unit: t
   - code: FSO_B
     description: 净荷（服务器）
-  - code: FSI_P
-    description: 数据包净荷（客户端）
-  - code: FSO_P
-    description: 数据包净荷（服务器）
+    unit: data
+  - code: PGHTTP400
+    description: HTTP 400数量
+    unit: '#'
   - code: PGRT
     description: 页面访问率
+    unit: 个/分钟
+  - code: PKTI
+    description: 包吞吐量（流入）
+    unit: 个/秒
+  - code: PKTO
+    description: 包吞吐量（流出）
+    unit: 个/秒
+  - code: FSI_B
+    description: 净荷（客户端）
+    unit: data
+  - code: BYTO
+    description: 流量（流出）
+    unit: data
+  - code: FSO_P
+    description: 数据包净荷（服务器）
+    unit: '#'
+  - code: PGHTTP200
+    description: HTTP 200数量
+    unit: '#'
+  - code: PLI
+    description: 丢包情况(流入)
+    unit: '%'
+  - code: FSI_P
+    description: 数据包净荷（客户端）
+    unit: '#'
+  - code: T2FBO
+    description: 第一字节时间（TCP服务器）
+    unit: t
   - code: PGSLRTS
     description: 慢页面率（客户端）
-  - code: PGHTTP200
-    description: HTTP 200 数量
-  - code: PGHTTP300
-    description: HTTP 300 数量
-  - code: PGHTTP100
-    description: HTTP 100 数量
+    unit: 个/分钟
+  - code: RFRO
+    description: 连接失败率(TCP客户端)
+    unit: 个/秒
+  - code: BYTIO
+    description: 流量（流入和流出）
+    unit: data
+  - code: GPI
+    description: 有效吞吐(流入)
+    unit: 千bits/秒
+  - code: CONO
+    description: 连接请求数(TCP客户端)
+    unit: '#'
+  - code: RFRI
+    description: 连接失败率(TCP服务器)
+    unit: 个/秒
+  - code: T2FBI
+    description: 第一字节时间（TCP客户端）
+    unit: t
+  - code: PLO
+    description: 丢包情况(流出)
+    unit: '%'
+  - code: GPO
+    description: 有效吞吐(流出)
+    unit: 千bits/秒
+  - code: TRNO
+    description: 交互数（客户端）
+    unit: '#'
+  - code: CONI
+    description: 连接请求数(TCP服务器)
+    unit: '#'
+  - code: TRNI
+    description: 交互数（服务器）
+    unit: '#'

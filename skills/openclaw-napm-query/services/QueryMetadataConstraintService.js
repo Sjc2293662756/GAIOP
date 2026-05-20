@@ -1,24 +1,39 @@
 /**
  * QueryMetadataConstraintService.js
  * 
- * 鏌ヨ鍏冩暟鎹害鏉熸湇鍔? * 
- * 璐熻矗瀵规煡璇㈣繘琛岃鑼冨寲鍜岀害鏉熸鏌ワ紝鍖呮嫭锛? * - 鎸囨爣瀛楁瑙勮寖鍖? * - 鍒嗙粍瀛楁瑙勮寖鍖? * - TopCount 瑙勮寖鍖? * - 鏃堕棿绮掑害瑙勮寖鍖? * - 鍏煎鎬ф鏌ュ拰淇
+ * 查询元数据约束服务
  * 
- * 淇敼鏃ユ湡锛?026-04-15
+ * 负责对查询进行规范化和兼容性检查，包括：
+ * - 指标字段规范化
+ * - 分组字段规范化
+ * - TopCount 规范化
+ * - 时间粒度规范化
+ * - 兼容性检查和修正
+ * 
+ * 修改日期：2026-04-15
  */
 const DimensionMappingService = require('./DimensionMappingService');
 const MetricMappingService = require('./MetricMappingService');
 const { SUPPORTED_GRANULARITIES } = require('../../../src/constants/metricDomains');
+const {
+  isBusinessObjectType,
+  getOwnedMetricIdsForObjectType
+} = require('../../../src/constants/objectMetricOwnership');
 
 /**
- * QueryMetadataConstraintService 绫? * 璐熻矗瀵规煡璇㈣繘琛岃鑼冨寲鍜岀害鏉熸鏌? */
+ * QueryMetadataConstraintService 类
+ * 负责对查询进行规范化和兼容性检查
+ */
 class QueryMetadataConstraintService {
   /**
-   * 绾︽潫鏌ヨ锛堜富鍏ュ彛鏂规硶锛?   * 
-   * 瀵规煡璇㈣繘琛屽叏闈㈢殑瑙勮寖鍖栧鐞嗭紝鍖呮嫭鎸囨爣銆佸垎缁勩€乀opCount銆佺矑搴︾瓑瀛楁鐨勮鑼冨寲锛?   * 骞惰繘琛屽吋瀹规€ф鏌ャ€?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {string} originalText - 鍘熷鏂囨湰
-   * @returns {object} - 绾︽潫澶勭悊缁撴灉
+   * 约束查询（主入口方法）
+   * 
+   * 对查询进行全面的规范化处理，包括指标、分组、TopCount、粒度等字段的规范化，
+   * 并进行兼容性检查。
+   * 
+   * @param {object} query - 查询对象
+   * @param {string} originalText - 原始文本
+   * @returns {object} - 约束处理结果
    */
   constrain(query, originalText = '') {
     const baseQuery = this.cloneQuery(query);
@@ -49,19 +64,23 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 娣辨嫹璐濇煡璇㈠璞?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @returns {object} - 鎷疯礉鍚庣殑鏌ヨ瀵硅薄
+   * 深拷贝查询对象
+   * 
+   * @param {object} query - 查询对象
+   * @returns {object} - 拷贝后的查询对象
    */
   cloneQuery(query) {
     return query ? JSON.parse(JSON.stringify(query)) : query;
   }
 
   /**
-   * 褰掍竴鍖栧巻鍙查仐鐣欑殑椤跺眰瀵硅薄绫诲瀷銆?   * 璇存槑锛氬綋鍓嶅厓鏁版嵁椤跺眰浣跨敤 DefinedApp锛屼笉鍐嶇洿鎺ヤ娇鐢?Application銆?   *
-   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @param {number} index - 鍒嗙粍绱㈠紩
-   * @returns {string} - 褰掍竴鍖栧悗鐨勫垎缁勭被鍨?   */
+   * 统一化卷云遗留的维度对象类型。
+   * 说明：当前元数据维度使用 DefinedApp，不再直接使用 Application。
+   *
+   * @param {string} groupType - 分组类型
+   * @param {number} index - 分组索引
+   * @returns {string} - 统一化后的分组类型
+   */
   normalizeLegacyGroupType(groupType, index = 0) {
     const raw = String(groupType || '').trim();
     if (!raw) {
@@ -76,9 +95,10 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 瑙勮寖鍖栨寚鏍囧瓧娈?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {array} corrections - 淇璁板綍鏁扮粍
+   * 规范化指标字段
+   * 
+   * @param {object} query - 查询对象
+   * @param {array} corrections - 修正记录数组
    */
   normalizeMetricFields(query, corrections) {
     if (query.service === 'metrics' || query.service === 'groups') {
@@ -130,11 +150,12 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 瑙勮寖鍖栧垎缁勫瓧娈?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {string} originalText - 鍘熷鏂囨湰
-   * @param {array} warnings - 璀﹀憡璁板綍鏁扮粍
-   * @param {array} corrections - 淇璁板綍鏁扮粍
+   * 规范化分组字段
+   * 
+   * @param {object} query - 查询对象
+   * @param {string} originalText - 原始文本
+   * @param {array} warnings - 警告记录数组
+   * @param {array} corrections - 修正记录数组
    */
   normalizeGroupFields(query, originalText, warnings, corrections) {
     if (query.service === 'metrics') {
@@ -207,10 +228,10 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 瑙勮寖鍖?TopCount
+   * 规范化 TopCount
    * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {array} corrections - 淇璁板綍鏁扮粍
+   * @param {object} query - 查询对象
+   * @param {array} corrections - 修正记录数组
    */
   normalizeTopCount(query, corrections) {
     if (query.service !== 'topValues') {
@@ -231,9 +252,10 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 瑙勮寖鍖栨椂闂寸矑搴?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {array} corrections - 淇璁板綍鏁扮粍
+   * 规范化时间粒度
+   * 
+   * @param {object} query - 查询对象
+   * @param {array} corrections - 修正记录数组
    */
   normalizeGranularity(query, corrections) {
     if (query.service !== 'timeValues') {
@@ -267,11 +289,13 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 鏋勫缓鍏煎鎬т俊鎭?   * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {array} warnings - 璀﹀憡璁板綍鏁扮粍
-   * @param {array} corrections - 淇璁板綍鏁扮粍
-   * @returns {object|null} - 鍏煎鎬т俊鎭璞?   */
+   * 构建兼容性信息
+   * 
+   * @param {object} query - 查询对象
+   * @param {array} warnings - 警告记录数组
+   * @param {array} corrections - 修正记录数组
+   * @returns {object|null} - 兼容性信息对象
+   */
   buildCompatibility(query, warnings, corrections) {
     if (query.service === 'metrics' || query.service === 'groups') {
       return null;
@@ -297,13 +321,22 @@ class QueryMetadataConstraintService {
       && currentGroup
       && explicitTarget === currentGroup
     );
+    const businessOwnershipViolation = Boolean(
+      currentGroup
+      && isBusinessObjectType(currentGroup)
+      && !getOwnedMetricIdsForObjectType(currentGroup).includes(String(metric || '').trim().toUpperCase())
+    );
 
-    if (!isCompatible && compatibleObjects.length > 0) {
+    if ((businessOwnershipViolation || !isCompatible) && compatibleObjects.length > 0) {
       if (shouldPreserveExplicitTarget) {
         warnings.push(`metric_group_incompatible_but_preserve_explicit_target:${metric}:${currentGroup}`);
       } else {
         const fallbackGroup = this.pickFallbackGroup(query.userRequirement || '', compatibleObjects, preferredObjects);
-        warnings.push(`metric_group_incompatible:${metric}:${currentGroup}`);
+        warnings.push(
+          businessOwnershipViolation
+            ? `metric_group_ownership_incompatible:${metric}:${currentGroup}`
+            : `metric_group_incompatible:${metric}:${currentGroup}`
+        );
         if (fallbackGroup && fallbackGroup !== currentGroup) {
           query.groups[0].type = fallbackGroup;
           delete query.groups[0].argument;
@@ -343,11 +376,12 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 閫夋嫨鍥為€€鍒嗙粍绫诲瀷
+   * 选择降级分组类型
    * 
-   * @param {string} originalText - 鍘熷鏂囨湰
-   * @param {array} compatibleObjects - 鍏煎鐨勫璞＄被鍨嬪垪琛?   * @param {array} preferredObjects - 棣栭€夌殑瀵硅薄绫诲瀷鍒楄〃
-   * @returns {string} - 鍥為€€鍒嗙粍绫诲瀷
+   * @param {string} originalText - 原始文本
+   * @param {array} compatibleObjects - 兼容的对象类型列表
+   * @param {array} preferredObjects - 首选的对象类型列表
+   * @returns {string} - 降级分组类型
    */
   pickFallbackGroup(originalText, compatibleObjects, preferredObjects) {
     const dimensions = DimensionMappingService.getSupportedObjectDimensions();
@@ -368,11 +402,11 @@ class QueryMetadataConstraintService {
   }
 
   /**
-   * 浣跨敤鍔ㄦ€佸厓鏁版嵁绾︽潫鏌ヨ
+   * 使用动态元数据约束查询
    * 
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @param {object} metadataReview - 鍔ㄦ€佸厓鏁版嵁瀹℃煡缁撴灉
-   * @returns {object} - 绾︽潫澶勭悊缁撴灉
+   * @param {object} query - 查询对象
+   * @param {object} metadataReview - 动态元数据审核结果
+   * @returns {object} - 约束处理结果
    */
   async constrainWithDynamicMetadata(query, metadataReview) {
     const constrained = this.cloneQuery(query);
@@ -429,4 +463,3 @@ class QueryMetadataConstraintService {
 }
 
 module.exports = new QueryMetadataConstraintService();
-

@@ -1,76 +1,72 @@
-# OpenClaw Integration Notes (Decision-First v2)
+# OpenClaw Integration Notes (Direct Skill Runtime)
 
 ## Goal
 
-Make OpenClaw route NAPM-related requests to a decision-first skill runtime, not a direct service classifier.
+OpenClaw should route NAPM-related requests directly to `openclaw-napm-query`.
+
+Responsibility split in the current runtime:
+
+- OpenClaw owns domain boundary judgement, follow-up understanding, clarification policy, and standard `resolvedQuery` construction.
+- The skill owns query normalization, metadata validation, NAPM execution, and machine-readable narration contract generation.
+
+There is no gateway approval layer in the active runtime.
 
 ## Trigger Strategy
 
 Prefer this skill when the request is likely one of:
 
-- NAPM concept explanation
-- NAPM direct query
-- broad analysis entry (`最近情况`, `最近为什么慢`)
-- result interpretation (`这个结果怎么解读`)
-- multi-turn refinement (`改成最近24小时`, `只看这个对象`)
+- NAPM / NetInside concept explanation
+- NAPM metadata inventory, such as "系统中有哪些web应用"
+- NAPM metric-ownership or scope explanation, such as "业务都可以查哪些指标"、"业务组都可以查哪些指标"、"WebApplication 和 BusinessGroup 区别"
+- direct query, ranking, average, trend, or overview
+- broad analysis entry, such as "最近情况怎么样" or "为什么最近慢"
+- result interpretation
+- multi-turn refinement, such as "改成最近24小时" or "只看这个对象"
 
-Do not require hard keyword match when there is an active NAPM session and continuation evidence.
+Do not require a hard NAPM keyword match when there is an active NAPM session and the current turn looks like a continuation.
 
-## Planner Policy
+## Runtime Policy
 
-1. First check continuation against session state.
-2. Then check scope boundary.
-3. Then classify task type and decide next action.
-4. Execute query only on query-related actions.
+1. Prefer structured `resolvedQuery` from OpenClaw as the standard contract.
+2. Use continuation context when present.
+3. Treat `decision` and `intent` as optional hints, but do not require them for execution.
+4. Require executable `resolvedQuery` for normal query execution.
+5. Return a machine-readable result for OpenClaw final narration.
 
-Suggested next-action mapping:
+## Recommended Tool
 
-- `ANSWER_CONCEPTUALLY`: answer concept in NAPM context without query
-- `INTERPRET_RESULT`: interpret prior result context
-- `GO_DIRECT_QUERY`: run intent -> resolution -> query
-- `GO_OVERVIEW_QUERY`: run overview-first path
-- `ASK_CLARIFYING_QUESTION`: ask one minimal clarification question
-- `REJECT_AND_REDIRECT`: reject out-of-scope and suggest closest NAPM-available path
-
-Special direct-query guidance for Web access questions:
-
-- If the request contains `访问量 / 访问次数 / 页面访问` plus `客户端 / 客户端IP`, prefer metric `PGNPGE` and target object `ClientIPs`.
-- If the same request contains `其他web应用 / 其它web应用 / 未注册web应用 / Other Web Application`, treat it as an explicit `WebApplication` argument, not as a vague pronoun that requires clarification.
-- Example target shape:
-  `service=topValues`, `metric=PGNPGE`, `topMetric=PGNPGE`, `groups=[{type:"WebApplication",argument:"Other Web Application"},{type:"ClientIPs"}]`
-- For singular asks such as `谁`, prefer `topCount=1`.
-
-## Tool Registration
-
-Register this skill as `semantic decision + query` capability.
-
-Recommended bridge command name:
+Recommended command name:
 
 - `napm-skill-query`
 
-Executor inputs:
+Fallback script:
 
-- `prompt`: raw natural-language request
-- `payload`: optional structured object containing `decision`, `intent`, `resolvedQuery`, `sessionState`
-
-Executor output contract:
-
-```json
-{
-  "ok": true,
-  "decision": {},
-  "intent": {},
-  "resolvedQuery": {},
-  "data": [],
-  "summary": {},
-  "error": null
-}
+```bash
+node skills/openclaw-napm-query/scripts/run_napm_query.js --resolvedQuery "{\"service\":\"groups\",\"groups\":[{\"type\":\"WebApplication\"}],\"format\":\"json\"}"
 ```
 
-## Operational Advice
+Executor inputs:
 
-- keep NAPM credentials injected through environment variables
-- keep metric mapping single-sourced from workspace config
-- log `decision`, `intent`, and `resolvedQuery` for observability
-- keep clarification minimal and specific
-- prefer `GO_OVERVIEW_QUERY` for analysis-entry requests with recognized subject and missing explicit metric
+- `resolvedQuery`: required structured executable query for the standard path
+- `payload`: optional object containing `decision`, `intent`, `resolvedQuery`, `session`, or `sessionState`
+- `--session`: optional continuation state for local execution
+
+Executor output should stay machine-readable, but OpenClaw should turn it into the final Chinese answer in the same turn.
+
+## Semantic Reminders
+
+- `系统中有哪些web应用` means list `WebApplication` objects, not the broad protocol `applications` endpoint.
+- `数据包数量`, `包数量`, `包个数`, `数据包个数`, `包流量` mean metric `PKIO`.
+- `服务器响应时间` / `服务端响应时间` means `TRTI`, not `RTTI`.
+- `RTT`, `往返时延`, `网络时延`, and `延迟` are latency / RTT concepts.
+- `访问其他web应用次数最多的客户端是谁` should prefer:
+  `service=topValues`, `metric=PGNPGE`, `groups=[{type:"WebApplication",argument:"Other Web Application"},{type:"ClientIPs"}]`, `topCount=1`.
+
+## Output Advice
+
+- Do not stop at raw JSON, `Groups list completed`, `Average query completed`, or `[object Object]`.
+- Every data answer must include the data time range. Prefer `narrationInput.result.timeRange.displayText` or `narrationInput.summary.timeRange.displayText`.
+- Summarize the returned rows in Chinese.
+- For empty results, say what metric, object, time range, and scope were queried.
+- Do not use old cached data as the answer for a failed fresh query.
+- Show debug API only when explicitly enabled by runtime policy, and always mask credentials.

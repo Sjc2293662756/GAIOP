@@ -13,6 +13,23 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
   });
 
+  test('should build prompt-only business inventory resolvedQuery for plain business inventory asks', async () => {
+    const input = await __test__.resolveInput({ prompt: '系统中都有哪些业务？' }, {});
+
+    expect(input.resolvedQuery.service).toBe('groups');
+    expect(input.resolvedQuery.queryModeKey).toBe('metadata');
+    expect(input.resolvedQuery.semanticConstraints.operation).toBe('metadata_list');
+    expect(input.resolvedQuery.semanticConstraints.targetObjectType).toBe('WebApplication');
+    expect(input.resolvedQuery.groups).toEqual([{ type: 'WebApplication' }]);
+    expect(input.resolvedQuery.start).toBeGreaterThan(0);
+    expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
+  });
+
+  test('should not treat explicit business-group inventory ask as business object inventory fallback', () => {
+    expect(__test__.isPromptFallbackBusinessObjectInventoryPrompt('系统中都有哪些业务组？')).toBe(false);
+    expect(__test__.buildPromptFallbackBusinessObjectInventoryResolvedQuery('系统中都有哪些业务组？')).toBeNull();
+  });
+
   test('should build prompt-only overview resolvedQuery for overall overview asks', async () => {
     const input = await __test__.resolveInput({ prompt: '今天网络整体情况怎么样？' }, {});
 
@@ -22,6 +39,59 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.overviewScene).toBe('network');
     expect(input.resolvedQuery.start).toBeGreaterThan(0);
     expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
+  });
+
+  test('should build direct topValues query for unknown TCP port traffic asks', async () => {
+    const input = await __test__.resolveInput({ prompt: '未知TCP端口流量Top10' }, {});
+
+    expect(input.resolvedQuery.service).toBe('topValues');
+    expect(input.resolvedQuery.queryModeKey).toBe('topn');
+    expect(input.resolvedQuery.metric).toBe('TPIO');
+    expect(input.resolvedQuery.topMetric).toBe('TPIO');
+    expect(input.resolvedQuery.topCount).toBe(10);
+    expect(input.resolvedQuery.groups).toEqual([
+      { type: 'TotalTraffic' },
+      { type: 'IPProtocol', argument: 'TCP' },
+      { type: 'OtherApps' },
+      { type: 'OtherApp' }
+    ]);
+    expect(input.resolvedQuery.semanticConstraints.targetObjectType).toBe('OtherApp');
+    expect(input.resolvedQuery.semanticConstraints.overviewScene).toBe('security');
+  });
+
+  test('should build direct topValues query for unknown UDP port traffic asks', async () => {
+    const input = await __test__.resolveInput({ prompt: '未知UDP端口流量排行' }, {});
+
+    expect(input.resolvedQuery.service).toBe('topValues');
+    expect(input.resolvedQuery.groups).toEqual([
+      { type: 'TotalTraffic' },
+      { type: 'IPProtocol', argument: 'UDP' },
+      { type: 'OtherApps' },
+      { type: 'OtherApp' }
+    ]);
+  });
+
+  test('should build dual protocol direct query for unknown port traffic asks without protocol', async () => {
+    const input = await __test__.resolveInput({ prompt: '未知端口流量排行' }, {});
+
+    expect(input.resolvedQuery.service).toBe('topValues_multi_protocol');
+    expect(input.resolvedQuery.queryModeKey).toBe('topn');
+    expect(Array.isArray(input.resolvedQuery.protocolQueries)).toBe(true);
+    expect(input.resolvedQuery.protocolQueries).toHaveLength(2);
+    expect(input.resolvedQuery.protocolQueries.map((item) => item.groups)).toEqual([
+      [
+        { type: 'TotalTraffic' },
+        { type: 'IPProtocol', argument: 'TCP' },
+        { type: 'OtherApps' },
+        { type: 'OtherApp' }
+      ],
+      [
+        { type: 'TotalTraffic' },
+        { type: 'IPProtocol', argument: 'UDP' },
+        { type: 'OtherApps' },
+        { type: 'OtherApp' }
+      ]
+    ]);
   });
 
   test('should still block sensitive credential prompts locally', async () => {
@@ -215,6 +285,39 @@ describe('run_napm_query input contract', () => {
       expect(result.ok).toBe(true);
       expect(result.discovery.selectedObject).toBe('101.254.114.237');
       expect(result.overview.discovery.selectedObject).toBe('101.254.114.237');
+    } finally {
+      RequirementParserService.executeGatewayRequest = originalExecute;
+    }
+  });
+
+  test('should execute unknown port traffic asks as separate TCP and UDP direct queries', async () => {
+    const originalExecute = RequirementParserService.executeGatewayRequest;
+    RequirementParserService.executeGatewayRequest = jest.fn(async (query) => ({
+      ok: true,
+      service: query.service,
+      data: [{
+        group: { argument: `${query.groups?.[1]?.argument}-other-app`, type: 'OtherApp' },
+        metricValues: [{ metric: { id: 'TPIO' }, value: query.groups?.[1]?.argument === 'TCP' ? 100 : 80, unit: 'kbps' }]
+      }],
+      requestUrl: `http://fake/${query.groups?.[1]?.argument?.toLowerCase()}`,
+      error: null
+    }));
+
+    try {
+      const result = await __test__.executeResolvedQuery(
+        '未知端口流量排行',
+        __test__.buildPromptFallbackUnknownPortDualProtocolResolvedQuery('未知端口流量排行'),
+        {},
+        {}
+      );
+
+      expect(result.service).toBe('topValues_multi_protocol');
+      expect(result.ok).toBe(true);
+      expect(result.protocolResults.map((item) => item.protocol)).toEqual(['TCP', 'UDP']);
+      expect(result.data.map((item) => item.protocol)).toEqual(['TCP', 'UDP']);
+      expect(RequirementParserService.executeGatewayRequest).toHaveBeenCalledTimes(2);
+      expect(RequirementParserService.executeGatewayRequest.mock.calls[0][0].groups[1]).toEqual({ type: 'IPProtocol', argument: 'TCP' });
+      expect(RequirementParserService.executeGatewayRequest.mock.calls[1][0].groups[1]).toEqual({ type: 'IPProtocol', argument: 'UDP' });
     } finally {
       RequirementParserService.executeGatewayRequest = originalExecute;
     }

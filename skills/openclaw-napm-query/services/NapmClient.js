@@ -5,11 +5,11 @@ const { maskSensitiveParams, buildSafeUrl, buildOrderedParams } = require('../..
 
 class NapmClient {
   constructor() {
-    this.baseUrl = process.env.NETINSIDE_HOST || 'https://101.254.114.238/webservice/NetInside';
-    this.username = process.env.NETINSIDE_USERNAME || 'admin';
-    this.password = process.env.NETINSIDE_PASSWORD || 'admin';
+    this.baseUrl = this.getRequiredEnv('NETINSIDE_HOST');
+    this.username = this.getRequiredEnv('NETINSIDE_USERNAME');
+    this.password = this.getRequiredEnv('NETINSIDE_PASSWORD');
     this.tlsInsecure = String(process.env.NETINSIDE_TLS_INSECURE || '').toLowerCase() === 'true';
-    
+
     this.client = axios.create({
       baseURL: this.baseUrl,
       timeout: 30000,
@@ -25,6 +25,14 @@ class NapmClient {
       baseUrl: this.baseUrl,
       username: this.username
     });
+  }
+
+  getRequiredEnv(name) {
+    const value = String(process.env[name] || '').trim();
+    if (!value) {
+      throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
   }
 
   async get(params) {

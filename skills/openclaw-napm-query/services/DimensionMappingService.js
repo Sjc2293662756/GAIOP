@@ -8,7 +8,14 @@
  */
 
 const { OBJECT_DIMENSIONS } = require('../../../src/constants/objectDimensions');
-const { METRIC_DOMAINS, DOMAIN_TO_OBJECTS, METRIC_META } = require('../../../src/constants/metricDomains');
+const {
+  METRIC_DOMAINS,
+  METRIC_META,
+  getDomainForMetric,
+  getDomainMeta,
+  getObjectsForMetric,
+  getPreferredObjectsForMetric
+} = require('../../../src/constants/metricDomains');
 const MetricMappingService = require('./MetricMappingService');
 
 /**
@@ -55,12 +62,7 @@ class DimensionMappingService {
    * @returns {string|null} - 指标域 ID，未找到返回 null
    */
   getMetricDomain(metricId) {
-    for (const domain of METRIC_DOMAINS) {
-      if (domain.metrics.includes(metricId)) {
-        return domain.id;
-      }
-    }
-    return null;
+    return getDomainForMetric(metricId)?.id || null;
   }
 
   /**
@@ -69,7 +71,7 @@ class DimensionMappingService {
    * @returns {object|null} - 指标域元数据，未找到返回 null
    */
   getDomainMeta(domainId) {
-    return METRIC_DOMAINS.find(item => item.id === domainId) || null;
+    return getDomainMeta(domainId);
   }
 
   /**
@@ -80,12 +82,7 @@ class DimensionMappingService {
    * @returns {array} - 兼容的对象维度列表
    */
   getObjectsForMetric(metricId, options = {}) {
-    const domain = this.getMetricDomain(metricId);
-    if (!domain) {
-      return [];
-    }
-
-    const objects = DOMAIN_TO_OBJECTS[domain] || [];
+    const objects = getObjectsForMetric(metricId);
     if (options.onlySupportedByCurrentSkill) {
       const supportedKeys = new Set(this.getSupportedObjectDimensions().map(item => item.key));
       return objects.filter(item => supportedKeys.has(item));
@@ -100,9 +97,7 @@ class DimensionMappingService {
    * @returns {array} - 首选对象维度列表
    */
   getPreferredObjectsForMetric(metricId) {
-    const domainId = this.getMetricDomain(metricId);
-    const domain = this.getDomainMeta(domainId);
-    return domain ? domain.preferredObjects || [] : [];
+    return getPreferredObjectsForMetric(metricId);
   }
 
   /**
@@ -141,4 +136,3 @@ class DimensionMappingService {
 }
 
 module.exports = new DimensionMappingService();
-

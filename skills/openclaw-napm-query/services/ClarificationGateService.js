@@ -73,6 +73,18 @@ class ClarificationGateService {
       return null;
     }
 
+    const semanticOperation = String(
+      resolvedQuery?.semanticConstraints?.operation
+      || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
+      || ''
+    ).trim().toLowerCase();
+    const isOverviewQuery = resolvedQuery?.service === 'overview'
+      || resolvedQuery?.queryModeKey === 'overview'
+      || semanticOperation === 'overview';
+    if (isOverviewQuery && String(guard?.code || '').trim() === 'SCOPED_DESCENT_UNRESOLVED') {
+      return null;
+    }
+
     const details = guard?.details || {};
     const suggestedCandidates = Array.isArray(details?.suggestedCandidates)
       ? details.suggestedCandidates
@@ -146,6 +158,18 @@ class ClarificationGateService {
   }
 
   buildObjectGate(resolvedQuery = null) {
+    const semanticOperation = String(
+      resolvedQuery?.semanticConstraints?.operation
+      || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
+      || ''
+    ).trim().toLowerCase();
+    const isOverviewQuery = resolvedQuery?.service === 'overview'
+      || resolvedQuery?.queryModeKey === 'overview'
+      || semanticOperation === 'overview';
+    if (isOverviewQuery) {
+      return null;
+    }
+
     const hints = resolvedQuery?.resolutionHints?.group;
     const candidates = Array.isArray(hints?.candidates) ? hints.candidates : [];
     if (!hints || hints.explicit !== false || candidates.length < 2) {

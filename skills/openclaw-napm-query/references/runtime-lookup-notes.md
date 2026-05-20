@@ -121,4 +121,4 @@
 - `metricsForGroup` :contentReference[oaicite:97]{index=97}
 
 ### execution
-只有 metadata resolution 成功后，才进入最终执行，避免错误对象绑定和无效指标查询。你们现有网关设计也强调 metadata review、argument resolution 和 execution guard。:contentReference[oaicite:98]{index=98}
+只有 metadata resolution 成功后，才进入最终执行，避免错误对象绑定和无效指标查询。当前直连 Skill 运行时仍要保留 metadata review、argument resolution 和 execution guard。:contentReference[oaicite:98]{index=98}

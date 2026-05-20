@@ -181,6 +181,8 @@ Applications 是应用集合层；DefinedApp 表示已定义应用；OtherApp �
 - 是否需要 argument
 - 该层是否支持目标 metric :contentReference\[oaicite:55]{index=55}
 
+若问题已经变成“这个路径下默认该选哪类指标”，需要再结合 `metric-dimension-ownership.md`，不要只根据层级结构硬猜 metric。
+
 ### execution
 
 执行时最终必须落到：
@@ -189,4 +191,3 @@ Applications 是应用集合层；DefinedApp 表示已定义应用；OtherApp �
 - `groupType1..n`
 - `groupArgument1..n`
   的链式表达，而不是仅保留自然语言对象层级描述。
-

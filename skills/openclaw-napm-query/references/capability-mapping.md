@@ -1,112 +1,122 @@
-# Capability Mapping (Decision-First v2)
+# Capability Mapping (Direct Skill Runtime)
 
 ## Purpose
 
-Map existing gateway capabilities into a reusable skill runtime that follows:
+Map the active skill-local modules into the current OpenClaw NAPM direct-query runtime.
 
-`Decision -> Intent -> Metadata Resolution -> Execution -> Output`
+```text
+OpenClaw resolvedQuery / session
+  -> Input normalization and runtime guard
+  -> Metadata resolution and validation
+  -> Query execution
+  -> Narration contract output
+```
 
-The key migration rule is: keep old execution capabilities, but demote them to post-decision layers.
+The removed project gateway layer is no longer part of the active request path. This document should describe only the modules that still exist in `skills/openclaw-napm-query/`.
 
 ## Layer-to-Module Mapping
 
-### 1) Decision Layer (new upstream layer)
+### 1. Input Normalization and Runtime Guard
 
 Primary responsibility:
 
-- session continuation detection
-- scope boundary control
-- task classification
-- information sufficiency judgement
-- next action selection
+- accept structured `resolvedQuery` as the standard execution contract
+- normalize `metric` / `metrics`, `topCount`, `topMetric`, and `granularity`
+- merge continuation context from runtime session state when available
+- return Chinese fallback payloads for missing executable query or blocked execution
+- keep only execution-side guardrails such as sensitive-credential refusal and structured continuation merge
 
-Expected outputs:
+Relevant modules and scripts:
 
-- `decision` object
-- inheritance hints for subject/time/metric/group/result context
+- `scripts/run_napm_query.js`
+- `RequirementParserService.js`
+- `ClarificationGateService.js`
 
-### 2) Intent Structuring Layer
+Expected output:
 
-Primary responsibility:
+- executable `resolvedQuery`, or
+- machine-readable decision-style payload when execution should not continue
 
-- convert request to intermediate intent for `query` / `analysis_entry`
-- avoid producing final execution JSON at this step
-
-Expected outputs:
-
-- `intent` object with subject/time/metric/view hints
-
-### 3) Metadata Resolution Layer (existing capabilities reused)
-
-- `skills/openclaw-napm-query/services/RequirementParserService.js`
-- `skills/openclaw-napm-query/services/MetricMappingService.js`
-- `skills/openclaw-napm-query/services/GroupBuilder.js`
-- `skills/openclaw-napm-query/services/QueryValidator.js`
-- `src/utils/TimeUtils.js`
+### 2. Metadata Resolution and Validation
 
 Primary responsibility:
 
-- resolve subject existence and object type
-- resolve metric and group mappings
-- select service mode
-- validate and repair safely
+- resolve metric aliases and dimension names into executable NAPM query fields
+- build or repair group chains
+- confirm runtime metadata compatibility
+- apply validation and execution guardrails before calling NAPM
 
-Expected outputs:
+Relevant modules:
 
-- final `resolvedQuery`
+- `MetricMappingService.js`
+- `DimensionMappingService.js`
+- `GroupBuilder.js`
+- `NapmMetadataService.js`
+- `QueryMetadataConstraintService.js`
+- `QueryValidator.js`
 
-### 4) Query Execution Layer (existing capabilities reused)
+Expected output:
 
-- `skills/openclaw-napm-query/services/RequirementParserService.js` (`executeGatewayRequest`)
-- `skills/openclaw-napm-query/services/NapmClient.js`
-- `src/utils/CsvParser.js`
+- validated metric / group / argument shape that can be executed safely
 
-Primary responsibility:
-
-- execute `topValues`, `averageValues`, `timeValues`
-- return machine-readable rows
-
-### 5) Result Interpretation / Output Layer
+### 3. Query Execution
 
 Primary responsibility:
 
-- stable payload for OpenClaw
-- support direct summary, empty results, interpretation mode, clarification mode, reject mode
+- execute metadata services such as `groups`, `metrics`, `groupArguments`, and `metricsForGroup`
+- execute data services such as `topValues`, `averageValues`, and `timeValues`
+- run overview expansion when the resolved query enters overview mode
 
-## New Skill Contract (v2)
+Relevant modules and scripts:
 
-```json
-{
-  "ok": true,
-  "decision": {},
-  "intent": {},
-  "resolvedQuery": {},
-  "data": [],
-  "summary": {},
-  "error": null
-}
-```
+- `RequirementParserService.js`
+- `NapmClient.js`
+- `scripts/run_napm_query.js`
+- `scripts/overview-module.js`
 
-Notes:
+Expected output:
 
-- `resolvedQuery` and `data` are optional for conceptual answer, clarification, rejection, and result-interpretation paths.
-- `topValues/averageValues/timeValues` are execution internals and must not be used as entry routing categories.
+- structured rows, series, overview aggregates, or metadata result sets
+
+### 4. Narration Contract
+
+Primary responsibility:
+
+- convert execution result into OpenClaw-facing machine payload
+- preserve time range, summary, empty-result explanation, and follow-up hints
+- avoid raw JSON acknowledgement and `[object Object]` style output
+
+Relevant modules:
+
+- `OpenClawNarrationContractService.js`
+
+Preferred narration source:
+
+1. `narrationInput.result.narrationStructure`
+2. `narrationInput.result.timeRange` or `narrationInput.summary.timeRange`
+3. structured rows / series / overview data
+4. `narrationInput.summary`
+5. `displayText` or `replyText` only as fallback
 
 ## Input Modes
 
-The skill executor supports:
+The current runner supports:
 
-1. raw prompt (`--prompt`)
-2. structured input (`--payload`) containing any subset of:
+1. standard structured execution via `--resolvedQuery`, `--query`, or `payload.resolvedQuery`
+2. optional companion fields:
    - `decision`
    - `intent`
-   - `resolvedQuery`
-   - `sessionState`
+   - `session` via `--session`, `payload.session`, or `payload.sessionState`
 
-## Refactor Boundary
+Notes:
 
-Keep this boundary unchanged:
+- `resolvedQuery` is the normal execution contract.
+- Missing `decision` must not block execution.
+- Local prompt parsing is not part of the active runtime contract.
 
-- preserve existing mapping/validation/execution modules
-- do not move Express routes into the skill
-- do not include transport-layer behavior in skill runtime
+## Boundary
+
+- Do not depend on removed gateway routes, project-level `src/services`, or deleted skill-local modules.
+- Do not treat `topValues / averageValues / timeValues` as the first-level planner intent.
+- Keep NAPM credentials in environment or runtime configuration, not in the reference files.
+- OpenClaw remains the owner of top-level NLU, scope judgement, and final user-facing narration.

@@ -1,15 +1,17 @@
 /**
  * RequirementParserService.js
- * 
- * 网关执行层主解析器
- * 
- * 负责将 assistant/skill 已经执行的问题，进一步转换为可执行的 gatewayRequest：
- * - 自然语言映射
- * - 对象 / 指标 / service mode / 时间解析
- * - 参数精细化与对齐
- * - 最终发出 NAPM 请求并返回 requestUrl
- * 
- * 修改日期：2026-04-16
+ *
+ * NAPM skill 运行时执行服务。
+ *
+ * 当前主职责是把已经结构化的查询对象收口为可执行的 NAPM 请求，并负责：
+ * - 执行前校验与收口
+ * - 对象 / 指标 / service mode / 时间参数对齐
+ * - 调用 NAPM / NetInside API
+ * - 返回执行结果与调试摘要
+ *
+ * 说明：
+ * - 文件中仍保留较多 `gatewayRequest` 历史命名，当前表示“运行时执行查询对象”，
+ *   不代表旧项目级 gateway 仍是现行主链。
  */
 const fs = require('fs');
 const path = require('path');
@@ -18,67 +20,51 @@ const MetricMappingService = require('./MetricMappingService');
 const NapmClient = require('./NapmClient');
 const GroupBuilder = require('./GroupBuilder');
 const QueryValidator = require('./QueryValidator');
-const NaturalLanguageQueryMapper = require('./NaturalLanguageQueryMapper');
-const QueryMetadataConstraintService = require('./QueryMetadataConstraintService');
 const NapmMetadataService = require('./NapmMetadataService');
-const ArgumentResolutionService = require('./ArgumentResolutionService');
-const ObjectTypeDisambiguationService = require('./ObjectTypeDisambiguationService');
-const ServiceModeDisambiguationService = require('./ServiceModeDisambiguationService');
-const MetricSemanticDisambiguationService = require('./MetricSemanticDisambiguationService');
-const TimeSemanticEnhancementService = require('./TimeSemanticEnhancementService');
-const ClarificationGateService = require('./ClarificationGateService');
-const PathResolveService = require('./PathResolveService');
-const MetricResolveService = require('./MetricResolveService');
-const TimeResolveService = require('./TimeResolveService');
-const ScopeContextPreservationService = require('./ScopeContextPreservationService');
+const GroupPathPlannerService = require('./GroupPathPlannerService');
+const QueryMetadataConstraintService = require('./QueryMetadataConstraintService');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
-const MetricDomainStrategyService = require('./MetricDomainStrategyService');
-const ResolvedSpecBuilder = require('./ResolvedSpecBuilder');
 const CsvParser = require('../../../src/utils/CsvParser');
 const TimeUtils = require('../../../src/utils/TimeUtils');
 const logger = require('../../../src/utils/logger');
 const { logAudit, buildSafeUrl, maskSensitiveParams, buildOrderedParams } = require('../../../src/utils/auditLogger');
+const {
+  filterMetricsForObjectType,
+  isBusinessObjectType,
+  rankMetricIdsForObjectType,
+  resolveMetricOwnershipObjectType,
+  isMetricCompatibleWithGroupPath
+} = require('../../../src/constants/objectMetricOwnership');
+const {
+  normalizeSemanticMetricDomainToken
+} = require('../../../src/constants/metricDomains');
 
 /**
  * RequirementParserService 类
- * 网关执行层主服务，负责将用户需求解析为可执行的网关请求
+ * 当前 skill 运行时中的核心执行服务，负责将结构化查询执行为 NAPM 请求。
  */
 class RequirementParserService {
-  /**
-   * 构造函数
-   * 
-   * 初始化所有依赖服务，加载稳定查询模板配置
-   */
   constructor() {
     this.metricMappingService = MetricMappingService;
     this.napmClient = new NapmClient();
     this.groupBuilder = GroupBuilder;
     this.queryValidator = QueryValidator;
-    this.naturalLanguageQueryMapper = NaturalLanguageQueryMapper;
-    this.queryMetadataConstraintService = QueryMetadataConstraintService;
     this.napmMetadataService = NapmMetadataService;
-    this.argumentResolutionService = ArgumentResolutionService;
-    this.objectTypeDisambiguationService = ObjectTypeDisambiguationService;
-    this.serviceModeDisambiguationService = ServiceModeDisambiguationService;
-    this.metricSemanticDisambiguationService = MetricSemanticDisambiguationService;
-    this.timeSemanticEnhancementService = TimeSemanticEnhancementService;
-    this.clarificationGateService = ClarificationGateService;
-    this.pathResolveService = PathResolveService;
-    this.metricResolveService = MetricResolveService;
-    this.timeResolveService = TimeResolveService;
-    this.scopeContextPreservationService = ScopeContextPreservationService;
-    // 链路收拢后，实探测服务暂不纳入主流程。
-    // this.scopedDescentProbeService = ScopedDescentProbeService;
-    this.metricDomainStrategyService = MetricDomainStrategyService;
+    this.groupPathPlannerService = GroupPathPlannerService;
+    this.queryMetadataConstraintService = QueryMetadataConstraintService;
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
     this.stableQueryTemplates = this.loadStableQueryTemplates();
   }
 
-  /**
-   * 解析网关模板禁用标志
-   * 
-   * @returns {boolean} - 是否禁用网关模板
-   */
+  filterMetricInventoryForOwnership(groups = [], metrics = []) {
+    const items = Array.isArray(metrics) ? metrics : [];
+    const firstType = String(groups?.[0]?.type || '').trim();
+    if (!firstType) {
+      return items;
+    }
+    return filterMetricsForObjectType(firstType, items);
+  }
+
   resolveGatewayTemplateDisableFlag() {
     const raw = String(
       process.env.DISABLE_GATEWAY_TEMPLATES
@@ -88,20 +74,10 @@ class RequirementParserService {
     return ['1', 'true', 'yes', 'on'].includes(raw);
   }
 
-  /**
-   * 判断网关模板是否被禁用
-   * 
-   * @returns {boolean} - 是否禁用网关模板
-   */
   areGatewayTemplatesDisabled() {
     return Boolean(this.gatewayTemplatesDisabled);
   }
 
-  /**
-   * 加载稳定查询模板配置
-   * 
-   * @returns {array} - 稳定查询模板数组
-   */
   loadStableQueryTemplates() {
     if (this.areGatewayTemplatesDisabled()) {
       logger.warn('Gateway stable templates are disabled by environment flag.');
@@ -116,60 +92,139 @@ class RequirementParserService {
         logger.warn('Gateway stable templates are disabled by config switch.');
         return [];
       }
-      return Array.isArray(parsed?.templates) ? parsed.templates : [];
+      return Array.isArray(parsed?.templates)
+        ? parsed.templates
+          .map((template) => this.normalizeStableTemplateDefinition(template))
+          .filter(Boolean)
+        : [];
     } catch (error) {
       logger.warn('Failed to load stable query templates:', error.message);
       return [];
     }
   }
 
-  /**
-   * 构建映射审计快照
-   * 
-   * 将解析结果转换为审计日志所需的快照格式
-   * 
-   * @param {object} mappingResult - 映射结果对象
-   * @returns {object|null} - 审计快照对象
-   */
-  buildMappingAuditSnapshot(mappingResult) {
-    if (!mappingResult) {
+  normalizeStableTemplateAllowedGroupPaths(pathLists = []) {
+    const items = Array.isArray(pathLists) ? pathLists : [];
+    const seen = new Set();
+    const normalizedPaths = [];
+
+    items.forEach((pathTypes) => {
+      const normalized = this.normalizeTopLevelGroupPath(pathTypes);
+      if (!Array.isArray(normalized) || normalized.length === 0) {
+        return;
+      }
+      const key = normalized.join('>');
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      normalizedPaths.push(normalized);
+    });
+
+    return normalizedPaths;
+  }
+
+  normalizeStableTemplateInferredArguments(inferredArguments = null) {
+    if (!inferredArguments || typeof inferredArguments !== 'object') {
+      return inferredArguments;
+    }
+
+    const normalized = { ...inferredArguments };
+    if (normalized.Application && !normalized.DefinedApp) {
+      normalized.DefinedApp = normalized.Application;
+    }
+    return normalized;
+  }
+
+  normalizeStableTemplateDefinition(template = null) {
+    if (!template || typeof template !== 'object') {
       return null;
     }
 
-    return {
-      resolvedQuery: mappingResult.resolvedQuery,
-      evidence: mappingResult.evidence,
-      serviceModeDisambiguation: mappingResult.serviceModeDisambiguation,
-      timeSemanticEnhancement: mappingResult.timeSemanticEnhancement,
-      timeResolve: mappingResult.timeResolve || null,
-      metricDisambiguation: mappingResult.metricDisambiguation,
-      metricResolve: mappingResult.metricResolve || null,
-      objectDisambiguation: mappingResult.objectDisambiguation,
-      entityResolve: mappingResult.entityResolve || null,
-      scopeContextPreservation: mappingResult.scopeContextPreservation,
-      metadataReview: mappingResult.metadataReview,
-      pathPlan: mappingResult.pathPlan,
-      pathResolve: mappingResult.pathResolve || null,
-      argumentResolution: mappingResult.argumentResolution,
-      candidateGeneration: mappingResult.candidateGeneration || null,
-      candidateSpec: mappingResult.candidateSpec || null,
-      resolvedSpec: mappingResult.resolvedSpec || null,
-      clarificationGate: mappingResult.clarificationGate || null,
-      dynamicMetadataReview: mappingResult.dynamicMetadataReview,
-      dynamicConstraint: mappingResult.dynamicConstraint,
-      executionScopeGuard: mappingResult.executionScopeGuard,
-      scopedDescentProbe: mappingResult.scopedDescentProbe,
-      semanticNormalization: mappingResult.semanticNormalization || null
-    };
+    const normalized = JSON.parse(JSON.stringify(template));
+    const bindings = normalized.bindings && typeof normalized.bindings === 'object'
+      ? normalized.bindings
+      : {};
+
+    const normalizedGroupPath = this.normalizeTopLevelGroupPath(bindings.groupPath);
+    if (Array.isArray(normalizedGroupPath) && normalizedGroupPath.length > 0) {
+      bindings.groupPath = normalizedGroupPath;
+    }
+
+    const normalizedAllowedGroupPaths = this.normalizeStableTemplateAllowedGroupPaths([
+      ...(Array.isArray(normalized.allowedGroupPaths) ? normalized.allowedGroupPaths : []),
+      ...(Array.isArray(bindings.allowedGroupPaths) ? bindings.allowedGroupPaths : []),
+      ...(Array.isArray(bindings.groupPath) && bindings.groupPath.length > 0 ? [bindings.groupPath] : [])
+    ]);
+    if (normalizedAllowedGroupPaths.length > 0) {
+      normalized.allowedGroupPaths = normalizedAllowedGroupPaths.map((pathTypes) => pathTypes.slice());
+      bindings.allowedGroupPaths = normalizedAllowedGroupPaths.map((pathTypes) => pathTypes.slice());
+    }
+
+    if (
+      (!Array.isArray(bindings.groupPath) || bindings.groupPath.length === 0)
+      && normalizedAllowedGroupPaths.length === 1
+    ) {
+      bindings.groupPath = normalizedAllowedGroupPaths[0].slice();
+    }
+
+    const metricList = [
+      ...(Array.isArray(bindings.primaryMetrics) ? bindings.primaryMetrics : []),
+      ...(Array.isArray(bindings.metrics) ? bindings.metrics : []),
+      ...(bindings.metric ? [bindings.metric] : []),
+      ...(Array.isArray(bindings.auxMetrics) ? bindings.auxMetrics : [])
+    ]
+      .map((metricId) => String(metricId || '').trim().toUpperCase())
+      .filter(Boolean);
+
+    const ownershipObjectType = resolveMetricOwnershipObjectType(
+      Array.isArray(bindings.groupPath)
+        ? bindings.groupPath.map((type) => ({ type }))
+        : [],
+      bindings.groupPath?.[0] || ''
+    );
+    const rankedMetrics = ownershipObjectType
+      ? rankMetricIdsForObjectType(ownershipObjectType, metricList)
+      : Array.from(new Set(metricList));
+
+    if (rankedMetrics.length > 0) {
+      bindings.metrics = rankedMetrics.slice();
+      bindings.metric = rankedMetrics[0];
+      bindings.primaryMetrics = Array.isArray(bindings.primaryMetrics) && bindings.primaryMetrics.length > 0
+        ? rankedMetrics.filter((metricId) => bindings.primaryMetrics.includes(metricId))
+        : [rankedMetrics[0]];
+      bindings.auxMetrics = rankedMetrics.filter((metricId) => !bindings.primaryMetrics.includes(metricId));
+    }
+
+    if (
+      ownershipObjectType
+      && bindings.metric
+      && !isMetricCompatibleWithGroupPath(
+        Array.isArray(bindings.groupPath) ? bindings.groupPath.map((type) => ({ type })) : [],
+        bindings.metric,
+        ownershipObjectType
+      )
+    ) {
+      logger.warn('Skip stable template due to metric ownership incompatibility', {
+        templateId: normalized.id || null,
+        metric: bindings.metric,
+        groupPath: bindings.groupPath || []
+      });
+      return null;
+    }
+
+    const normalizedMetricDomainToken = normalizeSemanticMetricDomainToken(
+      normalized.metricDomainToken || normalized.metricDomain || ''
+    );
+    if (normalizedMetricDomainToken) {
+      normalized.metricDomainToken = normalizedMetricDomainToken;
+    }
+
+    normalized.inferredArguments = this.normalizeStableTemplateInferredArguments(normalized.inferredArguments);
+    normalized.bindings = bindings;
+    return normalized;
   }
 
-  /**
-   * 鏋勫缓缃戝叧璇锋眰鎽樿
-   * 
-   * 灏嗙綉鍏宠姹傝浆鎹负瀹¤鏃ュ織鎵€闇€鐨勬憳瑕佹牸寮?   * 
-   * @param {object} gatewayRequest - 缃戝叧璇锋眰瀵硅薄
-   * @returns {object|null} - 璇锋眰鎽樿瀵硅薄
-   */
   buildGatewayRequestSummary(gatewayRequest) {
     if (!gatewayRequest) {
       return null;
@@ -206,75 +261,6 @@ class RequirementParserService {
     };
   }
 
-  /**
-   * 应用规范化语义种子
-   * 
-   * 将规范化后的语义信息应用到网关请求中
-   * 
-   * @param {object} gatewayRequest - 网关请求对象
-   * @param {object} normalizedSemantic - 规范化语义对象
-   * @returns {object} - 更新后的网关请求
-   */
-  applyNormalizedSemanticSeed(gatewayRequest, normalizedSemantic = null) {
-    if (!gatewayRequest || !normalizedSemantic || typeof normalizedSemantic !== 'object') {
-      return gatewayRequest;
-    }
-
-    const next = JSON.parse(JSON.stringify(gatewayRequest));
-    next.semanticNormalization = normalizedSemantic;
-
-    const intent = String(normalizedSemantic.intent || '').trim();
-    const focus = String(normalizedSemantic.focus || '').trim();
-    const objectType = String(normalizedSemantic.objectType || '').trim();
-    const service = String(normalizedSemantic.service || '').trim();
-
-    if (!next.service) {
-      if (intent === 'topn' || service === 'topn') {
-        next.service = 'topValues';
-      } else if (intent === 'compare' || service === 'compare' || intent === 'diagnose' || service === 'diagnose' || intent === 'overview' || service === 'overview') {
-        next.service = 'averageValues';
-      }
-    }
-
-    if (!next.metric) {
-      const focusMetricMap = {
-        traffic: 'TPIO',
-        network_performance: 'RTTI',
-        response_time: 'TRTI',
-        user_experience: 'PGTME',
-        'failure/connection': 'CSTI'
-      };
-      const mappedMetric = focusMetricMap[focus] || null;
-      if (mappedMetric) {
-        next.metric = mappedMetric;
-        next.metrics = Array.isArray(next.metrics) && next.metrics.length > 0 ? next.metrics : [mappedMetric];
-      }
-    }
-
-    if ((!Array.isArray(next.groups) || next.groups.length === 0) && objectType && objectType !== 'unknown') {
-      next.groups = [{
-        type: objectType,
-        argument: null
-      }];
-    }
-
-    if (intent === 'topn' && !next.topCount) {
-      next.topCount = 10;
-    }
-
-    if (intent === 'overview' && !next.topCount && next.service === 'averageValues') {
-      next.topCount = 20;
-    }
-
-    return next;
-  }
-
-  /**
-   * 构建执行数据摘要
-   * 
-   * @param {array} data - 执行结果数据
-   * @returns {object} - 数据摘要对象
-   */
   buildExecutionDataSummary(data) {
     const rows = Array.isArray(data) ? data : [];
     return {
@@ -283,108 +269,6 @@ class RequirementParserService {
     };
   }
 
-  /**
-   * 构建参数元数据守卫
-   * 
-   * 检查实体解析结果中的元数据验证状态，如果存在严重不匹配则构建执行守卫
-   * 
-   * @param {object} resolvedQuery - 解析后的查询对象
-   * @param {object} entityResolve - 实体解析结果
-   * @returns {object|null} - 更新后的查询或null
-   */
-  buildArgumentMetadataGuard(resolvedQuery, entityResolve) {
-    const query = resolvedQuery ? JSON.parse(JSON.stringify(resolvedQuery)) : resolvedQuery;
-    const selectedEntity = entityResolve?.selected_entity || null;
-    if (!query || !selectedEntity?.type || !selectedEntity?.value) {
-      return null;
-    }
-
-    if (!entityResolve?.metadata_validation?.hard_mismatch) {
-      return null;
-    }
-
-    const suggestedCandidates = Array.isArray(entityResolve?.clarification?.suggested_candidates)
-      ? entityResolve.clarification.suggested_candidates
-      : [];
-
-    query.executionGuard = {
-      blockExecution: true,
-      code: 'GROUP_ARGUMENT_NOT_FOUND',
-      message: `NAPM metadata does not contain a valid ${selectedEntity.type} argument named "${selectedEntity.value}".`,
-      details: {
-        groupType: selectedEntity.type,
-        argument: selectedEntity.value,
-        suggestedCandidates
-      }
-    };
-
-    return query;
-  }
-
-  /**
-   * 计算候选相似度分数
-   * 
-   * @param {string} source - 源字符串
-   * @param {string} candidate - 候选字符串
-   * @returns {number} - 相似度分数(0-1)
-   */
-  scoreCandidateSimilarity(source, candidate) {
-    const left = this.normalizeLooseComparable(source);
-    const right = this.normalizeLooseComparable(candidate);
-    if (!left || !right) {
-      return 0;
-    }
-    if (left === right) {
-      return 1;
-    }
-
-    let overlap = 0;
-    const leftSet = Array.from(new Set(left.split('')));
-    for (const char of leftSet) {
-      if (right.includes(char)) {
-        overlap += 1;
-      }
-    }
-
-    let longestCommonSubstring = 0;
-    for (let start = 0; start < left.length; start += 1) {
-      for (let end = start + 1; end <= left.length; end += 1) {
-        const fragment = left.slice(start, end);
-        if (fragment.length > longestCommonSubstring && right.includes(fragment)) {
-          longestCommonSubstring = fragment.length;
-        }
-      }
-    }
-
-    const overlapScore = overlap / Math.max(leftSet.length, 1);
-    const substringScore = longestCommonSubstring / Math.max(left.length, right.length, 1);
-    return Number((overlapScore * 0.45 + substringScore * 0.55).toFixed(2));
-  }
-
-  /**
-   * 规范化宽松可比较值
-   * 
-   * @param {string} value - 待规范化的值
-   * @returns {string} - 规范化后的值
-   */
-  normalizeLooseComparable(value) {
-    return String(value || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[`"'“”‘’]/g, '')
-      .replace(/\s+/g, '')
-      .replace(/[()（）:：_-]/g, '');
-  }
-
-  /**
-   * 构建上游路径守卫
-   * 
-   * 检测上游服务的路径格式并构建相应的错误信息
-   * 
-   * @param {object} gatewayRequest - 网关请求对象
-   * @param {Error} error - 错误对象
-   * @returns {object|null} - 上游守卫错误信息或null
-   */
   buildUpstreamPathGuard(gatewayRequest, error) {
     const message = String(error?.message || '');
     const groups = Array.isArray(gatewayRequest?.groups) ? gatewayRequest.groups : [];
@@ -396,19 +280,19 @@ class RequirementParserService {
       return null;
     }
 
-    const path = this.formatGroupPathWithArguments(groups);
+    const pathText = this.formatGroupPathWithArguments(groups);
     const service = String(gatewayRequest?.service || 'unknown');
     const metric = gatewayRequest?.metric || (Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics[0] : null);
-    const candidatePaths = this.collectMetadataPathCandidates(gatewayRequest, path);
+    const candidatePaths = this.collectMetadataPathCandidates(gatewayRequest, pathText);
 
     return {
       code: 'UPSTREAM_GROUP_PATH_NOT_SUPPORTED',
-      message: `NAPM upstream rejected the path ${path} for ${service} queries.`,
+      message: `NAPM upstream rejected the path ${pathText} for ${service} queries.`,
       details: {
         service,
         metric,
         groups,
-        path,
+        path: pathText,
         objectArgument: groups[0]?.argument || null,
         candidatePaths,
         upstreamMessage: message
@@ -435,6 +319,7 @@ class RequirementParserService {
 
   collectMetadataPathCandidates(gatewayRequest = {}, currentPath = '') {
     const candidates = new Set();
+
     const addPathText = (value) => {
       const normalized = String(value || '').trim();
       if (!normalized || normalized === currentPath) {
@@ -442,6 +327,7 @@ class RequirementParserService {
       }
       candidates.add(normalized);
     };
+
     const addPathTypes = (pathTypes) => {
       const normalizedPath = this.normalizeTopLevelGroupPath(pathTypes);
       if (!Array.isArray(normalizedPath) || normalizedPath.length === 0) {
@@ -449,6 +335,7 @@ class RequirementParserService {
       }
       addPathText(normalizedPath.join(' -> '));
     };
+
     const addPathCollection = (items) => {
       if (!Array.isArray(items)) {
         return;
@@ -482,399 +369,6 @@ class RequirementParserService {
     return Array.from(candidates).slice(0, 5);
   }
 
-  get BASE_SYSTEM_PROMPT() {
-    return `# 角色
-你是NetInside API专家，精通网络流量分析以及网络安全分析（入侵、时长等），将自然语言转换为网关可以理解的JSON格式。
-# 任务
-将用户需求精准转化为网关请求JSON，严格遵守以下规则：
-
-## 1. 服务类型(service)映射规则
-- "平均值"、"平均..." -> averageValues
-- "时间序列"、"随时间变化"、"历史数据" -> timeValues
-- "Top"、"排名前"、"最大的"、"最高的" -> topValues
-- "列表"、"有哪些"、"所有" -> 对应资源类型(如groups,metrics)
-
-## 2. 核心参数映射规则
-### 2.1 分组参数
-分组类型映射：
-- "IP地址"、"主机" -> IPAddress
-- "业务组" -> BusinessGroup
-- "Web应用"、"网站" -> WebApplication
-- "客户端IP" -> ClientIPs
-- "总流量" -> TotalTraffic
-- "网段" -> Prefix24
-- "IP会话" -> IPConversation
-
-### 2.2 指标(metrics)映射
-**重要：所有指标代码必须从 api构建规则.md 文件的 3.2 指标(metrics)映射部分选取**
-- 指标参数：只能使用规则文件中定义的指标代码
-### 2.3 特殊参数
-- "前N个"、"Top X" -> topCount=X
-- "每X周期"、"X秒粒度" -> granularity=X
-
-## 3. 时间范围
-- 今天：自动计算时间戳
-- 其他时间：根据用户需求计算
-- 必须为分钟的整数倍
-## 4. 输出要求
-1. 只输出包含JSON格式，无任何其他内容
-2. 格式按照示例格式输出
-3. 确保所有参数值正确无误
-4. 不要添加任何注释或说明文字
-5. 确保metrics使用的指标代码都来自规则文件
-
-# 输出格式
-{
-  "service": "averageValues",
-  "start": 1753113600,
-  "end": 1753200000,
-  "metrics": ["TPIO"],
-  "groups": [
-    {
-      "type": "IPAddress",
-      "argument": "101.254.114.240"
-    }
-  ],
-  "topCount": 20,
-  "granularity": null,
-  "format": "json"
-}
-
-# 示例
-## 示例1
-用户输入："查询IP地址101.254.114.240在今天的平均吞吐量"
-输出：{
-  "service": "averageValues",
-  "start": 1753113600,
-  "end": 1753200000,
-  "metrics": ["TPIO"],
-  "groups": [
-    {
-      "type": "IPAddress",
-      "argument": "101.254.114.240"
-    }
-  ],
-  "topCount": 20,
-  "granularity": null,
-  "format": "json"
-}
-
-## 示例2
-用户输入："获取今天吞吐量最高的20个IP地址"
-输出：{
-  "service": "topValues",
-  "start": 1753113600,
-  "end": 1753200000,
-  "metric": "TPIO",
-  "groups": [
-    {
-      "type": "IPAddress"
-    }
-  ],
-  "topCount": 20,
-  "granularity": null,
-  "format": "json"
-}`;
-  }
-
-  buildSystemPrompt(mappingResult) {
-    const mappedQuery = mappingResult?.resolvedQuery || null;
-    const evidence = mappingResult?.evidence || {};
-    const metadataReview = mappingResult?.metadataReview || null;
-    const objectDisambiguation = mappingResult?.objectDisambiguation || null;
-    const pathPlan = mappingResult?.pathPlan || null;
-    const argumentResolution = mappingResult?.argumentResolution || null;
-    const dynamicMetadataReview = mappingResult?.dynamicMetadataReview || null;
-
-    return `${this.BASE_SYSTEM_PROMPT}
-
-## 预解析提示- 以下内容是本地规则引擎对用户问题做出的预解析结果，优先参考，但仍需输出格式合法的最终JSON
-- 如果您判断预解析中的某个字段不准确，可以更正，但不要忽略已经明确识别出的 service、时间范围、指标、对象、路径和数量信息
-
-### 预解析查询对象
-${JSON.stringify(mappedQuery, null, 2)}
-
-### 预解析证据
-${JSON.stringify(evidence, null, 2)}
-
-### 元数据审查结果
-${JSON.stringify(metadataReview, null, 2)}
-
-### group path 规划结果
-${JSON.stringify(pathPlan, null, 2)}
-
-### 参数解析结果
-${JSON.stringify(argumentResolution, null, 2)}
-
-### 动态元数据审查
-${JSON.stringify(dynamicMetadataReview, null, 2)}`;
-  }
-
-  buildSystemPromptV2(mappingResult) {
-    const mappedQuery = mappingResult?.resolvedQuery || null;
-    const evidence = mappingResult?.evidence || {};
-    const serviceModeDisambiguation = mappingResult?.serviceModeDisambiguation || null;
-    const timeSemanticEnhancement = mappingResult?.timeSemanticEnhancement || null;
-    const metricDisambiguation = mappingResult?.metricDisambiguation || null;
-    const metadataReview = mappingResult?.metadataReview || null;
-    const objectDisambiguation = mappingResult?.objectDisambiguation || null;
-    const scopeContextPreservation = mappingResult?.scopeContextPreservation || null;
-    const pathPlan = mappingResult?.pathPlan || null;
-    const argumentResolution = mappingResult?.argumentResolution || null;
-    const dynamicMetadataReview = mappingResult?.dynamicMetadataReview || null;
-
-    return `${this.BASE_SYSTEM_PROMPT}
-
-## Pre-analysis guidance
-- The following content is the pre-analysis result produced by the local rule engine. Prefer it when forming the final legal JSON.
-- You may correct inaccurate fields, but do not ignore clearly recognized service, time range, metric, object, path, or argument evidence.
-
-### Resolved query
-${JSON.stringify(mappedQuery, null, 2)}
-
-### Evidence
-${JSON.stringify(evidence, null, 2)}
-
-### Service mode disambiguation
-${JSON.stringify(serviceModeDisambiguation, null, 2)}
-
-### Time semantic enhancement
-${JSON.stringify(timeSemanticEnhancement, null, 2)}
-
-### Metric disambiguation
-${JSON.stringify(metricDisambiguation, null, 2)}
-
-### Object disambiguation
-${JSON.stringify(objectDisambiguation, null, 2)}
-
-### Scope context preservation
-${JSON.stringify(scopeContextPreservation, null, 2)}
-
-### Metadata constraint
-${JSON.stringify(metadataReview, null, 2)}
-
-### Group path planning
-${JSON.stringify(pathPlan, null, 2)}
-
-### Argument resolution
-${JSON.stringify(argumentResolution, null, 2)}
-
-### Dynamic metadata review
-${JSON.stringify(dynamicMetadataReview, null, 2)}`;
-  }
-
-  /**
-   * 映射自然语言到查询
-   * 
-   * @param {string} userRequirement - 用户需求文本
-   * @returns {object} - 映射结果对象
-   */
-  mapNaturalLanguage(userRequirement, requestContext = null) {
-    const mappingResult = this.applyRequestContextSemanticSeed(
-      this.naturalLanguageQueryMapper.map(userRequirement),
-      requestContext
-    );
-    const metadataReview = this.queryMetadataConstraintService.constrain(
-      mappingResult.resolvedQuery,
-      userRequirement
-    );
-
-    return {
-      ...mappingResult,
-      resolvedQuery: metadataReview.query,
-      metadataReview
-    };
-  }
-
-  /**
-   * 使用消歧服务映射自然语言
-   * 
-   * 依次调用服务模式消歧、时间语义增强、指标消歧、对象类型消歧等服务
-   * 
-   * @param {string} userRequirement - 用户需求文本
-   * @returns {object} - 映射结果对象
-   */
-  async mapNaturalLanguageWithDisambiguation(userRequirement, requestContext = null) {
-    const mappingResult = this.applyRequestContextSemanticSeed(
-      this.naturalLanguageQueryMapper.map(userRequirement),
-      requestContext
-    );
-    const serviceModeDisambiguation = await this.serviceModeDisambiguationService.disambiguate(
-      mappingResult.resolvedQuery,
-      userRequirement
-    );
-    const timeSemanticEnhancement = await this.timeSemanticEnhancementService.enhance(
-      serviceModeDisambiguation.query,
-      userRequirement
-    );
-    const metricDisambiguation = await this.metricSemanticDisambiguationService.disambiguate(
-      timeSemanticEnhancement.query,
-      userRequirement
-    );
-    const objectDisambiguation = await this.objectTypeDisambiguationService.disambiguate(
-      metricDisambiguation.query,
-      userRequirement
-    );
-    const scopeContextPreservation = this.scopeContextPreservationService.preserve(
-      objectDisambiguation.query,
-      userRequirement,
-      objectDisambiguation
-    );
-    const metadataReview = this.queryMetadataConstraintService.constrain(
-      scopeContextPreservation.query,
-      userRequirement
-    );
-
-    return {
-      ...mappingResult,
-      resolvedQuery: metadataReview.query,
-      serviceModeDisambiguation,
-      timeSemanticEnhancement,
-      metricDisambiguation,
-      objectDisambiguation,
-      scopeContextPreservation,
-      metadataReview
-    };
-  }
-
-  /**
-   * 使用元数据解析自然语言
-   * 
-   * 完整的自然语言映射流程，包含路径规划、参数解析、实体解析、路径解析等
-   * 
-   * @param {string} userRequirement - 用户需求文本
-   * @param {object} requestContext - 请求上下文
-   * @returns {object} - 完整的解析结果对象
-   */
-  async mapNaturalLanguageWithMetadata(userRequirement, requestContext = null) {
-    const baseResult = await this.mapNaturalLanguageWithDisambiguation(userRequirement, requestContext);
-    baseResult.resolvedQuery = this.normalizeTopLevelQueryShape(baseResult.resolvedQuery);
-    baseResult.resolvedQuery = this.alignGroupsWithSemanticTarget(baseResult.resolvedQuery);
-
-    if (baseResult?.candidateSpec?.semantic_constraints) {
-      baseResult.candidateSpec.semantic_constraints.targetObjectType = this.normalizeTopLevelGroupType(
-        baseResult.candidateSpec.semantic_constraints.targetObjectType
-      );
-      if (baseResult.candidateSpec.semantic_constraints.anchorObject?.type) {
-        baseResult.candidateSpec.semantic_constraints.anchorObject.type = this.normalizeTopLevelGroupType(
-          baseResult.candidateSpec.semantic_constraints.anchorObject.type
-        );
-      }
-    }
-
-    if (baseResult?.evidence?.group?.type) {
-      baseResult.evidence.group.type = this.normalizeTopLevelGroupType(baseResult.evidence.group.type);
-    }
-
-    const pathPlan = this.buildPassThroughPathPlan(baseResult.resolvedQuery);
-    const queryWithPlannedPath = pathPlan.shouldApply
-      ? {
-        ...baseResult.resolvedQuery,
-        groups: pathPlan.plannedGroups
-      }
-      : baseResult.resolvedQuery;
-    const preResolutionMetadataReview = await this.napmMetadataService.reviewQuery(queryWithPlannedPath);
-    const argumentResolution = await this.argumentResolutionService.resolve(
-      queryWithPlannedPath,
-      userRequirement,
-      preResolutionMetadataReview
-    );
-    const queryWithResolvedArguments = argumentResolution.query;
-    const dynamicMetadataReview = await this.napmMetadataService.reviewQuery(queryWithResolvedArguments);
-    const dynamicConstraint = await this.queryMetadataConstraintService.constrainWithDynamicMetadata(
-      queryWithResolvedArguments,
-      dynamicMetadataReview
-    );
-    const metadataDrivenQuery = this.applyMetadataDrivenFinalization(
-      dynamicConstraint.query,
-      dynamicMetadataReview,
-      baseResult,
-      pathPlan
-    );
-    const executionScopeGuard = this.scopeContextPreservationService.evaluateExecution(
-      metadataDrivenQuery,
-      pathPlan,
-      dynamicMetadataReview
-    );
-    // 主链路收口：路径选择停留在 metadata/path_resolve 的候选评分阶段，
-    // parse 阶段不再做“边试边找路”的真实执行探测。
-    const scopedDescentProbe = {
-      resolved: false,
-      query: executionScopeGuard.query,
-      attempts: [],
-      reason: 'disabled_for_mainline_cleanup'
-    };
-    const queryAfterScopeProbe = executionScopeGuard.query;
-    const provisionalEntityResolve = baseResult.entityResolve || null;
-    const finalResolvedQuery = this.buildArgumentMetadataGuard(
-      queryAfterScopeProbe,
-      provisionalEntityResolve
-    ) || queryAfterScopeProbe;
-    const entityResolve = baseResult.entityResolve || provisionalEntityResolve || null;
-    const timeResolve = this.timeResolveService.resolve({
-      timeSemanticEnhancement: baseResult.timeSemanticEnhancement,
-      resolvedQuery: finalResolvedQuery
-    });
-    const metricResolve = this.metricResolveService.resolve({
-      metricDisambiguation: baseResult.metricDisambiguation,
-      resolvedQuery: finalResolvedQuery
-    });
-    const pathResolve = this.pathResolveService.resolve({
-      pathPlan,
-      resolvedQuery: finalResolvedQuery
-    });
-    const clarificationGate = this.clarificationGateService.assess({
-      resolvedQuery: finalResolvedQuery,
-      entityResolve,
-      pathResolve,
-      metricResolve,
-      timeResolve
-    });
-
-    const result = {
-      ...baseResult,
-      resolvedQuery: finalResolvedQuery,
-      entityResolve,
-      clarificationGate,
-      timeResolve,
-      metricResolve,
-      pathResolve,
-      pathPlan,
-      argumentResolution,
-      preResolutionMetadataReview,
-      dynamicMetadataReview,
-      dynamicConstraint,
-      executionScopeGuard,
-      scopedDescentProbe
-    };
-
-    logAudit('semantic_mapping_completed', {
-      userRequirement,
-      mapping: this.buildMappingAuditSnapshot(result)
-    }, requestContext);
-
-    return result;
-  }
-
-  buildPassThroughPathPlan(resolvedQuery = null) {
-    const plannedGroups = Array.isArray(resolvedQuery?.groups)
-      ? resolvedQuery.groups.map((item) => ({
-        type: item?.type,
-        argument: item?.argument
-      }))
-      : [];
-
-    return {
-      shouldApply: false,
-      reason: 'gateway_query_only_mode',
-      pathMode: null,
-      confidence: 0,
-      templateCandidates: [],
-      overviewConvergencePaths: [],
-      plannedGroups
-    };
-  }
-
   applyMetadataDrivenFinalization(query, dynamicMetadataReview = null, baseResult = null, pathPlan = null) {
     if (!query || typeof query !== 'object') {
       return query;
@@ -906,6 +400,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     const firstGroup = Array.isArray(request.groups) && request.groups[0] ? request.groups[0] : null;
     if (firstGroup && !firstGroup.argument && Array.isArray(dynamicMetadataReview?.groupArguments) && dynamicMetadataReview.groupArguments.length > 0) {
       const matchedHint = scopeHints.find((hint) => (
+        !this.looksLikePureTimeScopeHint(hint) &&
         dynamicMetadataReview.groupArguments.some((item) => (
           String(item?.value || '').toLowerCase() === hint.toLowerCase()
           || String(item?.label || '').toLowerCase() === hint.toLowerCase()
@@ -955,32 +450,267 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     return request;
   }
 
+  looksLikePureTimeScopeHint(value = '') {
+    const text = String(value || '').trim();
+    if (!text) {
+      return false;
+    }
+
+    return /^(?:今天|今日|昨天|昨日|前天|刚刚|刚才|现在|目前|当前|最近|近(?:1|2|3|4|6|8|12|24|48|72)?(?:小时|天|周)|本(?:小时|日|天|周|月)|上(?:小时|日|天|周|月)|下(?:小时|日|天|周|月))$/i.test(text);
+  }
+
+  isMultilevelGroupsInventoryQuery(query = {}) {
+    const service = String(query?.service || '').trim();
+    const groups = Array.isArray(query?.groups) ? query.groups.filter(Boolean) : [];
+    const operation = String(
+      query?.semanticConstraints?.operation
+      || query?.candidateSpec?.semantic_constraints?.operation
+      || ''
+    ).trim().toLowerCase();
+
+    return service === 'groups'
+      && groups.length >= 2
+      && operation === 'metadata_list';
+  }
+
+  buildMetricCandidatesFromMetadataReview(metadataReview = null, gatewayRequest = {}) {
+    const supportedMetrics = Array.isArray(metadataReview?.metricsForGroup)
+      ? metadataReview.metricsForGroup
+      : [];
+    if (supportedMetrics.length === 0) {
+      return [];
+    }
+
+    const ownershipObjectType = resolveMetricOwnershipObjectType(
+      gatewayRequest?.groups,
+      gatewayRequest?.groups?.[0]?.type || ''
+    );
+
+    const preferredIds = [
+      gatewayRequest?.topMetric,
+      gatewayRequest?.metric,
+      ...(Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics : []),
+      ...supportedMetrics.map((item) => item?.id)
+    ]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+
+    const rankedPreferredIds = rankMetricIdsForObjectType(ownershipObjectType, preferredIds);
+
+    const seen = new Set();
+    const ranked = [];
+
+    rankedPreferredIds.forEach((metricId) => {
+      if (seen.has(metricId)) {
+        return;
+      }
+      const matched = supportedMetrics.find((item) => String(item?.id || '').trim() === metricId);
+      if (!matched) {
+        return;
+      }
+      seen.add(metricId);
+      ranked.push(metricId);
+    });
+
+    supportedMetrics.forEach((item) => {
+      const metricId = String(item?.id || '').trim();
+      if (!metricId || seen.has(metricId)) {
+        return;
+      }
+      if (
+        ownershipObjectType
+        && !isMetricCompatibleWithGroupPath(gatewayRequest?.groups, metricId, ownershipObjectType)
+      ) {
+        return;
+      }
+      seen.add(metricId);
+      ranked.push(metricId);
+    });
+
+    return ranked;
+  }
+
+  buildInventoryRowsFromTopValues(rows = []) {
+    const deduped = new Map();
+    const items = Array.isArray(rows) ? rows : [];
+
+    items.forEach((row) => {
+      const label = String(
+        row?.group?.argument
+        || row?.group?.label
+        || row?.label
+        || row?.object
+        || row?.value
+        || ''
+      ).trim();
+      if (!label || deduped.has(label)) {
+        return;
+      }
+
+      deduped.set(label, {
+        label,
+        value: label,
+        type: row?.group?.key || row?.group?.type || null
+      });
+    });
+
+    return Array.from(deduped.values());
+  }
+
+  async tryExecuteInventoryFallback(gatewayRequest, metadataReview = null, requestContext = null) {
+    if (!this.isMultilevelGroupsInventoryQuery(gatewayRequest)) {
+      return null;
+    }
+
+    const metricCandidates = this.buildMetricCandidatesFromMetadataReview(metadataReview, gatewayRequest);
+    if (metricCandidates.length === 0) {
+      return null;
+    }
+
+    for (const metricId of metricCandidates.slice(0, 6)) {
+      const fallbackRequest = {
+        ...JSON.parse(JSON.stringify(gatewayRequest)),
+        service: 'topValues',
+        metric: metricId,
+        metrics: [metricId],
+        topMetric: metricId,
+        topCount: gatewayRequest?.topCount || 200
+      };
+
+      const result = await this.executeDirectGatewayRequest(fallbackRequest, requestContext);
+      if (!result?.ok) {
+        continue;
+      }
+
+      const inventoryRows = this.buildInventoryRowsFromTopValues(result.data);
+      if (inventoryRows.length === 0) {
+        continue;
+      }
+      return {
+        ok: true,
+        service: 'groups',
+        data: inventoryRows,
+        requestUrl: result.requestUrl,
+        requestParams: result.requestParams,
+        requestParamsMasked: result.requestParamsMasked,
+        warnings: [
+          {
+            code: 'MULTILEVEL_GROUPS_INVENTORY_FALLBACK',
+            message: `The upstream groups service did not provide child inventory for this multilevel path, so topValues(${metricId}) was used as a scoped inventory fallback.`
+          }
+        ]
+      };
+    }
+
+    return null;
+  }
+
+  buildMultilevelDataServiceFallbackQuery(gatewayRequest = {}, metadataReview = null) {
+    const groups = Array.isArray(gatewayRequest?.groups) ? gatewayRequest.groups.filter(Boolean) : [];
+    if (groups.length < 2) {
+      return null;
+    }
+
+    const service = String(gatewayRequest?.service || '').trim();
+    if (service !== 'averageValues') {
+      return null;
+    }
+
+    const supportedMetrics = this.buildMetricCandidatesFromMetadataReview(metadataReview, gatewayRequest);
+    const selectedMetric = supportedMetrics[0]
+      || String(gatewayRequest?.metric || gatewayRequest?.metrics?.[0] || '').trim();
+    if (!selectedMetric) {
+      return null;
+    }
+
+    const fallback = JSON.parse(JSON.stringify(gatewayRequest));
+    fallback.service = 'topValues';
+    fallback.metric = selectedMetric;
+    fallback.metrics = [selectedMetric];
+    fallback.topMetric = selectedMetric;
+    fallback.topCount = gatewayRequest?.topCount || 20;
+    fallback.executionFallback = {
+      strategy: 'multilevel_to_topvalues',
+      originalService: service,
+      originalMetric: gatewayRequest?.metric || gatewayRequest?.metrics?.[0] || null,
+      fallbackMetric: selectedMetric
+    };
+    return fallback;
+  }
+
+  buildMultiLevelServiceCompatibilityWarning(gatewayRequest = {}, fallbackQuery = {}) {
+    const groups = this.formatGroupPathWithArguments(gatewayRequest?.groups || []);
+    const originalService = String(gatewayRequest?.service || '').trim() || 'unknown';
+    const fallbackMetric = String(
+      fallbackQuery?.metric
+      || fallbackQuery?.metrics?.[0]
+      || fallbackQuery?.topMetric
+      || ''
+    ).trim();
+
+    return {
+      code: 'MULTILEVEL_SERVICE_COMPATIBILITY_FALLBACK',
+      message: `The upstream ${originalService} service is not stable for the multilevel path ${groups}, so the query was executed with topValues${fallbackMetric ? `(${fallbackMetric})` : ''} instead.`
+    };
+  }
+
+  async reviewGatewayRequestMetadata(gatewayRequest = {}) {
+    if (!gatewayRequest || typeof gatewayRequest !== 'object') {
+      return null;
+    }
+
+    try {
+      return await this.napmMetadataService.reviewQuery(gatewayRequest);
+    } catch (error) {
+      logger.warn('Dynamic metadata review failed before execution', {
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  async prepareGatewayExecution(gatewayRequest = {}, requestContext = null) {
+    const normalizedQuery = this.normalizeTopLevelQueryShape(gatewayRequest);
+    const staticConstraint = this.queryMetadataConstraintService.constrain(
+      normalizedQuery,
+      normalizedQuery?.userRequirement || ''
+    );
+    let preparedQuery = staticConstraint?.query || normalizedQuery;
+    const metadataReview = await this.reviewGatewayRequestMetadata(preparedQuery);
+    const dynamicConstraint = await this.queryMetadataConstraintService.constrainWithDynamicMetadata(
+      preparedQuery,
+      metadataReview
+    );
+    preparedQuery = this.applyMetadataDrivenFinalization(
+      dynamicConstraint?.query || preparedQuery,
+      metadataReview,
+      preparedQuery,
+      preparedQuery?.pathPlanning || null
+    );
+
+    const inventoryFallback = await this.tryExecuteInventoryFallback(preparedQuery, metadataReview, requestContext);
+    const serviceFallbackQuery = this.buildMultilevelDataServiceFallbackQuery(preparedQuery, metadataReview);
+
+    return {
+      query: preparedQuery,
+      metadataReview,
+      staticConstraint,
+      dynamicConstraint,
+      inventoryFallback,
+      serviceFallbackQuery
+    };
+  }
+
   /**
    * 瑙ｆ瀽鐢ㄦ埛闇€姹備负缃戝叧璇锋眰
    * 
    * parse闃舵鍙仛"鏀舵暃鎴愬彲鎵ц璇锋眰"锛屼笉鐩存帴璁块棶涓婃父銆?   * 瀹冪殑鐩爣鏄敖閲忚緭鍑轰竴涓ǔ瀹氥€佸彲瀹¤銆佸彲鍥炴斁鐨刧atewayRequest銆?   * 
    * @param {string} userRequirement - 鐢ㄦ埛闇€姹傛枃鏈?   * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 缃戝叧璇锋眰瀵硅薄
    */
-  async parseToGatewayRequest(userRequirement, requestContext = null) {
-    void userRequirement;
-    void requestContext;
-    const error = new Error('Local parse/postProcess chain is disabled. Please provide upstream structured resolvedQuery.');
-    error.code = 'LOCAL_PARSE_DISABLED';
-    throw error;
-  }
-
   /**
    * 瑙ｆ瀽骞舵墽琛岀敤鎴烽渶姹?   * 
    * @param {string} userRequirement - 鐢ㄦ埛闇€姹傛枃鏈?   * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 鎵ц缁撴灉
    */
-  async parseAndExecute(userRequirement, requestContext = null) {
-    void userRequirement;
-    void requestContext;
-    const error = new Error('Local parse/postProcess chain is disabled. Please provide upstream structured resolvedQuery.');
-    error.code = 'LOCAL_PARSE_DISABLED';
-    throw error;
-  }
-
   /**
    * 鎵ц缃戝叧璇锋眰
    * 
@@ -988,7 +718,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
    * @param {object} gatewayRequest - 缃戝叧璇锋眰瀵硅薄
    * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 鎵ц鍝嶅簲瀵硅薄
    */
-  async executeGatewayRequest(gatewayRequest, requestContext = null) {
+  async executeDirectGatewayRequest(gatewayRequest, requestContext = null) {
     // 网关仅负责按上游结构化参数执行查询，不在本地改写查询语义或执行策略。
     const passthroughGatewayRequest = gatewayRequest && typeof gatewayRequest === 'object'
       ? JSON.parse(JSON.stringify(gatewayRequest))
@@ -1050,19 +780,20 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
         };
         attachDebugRequestInfo(metadataParams);
         const metadataMetrics = await this.napmMetadataService.getMetricsForGroupPath(metadataGroups);
+        const ownedMetrics = this.filterMetricInventoryForOwnership(metadataGroups, metadataMetrics);
         response.ok = true;
         response.service = queryRequest.service;
-        response.data = metadataMetrics;
+        response.data = ownedMetrics;
         logAudit('napm_metadata_metrics_for_group_completed', {
           gatewayRequest: this.buildGatewayRequestSummary({ ...queryRequest, groups: metadataGroups }),
-          execution: this.buildExecutionDataSummary(metadataMetrics),
+          execution: this.buildExecutionDataSummary(ownedMetrics),
           params: response.requestParamsMasked,
           url: response.requestUrl
         }, requestContext);
         return response;
       }
 
-      if (queryRequest.service === 'groups' && metadataGroups.length > 0) {
+      if (queryRequest.service === 'groups' && metadataGroups.length === 1) {
         const firstGroup = metadataGroups[0] || {};
         const firstType = String(firstGroup.type || '').trim();
         const firstArgument = String(firstGroup.argument || '').trim();
@@ -1074,12 +805,12 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
         if (firstType === 'Application' || firstType === 'DefinedApp') {
           namedList = await this.napmMetadataService.getApplications(firstArgument);
           metadataTypeForDebug = 'applications';
-        } else if (firstType === 'WebApplication') {
-          // WebApplication 可选对象列表应走 groupArguments(argumentType=4) 口径。
-          namedList = await this.napmMetadataService.getGroupArguments('WebApplication', firstArgument);
+        } else if (isBusinessObjectType(firstType)) {
+          // 业务类顶层对象列表统一走 groupArguments 口径。
+          namedList = await this.napmMetadataService.getGroupArguments(firstType, firstArgument);
           metadataTypeForDebug = 'groupArguments';
-          const webAppDefinition = await this.napmMetadataService.getGroupDefinition('WebApplication');
-          metadataArgumentTypeForDebug = Number(webAppDefinition?.argumentType);
+          const businessDefinition = await this.napmMetadataService.getGroupDefinition(firstType);
+          metadataArgumentTypeForDebug = Number(businessDefinition?.argumentType);
           if (!Number.isFinite(metadataArgumentTypeForDebug)) {
             metadataArgumentTypeForDebug = 4;
           }
@@ -1220,6 +951,44 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     }
   }
 
+  async executeGatewayRequest(gatewayRequest, requestContext = null) {
+    const prepared = await this.prepareGatewayExecution(gatewayRequest, requestContext);
+    if (prepared?.inventoryFallback) {
+      return prepared.inventoryFallback;
+    }
+
+    const directResult = await this.executeDirectGatewayRequest(prepared?.query || gatewayRequest, requestContext);
+    if (this.isMultilevelGroupsInventoryQuery(prepared?.query || gatewayRequest) && directResult?.ok) {
+      return {
+        ...directResult,
+        ok: false,
+        error: {
+          code: 'MULTILEVEL_GROUPS_INVENTORY_NOT_EXECUTABLE',
+          message: `The multilevel path ${this.formatGroupPathWithArguments((prepared?.query || gatewayRequest)?.groups || [])} exists structurally, but upstream could not return a stable child-object inventory for it.`
+        }
+      };
+    }
+    if (directResult?.ok) {
+      return directResult;
+    }
+
+    if (prepared?.serviceFallbackQuery) {
+      const fallbackResult = await this.executeDirectGatewayRequest(prepared.serviceFallbackQuery, requestContext);
+      if (fallbackResult?.ok) {
+        const warning = this.buildMultiLevelServiceCompatibilityWarning(
+          prepared?.query || gatewayRequest,
+          prepared.serviceFallbackQuery
+        );
+        return {
+          ...fallbackResult,
+          warnings: [warning]
+        };
+      }
+    }
+
+    return directResult;
+  }
+
   shouldUseTopValuesDetailFallback(gatewayRequest, error) {
     return Boolean(
       gatewayRequest?.service === 'averageValues' &&
@@ -1321,16 +1090,11 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
   }
 
   buildUrl(params) {
-    const baseUrl = this.napmClient.baseUrl;
-    const urlParams = buildOrderedParams({
+    return buildSafeUrl(this.napmClient.baseUrl, {
       UserName: this.napmClient.username,
       Password: this.napmClient.password,
       ...params
     });
-    const queryString = Object.entries(urlParams)
-      .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-      .join('&');
-    return `${baseUrl}?${queryString}`;
   }
 
   /**
@@ -1343,15 +1107,6 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
    * @param {object} mappingResult - 映射结果对象
    * @returns {object} - 处理后的网关请求
    */
-  postProcessGatewayRequest(gatewayRequest, userRequirement, mappingResult = null) {
-    void gatewayRequest;
-    void userRequirement;
-    void mappingResult;
-    const error = new Error('Local parse/postProcess chain is disabled. Please provide upstream structured resolvedQuery.');
-    error.code = 'LOCAL_PARSE_DISABLED';
-    throw error;
-  }
-
   buildIntentResult(partialQuery, userRequirement = '') {
     const query = partialQuery && typeof partialQuery === 'object' ? partialQuery : {};
     const text = String(userRequirement || '').trim();
@@ -1448,10 +1203,6 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     };
   }
 
-  buildComparePlan(executionState, resolvedQuery) {
-    return this.metricDomainStrategyService.buildComparePlan(executionState, resolvedQuery);
-  }
-
   normalizeTopLevelGroupType(groupType = '') {
     const raw = String(groupType || '').trim();
     if (!raw) {
@@ -1494,6 +1245,11 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
       return gatewayRequest;
     }
 
+    const userRequirement = String(
+      gatewayRequest?.userRequirement
+      || gatewayRequest?.rawRequirement
+      || ''
+    ).trim();
     const request = JSON.parse(JSON.stringify(gatewayRequest));
 
     if (Array.isArray(request.groups)) {
@@ -1578,34 +1334,43 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     }
 
     if (request.stableTemplate && typeof request.stableTemplate === 'object') {
-      if (Array.isArray(request.stableTemplate.allowedGroupPaths)) {
-        request.stableTemplate.allowedGroupPaths = request.stableTemplate.allowedGroupPaths.map(
-          (pathTypes) => this.normalizeTopLevelGroupPath(pathTypes)
-        );
-      }
+      const normalizedStableTemplate = this.normalizeStableTemplateDefinition(request.stableTemplate);
+      request.stableTemplate = normalizedStableTemplate || {
+        ...request.stableTemplate,
+        inferredArguments: this.normalizeStableTemplateInferredArguments(request.stableTemplate.inferredArguments)
+      };
+    }
 
-      if (request.stableTemplate.bindings && typeof request.stableTemplate.bindings === 'object') {
-        if (Array.isArray(request.stableTemplate.bindings.groupPath)) {
-          request.stableTemplate.bindings.groupPath = this.normalizeTopLevelGroupPath(
-            request.stableTemplate.bindings.groupPath
-          );
-        }
+    return this.applyStaticGroupPathPlanning(request, userRequirement);
+  }
 
-        if (Array.isArray(request.stableTemplate.bindings.allowedGroupPaths)) {
-          request.stableTemplate.bindings.allowedGroupPaths = request.stableTemplate.bindings.allowedGroupPaths.map(
-            (pathTypes) => this.normalizeTopLevelGroupPath(pathTypes)
-          );
-        }
-      }
+  applyStaticGroupPathPlanning(gatewayRequest, userRequirement = '') {
+    if (!gatewayRequest || typeof gatewayRequest !== 'object') {
+      return gatewayRequest;
+    }
 
-      if (request.stableTemplate.inferredArguments && typeof request.stableTemplate.inferredArguments === 'object') {
-        if (
-          request.stableTemplate.inferredArguments.Application
-          && !request.stableTemplate.inferredArguments.DefinedApp
-        ) {
-          request.stableTemplate.inferredArguments.DefinedApp = request.stableTemplate.inferredArguments.Application;
-        }
-      }
+    const request = JSON.parse(JSON.stringify(gatewayRequest));
+    const pathPlan = this.groupPathPlannerService.planPath(request, userRequirement, {
+      groups: request.groups
+    });
+    if (!pathPlan?.plannedGroups?.length) {
+      return request;
+    }
+
+    request.groups = pathPlan.plannedGroups;
+    request.pathPlanning = {
+      ...(request.pathPlanning && typeof request.pathPlanning === 'object' ? request.pathPlanning : {}),
+      ...pathPlan
+    };
+
+    const targetType = pathPlan.plannedGroups[pathPlan.plannedGroups.length - 1]?.type || null;
+    if (targetType) {
+      request.semanticConstraints = {
+        ...(request.semanticConstraints && typeof request.semanticConstraints === 'object'
+          ? request.semanticConstraints
+          : {}),
+        targetObjectType: targetType
+      };
     }
 
     return request;
@@ -2597,39 +2362,6 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
     return metric;
   }
 
-  applyDefaultTopMetricForPacketLossRanking(gatewayRequest, userRequirement = '') {
-    if (!gatewayRequest || gatewayRequest.service !== 'topValues') {
-      return gatewayRequest;
-    }
-
-    const request = gatewayRequest;
-    const semanticMetric = String(request.metric || '').trim().toUpperCase();
-    if (!['PLI', 'PLO'].includes(semanticMetric)) {
-      return request;
-    }
-
-    const existingTopMetric = String(request.topMetric || '').trim().toUpperCase();
-    if (existingTopMetric) {
-      return request;
-    }
-
-    const text = String(userRequirement || request.userRequirement || '').trim();
-    if (this.hasExplicitRankingMetricInText(text)) {
-      return request;
-    }
-
-    // 业务约定：丢包类排行在未显式指定排序指标时，默认按吞吐量(TPIO)排序。
-    request.topMetric = 'TPIO';
-    if (request.executionBinding && typeof request.executionBinding === 'object') {
-      request.executionBinding.topSortMetricHint = 'TPIO';
-    }
-    if (request.semanticConstraints && typeof request.semanticConstraints === 'object') {
-      request.semanticConstraints.rankingSortMetric = 'TPIO';
-    }
-
-    return request;
-  }
-
   hasExplicitRankingMetricInText(text = '') {
     const raw = String(text || '').trim();
     if (!raw) {
@@ -2698,7 +2430,16 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
       return null;
     }
 
-    return {
+    if (!isMetricCompatibleWithGroupPath(item.groupPath, item.metric, item.groupPath[0])) {
+      logger.warn('Skip embedded topn template due to metric ownership incompatibility', {
+        templateId: key,
+        metric: item.metric,
+        groupPath: item.groupPath
+      });
+      return null;
+    }
+
+    return this.normalizeStableTemplateDefinition({
       id: key,
       description: item.description,
       intent: 'topn',
@@ -2714,7 +2455,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
         fallbackMode: 'clarify_or_overview',
         preferMappedQuery: true
       }
-    };
+    });
   }
 
   getDefaultGatewayRequest(userRequirement) {
@@ -2742,7 +2483,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
       return null;
     }
 
-    return {
+    return this.normalizeStableTemplateDefinition({
       id,
       description: `${groupType} ${metric} ranking generated fallback`,
       intent: 'topn',
@@ -2758,7 +2499,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
         fallbackMode: 'clarify_or_overview',
         preferMappedQuery: true
       }
-    };
+    });
   }
 
   buildTopnQueryFromAssistantState(partialQuery = {}, userRequirement = '') {
@@ -2781,7 +2522,12 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
       return null;
     }
 
-    const bindings = template.bindings || {};
+    const normalizedTemplate = this.normalizeStableTemplateDefinition(template);
+    if (!normalizedTemplate) {
+      return null;
+    }
+
+    const bindings = normalizedTemplate.bindings || {};
     const requestedTopCount = Number(partialQuery?.topCount);
     let topCount = Number.isFinite(requestedTopCount) && requestedTopCount > 0
       ? requestedTopCount
@@ -2813,9 +2559,9 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
       format: 'json',
       userRequirement,
       stableTemplate: {
-        id: template.id,
-        description: template.description || null,
-        intent: template.intent || 'topn',
+        id: normalizedTemplate.id,
+        description: normalizedTemplate.description || null,
+        intent: normalizedTemplate.intent || 'topn',
         applied: true,
         bindings: {
           service: 'topValues',
@@ -2834,7 +2580,7 @@ ${JSON.stringify(dynamicMetadataReview, null, 2)}`;
         topCount,
         timeRangeKey: timeRangeKey || null,
         dynamicTimeRange,
-        stableTemplateId: template.id,
+        stableTemplateId: normalizedTemplate.id,
         rankingTitleKey: partialQuery?.rankingTitleKey || null
       },
       intentResult: this.buildIntentResult(partialQuery, userRequirement),

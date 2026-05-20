@@ -28,10 +28,12 @@ const RequirementParserService = require(path.join(workspaceRoot, 'skills/opencl
 const MetricMappingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/MetricMappingService'));
 const NapmMetadataService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/NapmMetadataService'));
 const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/GroupPathPlannerService'));
+const PromptRoutingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/PromptRoutingService'));
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
 const { isBusinessObjectType } = require(path.join(workspaceRoot, 'src/constants/objectMetricOwnership'));
+const { buildSafeUrl } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -180,6 +182,24 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
     : '';
+
+  if (service === 'topValues_multi_protocol') {
+    const protocolQueries = Array.isArray(resolvedQuery?.protocolQueries) ? resolvedQuery.protocolQueries : [];
+    const protocolLabels = protocolQueries
+      .map((query) => String(query?.groups?.find((group) => group?.type === 'IPProtocol')?.argument || '').trim())
+      .filter(Boolean);
+    return {
+      mode: extra.mode || 'GO_DIRECT_QUERY',
+      title: '未知端口流量排行',
+      highlights: [
+        metric ? `查询指标：${metric}` : null,
+        topMetric ? `排序指标：${topMetric}` : null,
+        protocolLabels.length > 0 ? `协议范围：${protocolLabels.join(' / ')}` : null
+      ].filter(Boolean),
+      rowCount: rows.length,
+      empty: rows.length === 0
+    };
+  }
 
   if (service === 'groups') {
     return {
@@ -636,46 +656,11 @@ function buildDecisionSummary(title, text, mode = 'ASK_CLARIFYING_QUESTION') {
 }
 
 function normalizeDrilldownQuestionTarget(raw = '') {
-  const text = String(raw || '').trim();
-  if (!text) {
-    return null;
-  }
-
-  const aliasMap = [
-    { pattern: /\bBusinessGroup\b|业务组|工作组|业务分组/i, value: 'BusinessGroup' },
-    { pattern: /\bIPAddress\b|IP地址|IP\b/i, value: 'IPAddress' },
-    { pattern: /\bPrefix24\b|\/24|24位前缀|子网/i, value: 'Prefix24' },
-    { pattern: /\bWebApplication\b|Web应用|web应用|网站|站点|业务系统/i, value: 'WebApplication' },
-    { pattern: /\bApplication\b|\bDefinedApp\b|应用|已知应用|协议应用/i, value: 'DefinedApp' },
-    { pattern: /\bOtherApp\b|其他应用|其它应用/i, value: 'OtherApp' },
-    { pattern: /\bBusinessGroupLink\b|业务组链路/i, value: 'BusinessGroupLink' },
-    { pattern: /\bIPConversation\b|IP会话|会话/i, value: 'IPConversation' },
-    { pattern: /\bVLAN\b/i, value: 'VLAN' },
-    { pattern: /\bInterface\b|接口/i, value: 'Interface' },
-    { pattern: /\bPageFamily\b|页面族|页面分类/i, value: 'PageFamily' },
-    { pattern: /\bUser\b|用户/i, value: 'User' },
-    { pattern: /\bISPAS\b|运营商AS/i, value: 'ISPAS' },
-    { pattern: /\bDestAS\b|目的AS/i, value: 'DestAS' },
-    { pattern: /\bMonInterfaceGroup\b|监控接口组/i, value: 'MonInterfaceGroup' },
-    { pattern: /\bClientBusinessGroup\b|客户端业务组/i, value: 'ClientBusinessGroup' },
-    { pattern: /\bTotalTraffic\b|整体流量|总流量/i, value: 'TotalTraffic' }
-  ];
-
-  const matched = aliasMap.find((item) => item.pattern.test(text));
-  return matched ? matched.value : null;
+  return PromptRoutingService.normalizeHierarchyQuestionTarget(raw);
 }
 
 function isHierarchyCatalogPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hierarchyIntent = /(下钻|钻取|层级|路径|往下|到哪里|支持哪些|可达|目录|结构)/i.test(text);
-  const topLevelCatalogIntent = /(顶层|所有|全部|有哪些对象|哪些对象|各自支持哪些|全量)/i.test(text);
-  const objectMentioned = Boolean(normalizeDrilldownQuestionTarget(text));
-
-  return hierarchyIntent && (topLevelCatalogIntent || objectMentioned);
+  return PromptRoutingService.isHierarchyCatalogPrompt(prompt);
 }
 
 function buildDrilldownCatalogDisplayText(result = null) {
@@ -875,6 +860,160 @@ function buildHierarchyCatalogContract(prompt = '', payload = null) {
         ]
       }
     }
+  }, {
+    forwardDisplayText: true,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
+  });
+}
+
+function isQueryConstructionExplanationPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasApiIntent = /(?:api|url|参数|param|request)/i.test(text);
+  const hasExplainIntent = /(?:思路|构成|构造|怎么查|如何查|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源)/i.test(text);
+  const hasReferenceIntent = /(?:这个|这个查询|刚才|上一条|上一个|刚刚|该查询|这次)/i.test(text);
+
+  return hasApiIntent && (hasExplainIntent || hasReferenceIntent);
+}
+
+function cloneQueryGroups(groups = []) {
+  return Array.isArray(groups)
+    ? groups.map((group) => ({
+      type: group?.type || null,
+      argument: group?.argument ?? null
+    })).filter((group) => group.type)
+    : [];
+}
+
+function buildRequestUrlFromRememberedQuery(rememberedQuery = null) {
+  if (!rememberedQuery || typeof rememberedQuery !== 'object') {
+    return null;
+  }
+
+  const requestParamsJson = rememberedQuery.requestParamsJson && typeof rememberedQuery.requestParamsJson === 'object'
+    ? rememberedQuery.requestParamsJson
+    : null;
+  if (!requestParamsJson) {
+    return null;
+  }
+
+  const baseUrl = String(process.env.NETINSIDE_HOST || '').trim();
+  const username = String(process.env.NETINSIDE_USERNAME || '').trim();
+  const password = String(process.env.NETINSIDE_PASSWORD || '').trim();
+  if (!baseUrl || !username || !password) {
+    return null;
+  }
+
+  return buildSafeUrl(baseUrl, {
+    UserName: username,
+    Password: password,
+    ...requestParamsJson
+  });
+}
+
+function buildGroupPathExplanation(groups = []) {
+  const normalizedGroups = cloneQueryGroups(groups);
+  if (normalizedGroups.length === 0) {
+    return '当前查询没有显式 group path。';
+  }
+
+  return normalizedGroups.map((group) => (
+    group.argument ? `${group.type}(${group.argument})` : group.type
+  )).join(' -> ');
+}
+
+function buildQueryConstructionExplanationText(prompt = '', rememberedQuery = null) {
+  const context = rememberedQuery && typeof rememberedQuery === 'object'
+    ? rememberedQuery
+    : null;
+  if (!context) {
+    return '';
+  }
+
+  const resolvedQuery = context.resolvedQuery && typeof context.resolvedQuery === 'object'
+    ? context.resolvedQuery
+    : {};
+  const requestParamsJson = context.requestParamsJson && typeof context.requestParamsJson === 'object'
+    ? context.requestParamsJson
+    : null;
+  const requestUrl = String(
+    context.requestUrl
+    || buildRequestUrlFromRememberedQuery(context)
+    || ''
+  ).trim();
+  const metricsText = Array.isArray(resolvedQuery.metrics) && resolvedQuery.metrics.length > 0
+    ? resolvedQuery.metrics.join(', ')
+    : (resolvedQuery.metric ? String(resolvedQuery.metric) : '');
+  const lines = [];
+
+  if (resolvedQuery.start && resolvedQuery.end) {
+    lines.push(`数据时间：${TimeUtils.formatDate(resolvedQuery.start)} 至 ${TimeUtils.formatDate(resolvedQuery.end)}`);
+  }
+  lines.push('这次查询实际走的是项目内 skill 执行链，不是临时用外部 python3 去解析。');
+  lines.push('构造思路：先按项目内的 group path 规则确定查询层级，再由项目代码拼成 NetInside 参数。');
+  lines.push(`本次 group path：${buildGroupPathExplanation(resolvedQuery.groups)}`);
+  if (metricsText) {
+    lines.push(`指标：${metricsText}`);
+  }
+  if (resolvedQuery.service) {
+    lines.push(`service：${resolvedQuery.service}`);
+  }
+  lines.push('方法来源：');
+  lines.push('1. 项目内静态维度树与路径规划逻辑。');
+  lines.push('2. 项目内 RequirementParserService / GroupBuilder 的参数拼装规则。');
+  lines.push('3. 项目内 NapmClient 对 NetInside WebService 的真实请求。');
+  if (requestParamsJson) {
+    lines.push(`最终请求参数：${JSON.stringify(requestParamsJson, null, 2)}`);
+  } else {
+    lines.push('最终请求参数：当前上下文里没有保留下来。');
+  }
+  if (requestUrl) {
+    lines.push(`最终 API：${requestUrl}`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildQueryConstructionExplanationContract(prompt = '', rememberedQuery = null) {
+  const text = buildQueryConstructionExplanationText(prompt, rememberedQuery);
+  if (!text) {
+    return null;
+  }
+
+  const resolvedQuery = rememberedQuery?.resolvedQuery && typeof rememberedQuery.resolvedQuery === 'object'
+    ? rememberedQuery.resolvedQuery
+    : {
+      service: 'query_explanation',
+      userRequirement: prompt
+    };
+  const requestParamsJson = rememberedQuery?.requestParamsJson && typeof rememberedQuery.requestParamsJson === 'object'
+    ? rememberedQuery.requestParamsJson
+    : null;
+  const requestUrl = String(
+    rememberedQuery?.requestUrl
+    || buildRequestUrlFromRememberedQuery(rememberedQuery)
+    || ''
+  ).trim() || null;
+  const summary = buildDecisionSummary('查询构造说明', text, 'ANSWER_CONCEPTUALLY');
+
+  return buildOpenClawReplyContract({
+    ok: true,
+    prompt,
+    service: 'query_explanation',
+    resolvedQuery,
+    rows: [],
+    data: [],
+    summary,
+    error: null,
+    requestUrl,
+    requestParamsJson,
+    displayText: text,
+    followUpActions: [],
+    responseType: 'decision_result'
   }, {
     forwardDisplayText: true,
     appendRequestUrlToDisplayText,
@@ -1175,90 +1314,180 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
 
 function inferPromptFallbackOverviewScene(prompt = '') {
   const text = String(prompt || '').trim();
-  if (!text) {
-    return 'system';
-  }
-  if (/(业务组|工作组|业务分组|businessgroup|business\s*group)/i.test(text)) {
-    return 'business_group';
-  }
-
-  if (/(安全|风险|攻击|告警|security|attack|threat)/i.test(text)) {
+  if (isUnknownPortTrafficPrompt(text)) {
     return 'security';
   }
-  if (/(网络|链路|丢包|吞吐|带宽|时延|延迟|ip|network)/i.test(text)) {
-    return 'network';
-  }
-  if (/(应用|app|服务|页面|站点|application)/i.test(text)) {
-    return 'application';
-  }
-  if (/(业务|business|web应用|web application|网站)/i.test(text)) {
-    return 'business';
-  }
-  return 'system';
+  return PromptRoutingService.inferOverviewScene(text);
 }
 
 function inferPromptFallbackTimeRangeKey(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return 'last24hours';
-  }
-
-  if (/(今天|今日)/.test(text)) return 'today';
-  if (/(昨天|昨日)/.test(text)) return 'yesterday';
-  if (/(最近7天|近7天|过去7天|最近七天|近七天|过去七天)/.test(text)) return 'last7days';
-  if (/(最近30天|近30天|过去30天|最近三十天|近三十天|过去三十天)/.test(text)) return 'last30days';
-  if (/(最近1小时|近1小时|过去1小时|最近一小时|近一小时|过去一小时)/.test(text)) return 'last1hour';
-  if (/(最近24小时|近24小时|过去24小时|最近一天|近一天|过去一天)/.test(text)) return 'last24hours';
-  return 'last24hours';
+  return PromptRoutingService.inferOverviewTimeRangeKey(prompt);
 }
 
-function isMetricInventoryPrompt(prompt = '') {
+function isUnknownPortTrafficPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
     return false;
   }
 
-  return /(?:(?:哪些|有什么|有哪些)[^，。！？\n]{0,12}指标|指标[^，。！？\n]{0,12}(?:哪些|有什么|有哪些|可查|能查|支持)|(?:可查|能查|支持)[^，。！？\n]{0,12}(?:哪些|有什么)[^，。！？\n]{0,6}指标)/i.test(text);
+  const hasUnknownTarget = /(未知|其它|其他).{0,8}(tcp|udp)?.{0,8}(端口|应用)|\bother\s*app\b|\botherapp\b/i.test(text);
+  const hasTrafficIntent = /(流量|吞吐|吞吐量|带宽|throughput|bandwidth)/i.test(text);
+  return hasUnknownTarget && hasTrafficIntent;
 }
 
-function inferPromptFallbackMetricInventoryGroup(prompt = '') {
+function detectUnknownPortProtocol(prompt = '') {
   const text = String(prompt || '').trim();
-  if (!text || !isMetricInventoryPrompt(text)) {
+  if (!isUnknownPortTrafficPrompt(text)) {
     return null;
   }
 
-  if (/(ClientBusinessGroup|客户端业务组|初始组)/i.test(text)) return 'ClientBusinessGroup';
-  if (/(BusinessGroup|业务组|工作组|业务分组)/i.test(text)) return 'BusinessGroup';
-  if (/(PageFamily|页面族|页面分类)/i.test(text)) return 'PageFamily';
-  if (/(^|[^A-Za-z])User([^A-Za-z]|$)|用户/.test(text)) return 'User';
-  if (/(DefinedApp|Application|已知应用|协议应用)/i.test(text)) return 'DefinedApp';
-  if (/(WebApplication|Web应用|web应用|网站|站点|业务系统)/i.test(text)) return 'WebApplication';
-  if (/业务/.test(text)) return 'WebApplication';
+  const hasTcp = /(^|[^A-Za-z])(tcp)([^A-Za-z]|$)/i.test(text);
+  const hasUdp = /(^|[^A-Za-z])(udp)([^A-Za-z]|$)/i.test(text);
+  if (hasTcp && !hasUdp) {
+    return 'TCP';
+  }
+  if (hasUdp && !hasTcp) {
+    return 'UDP';
+  }
   return null;
 }
 
-function buildPromptFallbackMetricInventoryResolvedQuery(prompt = '') {
-  const groupType = inferPromptFallbackMetricInventoryGroup(prompt);
-  if (!groupType) {
+function buildPromptFallbackUnknownPortResolvedQuery(prompt = '') {
+  const text = String(prompt || '').trim();
+  const protocol = detectUnknownPortProtocol(text);
+  if (!protocol) {
     return null;
   }
 
-  const timeRangeKey = inferPromptFallbackTimeRangeKey(prompt);
+  if (/(趋势|变化|走势|曲线|按时间|trend|timevalues|平均|avg|average|概览|总览|整体|overview)/i.test(text)) {
+    return null;
+  }
+
+  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
   const range = TimeUtils.parseTimeRange(timeRangeKey);
 
   return normalizeResolvedQueryShape({
-    service: 'metrics',
-    queryModeKey: 'metadata',
+    service: 'topValues',
+    queryModeKey: 'topn',
     semanticConstraints: {
-      operation: 'metadata_list',
-      targetObjectType: groupType
+      operation: 'topn',
+      targetObjectType: 'OtherApp',
+      scopeHints: ['unknown_port_traffic', protocol],
+      overviewScene: 'security'
     },
     start: Math.floor(Number(range.start || 0) / 60) * 60,
     end: Math.floor(Number(range.end || 0) / 60) * 60,
-    groups: [{ type: groupType }],
+    metric: 'TPIO',
+    metrics: ['TPIO'],
+    topMetric: 'TPIO',
+    topCount: 10,
+    groups: [
+      { type: 'TotalTraffic' },
+      { type: 'IPProtocol', argument: protocol },
+      { type: 'OtherApps' },
+      { type: 'OtherApp' }
+    ],
     format: 'json',
-    userRequirement: prompt
-  }, prompt);
+    userRequirement: text
+  }, text);
+}
+
+function buildPromptFallbackUnknownPortDualProtocolResolvedQuery(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!isUnknownPortTrafficPrompt(text)) {
+    return null;
+  }
+
+  if (detectUnknownPortProtocol(text)) {
+    return null;
+  }
+
+  if (/(趋势|变化|走势|曲线|按时间|trend|timevalues|平均|avg|average|概览|总览|整体|overview)/i.test(text)) {
+    return null;
+  }
+
+  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
+  const range = TimeUtils.parseTimeRange(timeRangeKey);
+  const start = Math.floor(Number(range.start || 0) / 60) * 60;
+  const end = Math.floor(Number(range.end || 0) / 60) * 60;
+
+  const buildProtocolQuery = (protocol) => ({
+    service: 'topValues',
+    queryModeKey: 'topn',
+    semanticConstraints: {
+      operation: 'topn',
+      targetObjectType: 'OtherApp',
+      scopeHints: ['unknown_port_traffic', protocol],
+      overviewScene: 'security'
+    },
+    start,
+    end,
+    metric: 'TPIO',
+    metrics: ['TPIO'],
+    topMetric: 'TPIO',
+    topCount: 10,
+    groups: [
+      { type: 'TotalTraffic' },
+      { type: 'IPProtocol', argument: protocol },
+      { type: 'OtherApps' },
+      { type: 'OtherApp' }
+    ],
+    format: 'json',
+    userRequirement: text
+  });
+
+  return normalizeResolvedQueryShape({
+    service: 'topValues_multi_protocol',
+    queryModeKey: 'topn',
+    semanticConstraints: {
+      operation: 'topn',
+      targetObjectType: 'OtherApp',
+      scopeHints: ['unknown_port_traffic', 'TCP', 'UDP'],
+      overviewScene: 'security'
+    },
+    start,
+    end,
+    metric: 'TPIO',
+    metrics: ['TPIO'],
+    topMetric: 'TPIO',
+    topCount: 10,
+    format: 'json',
+    userRequirement: text,
+    protocolQueries: [
+      buildProtocolQuery('TCP'),
+      buildProtocolQuery('UDP')
+    ]
+  }, text);
+}
+
+function isMetricInventoryPrompt(prompt = '') {
+  return PromptRoutingService.isMetricInventoryPrompt(prompt);
+}
+
+function inferPromptFallbackMetricInventoryGroup(prompt = '') {
+  return PromptRoutingService.inferMetricInventoryGroup(prompt) || null;
+}
+
+function buildPromptFallbackMetricInventoryResolvedQuery(prompt = '') {
+  const route = PromptRoutingService.buildMetricInventoryRoute(prompt);
+  return materializePromptRouteResolvedQuery(route);
+}
+
+function materializePromptRouteResolvedQuery(route = null) {
+  return PromptRoutingService.materializePromptRouteResolvedQuery(route, {
+    resolveTimeRange: (timeRangeKey) => TimeUtils.parseTimeRange(timeRangeKey),
+    roundTimeValue: (value) => Math.floor(Number(value || 0) / 60) * 60,
+    normalizeResolvedQueryShape
+  });
+}
+
+function isPromptFallbackBusinessObjectInventoryPrompt(prompt = '') {
+  return PromptRoutingService.isBusinessObjectInventoryPrompt(prompt);
+}
+
+function buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt = '') {
+  const route = PromptRoutingService.buildBusinessObjectInventoryRoute(prompt);
+  return materializePromptRouteResolvedQuery(route);
 }
 
 function looksLikePromptOnlyOverview(prompt = '') {
@@ -1276,6 +1505,21 @@ function buildPromptFallbackResolvedQuery(prompt = '') {
   const metricInventoryResolvedQuery = buildPromptFallbackMetricInventoryResolvedQuery(prompt);
   if (metricInventoryResolvedQuery) {
     return metricInventoryResolvedQuery;
+  }
+
+  const businessObjectInventoryResolvedQuery = buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt);
+  if (businessObjectInventoryResolvedQuery) {
+    return businessObjectInventoryResolvedQuery;
+  }
+
+  const unknownPortResolvedQuery = buildPromptFallbackUnknownPortResolvedQuery(prompt);
+  if (unknownPortResolvedQuery) {
+    return unknownPortResolvedQuery;
+  }
+
+  const unknownPortDualProtocolResolvedQuery = buildPromptFallbackUnknownPortDualProtocolResolvedQuery(prompt);
+  if (unknownPortDualProtocolResolvedQuery) {
+    return unknownPortDualProtocolResolvedQuery;
   }
 
   if (!looksLikePromptOnlyOverview(prompt)) {
@@ -1548,7 +1792,85 @@ function buildMissingResolvedQueryContract(base = {}) {
   });
 }
 
+async function executeUnknownPortDualProtocolQuery(prompt, resolvedQuery) {
+  const protocolQueries = Array.isArray(resolvedQuery?.protocolQueries)
+    ? resolvedQuery.protocolQueries.filter((item) => item && typeof item === 'object')
+    : [];
+
+  if (protocolQueries.length === 0) {
+    return {
+      ok: false,
+      service: 'topValues_multi_protocol',
+      data: [],
+      summary: buildSummary('topValues_multi_protocol', resolvedQuery, []),
+      error: {
+        code: 'UNKNOWN_PORT_PROTOCOL_QUERIES_MISSING',
+        message: 'Unknown port traffic query is missing protocolQueries.'
+      }
+    };
+  }
+
+  const results = [];
+  const warnings = [];
+  for (const protocolQuery of protocolQueries) {
+    const result = await RequirementParserService.executeGatewayRequest(protocolQuery);
+    const protocol = String(protocolQuery?.groups?.find((group) => group?.type === 'IPProtocol')?.argument || '').trim() || 'UNKNOWN';
+    results.push({
+      protocol,
+      query: protocolQuery,
+      ok: Boolean(result?.ok),
+      requestUrl: result?.requestUrl || null,
+      data: Array.isArray(result?.data) ? result.data : [],
+      error: result?.error || null,
+      summary: result?.summary || buildSummary('topValues', protocolQuery, Array.isArray(result?.data) ? result.data : [])
+    });
+    if (Array.isArray(result?.warnings) && result.warnings.length > 0) {
+      warnings.push(...result.warnings);
+    }
+  }
+
+  const mergedRows = results.flatMap((item) => {
+    const rows = Array.isArray(item.data) ? item.data : [];
+    return rows.map((row) => ({
+      ...row,
+      protocol: item.protocol
+    }));
+  });
+
+  const protocolHighlights = results.map((item) => {
+    const rowCount = Array.isArray(item.data) ? item.data.length : 0;
+    return `${item.protocol} 结果数：${rowCount}`;
+  });
+
+  const summary = {
+    ...buildSummary('topValues_multi_protocol', resolvedQuery, mergedRows),
+    highlights: [
+      ...(protocolHighlights || [])
+    ]
+  };
+
+  return {
+    ok: results.some((item) => item.ok),
+    service: 'topValues_multi_protocol',
+    data: mergedRows,
+    requestUrl: results.map((item) => item.requestUrl).filter(Boolean).join('\n') || null,
+    summary,
+    warnings,
+    protocolResults: results,
+    error: results.some((item) => item.ok)
+      ? null
+      : {
+          code: 'UNKNOWN_PORT_PROTOCOL_QUERIES_FAILED',
+          message: 'All unknown port traffic protocol queries failed.'
+        }
+  };
+}
+
 async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult) {
+  if (resolvedQuery?.service === 'topValues_multi_protocol') {
+    return executeUnknownPortDualProtocolQuery(prompt, resolvedQuery);
+  }
+
   const isOverview = isOverviewResolvedQuery(resolvedQuery);
   const analysisPipeline = resolvedQuery?.analysisPipeline && typeof resolvedQuery.analysisPipeline === 'object'
     ? resolvedQuery.analysisPipeline
@@ -1776,9 +2098,15 @@ module.exports = {
     isDrilldownPrompt,
     inferDrilldownPathFromPrompt,
     applySessionContinuationToResolvedQuery,
+    isUnknownPortTrafficPrompt,
+    detectUnknownPortProtocol,
     buildPromptFallbackResolvedQuery,
+    buildPromptFallbackUnknownPortResolvedQuery,
+    buildPromptFallbackUnknownPortDualProtocolResolvedQuery,
     buildPromptFallbackMetricInventoryResolvedQuery,
+    buildPromptFallbackBusinessObjectInventoryResolvedQuery,
     inferPromptFallbackMetricInventoryGroup,
+    isPromptFallbackBusinessObjectInventoryPrompt,
     isMetricInventoryPrompt,
     isHierarchyCatalogPrompt,
     normalizeDrilldownQuestionTarget,
@@ -1786,6 +2114,7 @@ module.exports = {
     resolveInput,
     buildFocusedOverviewResolvedQuery,
     deriveDiscoveryFocusSelection,
+    executeUnknownPortDualProtocolQuery,
     executeResolvedQuery
   }
 };

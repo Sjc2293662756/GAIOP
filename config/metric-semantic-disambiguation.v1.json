@@ -6,10 +6,21 @@
   },
   "metrics": [
     {
+      "id": "PKIO",
+      "aliases": ["packet count", "packet traffic", "数据包数量", "包数量", "包个数", "数据包个数", "包流量", "总包流量"],
+      "domain": "network_usage",
+      "preferredObjects": ["IPAddress", "BusinessGroup", "TotalTraffic", "DefinedApp", "Prefix24"],
+      "weights": {
+        "aliasHit": 0.36,
+        "currentBias": 0.18,
+        "serviceFit": 0.06
+      }
+    },
+    {
       "id": "TPIO",
       "aliases": ["throughput", "bandwidth", "吞吐", "吞吐量", "带宽"],
       "domain": "network_usage",
-      "preferredObjects": ["IPAddress", "BusinessGroup", "TotalTraffic", "DefinedApp", "Application", "WebApplication"],
+      "preferredObjects": ["IPAddress", "BusinessGroup", "TotalTraffic", "DefinedApp", "Prefix24"],
       "weights": {
         "aliasHit": 0.3,
         "currentBias": 0.18,
@@ -20,7 +31,7 @@
       "id": "BYTIO",
       "aliases": ["traffic", "byte", "bytes", "流量", "字节量"],
       "domain": "network_usage",
-      "preferredObjects": ["IPAddress", "BusinessGroup", "TotalTraffic", "DefinedApp", "Application", "WebApplication"],
+      "preferredObjects": ["IPAddress", "BusinessGroup", "TotalTraffic", "DefinedApp", "Prefix24"],
       "weights": {
         "aliasHit": 0.3,
         "currentBias": 0.18,
@@ -28,10 +39,32 @@
       }
     },
     {
+      "id": "PGBYTO",
+      "aliases": ["page traffic", "page bytes", "页面流量", "业务页面流量", "网站流量", "web页面流量"],
+      "domain": "web_experience",
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
+      "weights": {
+        "aliasHit": 0.38,
+        "currentBias": 0.18,
+        "serviceFit": 0.08
+      }
+    },
+    {
+      "id": "PGBYTI",
+      "aliases": ["request traffic", "request bytes", "请求流量", "页面请求流量", "请求数据量"],
+      "domain": "web_experience",
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
+      "weights": {
+        "aliasHit": 0.38,
+        "currentBias": 0.18,
+        "serviceFit": 0.08
+      }
+    },
+    {
       "id": "PGTME",
       "aliases": ["page response time", "page load time", "web response time", "页面时延", "页面响应时间", "页面耗时"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -42,7 +75,7 @@
       "id": "PGNPGE",
       "aliases": ["page views", "visits", "visit count", "访问量", "访问次数", "页面访问"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -53,7 +86,7 @@
       "id": "TRTI",
       "aliases": ["response time", "server response", "transaction response", "响应时间", "服务器响应时间"],
       "domain": "application_performance",
-      "preferredObjects": ["BusinessGroup", "IPAddress", "IPConversation", "DefinedApp", "Application"],
+      "preferredObjects": ["BusinessGroup", "IPAddress", "IPConversation", "DefinedApp"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -64,7 +97,7 @@
       "id": "RTTI",
       "aliases": ["rtt", "round trip", "round trip time", "往返时延", "往返时间"],
       "domain": "network_performance",
-      "preferredObjects": ["IPConversation", "IPAddress", "DefinedApp", "Prefix24"],
+      "preferredObjects": ["IPConversation", "IPAddress", "BusinessGroup", "DefinedApp", "Prefix24", "ISPAS", "DestAS"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -75,7 +108,7 @@
       "id": "RDTI",
       "aliases": ["retransmission", "retransmit", "重传", "重传时延"],
       "domain": "network_performance",
-      "preferredObjects": ["IPConversation", "IPAddress", "DefinedApp", "Prefix24"],
+      "preferredObjects": ["IPConversation", "IPAddress", "BusinessGroup", "DefinedApp", "Prefix24", "ISPAS", "DestAS"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -86,7 +119,7 @@
       "id": "PLI",
       "aliases": ["packet loss", "loss", "丢包", "丢包率"],
       "domain": "network_performance",
-      "preferredObjects": ["IPConversation", "IPAddress", "DefinedApp", "Prefix24"],
+      "preferredObjects": ["IPConversation", "IPAddress", "BusinessGroup", "DefinedApp", "Prefix24", "ISPAS", "DestAS"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -97,7 +130,7 @@
       "id": "PGHTTP500",
       "aliases": ["http500", "http 500", "5xx", "500 error", "500异常", "500错误"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -108,7 +141,7 @@
       "id": "PGHTTP500PCT",
       "aliases": ["http 500错误率", "500错误率", "5xx错误率", "5xx rate", "http 500 rate", "服务器错误率"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.36,
         "currentBias": 0.18,
@@ -119,7 +152,7 @@
       "id": "PGHTTP400",
       "aliases": ["http400", "http 400", "4xx", "400 error", "400异常", "400错误"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -130,7 +163,7 @@
       "id": "PGHTTP400PCT",
       "aliases": ["http 400错误率", "400错误率", "4xx错误率", "4xx rate", "http 400 rate", "客户端错误率"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.36,
         "currentBias": 0.18,
@@ -141,7 +174,7 @@
       "id": "PGHTTP200",
       "aliases": ["http200", "http 200", "200数量", "成功数", "成功响应数"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -152,7 +185,7 @@
       "id": "PGHTTP200PCT",
       "aliases": ["http成功率", "http 200成功率", "200成功率", "成功率"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.36,
         "currentBias": 0.18,
@@ -163,7 +196,7 @@
       "id": "PGNOBJE",
       "aliases": ["http响应数", "response count", "http responses", "响应总数"],
       "domain": "web_experience",
-      "preferredObjects": ["WebApplication", "BusinessGroup", "ClientIPs"],
+      "preferredObjects": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
       "weights": {
         "aliasHit": 0.34,
         "currentBias": 0.18,
@@ -172,10 +205,12 @@
     }
   ],
   "objectHints": {
-    "BusinessGroup": ["业务组", "business group"],
-    "WebApplication": ["web", "website", "网站", "站点", "web应用"],
-    "Application": ["application", "app", "应用", "服务器应用", "服务应用"],
-    "DefinedApp": ["application", "app", "应用", "业务应用", "服务器应用", "服务应用"],
+    "BusinessGroup": ["业务组", "工作组", "business group"],
+    "WebApplication": ["web", "website", "网站", "站点", "web应用", "业务系统"],
+    "PageFamily": ["页面族", "页面分类", "page family"],
+    "User": ["用户", "user"],
+    "ClientBusinessGroup": ["客户端业务组", "发起组", "用户组"],
+    "DefinedApp": ["application", "app", "应用", "已知应用", "协议应用"],
     "IPConversation": ["会话", "conversation"],
     "IPAddress": ["ip", "ip地址", "host"]
   },

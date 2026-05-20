@@ -1,10 +1,11 @@
 /**
  * MetricMappingService.js
- * 
- * 鎻忚堪锛氭寚鏍囨槧灏勬湇鍔℃ā鍧? * 鍔熻兘锛氱鐞嗘寚鏍囨弿杩颁笌鎸囨爣浠ｇ爜涔嬮棿鐨勬槧灏勫叧绯伙紝鏀寔浠庨厤缃枃浠跺姞杞藉拰榛樿鎸囨爣鍔犺浇
- *       鎻愪緵鎸囨爣楠岃瘉銆佹煡璇㈠拰淇鍔熻兘
- * 浣滆€咃細绯荤粺鐢熸垚
- * 淇敼鏃ユ湡锛?026-04-15
+ *
+ * 负责维护指标描述与指标编码之间的映射关系。
+ * 优先从 `config/metrics-config.yml` 中加载指标定义；
+ * 如果配置文件不存在或读取失败，则回退到内置默认指标表。
+ *
+ * 最近更新：2026-04-15
  */
 
 const fs = require('fs');
@@ -14,25 +15,31 @@ const logger = require('../../../src/utils/logger');
 const NodeCache = require('node-cache');
 
 /**
- * 鎸囨爣鏄犲皠鏈嶅姟绫? * 璐熻矗鎸囨爣鎻忚堪涓庢寚鏍囦唬鐮佺殑鍙屽悜鏄犲皠绠＄悊
+ * 指标映射服务
+ * 用于统一管理指标编码、描述、合法性校验和兜底修正。
  */
 class MetricMappingService {
   /**
-   * 鏋勯€犲嚱鏁?   * 鍒濆鍖栨寚鏍囨槧灏勬暟鎹粨鏋勫苟鍔犺浇鎸囨爣閰嶇疆
+   * 初始化指标映射服务
+   * 启动时先尝试加载配置文件，再补充少量运行期别名指标。
    */
   constructor() {
-    /** @type {Map<string, string>} 鎸囨爣鎻忚堪鍒版寚鏍囦唬鐮佺殑鏄犲皠 */
+    /** @type {Map<string, string>} 指标描述 -> 指标编码 */
     this.metricMapping = new Map();
-    /** @type {Set<string>} 鏈夋晥鐨勬寚鏍囦唬鐮侀泦鍚?*/
+    /** @type {Map<string, object>} 规范化指标描述 -> 指标定义 */
+    this.metricDefinitions = new Map();
+    /** @type {Set<string>} 所有合法的指标编码集合 */
     this.validMetricCodes = new Set();
-    /** @type {NodeCache} 缂撳瓨瀹炰緥锛岀敤浜庣紦瀛樻寚鏍囨暟鎹?*/
+    /** @type {NodeCache} 预留缓存实例，供后续扩展使用 */
     this.cache = new NodeCache({ stdTTL: 3600 });
-    
-    // 鍔犺浇鎸囨爣閰嶇疆
+
     this.loadMetricsFromConfigFile();
     this.ensureSupplementalMetrics();
   }
 
+  /**
+   * 补充少量配置文件中未显式声明、但语义侧会用到的指标别名。
+   */
   ensureSupplementalMetrics() {
     const supplementalMetrics = [
       { description: '包流量（流入和流出）', code: 'PKIO' },
@@ -46,24 +53,24 @@ class MetricMappingService {
   }
 
   /**
-   * 浠庨厤缃枃浠跺姞杞芥寚鏍?   * 浼樺厛浠?YAML 閰嶇疆鏂囦欢鍔犺浇锛屽け璐ュ垯浣跨敤榛樿鎸囨爣
+   * 从 YAML 配置文件加载指标定义。
    */
   loadMetricsFromConfigFile() {
     try {
       const configPath = path.join(__dirname, '../../../config/metrics-config.yml');
-      
+
       if (fs.existsSync(configPath)) {
         const fileContents = fs.readFileSync(configPath, 'utf8');
         const config = yaml.load(fileContents);
-        
+
         if (config && config.metrics) {
-          config.metrics.forEach(metric => {
+          config.metrics.forEach((metric) => {
             if (metric.code && metric.description) {
               this.addMetric(metric.description, metric.code);
             }
           });
         }
-        
+
         logger.info('Metrics loaded from config file', {
           totalMetrics: this.validMetricCodes.size
         });
@@ -78,55 +85,56 @@ class MetricMappingService {
   }
 
   /**
-   * 鍔犺浇榛樿鎸囨爣
-   * 褰撻厤缃枃浠朵笉瀛樺湪鎴栧姞杞藉け璐ユ椂浣跨敤鐨勫唴缃寚鏍囧垪琛?   */
+   * 加载内置默认指标定义。
+   * 这些定义只在配置文件缺失或解析失败时作为兜底使用。
+   */
   loadDefaultMetrics() {
     const defaultMetrics = [
-      { description: '鍚炲悙閲?鍏ョ珯)', code: 'TPI' },
-      { description: '鍚炲悙閲?鍑虹珯)', code: 'TPO' },
-      { description: '鍚炲悙閲?鎬?', code: 'TPIO' },
-      { description: 'HTTP 500閿欒', code: 'PGHTTP500' },
-      { description: 'HTTP 400閿欒', code: 'PGHTTP400' },
-      { description: '鍝嶅簲鏃堕棿', code: 'PGTME' },
-      { description: '椤甸潰鏁伴噺', code: 'PGNPGE' },
-      { description: 'Connection setup time (TCP server)', code: 'CSTI' },
-      { description: 'Slow page percent (client)', code: 'PGSLPCTS' },
-      { description: 'Network response time out (server)', code: 'NRTO' },
-      { description: 'Network response time in (client)', code: 'NRTI' },
-      { description: '椤甸潰璁块棶鏁帮紙鏈嶅姟鍣級', code: 'PGNPGC' },
-      { description: '娴侀噺锛堟祦鍏ワ級', code: 'BYTI' },
-      { description: '娴侀噺锛堟祦鍑猴級', code: 'BYTO' },
-      { description: 'Traffic in/out total', code: 'BYTIO' },
-      { description: '涓㈠寘鎯呭喌 (娴佸叆)', code: 'PLI' },
-      { description: '涓㈠寘鎯呭喌 (娴佸嚭)', code: 'PLO' },
-      { description: '閲嶄紶鏃跺欢锛堟祦鍑猴級', code: 'RDTO' },
-      { description: '鏈夋晥鍚炲悙 (娴佸叆)', code: 'GPI' },
-      { description: '鏈夋晥鍚炲悙 (娴佸嚭)', code: 'GPO' },
-      { description: '杩炴帴璇锋眰鏁?(TCP 瀹㈡埛绔?', code: 'CONO' },
-      { description: '杩炴帴璇锋眰鏁?(TCP 鏈嶅姟鍣?', code: 'CONI' },
-      { description: 'Connection failure count (TCP client)', code: 'RFCO' },
-      { description: 'Connection failure count (TCP server)', code: 'RFCI' },
-      { description: 'New connection count (TCP client)', code: 'CCNO' },
-      { description: 'New connection count (TCP server)', code: 'CCNI' },
-      { description: '杩炴帴澶辫触鐜?(TCP 瀹㈡埛绔?', code: 'RFRO' },
-      { description: '杩炴帴澶辫触鐜?(TCP 鏈嶅姟鍣?', code: 'RFRI' },
-      { description: '绗竴瀛楄妭鏃堕棿锛圱CP 瀹㈡埛绔級', code: 'T2FBI' },
-      { description: '绗竴瀛楄妭鏃堕棿锛圱CP 鏈嶅姟鍣級', code: 'T2FBO' },
-      { description: '浜や簰鏁帮紙瀹㈡埛绔級', code: 'TRNO' },
-      { description: '浜や簰鏁帮紙鏈嶅姟鍣級', code: 'TRNI' },
-      { description: '鍖呭悶鍚愰噺锛堟祦鍏ワ級', code: 'PKTI' },
-      { description: '鍖呭悶鍚愰噺锛堟祦鍑猴級', code: 'PKTO' },
-      { description: 'Packet traffic in/out total', code: 'PKIO' },
-      { description: '鍑€鑽凤紙瀹㈡埛绔級', code: 'FSI_B' },
-      { description: '鍑€鑽凤紙鏈嶅姟鍣級', code: 'FSO_B' },
-      { description: '鏁版嵁鍖呭噣鑽凤紙瀹㈡埛绔級', code: 'FSI_P' },
-      { description: '鏁版嵁鍖呭噣鑽凤紙鏈嶅姟鍣級', code: 'FSO_P' },
-      { description: 'Page visit rate', code: 'PGRT' },
-      { description: 'Slow page rate (client)', code: 'PGSLRTS' },
-      { description: 'HTTP 200 鏁伴噺', code: 'PGHTTP200' }
+      { description: '吞吐量（流入）', code: 'TPI' },
+      { description: '吞吐量（流出）', code: 'TPO' },
+      { description: '吞吐量（总）', code: 'TPIO' },
+      { description: 'HTTP 500错误数', code: 'PGHTTP500' },
+      { description: 'HTTP 400错误数', code: 'PGHTTP400' },
+      { description: '页面响应时间', code: 'PGTME' },
+      { description: '页面数量', code: 'PGNPGE' },
+      { description: '连接建立时间（TCP服务器）', code: 'CSTI' },
+      { description: '慢页面百分比（客户端）', code: 'PGSLPCTS' },
+      { description: '网络响应时间（服务器）', code: 'NRTO' },
+      { description: '网络响应时间（客户端）', code: 'NRTI' },
+      { description: '页面访问数（服务器）', code: 'PGNPGC' },
+      { description: '流量（流入）', code: 'BYTI' },
+      { description: '流量（流出）', code: 'BYTO' },
+      { description: '流量（流入和流出）', code: 'BYTIO' },
+      { description: '丢包情况（流入）', code: 'PLI' },
+      { description: '丢包情况（流出）', code: 'PLO' },
+      { description: '重传时延（流出）', code: 'RDTO' },
+      { description: '有效吞吐（流入）', code: 'GPI' },
+      { description: '有效吞吐（流出）', code: 'GPO' },
+      { description: '连接请求数（TCP客户端）', code: 'CONO' },
+      { description: '连接请求数（TCP服务器）', code: 'CONI' },
+      { description: '连接失败数（TCP客户端）', code: 'RFCO' },
+      { description: '连接失败数（TCP服务器）', code: 'RFCI' },
+      { description: '新建连接数（TCP客户端）', code: 'CCNO' },
+      { description: '新建连接数（TCP服务器）', code: 'CCNI' },
+      { description: '连接失败率（TCP客户端）', code: 'RFRO' },
+      { description: '连接失败率（TCP服务器）', code: 'RFRI' },
+      { description: '首字节时间（TCP客户端）', code: 'T2FBI' },
+      { description: '首字节时间（TCP服务器）', code: 'T2FBO' },
+      { description: '事务数（客户端）', code: 'TRNO' },
+      { description: '事务数（服务器）', code: 'TRNI' },
+      { description: '包吞吐量（流入）', code: 'PKTI' },
+      { description: '包吞吐量（流出）', code: 'PKTO' },
+      { description: '包流量', code: 'PKIO' },
+      { description: '净荷（客户端）', code: 'FSI_B' },
+      { description: '净荷（服务器）', code: 'FSO_B' },
+      { description: '数据包净荷（客户端）', code: 'FSI_P' },
+      { description: '数据包净荷（服务器）', code: 'FSO_P' },
+      { description: '页面访问率', code: 'PGRT' },
+      { description: '慢页面率（客户端）', code: 'PGSLRTS' },
+      { description: 'HTTP 200数量', code: 'PGHTTP200' }
     ];
 
-    defaultMetrics.forEach(metric => {
+    defaultMetrics.forEach((metric) => {
       this.addMetric(metric.description, metric.code);
     });
 
@@ -136,84 +144,132 @@ class MetricMappingService {
   }
 
   /**
-   * 娣诲姞鎸囨爣鍒版槧灏?   * @param {string} description - 鎸囨爣鎻忚堪
-   * @param {string} code - 鎸囨爣浠ｇ爜
+   * 新增一条指标映射。
+   * @param {string} description 指标描述
+   * @param {string} code 指标编码
    */
   addMetric(description, code) {
     if (code && description) {
-      this.metricMapping.set(description.toLowerCase(), code);
+      const normalizedDescription = this.normalizeMetricText(description);
+      this.metricMapping.set(normalizedDescription, code);
+      this.metricDefinitions.set(normalizedDescription, {
+        code,
+        description
+      });
       this.validMetricCodes.add(code);
     }
   }
 
   /**
-   * 楠岃瘉鎸囨爣浠ｇ爜鏄惁鏈夋晥
-   * @param {string} code - 鎸囨爣浠ｇ爜
-   * @returns {boolean} - 鏄惁涓烘湁鏁堟寚鏍囦唬鐮?   */
+   * 判断指标编码是否合法。
+   * @param {string} code 指标编码
+   * @returns {boolean}
+   */
   isValidMetricCode(code) {
     return this.validMetricCodes.has(code);
   }
 
   /**
-   * 鏍规嵁鎻忚堪鑾峰彇鎸囨爣浠ｇ爜
-   * @param {string} description - 鎸囨爣鎻忚堪
-   * @returns {string|undefined} - 鎸囨爣浠ｇ爜
+   * 根据指标描述获取指标编码。
+   * @param {string} description 指标描述
+   * @returns {string|undefined}
    */
   getMetricCode(description) {
-    return this.metricMapping.get(description.toLowerCase());
+    return this.metricMapping.get(this.normalizeMetricText(description));
   }
 
   /**
-   * 鏍规嵁鎸囨爣浠ｇ爜鑾峰彇鎻忚堪
-   * @param {string} code - 鎸囨爣浠ｇ爜
-   * @returns {string|null} - 鎸囨爣鎻忚堪锛屾湭鎵惧埌杩斿洖 null
+   * 根据指标编码反查指标描述。
+   * @param {string} code 指标编码
+   * @returns {string|null}
    */
   getMetricDescription(code) {
-    for (const [desc, metricCode] of this.metricMapping.entries()) {
-      if (metricCode === code) {
-        return desc;
+    for (const metric of this.metricDefinitions.values()) {
+      if (metric.code === code) {
+        return metric.description;
       }
     }
     return null;
   }
 
   /**
-   * 鑾峰彇鎵€鏈夋湁鏁堢殑鎸囨爣浠ｇ爜
-   * @returns {array} - 鎸囨爣浠ｇ爜鏁扮粍
+   * 获取全部合法指标编码。
+   * @returns {string[]}
    */
   getAllMetricCodes() {
     return Array.from(this.validMetricCodes);
   }
 
   /**
-   * 鑾峰彇鎵€鏈夋寚鏍囨槧灏?   * @returns {array} - 鍖呭惈鎻忚堪鍜屼唬鐮佺殑瀵硅薄鏁扮粍
+   * 获取全部指标定义。
+   * @returns {{description: string, code: string}[]}
    */
   getAllMetrics() {
     const metrics = [];
-    for (const [description, code] of this.metricMapping.entries()) {
-      metrics.push({ description, code });
+    for (const metric of this.metricDefinitions.values()) {
+      metrics.push({ description: metric.description, code: metric.code });
     }
     return metrics;
   }
 
+  findMetricByQueryText(text = '') {
+    const normalizedText = this.normalizeMetricText(text);
+    if (!normalizedText) {
+      return null;
+    }
+
+    let best = null;
+    for (const [normalizedDescription, metric] of this.metricDefinitions.entries()) {
+      if (!normalizedDescription || !normalizedText.includes(normalizedDescription)) {
+        continue;
+      }
+
+      const candidate = {
+        code: metric.code,
+        description: metric.description,
+        matchLength: normalizedDescription.length
+      };
+
+      if (
+        !best
+        || candidate.matchLength > best.matchLength
+        || (candidate.matchLength === best.matchLength && String(candidate.description).length > String(best.description).length)
+      ) {
+        best = candidate;
+      }
+    }
+
+    return best;
+  }
+
+  normalizeMetricText(value = '') {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[()（）_\-]/g, '');
+  }
+
   /**
-   * 楠岃瘉骞朵慨澶嶆寚鏍囧瓧绗︿覆
-   * 杩囨护鏃犳晥鎸囨爣锛岃嫢鏃犳湁鏁堟寚鏍囧垯杩斿洖榛樿鍊?TPIO
-   * @param {string} metricsString - 閫楀彿鍒嗛殧鐨勬寚鏍囦唬鐮佸瓧绗︿覆
-   * @returns {string} - 楠岃瘉鍚庣殑鎸囨爣浠ｇ爜瀛楃涓?   */
+   * 校验并修正传入的指标编码串。
+   * 如果全部非法，则回退到默认指标 `TPIO`。
+   *
+   * @param {string} metricsString 逗号分隔的指标编码字符串
+   * @returns {string}
+   */
   validateAndFixMetrics(metricsString) {
     if (!metricsString) {
       return 'TPIO';
     }
 
-    const metricCodes = metricsString.split(',').map(m => m.trim());
+    const metricCodes = metricsString.split(',').map((m) => m.trim());
     const validMetrics = [];
 
-    metricCodes.forEach(code => {
+    metricCodes.forEach((code) => {
       logger.info(`Validating metric code: ${code}`, {
         isValid: this.isValidMetricCode(code)
       });
-      
+
       if (this.isValidMetricCode(code)) {
         validMetrics.push(code);
       }
@@ -229,4 +285,3 @@ class MetricMappingService {
 }
 
 module.exports = new MetricMappingService();
-

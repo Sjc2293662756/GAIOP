@@ -25,6 +25,24 @@ function buildGroupsFromCandidate(candidate, slots = {}) {
   });
 }
 
+function buildSeedGroups(seedGroups = [], contextGroups = [], anchorObject = null) {
+  const groups = [];
+  if (Array.isArray(seedGroups)) {
+    groups.push(...seedGroups);
+  }
+  if (Array.isArray(contextGroups)) {
+    groups.push(...contextGroups);
+  }
+  const anchorArgument = String(anchorObject?.argument || anchorObject?.value || '').trim();
+  if (anchorObject?.type && anchorArgument) {
+    groups.push({
+      type: anchorObject.type,
+      argument: anchorArgument
+    });
+  }
+  return groups;
+}
+
 function pickAnchorGroup(seedGroups = []) {
   return seedGroups.find((group) => group && group.type && group.argument) || null;
 }
@@ -132,6 +150,16 @@ function buildChildBudgetAllocations(compiledChildPlans = [], maxChildren = 0) {
 }
 
 function compileOverviewPlan({ overviewPlan, timeRange, seedGroups = [], metadataReview = null } = {}) {
+  const anchorSeedGroups = buildSeedGroups(
+    seedGroups,
+    overviewPlan?.slots?.anchorGroups || [],
+    overviewPlan?.slots?.focusObject
+      ? {
+          type: overviewPlan.slots.focusObject.type,
+          argument: overviewPlan.slots.focusObject.value
+        }
+      : null
+  );
   const compiledRootItems = [];
   const compiledChildPlans = [];
   const selectedCandidates = [];
@@ -145,7 +173,7 @@ function compileOverviewPlan({ overviewPlan, timeRange, seedGroups = [], metadat
   for (const selection of selectedRoots) {
     const candidate = selection.candidate;
     const candidateReview = metadataReview?.byCandidateId?.[candidate.id] || null;
-    const query = buildBaseQueryFromCandidate(candidate, timeRange, seedGroups, overviewPlan.slots, candidateReview);
+    const query = buildBaseQueryFromCandidate(candidate, timeRange, anchorSeedGroups, overviewPlan.slots, candidateReview);
     compiledRootItems.push({
       planId: candidate.id,
       candidateId: candidate.id,
@@ -183,7 +211,7 @@ function compileOverviewPlan({ overviewPlan, timeRange, seedGroups = [], metadat
     }
 
     const candidateReview = metadataReview?.byCandidateId?.[candidate.id] || null;
-    const querySeed = buildBaseQueryFromCandidate(candidate, timeRange, seedGroups, overviewPlan.slots, candidateReview);
+    const querySeed = buildBaseQueryFromCandidate(candidate, timeRange, anchorSeedGroups, overviewPlan.slots, candidateReview);
     compiledChildPlans.push({
       planId: `${parentItem.candidateId}:${candidate.id}`,
       candidateId: candidate.id,
@@ -253,5 +281,6 @@ module.exports = {
   compileOverviewPlan,
   buildBaseQueryFromCandidate,
   buildGroupsFromCandidate,
-  applySeedAnchorIfNeeded
+  applySeedAnchorIfNeeded,
+  buildSeedGroups
 };

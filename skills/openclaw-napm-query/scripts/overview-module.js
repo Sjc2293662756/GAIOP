@@ -23,6 +23,7 @@ const GROUP_TYPE_SCENE_MAP = {
 
 const SCENE_HINT_PATTERNS = [
   { scene: 'business_group', regex: /(业务组|工作组|业务分组|businessgroup|business group)/i },
+  { scene: 'security', regex: /(未知.{0,8}(tcp|udp)?.{0,8}(端口|应用).{0,8}(流量|吞吐|带宽)|(tcp|udp).{0,8}未知.{0,8}(端口|应用).{0,8}(流量|吞吐|带宽))/i },
   { scene: 'security', regex: /(安全|风险|攻击|告警|security|attack|threat)/i },
   { scene: 'network', regex: /(网络|链路|丢包|吞吐|带宽|时延|地址|ip|network)/i },
   { scene: 'application', regex: /(应用|app|服务|网页|站点|application)/i },

@@ -22,6 +22,8 @@ NAPM 指标可分为以下几类：
 
 解释型问题优先基于本文件回答；查询型问题在解析 metric code 时，应结合运行时 `metrics` 元数据服务进一步确认。`metrics` 服务可返回设备支持的指标列表与代码。:contentReference[oaicite:1]{index=1}
 
+若问题是“某个对象维度 / groupPath 该优先使用哪些指标”，不要只看本文件；应转到 `metric-dimension-ownership.md`，并在执行前结合 `metricsForGroup` 做最终校验。
+
 ---
 
 ## 2. 常用指标说明

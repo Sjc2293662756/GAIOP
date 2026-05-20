@@ -48,6 +48,19 @@ describe('overview-module', () => {
     expect(scene).toBe('network');
   });
 
+  test('should resolve unknown port traffic prompts to security scene', () => {
+    const scene = resolveOverviewScene({
+      prompt: '未知TCP端口流量情况',
+      payload: {},
+      intent: {},
+      resolvedQuery: {
+        groups: [{ type: 'TotalTraffic' }]
+      }
+    });
+
+    expect(scene).toBe('security');
+  });
+
   test('should resolve overview depth from explicit prompt signal', () => {
     const depth = resolveOverviewDepth({
       prompt: '请给我一个快速网络概览',

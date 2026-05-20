@@ -1,10 +1,11 @@
 /**
  * NapmMetadataService.js
  * 
- * 鎻忚堪锛歂APM 鍏冩暟鎹湇鍔℃ā锟? * 鍔熻兘锛氫粠 NAPM 鍚庣鏈嶅姟鑾峰彇鍚勭鍏冩暟鎹紙鎸囨爣銆佸垎缁勩€佸簲鐢ㄣ€佺敤鎴枫€侀〉闈㈢瓑锛夛紝
- *       鎻愪緵缂撳瓨鏈哄埗鍑忓皯閲嶅璇锋眰锛屽苟瀵硅繑鍥炴暟鎹繘琛屾爣鍑嗗寲澶勭悊
- * 浣滆€咃細绯荤粺鐢熸垚
- * 淇敼鏃ユ湡锟?026-04-15
+ * 描述：NAPM 元数据服务模块
+ * 功能：从 NAPM 后端服务获取各种元数据（指标、分组、应用、用户、页面等），
+ *       提供缓存机制减少重复请求，并对返回数据进行标准化处理
+ * 作者：系统生成
+ * 修改日期：2026-04-15
  */
 
 const NodeCache = require('node-cache');
@@ -16,17 +17,18 @@ const DimensionMappingService = require('./DimensionMappingService');
 const logger = require('../../../src/utils/logger');
 
   /**
- * NAPM 鍏冩暟鎹湇鍔＄被
- * 璐熻矗鑾峰彇鍜岀紦锟?NAPM 鍚庣鏈嶅姟鐨勫悇绉嶅厓鏁版嵁
+ * NAPM 元数据服务类
+ * 负责获取和缓存 NAPM 后端服务的各种元数据
  */
 class NapmMetadataService {
   /**
-   * 鏋勯€犲嚱锟?   * 鍒濆锟?NAPM 瀹㈡埛绔拰缂撳瓨瀹炰緥
+   * 构造函数
+   * 初始化 NAPM 客户端和缓存实例
    */
   constructor() {
-    /** @type {NapmClient} NAPM API 瀹㈡埛绔疄锟?*/
+    /** @type {NapmClient} NAPM API 客户端实例 */
     this.napmClient = new NapmClient();
-    /** @type {NodeCache} 鍏冩暟鎹紦瀛樺疄渚嬶紙10鍒嗛挓杩囨湡锟?*/
+    /** @type {NodeCache} 元数据缓存实例（10分钟过期） */
     this.cache = new NodeCache({ stdTTL: 600 });
     this.groupsTreeMode = String(process.env.NAPM_GROUPS_TREE_MODE || 'static').toLowerCase();
     this.staticGroupsTreeFile = process.env.NAPM_STATIC_GROUPS_TREE_FILE
@@ -36,8 +38,8 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鎸囨爣鍒楄〃
-   * @returns {array} - 鏍囧噯鍖栫殑鎸囨爣鏁扮粍锛屾瘡涓厓绱犲寘锟?id銆乴abel銆乽nit
+   * 获取指标列表
+   * @returns {array} - 标准化的指标数组，每个元素包含 id、label、unit
    */
   async getMetrics() {
     const cacheKey = 'metadata:metrics';
@@ -60,7 +62,9 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍鏍戠粨锟?   * @returns {array} - 瑙勮寖鍖栫殑鍒嗙粍鏍戣妭鐐规暟锟?   */
+   * 获取分组树结构
+   * @returns {array} - 规范化的分组树节点数组
+   */
   async getGroupsTree() {
     const cacheKey = 'metadata:groupsTree';
     const cached = this.cache.get(cacheKey);
@@ -103,8 +107,8 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鎵佸钩鍖栫殑鍒嗙粍鍒楄〃
-   * @returns {array} - 鎵佸钩鍖栫殑鍒嗙粍鏁扮粍
+   * 获取扁平化的分组列表
+   * @returns {array} - 扁平化的分组数组
    */
   async getFlattenedGroups() {
     const cacheKey = 'metadata:flattenedGroups';
@@ -120,8 +124,67 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鏃堕棿绮掑害鍒楄〃
-   * @returns {array} - 鎺掑簭鍚庣殑鏃堕棿绮掑害鏁扮粍锛堝崟浣嶏細绉掞級
+   * 获取所有顶层 group 节点
+   * @returns {array} - 顶层 group 节点数组
+   */
+  async getTopLevelGroups() {
+    return this.getGroupsTree();
+  }
+
+  /**
+   * 获取某个对象类型的下钻路径信息
+   * @param {string} groupType - group 类型
+   * @param {object} options - 枚举选项
+   * @returns {object|null} - 下钻路径信息
+   */
+  async getDrilldownPathsForGroupType(groupType, options = {}) {
+    const candidates = await this.findGroupNodesByType(groupType);
+    const targetNode = candidates[0] || null;
+    if (!targetNode) {
+      return null;
+    }
+
+    const paths = this.collectDrilldownPathRecords(targetNode, options);
+    return {
+      groupType: targetNode.key,
+      runtimeGroupType: this.normalizeRuntimeGroupKey(targetNode.key),
+      label: targetNode.label || targetNode.key,
+      isTopLevel: Array.isArray(targetNode.path) && targetNode.path.length === 1,
+      sourcePath: Array.isArray(targetNode.path) ? targetNode.path.slice() : [targetNode.key],
+      sourcePathText: String(targetNode.pathText || targetNode.key),
+      canQuery: Boolean(targetNode.canQuery),
+      hasArgument: Boolean(targetNode.hasArgument),
+      directChildren: this.buildDirectDrilldownOptions(targetNode),
+      pathCount: paths.length,
+      paths
+    };
+  }
+
+  /**
+   * 获取所有顶层对象的下钻目录
+   * @param {object} options - 枚举选项
+   * @returns {array} - 顶层对象下钻目录
+   */
+  async getTopLevelDrilldownCatalog(options = {}) {
+    const roots = await this.getTopLevelGroups();
+    return roots.map((node) => {
+      const paths = this.collectDrilldownPathRecords(node, options);
+      return {
+        groupType: node.key,
+        runtimeGroupType: this.normalizeRuntimeGroupKey(node.key),
+        label: node.label || node.key,
+        canQuery: Boolean(node.canQuery),
+        hasArgument: Boolean(node.hasArgument),
+        directChildren: this.buildDirectDrilldownOptions(node),
+        pathCount: paths.length,
+        paths
+      };
+    });
+  }
+
+  /**
+   * 获取时间粒度列表
+   * @returns {array} - 排序后的时间粒度数组（单位：秒）
    */
   async getGranularities() {
     const cacheKey = 'metadata:granularities';
@@ -140,47 +203,55 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇搴旂敤鍒楄〃
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 搴旂敤鍒楄〃
+   * 获取应用列表
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 应用列表
    */
   async getApplications(keyword = '') {
     return this.getNamedMetadataList('applications', keyword);
   }
 
   /**
-   * 鑾峰彇涓氬姟缁勫垪锟?   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 涓氬姟缁勫垪锟?   */
+   * 获取业务组列表
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 业务组列表
+   */
   async getBusinessGroups(keyword = '') {
     return this.getNamedMetadataList('businessGroups', keyword);
   }
 
   /**
-   * 鑾峰彇鎺ュ彛鍒楄〃
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 鎺ュ彛鍒楄〃
+   * 获取接口列表
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 接口列表
    */
   async getInterfaces(keyword = '') {
     return this.getNamedMetadataList('interfaces', keyword);
   }
 
   /**
-   * 鑾峰彇 VLAN 鍒楄〃
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - VLAN 鍒楄〃
+   * 获取 VLAN 列表
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - VLAN 列表
    */
   async getVlans(keyword = '') {
     return this.getNamedMetadataList('vlans', keyword);
   }
 
   /**
-   * 鑾峰彇 TOS 闆嗗悎鍒楄〃
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - TOS 闆嗗悎鍒楄〃
+   * 获取 TOS 集合列表
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - TOS 集合列表
    */
   async getTosSets(keyword = '') {
     return this.getNamedMetadataList('tosSets', keyword);
   }
 
   /**
-   * 鑾峰彇鐢ㄦ埛鍒楄〃
-   * @param {string} searchText - 鎼滅储鏂囨湰
-   * @param {number} maxLimit - 鏈€澶ц繑鍥炴暟锟?   * @returns {array} - 鐢ㄦ埛鍒楄〃
+   * 获取用户列表
+   * @param {string} searchText - 搜索文本
+   * @param {number} maxLimit - 最大返回数量
+   * @returns {array} - 用户列表
    */
   async getUsers(searchText = '', maxLimit = 20) {
     const cacheKey = `metadata:users:${searchText}:${maxLimit}`;
@@ -205,9 +276,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇椤甸潰鍒楄〃
-   * @param {string} searchText - 鎼滅储鏂囨湰
-   * @param {number} maxLimit - 鏈€澶ц繑鍥炴暟锟?   * @returns {array} - 椤甸潰鍒楄〃
+   * 获取页面列表
+   * @param {string} searchText - 搜索文本
+   * @param {number} maxLimit - 最大返回数量
+   * @returns {array} - 页面列表
    */
   async getPages(searchText = '', maxLimit = 20) {
     const cacheKey = `metadata:pages:${searchText}:${maxLimit}`;
@@ -237,9 +309,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍛藉悕鍏冩暟鎹垪琛ㄧ殑閫氱敤鏂规硶
-   * @param {string} serviceType - 鏈嶅姟绫诲瀷
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 鏍囧噯鍖栫殑鍛藉悕鍒楄〃
+   * 获取命名元数据列表的通用方法
+   * @param {string} serviceType - 服务类型
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 标准化的命名列表
    */
   async getNamedMetadataList(serviceType, keyword = '') {
     const cacheKey = `metadata:${serviceType}:${keyword}`;
@@ -260,8 +333,9 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍瀹氫箟锛堜紭鍏堢骇鏈€楂樼殑锟?   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @returns {object|null} - 鍒嗙粍瀹氫箟瀵硅薄
+   * 获取分组定义（优先级最高的）
+   * @param {string} groupType - 分组类型
+   * @returns {object|null} - 分组定义对象
    */
   async getGroupDefinition(groupType) {
     const definitions = await this.getGroupDefinitions(groupType);
@@ -269,9 +343,9 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍瀹氫箟鍒楄〃锛堟寜浼樺厛绾ф帓搴忥級
-   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @returns {array} - 鍒嗙粍瀹氫箟鏁扮粍
+   * 获取分组定义列表（按优先级排序）
+   * @param {string} groupType - 分组类型
+   * @returns {array} - 分组定义数组
    */
   async getGroupDefinitions(groupType) {
     const flattened = await this.getFlattenedGroups();
@@ -281,10 +355,12 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍鍙傛暟鍒楄〃
-   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 鍙傛暟鍒楄〃
-   * @throws {Error} - 鏈煡鍒嗙粍绫诲瀷鏃舵姏鍑洪敊锟?   */
+   * 获取分组参数列表
+   * @param {string} groupType - 分组类型
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 参数列表
+   * @throws {Error} - 未知分组类型时抛出错误
+   */
   async getGroupArguments(groupType, keyword = '') {
     const definition = await this.getGroupDefinition(groupType);
     if (!definition) {
@@ -314,8 +390,8 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍璺緞鏀寔鐨勬寚鏍囧垪锟?   * @param {array} groups - 鍒嗙粍鏁扮粍
-   * @returns {array} - 鎸囨爣鍒楄〃
+   * 获取分组路径支持的指标列�?   * @param {array} groups - 分组数组
+   * @returns {array} - 指标列表
    */
   async getMetricsForGroupPath(groups = []) {
     const normalizedGroups = Array.isArray(groups)
@@ -360,9 +436,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 瀹℃煡鏌ヨ鐨勬湁鏁堬拷?   * 妫€鏌ュ垎缁勩€佹寚鏍囥€佹椂闂寸矑搴︾瓑鏄惁鏈夋晥
-   * @param {object} query - 鏌ヨ瀵硅薄
-   * @returns {object} - 瀹℃煡缁撴灉锛屽寘锟?issues 锟?suggestions
+   * 审查查询的有效性
+   * 检查分组、指标、时间粒度等是否有效
+   * @param {object} query - 查询对象
+   * @returns {object} - 审查结果，包含 issues 和 suggestions
    */
   async reviewQuery(query) {
     const issues = [];
@@ -445,9 +522,203 @@ class NapmMetadataService {
     return result;
   }
 
+  normalizeRuntimeGroupKey(groupType = '') {
+    const raw = String(groupType || '').trim();
+    if (!raw) {
+      return raw;
+    }
+
+    if (raw === 'Application') {
+      return 'DefinedApp';
+    }
+
+    return raw;
+  }
+
+  normalizeRuntimeGroupPath(path = []) {
+    if (!Array.isArray(path)) {
+      return [];
+    }
+
+    return path
+      .map((item) => this.normalizeRuntimeGroupKey(item))
+      .filter(Boolean);
+  }
+
+  buildDirectDrilldownOptions(node) {
+    const children = Array.isArray(node?.children) ? node.children : [];
+    const deduped = new Map();
+
+    children.forEach((child) => {
+      const rawPath = Array.isArray(child.path) ? child.path.slice() : [child.key];
+      const runtimePath = this.normalizeRuntimeGroupPath(rawPath);
+      const key = runtimePath.join(' > ');
+      if (!key || deduped.has(key)) {
+        return;
+      }
+
+      deduped.set(key, {
+        key: child.key,
+        runtimeKey: this.normalizeRuntimeGroupKey(child.key),
+        label: child.label || child.key,
+        canQuery: Boolean(child.canQuery),
+        hasArgument: Boolean(child.hasArgument),
+        childCount: Array.isArray(child.children) ? child.children.length : 0,
+        rawPath,
+        rawPathText: rawPath.join(' > '),
+        runtimePath,
+        runtimePathText: runtimePath.join(' > ')
+      });
+    });
+
+    return Array.from(deduped.values());
+  }
+
+  buildDrilldownPathRecord(pathNodes = []) {
+    const rawPath = pathNodes
+      .map((node) => String(node?.key || '').trim())
+      .filter(Boolean);
+    const runtimePath = this.normalizeRuntimeGroupPath(rawPath);
+    const terminalNode = pathNodes[pathNodes.length - 1] || null;
+
+    return {
+      rawPath,
+      rawPathText: rawPath.join(' > '),
+      runtimePath,
+      runtimePathText: runtimePath.join(' > '),
+      depth: Math.max(0, rawPath.length - 1),
+      terminalKey: terminalNode?.key || null,
+      terminalRuntimeKey: this.normalizeRuntimeGroupKey(terminalNode?.key || ''),
+      terminalLabel: terminalNode?.label || terminalNode?.key || null,
+      terminalCanQuery: Boolean(terminalNode?.canQuery),
+      terminalHasArgument: Boolean(terminalNode?.hasArgument),
+      terminalChildCount: Array.isArray(terminalNode?.children) ? terminalNode.children.length : 0
+    };
+  }
+
+  collectDrilldownPathRecords(node, options = {}, parentNodes = null, acc = []) {
+    if (!node) {
+      return [];
+    }
+
+    const config = {
+      maxDepth: Number.isFinite(Number(options?.maxDepth)) && Number(options.maxDepth) >= 1
+        ? Number(options.maxDepth)
+        : Infinity,
+      includeIntermediate: options?.includeIntermediate !== false,
+      leafOnly: Boolean(options?.leafOnly)
+    };
+
+    const pathNodes = Array.isArray(parentNodes) && parentNodes.length > 0
+      ? parentNodes.concat(node)
+      : [node];
+    const drillDepth = pathNodes.length - 1;
+    const children = Array.isArray(node.children) ? node.children : [];
+    const isLeaf = children.length === 0;
+
+    if (drillDepth > 0 && drillDepth <= config.maxDepth) {
+      const shouldInclude = config.leafOnly
+        ? isLeaf
+        : (config.includeIntermediate || isLeaf);
+      if (shouldInclude) {
+        acc.push(this.buildDrilldownPathRecord(pathNodes));
+      }
+    }
+
+    if (drillDepth >= config.maxDepth) {
+      return this.dedupeDrilldownPathRecords(acc);
+    }
+
+    children.forEach((child) => {
+      this.collectDrilldownPathRecords(child, config, pathNodes, acc);
+    });
+
+    return this.dedupeDrilldownPathRecords(acc);
+  }
+
+  dedupeDrilldownPathRecords(records = []) {
+    const deduped = new Map();
+
+    records.forEach((item) => {
+      const runtimeKey = String(item?.runtimePathText || '').trim();
+      const rawPathText = String(item?.rawPathText || '').trim();
+      const key = runtimeKey || rawPathText;
+      if (!key) {
+        return;
+      }
+
+      if (!deduped.has(key)) {
+        deduped.set(key, {
+          ...item,
+          rawVariants: rawPathText ? [rawPathText] : []
+        });
+        return;
+      }
+
+      const existing = deduped.get(key);
+      if (rawPathText && !existing.rawVariants.includes(rawPathText)) {
+        existing.rawVariants.push(rawPathText);
+      }
+    });
+
+    return Array.from(deduped.values()).sort((left, right) => {
+      if (left.depth !== right.depth) {
+        return left.depth - right.depth;
+      }
+      return String(left.runtimePathText || '').localeCompare(String(right.runtimePathText || ''));
+    });
+  }
+
+  async findGroupNodesByType(groupType) {
+    const target = this.normalizeRuntimeGroupKey(groupType);
+    if (!target) {
+      return [];
+    }
+
+    const tree = await this.getGroupsTree();
+    const matches = [];
+    this.collectGroupNodesByType(tree, target, matches);
+    return matches.sort((left, right) => this.scoreGroupNode(right) - this.scoreGroupNode(left));
+  }
+
+  collectGroupNodesByType(nodes = [], target = '', acc = []) {
+    if (!Array.isArray(nodes) || !target) {
+      return acc;
+    }
+
+    nodes.forEach((node) => {
+      if (this.normalizeRuntimeGroupKey(node?.key) === target) {
+        acc.push(node);
+      }
+
+      if (Array.isArray(node?.children) && node.children.length > 0) {
+        this.collectGroupNodesByType(node.children, target, acc);
+      }
+    });
+
+    return acc;
+  }
+
+  scoreGroupNode(node) {
+    if (!node) {
+      return -Infinity;
+    }
+
+    let score = this.scoreGroupDefinition(node);
+    if (Array.isArray(node.path) && node.path.length === 1) {
+      score += 100;
+    }
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      score += 5;
+    }
+    return score;
+  }
+
   /**
-   * 瑙勮寖鍖栧垎缁勮妭锟?   * @param {object} node - 鍘熷鑺傜偣瀵硅薄
-   * @param {array} parentPath - 鐖惰矾寰勬暟锟?   * @returns {object} - 瑙勮寖鍖栫殑鑺傜偣瀵硅薄
+   * 规范化分组节点
+   * @param {object} node - 原始节点对象
+   * @param {array} parentPath - 父路径数组
+   * @returns {object} - 规范化的节点对象
    */
   normalizeGroupNode(node, parentPath) {
     const currentPath = parentPath.concat(node.key);
@@ -468,9 +739,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 鎵佸钩鍖栧垎缁勬爲
-   * @param {array} nodes - 鍒嗙粍鑺傜偣鏁扮粍
-   * @param {array} acc - 绱姞鍣ㄦ暟锟?   * @returns {array} - 鎵佸钩鍖栫殑鍒嗙粍鏁扮粍
+   * 扁平化分组树
+   * @param {array} nodes - 分组节点数组
+   * @param {array} acc - 累加器数组
+   * @returns {array} - 扁平化的分组数组
    */
   flattenGroups(nodes, acc = []) {
     for (const node of nodes) {
@@ -495,9 +767,11 @@ class NapmMetadataService {
   }
 
   /**
-   * 瑙勮寖鍖栧垎缁勫弬锟?   * @param {*} raw - 鍘熷鏁版嵁
-   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 瑙勮寖鍖栫殑鍙傛暟鏁扮粍
+   * 规范化分组参数
+   * @param {*} raw - 原始数据
+   * @param {string} groupType - 分组类型
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 规范化的参数数组
    */
   normalizeGroupArguments(raw, groupType, keyword = '') {
     let values = [];
@@ -538,8 +812,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 瑙勮寖鍖栧懡鍚嶅垪锟?   * @param {*} raw - 鍘熷鏁版嵁
-   * @param {string} keyword - 杩囨护鍏抽敭锟?   * @returns {array} - 瑙勮寖鍖栫殑鍛藉悕鍒楄〃
+   * 规范化命名列表
+   * @param {*} raw - 原始数据
+   * @param {string} keyword - 过滤关键词
+   * @returns {array} - 规范化的命名列表
    */
   normalizeNamedList(raw, keyword = '') {
     const values = Array.isArray(raw)
@@ -578,8 +854,8 @@ class NapmMetadataService {
   }
 
   /**
-   * 鑾峰彇鍒嗙粍绫诲瀷鐨勫埆鍚嶅垪锟?   * @param {string} groupType - 鍒嗙粍绫诲瀷
-   * @returns {array} - 鍒悕鏁扮粍
+   * 获取分组类型的别名列�?   * @param {string} groupType - 分组类型
+   * @returns {array} - 别名数组
    */
   getAliases(groupType) {
     const dimension = DimensionMappingService.getObjectDimension(groupType);
@@ -587,7 +863,7 @@ class NapmMetadataService {
   }
 
   /**
-   * 娓呯┖缂撳瓨
+   * 清空缓存
    */
   clearCache() {
     this.cache.flushAll();
@@ -637,8 +913,10 @@ class NapmMetadataService {
     }
   }
 /**
-   * 涓哄垎缁勫畾涔夎瘎鍒嗭紙鐢ㄤ簬鎺掑簭锟?   * @param {object} definition - 鍒嗙粍瀹氫箟
-   * @returns {number} - 璇勫垎锟?   */
+   * 为分组定义评分（用于排序）
+   * @param {object} definition - 分组定义
+   * @returns {number} - 评分值
+   */
   scoreGroupDefinition(definition) {
     if (!definition) {
       return -Infinity;
