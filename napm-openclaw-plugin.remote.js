@@ -16,6 +16,8 @@ let cachedGroupPathPlannerService = null;
 let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
 let promptRoutingLookupComplete = false;
+let cachedResolutionSpecService = null;
+let resolutionSpecLookupComplete = false;
 let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
@@ -415,6 +417,33 @@ function collectPromptRoutingModuleCandidates() {
   return candidates;
 }
 
+function collectResolutionSpecServiceModuleCandidates() {
+  const candidates = [];
+  const pushCandidate = (candidatePath) => {
+    const normalized = String(candidatePath || '').trim();
+    if (!normalized) {
+      return;
+    }
+
+    const resolved = path.resolve(normalized);
+    if (!candidates.includes(resolved)) {
+      candidates.push(resolved);
+    }
+  };
+
+  pushCandidate(path.resolve(__dirname, 'skills', 'openclaw-napm-query', 'services', 'ResolutionSpecService.js'));
+  pushCandidate(path.resolve(__dirname, '..', 'skills', 'openclaw-napm-query', 'services', 'ResolutionSpecService.js'));
+  pushCandidate(path.resolve(__dirname, '..', '..', 'skills', 'openclaw-napm-query', 'services', 'ResolutionSpecService.js'));
+
+  const workspaceRoot = getSkillWorkspaceRootFromExecutor();
+  if (workspaceRoot) {
+    pushCandidate(path.join(workspaceRoot, 'skills', 'openclaw-napm-query', 'services', 'ResolutionSpecService.js'));
+  }
+
+  pushCandidate(path.resolve(process.cwd(), 'skills', 'openclaw-napm-query', 'services', 'ResolutionSpecService.js'));
+  return candidates;
+}
+
 function loadSkillDotenvIfAvailable() {
   if (skillDotenvLoaded) {
     return;
@@ -447,6 +476,7 @@ function getGroupPathPlannerService() {
     return cachedGroupPathPlannerService;
   }
 
+  loadSkillDotenvIfAvailable();
   groupPathPlannerLookupComplete = true;
   for (const candidatePath of collectGroupPathPlannerModuleCandidates()) {
     try {
@@ -472,6 +502,7 @@ function getPromptRoutingService() {
     return cachedPromptRoutingService;
   }
 
+  loadSkillDotenvIfAvailable();
   promptRoutingLookupComplete = true;
   for (const candidatePath of collectPromptRoutingModuleCandidates()) {
     try {
@@ -494,6 +525,38 @@ function getPromptRoutingService() {
   }
 
   return cachedPromptRoutingService;
+}
+
+function getResolutionSpecService() {
+  if (resolutionSpecLookupComplete) {
+    return cachedResolutionSpecService;
+  }
+
+  loadSkillDotenvIfAvailable();
+  resolutionSpecLookupComplete = true;
+  for (const candidate of collectResolutionSpecServiceModuleCandidates()) {
+    try {
+      cachedResolutionSpecService = require(candidate);
+      break;
+    } catch (_error) {
+      // try next candidate
+    }
+  }
+
+  return cachedResolutionSpecService;
+}
+
+function getBoundaryMode() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getBoundaryMode === 'function') {
+    return service.getBoundaryMode('compat');
+  }
+  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || 'compat').trim().toLowerCase();
+  return raw === 'strict' ? 'strict' : 'compat';
+}
+
+function isStrictBoundaryMode() {
+  return getBoundaryMode() === 'strict';
 }
 
 function shouldSkipPathPreflight(resolvedQuery = {}) {
@@ -579,15 +642,7 @@ function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, prompt = '
 }
 
 function applyPathPreflightToSkillArgs(args = {}) {
-  const prepared = isPlainObject(args) ? { ...args } : {};
-  if (isPlainObject(prepared.resolvedQuery)) {
-    prepared.resolvedQuery = applyPathPreflightToResolvedQuery(
-      prepared.resolvedQuery,
-      normalizePrompt(prepared),
-      prepared.sessionState
-    );
-  }
-  return prepared;
+  return isPlainObject(args) ? { ...args } : {};
 }
 
 function roundToNearestMinute(value) {
@@ -865,6 +920,9 @@ function buildOverviewResolvedQuery(prompt = '') {
 }
 
 function resolvePromptInjectedResolvedQuery(prompt = '', currentResolvedQuery = undefined, options = {}) {
+  if (isStrictBoundaryMode()) {
+    return null;
+  }
   const text = String(prompt || '').trim();
   if (!text) {
     return null;
@@ -931,14 +989,6 @@ function prepareSkillExecutionArgs(args = {}) {
     prepared.userQuery = prompt;
   }
 
-  const injectedResolvedQuery = resolvePromptInjectedResolvedQuery(prompt, prepared.resolvedQuery, {
-    allowOverviewReplacement: true,
-    pluginStructuredOverview: true
-  });
-  if (injectedResolvedQuery) {
-    prepared.resolvedQuery = injectedResolvedQuery;
-  }
-
   return applyPathPreflightToSkillArgs(prepared);
 }
 
@@ -951,14 +1001,6 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
 
   nextParams.prompt = prompt;
   nextParams.userQuery = prompt;
-
-  const injectedResolvedQuery = resolvePromptInjectedResolvedQuery(prompt, nextParams.resolvedQuery, {
-    allowOverviewReplacement: true,
-    pluginStructuredOverview: true
-  });
-  if (injectedResolvedQuery) {
-    nextParams.resolvedQuery = injectedResolvedQuery;
-  }
 
   return applyPathPreflightToSkillArgs(nextParams);
 }
@@ -1688,15 +1730,10 @@ function buildForwardSkillArgsFromDirectTool(args = {}) {
     return null;
   }
 
-  const skillArgs = {
+  return prepareSkillExecutionArgs({
     prompt,
     userQuery: prompt
-  };
-  const overviewResolvedQuery = buildOverviewResolvedQuery(prompt);
-  if (overviewResolvedQuery) {
-    skillArgs.resolvedQuery = overviewResolvedQuery;
-  }
-  return prepareSkillExecutionArgs(skillArgs);
+  });
 }
 
 function toolArgsContainCanonicalTimeRange(params = {}) {
@@ -1730,6 +1767,14 @@ function shouldExposeUpstreamApi() {
 function shouldAllowNapmReasoningPreview() {
   const raw = String(process.env.NAPM_ALLOW_REASONING_PREVIEW || '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
+function shouldAllowNapmReasoningPreviewForCtx(ctx = {}) {
+  if (!shouldAllowNapmReasoningPreview()) {
+    return false;
+  }
+
+  return String(ctx?.channelId || '').trim() !== 'wecom';
 }
 
 function appendDebugApi(text, requestUrl) {
@@ -2057,11 +2102,9 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
     if (shouldRefreshOverview) {
       try {
         api.logger.warn('[napm-openclaw-plugin] forcing overview prompt through skill executor before final reply');
-        const fallbackResolvedQuery = buildOverviewResolvedQuery(activePrompt);
         const refreshed = await runSkillExecutor({
           prompt: activePrompt,
-          userQuery: activePrompt,
-          ...(fallbackResolvedQuery ? { resolvedQuery: fallbackResolvedQuery } : {})
+          userQuery: activePrompt
         });
         rememberDebugApi(activePrompt, refreshed, conversationKey);
         const refreshedReply = makeTextReplyFromSkillResult(refreshed);
@@ -2090,11 +2133,9 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
   if (shouldRefreshMetricInventory(activePrompt, rememberedRecord)) {
     try {
       api.logger.warn('[napm-openclaw-plugin] forcing metric-inventory prompt through skill executor before final reply');
-      const fallbackResolvedQuery = buildMetricInventoryResolvedQuery(activePrompt);
       const refreshed = await runSkillExecutor({
         prompt: activePrompt,
-        userQuery: activePrompt,
-        ...(fallbackResolvedQuery ? { resolvedQuery: fallbackResolvedQuery } : {})
+        userQuery: activePrompt
       });
       rememberDebugApi(activePrompt, refreshed, conversationKey);
       const refreshedReply = makeTextReplyFromSkillResult(refreshed);
@@ -2109,11 +2150,9 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
   if (shouldRefreshBusinessObjectInventory(activePrompt, rememberedRecord)) {
     try {
       api.logger.warn('[napm-openclaw-plugin] forcing business-object-inventory prompt through skill executor before final reply');
-      const fallbackResolvedQuery = buildBusinessObjectInventoryResolvedQuery(activePrompt);
       const refreshed = await runSkillExecutor({
         prompt: activePrompt,
-        userQuery: activePrompt,
-        ...(fallbackResolvedQuery ? { resolvedQuery: fallbackResolvedQuery } : {})
+        userQuery: activePrompt
       });
       rememberDebugApi(activePrompt, refreshed, conversationKey);
       const refreshedReply = makeTextReplyFromSkillResult(refreshed);
@@ -2241,7 +2280,6 @@ async function buildGenericNapmSkillRefreshText(api, prompt, conversationKey, co
 
   try {
     let expandedPrompt = activePrompt;
-    let fallbackResolvedQuery = null;
     const rememberedRecord = getRememberedSkillResult(activePrompt, conversationKey);
     const rememberedGroupType = String(
       rememberedRecord?.resolvedQuery?.groups?.[0]?.type
@@ -2250,13 +2288,11 @@ async function buildGenericNapmSkillRefreshText(api, prompt, conversationKey, co
     ).trim();
     if (isMetricInventoryDetailPrompt(activePrompt) && rememberedGroupType) {
       expandedPrompt = expandMetricInventoryPrompt(activePrompt, rememberedGroupType);
-      fallbackResolvedQuery = buildMetricInventoryResolvedQuery(expandedPrompt);
     }
     api.logger.warn('[napm-openclaw-plugin] forcing generic NAPM prompt through skill executor before final reply');
     const refreshed = await runSkillExecutor({
       prompt: expandedPrompt,
-      userQuery: expandedPrompt,
-      ...(fallbackResolvedQuery ? { resolvedQuery: fallbackResolvedQuery } : {})
+      userQuery: expandedPrompt
     });
     if (!canUseGenericNapmSkillRefreshResult(refreshed)) {
       return '';
@@ -2306,7 +2342,7 @@ function extractMessageText(message) {
 }
 
 function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardState = null, rememberedRecord = null) {
-  if (shouldAllowNapmReasoningPreview()) {
+  if (shouldAllowNapmReasoningPreviewForCtx(ctx)) {
     return false;
   }
   if (String(ctx?.channelId || '').trim() !== 'wecom') {
@@ -2781,38 +2817,16 @@ const plugin = {
           }
         }
 
-        const shouldForceSkillFirst = activeNapmPrompt
-          && Boolean(activePrompt)
-          && !Boolean(activePromptState?.turnNapmToolUsed);
-
-        if (shouldForceSkillFirst && isDirectNapmTool(toolName)) {
+        if (activeNapmPrompt && isDirectNapmTool(toolName) && activePrompt && !shouldForwardDirectToolToSkill(toolName, toolParams)) {
           const rerouteReason = toolArgsLookCanonicalForDirectNapm(toolName, toolParams)
-            ? 'skill_first'
-            : 'skill_first_non_canonical_direct_tool';
-          api.logger.warn(`[napm-openclaw-plugin] forcing direct NAPM tool through skill executor first: tool=${toolName} reason=${rerouteReason}`);
+            ? 'skill_only_direct_tool_guard'
+            : 'skill_only_non_canonical_direct_tool';
+          api.logger.warn(`[napm-openclaw-plugin] rerouting direct NAPM tool to skill executor: tool=${toolName} reason=${rerouteReason}`);
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
             updatedAt: Date.now()
           });
-          return {
-            params: buildDirectToolForwardParams(toolParams, activePrompt, rerouteReason)
-          };
-        }
-
-        if (
-          activeNapmPrompt
-          && isDirectNapmTool(toolName)
-          && activePrompt
-          && (
-            isOverviewPrompt(activePrompt)
-            || !toolArgsLookCanonicalForDirectNapm(toolName, toolParams)
-          )
-        ) {
-          const rerouteReason = isOverviewPrompt(activePrompt)
-            ? 'overview_prompt'
-            : (!toolArgsLookCanonicalForDirectNapm(toolName, toolParams) ? 'non_canonical_direct_tool' : 'napm_mainline_guard');
-          api.logger.warn(`[napm-openclaw-plugin] rerouting direct NAPM tool to skill executor: tool=${toolName} reason=${rerouteReason}`);
           return {
             params: buildDirectToolForwardParams(toolParams, activePrompt, rerouteReason)
           };
@@ -2877,12 +2891,12 @@ const plugin = {
             || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
             || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null);
           const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
-          if (shouldAllowNapmReasoningPreview() && isStreamingPreviewMessageEvent(event)) {
+          if (shouldAllowNapmReasoningPreviewForCtx(ctx) && isStreamingPreviewMessageEvent(event)) {
             return undefined;
           }
           const leakedReasoningText = extractTextContent(event?.content);
           const leakedBypassProcessText = looksLikeNapmBypassProcessText(leakedReasoningText);
-          const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreview() && looksLikeInternalReasoningPreview(leakedReasoningText)
+          const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(leakedReasoningText)
             ? buildRememberedSkillReplyText(rememberedRecord)
             : '';
           if (rememberedReasoningFallbackText) {
@@ -3027,7 +3041,7 @@ const plugin = {
             message: buildAssistantTextMessage(rememberedReplyText, message)
           };
         }
-        const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreview() && looksLikeInternalReasoningPreview(existingText)
+        const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(existingText)
           ? buildRememberedSkillReplyText(rememberedRecord)
           : '';
         if (rememberedReasoningFallbackText) {
@@ -3092,6 +3106,8 @@ const plugin = {
 module.exports = plugin;
 module.exports.default = plugin;
 module.exports.__test__ = {
+  getBoundaryMode,
+  isStrictBoundaryMode,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,

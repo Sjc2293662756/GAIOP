@@ -481,9 +481,13 @@ class RequirementParserService {
       return [];
     }
 
+    const groups = Array.isArray(gatewayRequest?.groups)
+      ? gatewayRequest.groups.filter(Boolean)
+      : [];
+    const allowRuntimeSupportedFallback = groups.length >= 2;
     const ownershipObjectType = resolveMetricOwnershipObjectType(
-      gatewayRequest?.groups,
-      gatewayRequest?.groups?.[0]?.type || ''
+      groups,
+      groups[0]?.type || ''
     );
 
     const preferredIds = [
@@ -496,6 +500,29 @@ class RequirementParserService {
       .filter(Boolean);
 
     const rankedPreferredIds = rankMetricIdsForObjectType(ownershipObjectType, preferredIds);
+    const runtimeSupportedIds = [];
+    const runtimeSupportedSeen = new Set();
+
+    preferredIds.forEach((metricId) => {
+      if (!metricId || runtimeSupportedSeen.has(metricId)) {
+        return;
+      }
+      const matched = supportedMetrics.some((item) => String(item?.id || '').trim() === metricId);
+      if (!matched) {
+        return;
+      }
+      runtimeSupportedSeen.add(metricId);
+      runtimeSupportedIds.push(metricId);
+    });
+
+    supportedMetrics.forEach((item) => {
+      const metricId = String(item?.id || '').trim();
+      if (!metricId || runtimeSupportedSeen.has(metricId)) {
+        return;
+      }
+      runtimeSupportedSeen.add(metricId);
+      runtimeSupportedIds.push(metricId);
+    });
 
     const seen = new Set();
     const ranked = [];
@@ -526,6 +553,19 @@ class RequirementParserService {
       seen.add(metricId);
       ranked.push(metricId);
     });
+
+    if (allowRuntimeSupportedFallback) {
+      // For multilevel paths, metricsForGroup is the final runtime executability signal.
+      // Keep ownership-compatible metrics first, but do not discard runtime-supported
+      // alternatives entirely when static ownership tables do not model that path.
+      runtimeSupportedIds.forEach((metricId) => {
+        if (seen.has(metricId)) {
+          return;
+        }
+        seen.add(metricId);
+        ranked.push(metricId);
+      });
+    }
 
     return ranked;
   }

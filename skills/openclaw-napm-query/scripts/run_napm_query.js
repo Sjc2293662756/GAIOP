@@ -29,6 +29,7 @@ const MetricMappingService = require(path.join(workspaceRoot, 'skills/openclaw-n
 const NapmMetadataService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/NapmMetadataService'));
 const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/GroupPathPlannerService'));
 const PromptRoutingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/PromptRoutingService'));
+const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolutionSpecService'));
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
@@ -36,6 +37,18 @@ const { isBusinessObjectType } = require(path.join(workspaceRoot, 'src/constants
 const { buildSafeUrl } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
+
+function getBoundaryMode() {
+  return ResolutionSpecService.getBoundaryMode('compat');
+}
+
+function isStrictBoundaryMode() {
+  return ResolutionSpecService.isStrictBoundaryMode('compat');
+}
+
+function getResolutionSpec() {
+  return ResolutionSpecService.loadResolutionSpec();
+}
 
 function hasExplicitRankingMetricInText(text = '') {
   const raw = String(text || '').trim();
@@ -1243,20 +1256,71 @@ function inferDrilldownPathFromPrompt(groups = [], prompt = '') {
   return baseGroups;
 }
 
+function shouldSkipStaticPathPlanning(query = {}, prompt = '') {
+  const service = String(query?.service || '').trim();
+  if (!['topValues', 'averageValues', 'timeValues'].includes(service)) {
+    return false;
+  }
+
+  const followUpAction = String(
+    query?.pathPlanning?.followUpAction
+    || query?.semanticConstraints?.followUpAction
+    || query?.executionHints?.followUpAction
+    || ''
+  ).trim().toLowerCase();
+  if (followUpAction === 'drilldown' || isDrilldownPrompt(prompt)) {
+    return false;
+  }
+
+  const groups = cloneGroups(query?.groups);
+  if (groups.length === 0) {
+    return false;
+  }
+
+  const currentTerminalType = String(groups[groups.length - 1]?.type || '').trim();
+  const targetType = String(
+    query?.semanticConstraints?.targetObjectType
+    || query?.resolutionHints?.group?.type
+    || ''
+  ).trim();
+  if (targetType && currentTerminalType && targetType === currentTerminalType) {
+    return true;
+  }
+
+  const metrics = Array.isArray(query?.metrics)
+    ? query.metrics.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+  const primaryMetric = String(query?.metric || query?.topMetric || metrics[0] || '').trim().toUpperCase();
+  const isPacketLossMetric = ['PLI', 'PLO'].includes(primaryMetric) || metrics.some((item) => ['PLI', 'PLO'].includes(item));
+  return service === 'topValues'
+    && currentTerminalType === 'IPAddress'
+    && isPacketLossMetric;
+}
+
+function applyStaticPathPlanningIfNeeded(query = {}, prompt = '') {
+  if (shouldSkipStaticPathPlanning(query, prompt)) {
+    return query;
+  }
+
+  const staticPathPlan = GroupPathPlannerService.planPath(query, prompt, {
+    groups: query.groups
+  });
+  if (staticPathPlan?.plannedGroups?.length > 0) {
+    query.groups = staticPathPlan.plannedGroups;
+    query.pathPlanning = {
+      ...(query.pathPlanning && typeof query.pathPlanning === 'object' ? query.pathPlanning : {}),
+      ...staticPathPlan
+    };
+  }
+
+  return query;
+}
+
 function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = '', session = null) {
   const query = normalizeResolvedQueryShape(resolvedQuery, prompt);
   const sessionState = normalizeSessionState(session);
   if (!hasUsableSessionContext(sessionState)) {
-    const staticPathPlan = GroupPathPlannerService.planPath(query, prompt, {
-      groups: query.groups
-    });
-    if (staticPathPlan?.plannedGroups?.length > 0) {
-      query.groups = staticPathPlan.plannedGroups;
-      query.pathPlanning = {
-        ...(query.pathPlanning && typeof query.pathPlanning === 'object' ? query.pathPlanning : {}),
-        ...staticPathPlan
-      };
-    }
+    applyStaticPathPlanningIfNeeded(query, prompt);
     return query;
   }
 
@@ -1298,16 +1362,7 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
     query.userRequirement = prompt || '';
   }
 
-  const staticPathPlan = GroupPathPlannerService.planPath(query, prompt, {
-    groups: query.groups
-  });
-  if (staticPathPlan?.plannedGroups?.length > 0) {
-    query.groups = staticPathPlan.plannedGroups;
-    query.pathPlanning = {
-      ...(query.pathPlanning && typeof query.pathPlanning === 'object' ? query.pathPlanning : {}),
-      ...staticPathPlan
-    };
-  }
+  applyStaticPathPlanningIfNeeded(query, prompt);
 
   return normalizeResolvedQueryShape(query, prompt);
 }
@@ -1490,6 +1545,49 @@ function buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt = '') {
   return materializePromptRouteResolvedQuery(route);
 }
 
+function isPromptFallbackPacketLossClientTopPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasLoss = /(丢包|丢包率|packet\s*loss|loss)/i.test(text);
+  const hasRanking = /(最多|最高|最大|排行|排名|top|谁|哪个)/i.test(text);
+  const hasAddressScope = /(客户端|client|地址|\bip\b|ip地址|远端|对端)/i.test(text);
+
+  return hasLoss && hasRanking && hasAddressScope;
+}
+
+function buildPromptFallbackPacketLossClientTopResolvedQuery(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!isPromptFallbackPacketLossClientTopPrompt(text)) {
+    return null;
+  }
+
+  const metric = /(流出|出向|outbound|uplink)/i.test(text) ? 'PLO' : 'PLI';
+  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
+  const range = TimeUtils.parseTimeRange(timeRangeKey);
+
+  return normalizeResolvedQueryShape({
+    service: 'topValues',
+    queryModeKey: 'topn',
+    semanticConstraints: {
+      operation: 'topn',
+      targetObjectType: 'IPAddress',
+      metricDomain: 'loss'
+    },
+    start: Math.floor(Number(range.start || 0) / 60) * 60,
+    end: Math.floor(Number(range.end || 0) / 60) * 60,
+    metric,
+    metrics: [metric],
+    topMetric: metric,
+    topCount: 1,
+    groups: [{ type: 'IPAddress' }],
+    format: 'json',
+    userRequirement: text
+  }, text);
+}
+
 function looksLikePromptOnlyOverview(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
@@ -1510,6 +1608,11 @@ function buildPromptFallbackResolvedQuery(prompt = '') {
   const businessObjectInventoryResolvedQuery = buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt);
   if (businessObjectInventoryResolvedQuery) {
     return businessObjectInventoryResolvedQuery;
+  }
+
+  const packetLossClientTopResolvedQuery = buildPromptFallbackPacketLossClientTopResolvedQuery(prompt);
+  if (packetLossClientTopResolvedQuery) {
+    return packetLossClientTopResolvedQuery;
   }
 
   const unknownPortResolvedQuery = buildPromptFallbackUnknownPortResolvedQuery(prompt);
@@ -1635,86 +1738,89 @@ async function resolveInput(args, payload) {
     };
   }
 
-  const promptFallbackResolvedQuery = buildPromptFallbackResolvedQuery(prompt);
-  if (promptFallbackResolvedQuery) {
-    const resolvedQuery = applySessionContinuationToResolvedQuery(
-      promptFallbackResolvedQuery,
-      prompt,
-      requestContext.session
-    );
-    return {
-      prompt,
-      mappingResult: null,
-      resolvedQuery,
-      intentResult: RequirementParserService.buildIntentResult(resolvedQuery, prompt),
-      semanticResolutionResult: RequirementParserService.buildSemanticResolutionResult(resolvedQuery),
-      requestContext,
-      payload
-    };
-  }
+  if (!isStrictBoundaryMode()) {
+    const promptFallbackResolvedQuery = buildPromptFallbackResolvedQuery(prompt);
+    if (promptFallbackResolvedQuery) {
+      const resolvedQuery = applySessionContinuationToResolvedQuery(
+        promptFallbackResolvedQuery,
+        prompt,
+        requestContext.session
+      );
+      return {
+        prompt,
+        mappingResult: null,
+        resolvedQuery,
+        intentResult: RequirementParserService.buildIntentResult(resolvedQuery, prompt),
+        semanticResolutionResult: RequirementParserService.buildSemanticResolutionResult(resolvedQuery),
+        requestContext,
+        payload
+      };
+    }
 
-  const hierarchyCatalogPayload = await buildHierarchyCatalogPayload(prompt);
-  if (hierarchyCatalogPayload) {
-    return {
-      prompt,
-      mappingResult: null,
-      resolvedQuery: {
-        service: 'drilldownCatalog',
-        userRequirement: prompt,
-        groups: hierarchyCatalogPayload?.targetGroupType
-          ? [{ type: hierarchyCatalogPayload.targetGroupType, argument: null }]
-          : []
-      },
-      intentResult: {
-        objectType: 'IntentResult',
-        userIntent: 'metadata',
-        questionType: 'drilldown_hierarchy',
-        service: 'drilldownCatalog',
-        scopeHint: hierarchyCatalogPayload?.targetGroupType || 'all_top_level_groups',
-        preferOverviewFirst: false,
-        stableTemplateId: null,
-        candidateGeneration: null,
-        metricDomainCandidates: [],
-        confidence: 0.95
-      },
-      semanticResolutionResult: {
-        objectType: 'SemanticResolutionResult',
-        object: hierarchyCatalogPayload?.targetGroupType
-          ? { type: hierarchyCatalogPayload.targetGroupType, value: null }
-          : null,
-        groupPath: hierarchyCatalogPayload?.targetGroupType ? [hierarchyCatalogPayload.targetGroupType] : [],
-        metric: null,
-        metrics: [],
-        metricDomain: null,
-        timeRange: {
-          start: null,
-          end: null
+    const hierarchyCatalogPayload = await buildHierarchyCatalogPayload(prompt);
+    if (hierarchyCatalogPayload) {
+      return {
+        prompt,
+        mappingResult: null,
+        resolvedQuery: {
+          service: 'drilldownCatalog',
+          userRequirement: prompt,
+          groups: hierarchyCatalogPayload?.targetGroupType
+            ? [{ type: hierarchyCatalogPayload.targetGroupType, argument: null }]
+            : []
         },
-        baseline: {
-          type: 'none',
-          timeRangeKey: null,
-          start: null,
-          end: null,
-          compareTo: null
+        intentResult: {
+          objectType: 'IntentResult',
+          userIntent: 'metadata',
+          questionType: 'drilldown_hierarchy',
+          service: 'drilldownCatalog',
+          scopeHint: hierarchyCatalogPayload?.targetGroupType || 'all_top_level_groups',
+          preferOverviewFirst: false,
+          stableTemplateId: null,
+          candidateGeneration: null,
+          metricDomainCandidates: [],
+          confidence: 0.95
         },
-        metricSemantic: null,
-        objectSemantic: 'drilldown_hierarchy',
-        pathPlanning: null,
-        stableTemplateId: null,
-        confidence: 0.95,
-        needsClarification: false
-      },
-      hierarchyCatalogPayload,
-      requestContext,
-      payload
-    };
+        semanticResolutionResult: {
+          objectType: 'SemanticResolutionResult',
+          object: hierarchyCatalogPayload?.targetGroupType
+            ? { type: hierarchyCatalogPayload.targetGroupType, value: null }
+            : null,
+          groupPath: hierarchyCatalogPayload?.targetGroupType ? [hierarchyCatalogPayload.targetGroupType] : [],
+          metric: null,
+          metrics: [],
+          metricDomain: null,
+          timeRange: {
+            start: null,
+            end: null
+          },
+          baseline: {
+            type: 'none',
+            timeRangeKey: null,
+            start: null,
+            end: null,
+            compareTo: null
+          },
+          metricSemantic: null,
+          objectSemantic: 'drilldown_hierarchy',
+          pathPlanning: null,
+          stableTemplateId: null,
+          confidence: 0.95,
+          needsClarification: false
+        },
+        hierarchyCatalogPayload,
+        requestContext,
+        payload
+      };
+    }
   }
 
   const error = new Error('Structured resolvedQuery is required in upstream-execution mode; local prompt parsing is disabled.');
   error.code = 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
   error.details = {
     acceptedInputs: ['--query', '--resolvedQuery', '--payload.resolvedQuery'],
-    promptReceived: Boolean(prompt)
+    promptReceived: Boolean(prompt),
+    boundaryMode: getBoundaryMode()
   };
   throw error;
 }
@@ -1767,6 +1873,7 @@ function buildSensitiveCredentialRefusalContract(base = {}) {
 }
 
 function buildMissingResolvedQueryContract(base = {}) {
+  const spec = getResolutionSpec();
   const text = [
     '\u5f53\u524d\u8fd9\u4e2a\u95ee\u9898\u8fd8\u6ca1\u6709\u5f62\u6210\u53ef\u6267\u884c\u7684 NAPM \u67e5\u8be2\u6761\u4ef6\u3002',
     '\u8bf7\u5148\u7531 OpenClaw \u4e3b\u94fe\u5b8c\u6210\u610f\u56fe\u5224\u5b9a\u3001\u8303\u56f4\u786e\u8ba4\u6216\u5fc5\u8981\u7684\u6f84\u6e05\u540e\uff0c\u518d\u4e0b\u53d1 structured resolvedQuery \u7ed9 NAPM skill \u6267\u884c\u3002'
@@ -1779,6 +1886,11 @@ function buildMissingResolvedQueryContract(base = {}) {
     error: {
       code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
       message: text
+    },
+    decision: {
+      next_action: 'UPSTREAM_RESOLUTION_REQUIRED',
+      boundaryMode: getBoundaryMode(),
+      acceptedInputs: Array.isArray(spec?.queryContract?.acceptedInputs) ? spec.queryContract.acceptedInputs : []
     },
     rows: [],
     summary,
@@ -2091,6 +2203,9 @@ if (require.main === module) {
 
 module.exports = {
   __test__: {
+    getBoundaryMode,
+    isStrictBoundaryMode,
+    getResolutionSpec,
     hasExplicitRankingMetricInText,
     normalizeResolvedQueryShape,
     normalizeSessionState,
@@ -2105,6 +2220,8 @@ module.exports = {
     buildPromptFallbackUnknownPortDualProtocolResolvedQuery,
     buildPromptFallbackMetricInventoryResolvedQuery,
     buildPromptFallbackBusinessObjectInventoryResolvedQuery,
+    isPromptFallbackPacketLossClientTopPrompt,
+    buildPromptFallbackPacketLossClientTopResolvedQuery,
     inferPromptFallbackMetricInventoryGroup,
     isPromptFallbackBusinessObjectInventoryPrompt,
     isMetricInventoryPrompt,

@@ -370,14 +370,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result).toBeTruthy();
     expect(result.params.prompt).toBe(rawPrompt);
     expect(result.params.userQuery).toBe(rawPrompt);
-    expect(result.params.resolvedQuery).toMatchObject({
-      service: 'metrics',
-      semanticConstraints: {
-        operation: 'metadata_list',
-        targetObjectType: 'WebApplication'
-      },
-      groups: [{ type: 'WebApplication' }]
-    });
+    expect(result.params.resolvedQuery).toBeUndefined();
   }, 30000);
 
   test('should block exec when raw session prompt is a business metric inventory ask', async () => {
@@ -486,7 +479,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result).toBeTruthy();
     expect(result.params.__napmForwardToSkill).toBe(true);
     expect(result.params.__napmForwardPrompt).toBe(rawPrompt);
-    expect(result.params.__napmForwardReason).toContain('skill_first');
+    expect(result.params.__napmForwardReason).toMatch(/skill_(first|only)/);
   }, 30000);
 
   test('should expand metric inventory details when user asks for detail prompt', async () => {

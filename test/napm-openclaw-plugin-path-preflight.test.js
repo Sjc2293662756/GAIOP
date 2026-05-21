@@ -2,6 +2,7 @@ const path = require('path');
 
 describe('napm-openclaw-plugin path preflight', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalBoundaryMode = process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
   let plugin = null;
 
   beforeAll(() => {
@@ -13,112 +14,100 @@ describe('napm-openclaw-plugin path preflight', () => {
   afterAll(() => {
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
-      return;
+    } else {
+      process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
     }
-    process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
+    if (originalBoundaryMode === undefined) {
+      delete process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
+    } else {
+      process.env.NAPM_RESOLUTION_BOUNDARY_MODE = originalBoundaryMode;
+    }
   });
 
-  test('should preflight explicit object path into planned drilldown groups', () => {
-    const testApi = plugin.__test__;
-    const next = testApi.prepareSkillExecutionArgs({
-      prompt: '看这个业务组下面的应用',
-      userQuery: '看这个业务组下面的应用',
-      resolvedQuery: {
-        service: 'groups',
-        groups: [{ type: 'BusinessGroup', argument: '服务器网段' }],
-        format: 'json'
-      }
-    });
+  afterEach(() => {
+    if (originalBoundaryMode === undefined) {
+      delete process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
+    } else {
+      process.env.NAPM_RESOLUTION_BOUNDARY_MODE = originalBoundaryMode;
+    }
+  });
 
-    expect(next.resolvedQuery.groups).toEqual([
-      { type: 'BusinessGroup', argument: '服务器网段' },
+  test('should keep standalone path preflight helper available for explicit planning', () => {
+    const testApi = plugin.__test__;
+    const next = testApi.applyPathPreflightToResolvedQuery({
+      service: 'groups',
+      groups: [{ type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }],
+      format: 'json'
+    }, '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528', null);
+
+    expect(next.groups).toEqual([
+      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' },
       { type: 'Applications', argument: null },
       { type: 'DefinedApp', argument: null }
     ]);
-    expect(next.resolvedQuery.pathPlanning).toMatchObject({
+    expect(next.pathPlanning).toMatchObject({
       applied: true,
       preflightSource: 'napm_openclaw_plugin',
       selectedPath: ['BusinessGroup', 'Applications', 'DefinedApp']
     });
-    expect(next.resolvedQuery.semanticConstraints).toMatchObject({
-      targetObjectType: 'DefinedApp'
-    });
-    expect(next.resolvedQuery.resolutionHints).toMatchObject({
-      group: {
-        type: 'DefinedApp',
-        source: 'plugin_path_preflight'
-      }
-    });
   });
 
-  test('should preflight continuation prompt from session last_groups when resolvedQuery has no groups', () => {
+  test('should preserve explicit resolvedQuery during skill arg preparation', () => {
     const testApi = plugin.__test__;
     const next = testApi.prepareSkillExecutionArgs({
-      prompt: '继续看下面的页面',
-      userQuery: '继续看下面的页面',
-      sessionState: {
-        last_groups: [{ type: 'WebApplication', argument: '回函238web' }]
-      },
+      prompt: '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528',
+      userQuery: '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528',
       resolvedQuery: {
         service: 'groups',
-        semanticConstraints: {
-          followUpAction: 'drilldown'
-        },
+        groups: [{ type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }],
         format: 'json'
       }
     });
 
     expect(next.resolvedQuery.groups).toEqual([
-      { type: 'WebApplication', argument: '回函238web' },
-      { type: 'PageFamilies', argument: null },
-      { type: 'PageFamily', argument: null }
+      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }
     ]);
-    expect(next.resolvedQuery.pathPlanning).toMatchObject({
-      followUpAction: 'drilldown',
-      selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
-    });
-    expect(next.resolvedQuery.semanticConstraints).toMatchObject({
-      followUpAction: 'drilldown',
-      targetObjectType: 'PageFamily'
-    });
-  });
-
-  test('should not rewrite overview resolvedQuery during path preflight', () => {
-    const testApi = plugin.__test__;
-    const next = testApi.prepareSkillExecutionArgs({
-      prompt: '现在应用整体情况怎么样？',
-      userQuery: '现在应用整体情况怎么样？',
-      resolvedQuery: {
-        service: 'overview',
-        overviewScene: 'application',
-        semanticConstraints: {
-          operation: 'overview',
-          overviewScene: 'application'
-        },
-        groups: [{ type: 'BusinessGroup', argument: '服务器网段' }],
-        format: 'json'
-      }
-    });
-
-    expect(next.resolvedQuery.service).toBe('overview');
-    expect(next.resolvedQuery.overviewScene).toBe('application');
     expect(next.resolvedQuery.pathPlanning).toBeUndefined();
   });
 
-  test('should expose canonical skill tool params with preflighted path', () => {
+  test('should expose canonical skill tool params without plugin path rewrite', () => {
     const testApi = plugin.__test__;
-    const next = testApi.buildCanonicalSkillToolParams('看这个业务组下面的应用', {
+    const next = testApi.buildCanonicalSkillToolParams('\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528', {
       resolvedQuery: {
         service: 'groups',
-        groups: [{ type: 'BusinessGroup', argument: '服务器网段' }],
+        groups: [{ type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }],
         format: 'json'
       }
     });
 
-    expect(next.prompt).toBe('看这个业务组下面的应用');
-    expect(next.userQuery).toBe('看这个业务组下面的应用');
-    expect(next.resolvedQuery.pathPlanning).toMatchObject({
-      selectedPath: ['BusinessGroup', 'Applications', 'DefinedApp']
+    expect(next.prompt).toBe('\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528');
+    expect(next.userQuery).toBe('\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528');
+    expect(next.resolvedQuery.pathPlanning).toBeUndefined();
+    expect(next.resolvedQuery.groups).toEqual([
+      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }
+    ]);
+  });
+
+  test('should still preserve explicit resolvedQuery in strict boundary mode', () => {
+    process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
+    jest.resetModules();
+    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+
+    const testApi = plugin.__test__;
+    const next = testApi.prepareSkillExecutionArgs({
+      prompt: '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528',
+      userQuery: '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528',
+      resolvedQuery: {
+        service: 'groups',
+        groups: [{ type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }],
+        format: 'json'
+      }
     });
+
+    expect(testApi.getBoundaryMode()).toBe('strict');
+    expect(next.resolvedQuery.groups).toEqual([
+      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }
+    ]);
+    expect(next.resolvedQuery.pathPlanning).toBeUndefined();
   });
 });

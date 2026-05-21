@@ -18,20 +18,17 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should recognize packet-loss top prompts without explicit client wording', () => {
+  test('should recognize packet loss top client prompt', () => {
     const testApi = plugin.__test__;
 
-    expect(testApi.isPacketLossClientTopPrompt('现在丢包最大的地址是谁？')).toBe(true);
-    expect(testApi.isPacketLossClientTopPrompt('现在丢包最多的客户端是谁？')).toBe(true);
-    expect(testApi.isPacketLossClientTopPrompt('现在按丢包率排序看丢包最大的IP是谁？')).toBe(true);
-    expect(testApi.isPacketLossClientTopPrompt('现在系统整体情况怎么样？')).toBe(false);
+    expect(testApi.isPacketLossClientTopPrompt('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f')).toBe(true);
+    expect(testApi.isPacketLossClientTopPrompt('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f')).toBe(false);
   });
 
-  test('should build packet-loss resolvedQuery with metric-aligned sort and top1 default', () => {
+  test('should build packet loss helper resolvedQuery', () => {
     const testApi = plugin.__test__;
-    const resolvedQuery = testApi.buildPacketLossClientTopResolvedQuery('现在丢包最大的地址是谁？');
+    const resolvedQuery = testApi.buildPacketLossClientTopResolvedQuery('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f');
 
-    expect(resolvedQuery).toBeTruthy();
     expect(resolvedQuery).toMatchObject({
       service: 'topValues',
       metric: 'PLI',
@@ -40,29 +37,26 @@ describe('napm-openclaw-plugin packet loss guard', () => {
       groups: [{ type: 'IPAddress' }],
       topCount: 1,
       format: 'json',
-      userRequirement: '现在丢包最大的地址是谁？'
+      userRequirement: '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f'
     });
     expect(resolvedQuery.start).toBeGreaterThan(0);
     expect(resolvedQuery.end).toBeGreaterThan(resolvedQuery.start);
   });
 
-  test('should inject packet-loss resolvedQuery into skill execution args', () => {
+  test('should preserve raw prompt and avoid injecting resolvedQuery during skill arg preparation', () => {
     const testApi = plugin.__test__;
+    const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
-      prompt: '现在丢包最大的地址是谁？',
-      userQuery: '现在丢包最大的地址是谁？'
+      prompt,
+      userQuery: prompt
     });
 
-    expect(prepared.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      metric: 'PLI',
-      metrics: ['PLI'],
-      topMetric: 'PLI',
-      groups: [{ type: 'IPAddress' }]
-    });
+    expect(prepared.prompt).toBe(prompt);
+    expect(prepared.userQuery).toBe(prompt);
+    expect(prepared.resolvedQuery).toBeUndefined();
   });
 
-  test('should rewrite packet-loss topn result into concise user-facing answer', async () => {
+  test('should reroute direct topn tool back through skill even after a NAPM turn is active', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -89,55 +83,59 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
-    const skillTool = tools.get('napm-skill-query');
-    const beforeMessageWrite = hooks.get('before_message_write');
-
-    expect(typeof messageReceived).toBe('function');
-    expect(typeof beforePromptBuild).toBe('function');
-    expect(typeof beforeMessageWrite).toBe('function');
-    expect(skillTool).toBeTruthy();
-
+    const beforeToolCall = hooks.get('before_tool_call');
     const ctx = {
       channelId: 'wecom',
-      accountId: 'acct-loss',
-      conversationId: 'conv-loss',
-      sessionKey: 'session-loss',
-      sessionId: 'session-loss',
-      runId: 'run-loss'
+      accountId: 'acct-loss-reroute',
+      conversationId: 'conv-loss-reroute',
+      sessionKey: 'session-loss-reroute',
+      sessionId: 'session-loss-reroute',
+      runId: 'run-loss-reroute'
     };
+    const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
 
-    const prompt = '现在丢包最大的地址是谁？';
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
-
-    await skillTool.execute('tool-call-loss', {
-      prompt,
-      userQuery: prompt,
-      resolvedQuery: {
-        service: 'topValues',
-        metric: 'PLI',
-        metrics: ['PLI'],
-        topMetric: 'PLI',
-        groups: [{ type: 'IPAddress' }],
-        start: 1778216700,
-        end: 1778303100,
-        topCount: 1,
-        format: 'json',
-        userRequirement: prompt
+    await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt
       }
-    });
+    }, ctx);
 
-    const result = await beforeMessageWrite({
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'I see the issue - 让我换个角度继续查。' }]
+    const result = await beforeToolCall({
+      toolName: 'napm-topn',
+      params: {
+        metric: 'PLI',
+        group: 'IPAddress',
+        start: 1779250380,
+        end: 1779336780,
+        topCount: 5
       }
     }, ctx);
 
     expect(result).toBeTruthy();
-    const text = result.message.content?.[0]?.text || '';
-    expect(text).toContain('丢包最大的地址');
-    expect(text).toContain('数据时间');
-    expect(text).not.toContain('I see the issue');
+    expect(result.params.__napmForwardToSkill).toBe(true);
+    expect(result.params.__napmForwardPrompt).toBe(prompt);
   }, 30000);
+
+  test('should preserve remembered packet loss skill reply text', () => {
+    const testApi = plugin.__test__;
+    const reply = testApi.buildPromptScopedReplyTextFromRememberedRecord('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f', {
+      resolvedQuery: {
+        service: 'topValues',
+        metric: 'PLI',
+        topMetric: 'PLI',
+        userRequirement: '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f'
+      },
+      result: {
+        rows: [{ object: '10.0.0.1', value: 12.5 }],
+        displayText: '\u5f53\u524d\u4e22\u5305\u6700\u9ad8\u7684\u5ba2\u6237\u7aefIP\u662f 10.0.0.1\uff0c\u4e22\u5305\u7387 12.5%\u3002'
+      }
+    });
+
+    expect(reply).toContain('10.0.0.1');
+    expect(reply).toContain('12.5%');
+  });
 });

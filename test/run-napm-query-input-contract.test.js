@@ -1,7 +1,66 @@
+process.env.NETINSIDE_HOST = process.env.NETINSIDE_HOST || 'https://example.invalid/webservice/NetInside';
+process.env.NETINSIDE_USERNAME = process.env.NETINSIDE_USERNAME || 'test-user';
+process.env.NETINSIDE_PASSWORD = process.env.NETINSIDE_PASSWORD || 'test-password';
+
+jest.mock('../skills/openclaw-napm-query/scripts/overview-module', () => {
+  const actual = jest.requireActual('../skills/openclaw-napm-query/scripts/overview-module');
+  return {
+    ...actual,
+    executeOverviewModule: jest.fn(async (options = {}) => ({
+      ok: true,
+      service: 'overview',
+      data: [],
+      overview: {
+        queries: [],
+        selectedCandidates: [],
+        skippedCandidates: [],
+        modules: [],
+        warnings: [],
+        executionMeta: {
+          queryCount: 1,
+          successCount: 1,
+          failedCount: 0
+        },
+        discovery: options?.resolvedQuery?.analysisPipeline?.discovery || null
+      },
+      summary: {
+        mode: 'GO_DIRECT_QUERY',
+        title: '概览结果',
+        highlights: [],
+        rowCount: 0,
+        empty: false
+      },
+      selectedCandidates: [],
+      skippedCandidates: [],
+      modules: [],
+      warnings: [],
+      executionMeta: {
+        queryCount: 1,
+        successCount: 1,
+        failedCount: 0
+      },
+      requestUrl: 'http://fake/overview',
+      error: null
+    }))
+  };
+});
+
+const overviewModule = require('../skills/openclaw-napm-query/scripts/overview-module');
 const { __test__ } = require('../skills/openclaw-napm-query/scripts/run_napm_query');
 const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
 
 describe('run_napm_query input contract', () => {
+  const originalBoundaryMode = process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
+
+  afterEach(() => {
+    if (originalBoundaryMode === undefined) {
+      delete process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
+    } else {
+      process.env.NAPM_RESOLUTION_BOUNDARY_MODE = originalBoundaryMode;
+    }
+    jest.clearAllMocks();
+  });
+
   test('should build prompt-only metric inventory resolvedQuery for plain business metric asks', async () => {
     const input = await __test__.resolveInput({ prompt: '业务都可以查哪些指标？' }, {});
 
@@ -100,6 +159,43 @@ describe('run_napm_query input contract', () => {
     expect(input.sensitiveCredentialRequest).toBe(true);
     expect(input.resolvedQuery.service).toBe('security_refusal');
     expect(input.intentResult.userIntent).toBe('security_refusal');
+  });
+
+  test('should require upstream resolvedQuery in strict boundary mode for prompt-only asks', async () => {
+    process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
+
+    await expect(__test__.resolveInput({ prompt: '现在应用整体情况怎么样？' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
+  });
+
+  test('should keep explicit resolvedQuery executable in strict boundary mode', async () => {
+    process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
+
+    const input = await __test__.resolveInput({
+      prompt: '现在应用整体情况怎么样？'
+    }, {
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'application',
+        semanticConstraints: {
+          operation: 'overview',
+          overviewScene: 'application'
+        },
+        start: 1777982400,
+        end: 1777986000
+      }
+    });
+
+    expect(input.resolvedQuery.service).toBe('overview');
+    expect(input.resolvedQuery.overviewScene).toBe('application');
+    expect(input.resolvedQuery.start).toBe(1777982400);
+    expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
   test('should keep discover-then-overview pipeline shape when resolvedQuery requests composite analysis', async () => {
@@ -285,6 +381,7 @@ describe('run_napm_query input contract', () => {
       expect(result.ok).toBe(true);
       expect(result.discovery.selectedObject).toBe('101.254.114.237');
       expect(result.overview.discovery.selectedObject).toBe('101.254.114.237');
+      expect(overviewModule.executeOverviewModule).toHaveBeenCalledTimes(1);
     } finally {
       RequirementParserService.executeGatewayRequest = originalExecute;
     }
@@ -321,5 +418,16 @@ describe('run_napm_query input contract', () => {
     } finally {
       RequirementParserService.executeGatewayRequest = originalExecute;
     }
+  });
+
+  test('should keep packet loss prompt fallback on plain IPAddress topn without auto drilldown expansion', async () => {
+    const input = await __test__.resolveInput({ prompt: '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f' }, {});
+
+    expect(input.resolvedQuery.service).toBe('topValues');
+    expect(input.resolvedQuery.metric).toBe('PLI');
+    expect(input.resolvedQuery.topMetric).toBe('PLI');
+    expect(input.resolvedQuery.topCount).toBe(1);
+    expect(input.resolvedQuery.groups).toEqual([{ type: 'IPAddress' }]);
+    expect(input.resolvedQuery.pathPlanning).toBeUndefined();
   });
 });

@@ -1,0 +1,527 @@
+{
+  "specVersion": "1.0.0",
+  "skillId": "openclaw-napm-query",
+  "queryContract": {
+    "resolvedQueryRequired": true,
+    "acceptedInputs": [
+      "--query",
+      "--resolvedQuery",
+      "payload.resolvedQuery"
+    ],
+    "continuationInputs": [
+      "--session",
+      "payload.session",
+      "payload.sessionState"
+    ]
+  },
+  "services": {
+    "topValues": {
+      "category": "data_query",
+      "semanticHints": [
+        "最多",
+        "最少",
+        "最高",
+        "最低",
+        "最慢",
+        "前N",
+        "TopN",
+        "排名",
+        "排行",
+        "是谁",
+        "哪个"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "metrics",
+        "topMetric",
+        "timeRange"
+      ],
+      "optional": [
+        "groups",
+        "filters",
+        "topCount",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "topn"
+      ]
+    },
+    "averageValues": {
+      "category": "data_query",
+      "semanticHints": [
+        "平均",
+        "均值",
+        "是多少",
+        "整体"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "metrics",
+        "timeRange"
+      ],
+      "optional": [
+        "groups",
+        "filters",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "average"
+      ]
+    },
+    "timeValues": {
+      "category": "data_query",
+      "semanticHints": [
+        "趋势",
+        "走势",
+        "变化",
+        "曲线",
+        "按时间"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "metrics",
+        "timeRange",
+        "granularity"
+      ],
+      "optional": [
+        "groups",
+        "filters",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "timeseries"
+      ]
+    },
+    "overview": {
+      "category": "analysis_query",
+      "semanticHints": [
+        "整体",
+        "总体",
+        "概览",
+        "总览",
+        "overall",
+        "overview",
+        "global",
+        "情况怎么样",
+        "状态"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "overviewScene",
+        "timeRange"
+      ],
+      "optional": [
+        "groups",
+        "analysisPipeline",
+        "overviewDepth",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "overview"
+      ]
+    },
+    "groups": {
+      "category": "metadata_query",
+      "semanticHints": [
+        "有哪些",
+        "列表",
+        "清单",
+        "对象列表"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "groups"
+      ],
+      "optional": [
+        "timeRange",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "metadata"
+      ]
+    },
+    "metrics": {
+      "category": "metadata_query",
+      "semanticHints": [
+        "哪些指标",
+        "支持哪些指标",
+        "可查哪些指标"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "groups"
+      ],
+      "optional": [
+        "timeRange",
+        "format",
+        "semanticConstraints",
+        "pathPlanning",
+        "resolutionHints"
+      ],
+      "queryModes": [
+        "metadata"
+      ]
+    },
+    "drilldownCatalog": {
+      "category": "metadata_query",
+      "semanticHints": [
+        "下钻",
+        "层级",
+        "路径",
+        "结构",
+        "目录"
+      ],
+      "required": [
+        "service"
+      ],
+      "optional": [
+        "groups",
+        "userRequirement"
+      ],
+      "queryModes": [
+        "metadata"
+      ]
+    },
+    "topValues_multi_protocol": {
+      "category": "synthetic_query",
+      "semanticHints": [
+        "未知端口流量排行",
+        "未知TCP端口流量",
+        "未知UDP端口流量"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "protocolQueries",
+        "timeRange"
+      ],
+      "optional": [
+        "format",
+        "semanticConstraints"
+      ],
+      "queryModes": [
+        "topn"
+      ]
+    },
+    "security_refusal": {
+      "category": "decision_only",
+      "semanticHints": [
+        "账号",
+        "密码",
+        "token",
+        "secret",
+        "凭证"
+      ],
+      "required": [
+        "service"
+      ],
+      "optional": [
+        "userRequirement"
+      ],
+      "queryModes": [
+        "decision"
+      ]
+    }
+  },
+  "objects": {
+    "aliases": {
+      "BusinessGroup": [
+        "业务组",
+        "工作组",
+        "业务分组"
+      ],
+      "WebApplication": [
+        "Web应用",
+        "web应用",
+        "网站",
+        "站点",
+        "业务系统",
+        "业务"
+      ],
+      "DefinedApp": [
+        "应用",
+        "已知应用",
+        "协议应用",
+        "Application"
+      ],
+      "ClientIPs": [
+        "客户端",
+        "客户端IP"
+      ],
+      "IPAddress": [
+        "服务端",
+        "服务端IP",
+        "IP地址"
+      ],
+      "PageFamily": [
+        "页面族",
+        "页面分类"
+      ],
+      "User": [
+        "用户"
+      ],
+      "OtherWebApplicationArgument": [
+        "其他web应用",
+        "其它web应用",
+        "未注册web应用",
+        "Other Web Application"
+      ]
+    },
+    "hierarchyCatalogTargets": [
+      "BusinessGroup",
+      "IPAddress",
+      "Prefix24",
+      "WebApplication",
+      "DefinedApp",
+      "OtherApp",
+      "BusinessGroupLink",
+      "IPConversation",
+      "Interface",
+      "VLAN",
+      "User",
+      "PageFamily",
+      "ISPAS",
+      "DestAS",
+      "MonInterfaceGroup",
+      "ClientBusinessGroup",
+      "TotalTraffic"
+    ]
+  },
+  "metrics": {
+    "aliases": {
+      "PKIO": [
+        "数据包数量",
+        "包数量",
+        "包个数",
+        "数据包个数",
+        "包流量"
+      ],
+      "TPIO": [
+        "流量",
+        "吞吐",
+        "吞吐量",
+        "带宽"
+      ],
+      "BYTIO": [
+        "字节流量",
+        "字节数"
+      ],
+      "PGNPGE": [
+        "访问量",
+        "访问次数",
+        "页面访问",
+        "web visits",
+        "page views"
+      ],
+      "TRTI": [
+        "服务器响应时间",
+        "服务端响应时间"
+      ],
+      "RTTI": [
+        "RTT",
+        "往返时延",
+        "网络时延",
+        "延迟"
+      ],
+      "PGTME": [
+        "页面响应时间",
+        "页面耗时",
+        "页面时延"
+      ],
+      "PLI": [
+        "丢包",
+        "丢包率",
+        "packet loss"
+      ],
+      "RDTI": [
+        "重传",
+        "retransmission"
+      ],
+      "CONI": [
+        "连接请求数",
+        "建连请求数"
+      ],
+      "RFCI": [
+        "连接失败数",
+        "失败连接数"
+      ],
+      "CCNI": [
+        "连接数",
+        "新建连接数"
+      ],
+      "PGHTTP500": [
+        "HTTP 5xx",
+        "500错误"
+      ],
+      "PGHTTP400": [
+        "HTTP 4xx",
+        "400错误"
+      ]
+    },
+    "ownershipRules": {
+      "plainBusinessMetricInventoryDefaultsTo": "WebApplication",
+      "preferredBusinessMetrics": [
+        "PG*",
+        "page_optimization_metrics"
+      ],
+      "hiddenFromPlainBusinessInventory": [
+        "PLI",
+        "PLO",
+        "RTTI",
+        "RTTO",
+        "RDTI",
+        "RDTO",
+        "RTXI",
+        "RTXO",
+        "CONI",
+        "CCNI",
+        "RFCI",
+        "TPIO",
+        "BYTIO"
+      ]
+    }
+  },
+  "routingRules": {
+    "inventory": {
+      "metricInventory": {
+        "service": "metrics",
+        "queryModeKey": "metadata"
+      },
+      "businessObjectInventory": {
+        "service": "groups",
+        "queryModeKey": "metadata",
+        "targetObjectType": "WebApplication"
+      },
+      "hierarchyCatalog": {
+        "service": "drilldownCatalog"
+      }
+    },
+    "overviewScenes": [
+      "system",
+      "network",
+      "application",
+      "business",
+      "business_group",
+      "security"
+    ],
+    "overviewTimeRanges": [
+      "today",
+      "yesterday",
+      "last1hour",
+      "last24hours",
+      "last7days",
+      "last30days"
+    ],
+    "unknownPortTraffic": {
+      "singleProtocolService": "topValues",
+      "dualProtocolService": "topValues_multi_protocol",
+      "defaultMetric": "TPIO",
+      "targetObjectType": "OtherApp",
+      "overviewScene": "security",
+      "protocolPathTemplate": [
+        "TotalTraffic",
+        "IPProtocol",
+        "OtherApps",
+        "OtherApp"
+      ]
+    }
+  },
+  "metadataRules": {
+    "groups": "当用户询问有哪些对象或某对象维度下有哪些成员时使用。",
+    "metrics": "当用户询问某对象维度支持哪些指标时使用。",
+    "drilldownCatalog": "当用户询问层级、下钻路径、结构或可达路径时使用。",
+    "metricsForGroupValidation": "执行前若指标归属不明确，最终仍需通过 metricsForGroup 或 NapmMetadataService.getMetricsForGroupPath() 校验。"
+  },
+  "clarificationRules": [
+    {
+      "id": "missing_metric",
+      "description": "已知对象但缺少指标且无法安全默认时，要求澄清。"
+    },
+    {
+      "id": "missing_time_range",
+      "description": "缺少时间范围且不能稳定默认时，要求澄清。"
+    },
+    {
+      "id": "ambiguous_object_scope",
+      "description": "业务 / 业务组 / 应用 / WebApplication 范围不清晰时，要求澄清。"
+    },
+    {
+      "id": "multiple_material_queries",
+      "description": "多个合理 query 会导致明显不同答案时，要求澄清。"
+    }
+  ],
+  "specialExecutionRules": {
+    "overview": {
+      "entryCondition": "整体/概览/总览/分析类问题或 queryModeKey=overview",
+      "notes": [
+        "对象明确时直接 focused overview",
+        "对象不明确但要求找出最突出对象后再分析时，使用 analysisPipeline.discoveryQuery"
+      ]
+    },
+    "discoverThenOverview": {
+      "outerService": "overview",
+      "discoveryPreferredService": "topValues",
+      "selectionSignals": [
+        "谁",
+        "哪个",
+        "最多",
+        "最高",
+        "最慢",
+        "最差"
+      ],
+      "timeRangePolicy": "discovery 与 focused overview 默认复用同一时间范围"
+    },
+    "topValuesMultiProtocol": {
+      "entryCondition": "未知端口流量问题且未明确 TCP/UDP",
+      "service": "topValues_multi_protocol"
+    }
+  },
+  "boundaryRules": {
+    "pluginShouldNotOwn": [
+      "prompt_to_resolvedQuery_semantic_construction",
+      "path_preflight_query_rewrite",
+      "overview_scene_replacement",
+      "inventory_query_fabrication"
+    ],
+    "skillShouldNotOwnInStrictMode": [
+      "prompt_only_query_fallback",
+      "out_of_scope_redirect_policy",
+      "domain_boundary_judgement"
+    ],
+    "pluginShouldOwn": [
+      "tool_registration",
+      "skill_first_tool_guard",
+      "dangerous_tool_block",
+      "thin_skill_bridge"
+    ],
+    "skillShouldOwn": [
+      "resolvedQuery_normalization",
+      "session_continuation_merge",
+      "execution_guard_validation",
+      "metadata_validation",
+      "query_execution",
+      "narration_contract_output"
+    ]
+  }
+}

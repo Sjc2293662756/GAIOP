@@ -18,7 +18,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should force overview refresh from current prompt when remembered result is not overview', async () => {
+  test('should refresh overview reply during message_sending when remembered result is not overview', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -45,10 +45,12 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
-    const skillTool = tools.get('napm-skill-query');
+    const messageSending = hooks.get('message_sending');
     const beforeMessageWrite = hooks.get('before_message_write');
+    const skillTool = tools.get('napm-skill-query');
     expect(typeof messageReceived).toBe('function');
     expect(typeof beforePromptBuild).toBe('function');
+    expect(typeof messageSending).toBe('function');
     expect(typeof beforeMessageWrite).toBe('function');
     expect(skillTool).toBeTruthy();
 
@@ -61,17 +63,14 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       runId: 'run-a'
     };
 
-    messageReceived({
-      content: '现在应用整体情况怎么样？'
-    }, ctx);
+    const prompt = '\u73b0\u5728\u5e94\u7528\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f';
 
-    await beforePromptBuild({
-      prompt: '现在应用整体情况怎么样？'
-    }, ctx);
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
 
     await skillTool.execute('tool-call-1', {
-      prompt: '现在应用整体情况怎么样？',
-      userQuery: '现在应用整体情况怎么样？',
+      prompt,
+      userQuery: prompt,
       resolvedQuery: {
         service: 'topValues',
         metric: 'BYTIO',
@@ -84,17 +83,22 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       }
     });
 
-    const result = await beforeMessageWrite({
+    const beforeWriteResult = await beforeMessageWrite({
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: '旧的自由回答' }]
+        content: [{ type: 'text', text: '\u65e7\u7684\u81ea\u7531\u56de\u7b54' }]
       }
     }, ctx);
 
+    expect(beforeWriteResult).toBeUndefined();
+
+    const result = await messageSending({
+      content: '\u65e7\u7684\u81ea\u7531\u56de\u7b54'
+    }, ctx);
+
     expect(result).toBeTruthy();
-    expect(result.message).toBeTruthy();
-    const text = result.message.content?.[0]?.text || '';
-    expect(text).toContain('应用整体');
-    expect(text).not.toContain('业务组流量状况');
+    expect(typeof result.content).toBe('string');
+    expect(result.content).toMatch(/(?:\u5e94\u7528.*\u6982\u89c8|\u5f53\u524d\u5e94\u7528\u6574\u4f53)/);
+    expect(result.content).not.toContain('\u4e1a\u52a1\u7ec4\u6d41\u91cf\u72b6\u51b5');
   }, 30000);
 });
