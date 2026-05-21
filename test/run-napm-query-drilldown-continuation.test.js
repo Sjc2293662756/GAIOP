@@ -132,6 +132,33 @@ describe('run_napm_query drilldown continuation', () => {
     expect(resolvedQuery.start).toBe(1777982400);
     expect(resolvedQuery.end).toBe(1777986000);
   });
+
+  test('should preserve explicit multilevel path when path planning is disabled', () => {
+    const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
+      {
+        service: 'topValues',
+        metric: 'TPIO',
+        metrics: ['TPIO'],
+        groups: [
+          { type: 'IPAddress', argument: '101.254.114.237' },
+          { type: 'Applications' },
+          { type: 'DefinedApp' }
+        ],
+        skipPathPlanning: true
+      },
+      '101.254.114.237 这个IP最近一天主要跑哪些应用',
+      null
+    );
+
+    expect(resolvedQuery.groups.map((group) => group.type)).toEqual([
+      'IPAddress',
+      'Applications',
+      'DefinedApp'
+    ]);
+    expect(resolvedQuery.groups[0].argument).toBe('101.254.114.237');
+    expect(resolvedQuery.pathPlanning).toBeUndefined();
+  });
+
   test('should plan page family drilldown through PageFamilies container', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {

@@ -1408,6 +1408,10 @@ class RequirementParserService {
     }
 
     const request = JSON.parse(JSON.stringify(gatewayRequest));
+    if (request.skipPathPlanning === true || request.executionHints?.skipPathPlanning === true) {
+      return request;
+    }
+
     const pathPlan = this.groupPathPlannerService.planPath(request, userRequirement, {
       groups: request.groups
     });

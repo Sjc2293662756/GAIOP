@@ -64,7 +64,8 @@ function findAliasMatch(text = '', aliasMap = {}, options = {}) {
 }
 
 function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
-  const end = Number(nowSeconds) > 0 ? Math.floor(Number(nowSeconds)) : Math.floor(Date.now() / 1000);
+  const rawEnd = Number(nowSeconds) > 0 ? Math.floor(Number(nowSeconds)) : Math.floor(Date.now() / 1000);
+  const end = Math.floor(rawEnd / 60) * 60;
   return {
     key: 'last24hours',
     start: end - 24 * 60 * 60,

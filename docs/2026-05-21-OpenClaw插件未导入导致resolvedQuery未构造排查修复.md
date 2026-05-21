@@ -32,7 +32,7 @@ NAPM prompt detected; releasing to OpenClaw Agent mainflow resolver
 
 说明企业微信插件已将 NAPM 问题放行给 OpenClaw Agent 主链。
 
-真实根因是 `napm-openclaw-plugin` 在 OpenClaw runtime 中没有被真正导入：
+排查过程中一度看到 `plugins inspect` 中 `napm-openclaw-plugin` 显示：
 
 ```json
 {
@@ -50,7 +50,9 @@ NAPM prompt detected; releasing to OpenClaw Agent mainflow resolver
 }
 ```
 
-含义是：manifest 被 registry 识别到了，但插件运行时代码没有 import/register，所以 OpenClaw 主链看不到以下工具：
+这个结果不能单独作为“插件完全未导入”的最终证据，因为 `plugins inspect` / `plugins list` 更偏静态 registry 视图；官方 `wecom-openclaw-plugin` 在该命令里也可能显示 `imported:false`。
+
+更准确的验证方式是直接用 OpenClaw runtime loader 加载 NAPM 插件。验证结果显示当前远端已经可以注册出以下工具：
 
 ```text
 napm-resolve-query
@@ -58,7 +60,23 @@ napm-mainflow-query
 napm-skill-query
 ```
 
-主链看不到工具，就不会调用构造器，也就不会产出 `resolvedQuery`。随后模型只能绕行 `curl` / 底层 API。
+以及以下 hook：
+
+```text
+napm-message-scope-detect
+napm-routing-policy
+napm-boundary-tool-guard
+napm-out-of-scope-rewriter
+napm-before-message-write-guard
+```
+
+因此当前更精确的判断是：
+
+```text
+插件 runtime 可加载，resolver 可构造 resolvedQuery；
+但 2026-05-21 19:48 那次企业微信 Agent 会话没有实际使用到 napm-mainflow-query，
+导致模型绕行 curl / 底层 NetInside API。
+```
 
 ## 为什么没有导入
 
@@ -87,6 +105,8 @@ napm-skill-query
 
 因此 NAPM 插件虽然有 `openclaw.plugin.json` 的 contracts 声明，但缺少 OpenClaw runtime 实际导入的 `openclaw.extensions` 入口。
 
+另一个容易误判的点是：`activation.onStartup=true` 会让 persisted registry 将该插件标记成 `startup.sidecar=true`，但 NAPM 插件这里需要暴露的是主链可调用的 `tool/hook capability`。
+
 ## 本次修复
 
 新增 ESM 薄包装入口：
@@ -104,6 +124,11 @@ const require = createRequire(import.meta.url);
 const pluginModule = require('./index.js');
 
 const plugin = pluginModule?.default || pluginModule;
+
+export const register = plugin.register.bind(plugin);
+export const id = plugin.id;
+export const name = plugin.name;
+export const description = plugin.description;
 
 export default plugin;
 ```
@@ -132,6 +157,23 @@ napm-openclaw-plugin.package.json
 
 最终链路是：OpenClaw 按 ESM extension 导入 `index.mjs`，`index.mjs` 再通过 `createRequire()` 兼容加载现有 CommonJS `index.js`。
 
+`index.mjs` 同时提供 `default` 和命名导出 `register/id/name/description`。这样无论 OpenClaw loader 使用 `module.default.register` 还是直接读取 `module.register`，都能拿到同一个插件注册函数。
+
+同时调整 `openclaw.plugin.json` 的 activation：
+
+```json
+{
+  "activation": {
+    "onCapabilities": [
+      "tool",
+      "hook"
+    ]
+  }
+}
+```
+
+原来的 `activation.onStartup=true` 会让 OpenClaw persisted registry 将 NAPM 标记成 `startup.sidecar=true`。NAPM 这里需要暴露给主链的是 tool/hook capability，不是启动型 sidecar。
+
 ## 远端部署位置
 
 ```text
@@ -143,18 +185,36 @@ napm-openclaw-plugin.package.json
 
 ## 验证标准
 
-刷新 registry 并重启后，必须看到：
+刷新 registry 并重启后，不能只看 `plugins inspect` 的 `imported` 字段。应优先做 runtime loader 验证：
 
 ```bash
-/home/netinside/.openclaw/npm/node_modules/.bin/openclaw plugins inspect napm-openclaw-plugin --json
+cd /home/netinside/.openclaw
+node --input-type=module - <<'NODE'
+import { l as loadOpenClawPlugins } from './npm/node_modules/openclaw/dist/loader-CBUR8YGF.js';
+import fs from 'node:fs';
+const config = JSON.parse(fs.readFileSync('./openclaw.json', 'utf8'));
+const registry = loadOpenClawPlugins({
+  config,
+  activationSourceConfig: config,
+  workspaceDir: '/home/netinside/.openclaw/workspace',
+  onlyPluginIds: ['napm-openclaw-plugin'],
+  activate: false,
+  preferBuiltPluginArtifacts: true,
+  logger: console
+});
+console.log(JSON.stringify({
+  tools: registry.tools.flatMap((tool) => tool.names),
+  hooks: registry.hooks.map((hook) => hook.entry?.hook?.name),
+  diagnostics: registry.diagnostics
+}, null, 2));
+NODE
 ```
 
-期望结果：
+期望至少包含：
 
 ```json
 {
-  "imported": true,
-  "toolNames": [
+  "tools": [
     "napm-resolve-query",
     "napm-mainflow-query",
     "napm-skill-query"
@@ -162,7 +222,98 @@ napm-openclaw-plugin.package.json
 }
 ```
 
-如果仍是 `imported:false` 或 `toolNames:[]`，说明 OpenClaw 仍没有加载 NAPM 插件 runtime，不能继续讨论 resolver 规则问题。
+`plugins inspect` 可以辅助观察 manifest：
+
+```bash
+/home/netinside/.openclaw/npm/node_modules/.bin/openclaw plugins inspect napm-openclaw-plugin --json
+```
+
+如果只看 `plugins inspect`，期望至少能看到 `source` 指向 `index.mjs`，并且 `contracts.tools` 存在：
+
+```json
+{
+  "source": "/home/netinside/.openclaw/extensions/napm-openclaw-plugin/index.mjs",
+  "contracts": {
+    "tools": [
+      "napm-resolve-query",
+      "napm-mainflow-query",
+      "napm-skill-query"
+    ]
+  }
+}
+```
+
+## Resolver 验证
+
+本地验证以下问法已经可以稳定构造 `resolvedQuery`：
+
+```text
+吞吐量最大的前10个IP地址是谁？
+```
+
+结果摘要：
+
+```json
+{
+  "ok": true,
+  "service": "topValues",
+  "queryModeKey": "topn",
+  "metric": "TPIO",
+  "groups": [
+    {
+      "type": "IPAddress"
+    }
+  ],
+  "topCount": 10,
+  "semanticConstraints": {
+    "operation": "rank_top",
+    "direction": "desc"
+  }
+}
+```
+
+同时验证：
+
+```text
+丢包最大的IP地址是谁？
+哪个客户端IP丢包最高？
+系统中有哪些工作组？
+```
+
+分别会构造成：
+
+```text
+topValues + PLI + IPAddress + topCount=1
+topValues + PLI + IPAddress + topCount=1
+groups + BusinessGroup + metadata_list
+```
+
+## 当前剩余风险
+
+如果企业微信再次回答“直接调 NetInside 底层 API / curl”，说明不是 resolver 规则问题，而是当前 Agent turn 没有把 `napm-mainflow-query` 加入可用工具集，或模型没有遵循 NAPM routing policy。
+
+这时应重点检查：
+
+```text
+1. 当前企业微信会话 Runtime 行里的 capabilities 是否仍为 none
+2. 本轮 transcript 是否出现 napm-mainflow-query toolCall
+3. journal 是否出现 [napm-openclaw-plugin] injecting NAPM routing policy
+4. 是否仍有旧 session direct mapping 或旧 prompt policy 引导模型使用 exec/curl
+```
+
+如果 tools 已经存在但模型仍绕行，应继续加一层硬约束：在 NAPM prompt 下通过 `before_tool_call` 阻断 `exec/curl`，只允许 `napm-mainflow-query` / `napm-skill-query`。
+
+旧判断中“必须看到 imported:true / toolNames 非空”的要求不再作为唯一标准：
+
+```json
+{
+  "legacyReferenceOnly": [
+    "napm-resolve-query",
+    "napm-mainflow-query",
+    "napm-skill-query"
+  ]
+}
+```
 
 ## 后续测试问题
 

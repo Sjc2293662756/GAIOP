@@ -48,4 +48,34 @@ describe('RequirementParserService multilevel groups execution', () => {
       numGroups: 3
     });
   });
+
+  test('should not append ConnectedIP when explicit IP application path disables planning', async () => {
+    const response = await RequirementParserService.executeGatewayRequest({
+      service: 'topValues',
+      start: 1779282180,
+      end: 1779368580,
+      metric: 'TPIO',
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
+      topCount: 10,
+      format: 'json',
+      skipPathPlanning: true,
+      userRequirement: '101.254.114.237 这个IP最近一天主要跑哪些应用',
+      groups: [
+        { type: 'IPAddress', argument: '101.254.114.237' },
+        { type: 'Applications', argument: null },
+        { type: 'DefinedApp', argument: null }
+      ]
+    });
+
+    expect(response.requestParams).toMatchObject({
+      type: 'topValues',
+      groupType1: 'IPAddress',
+      groupArgument1: '101.254.114.237',
+      groupType2: 'Applications',
+      groupType3: 'DefinedApp',
+      numGroups: 3
+    });
+    expect(response.requestParams.groupType4).toBeUndefined();
+  });
 });

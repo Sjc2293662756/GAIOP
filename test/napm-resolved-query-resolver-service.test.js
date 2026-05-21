@@ -40,6 +40,24 @@ describe('NapmResolvedQueryResolverService', () => {
     expect(result.resolvedQuery.groups).toEqual([{ type: 'IPAddress' }]);
   });
 
+  test('should align generated topValues time range to minute boundaries', () => {
+    const result = ResolverService.resolvePrompt('吞吐量最大的前10个IP地址是谁？', {
+      nowSeconds: 1779366525
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      metric: 'TPIO',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 10,
+      start: 1779280080,
+      end: 1779366480
+    });
+    expect(result.resolvedQuery.start % 60).toBe(0);
+    expect(result.resolvedQuery.end % 60).toBe(0);
+  });
+
   test('should resolve work group inventory prompt into groups metadata_list', () => {
     const result = ResolverService.resolvePrompt('系统中有哪些工作组？');
 

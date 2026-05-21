@@ -225,3 +225,215 @@ BusinessGroup 可以往下钻到哪里？
 业务都可以查哪些指标？
 刚才有没有走 skill？
 ```
+
+## 20:26 吞吐量 Top10 问题复盘
+
+问题时间：2026-05-21 20:26 CST
+
+用户问句：
+
+```text
+吞吐量最大的前10个IP地址是谁？
+```
+
+排查结论：
+
+```text
+这次不是 resolver 完全没有构造 resolvedQuery。
+20:28:46 的 audit 证明 napm-mainflow-query 已经调用 resolver，并产出了 resolvedQuery。
+真正失败点是 resolver 生成的 start/end 没有按 NetInside 要求对齐到分钟整倍数。
+```
+
+失败证据：
+
+```json
+{
+  "event": "napm_mainflow_skill_completed",
+  "traceId": "napm-mainflow-1779366525742",
+  "service": "topValues",
+  "metric": "TPIO",
+  "groups": [
+    {
+      "type": "IPAddress"
+    }
+  ],
+  "topCount": 10,
+  "start": 1779280125,
+  "end": 1779366525,
+  "error": {
+    "code": "NAPM_UPSTREAM_ERROR",
+    "message": "NAPM API error: Request failed with status code 400"
+  }
+}
+```
+
+`1779280125 % 60 != 0`，`1779366525 % 60 != 0`。NetInside `topValues` 要求 `start/end` 是分钟整倍数，所以这个 resolvedQuery 结构语义正确，但时间字段不符合执行契约。随后模型自行构造了分钟对齐的参数 `1779279960/1779366360`，查询成功，但这属于绕开 mainflow 的坏路径。
+
+本次补丁：
+
+```text
+NapmResolvedQueryResolverService.buildLast24HoursTimeRange()
+```
+
+修改为：
+
+```text
+end = Math.floor(nowSeconds / 60) * 60
+start = end - 24 * 60 * 60
+```
+
+这样 `napm-mainflow-query` 自动生成的 `resolvedQuery.start/end` 永远是分钟边界。
+
+同步加固：
+
+```text
+before_tool_call 的 NAPM 绕行拦截提示从 “must call napm-skill-query first”
+改为 “must call napm-mainflow-query first, or call napm-resolve-query and then napm-skill-query”
+```
+
+原因是当前正确链路已经不是 prompt-only skill，而是：
+
+```text
+自然语言 -> napm-mainflow-query
+或
+自然语言 -> napm-resolve-query -> napm-skill-query
+```
+
+新增/更新测试：
+
+```text
+test/napm-resolved-query-resolver-service.test.js
+test/napm-openclaw-plugin-resolver-tool.test.js
+test/napm-openclaw-plugin-direct-tool-removal.test.js
+```
+
+验证命令：
+
+```bash
+npx jest test/napm-resolved-query-resolver-service.test.js test/napm-openclaw-plugin-resolver-tool.test.js test/napm-openclaw-plugin-direct-tool-removal.test.js --runInBand
+```
+
+验证结果：
+
+```text
+Test Suites: 3 passed, 3 total
+Tests: 12 passed, 12 total
+```
+
+本地复现结果：
+
+```json
+{
+  "prompt": "吞吐量最大的前10个IP地址是谁？",
+  "service": "topValues",
+  "metric": "TPIO",
+  "groups": [
+    {
+      "type": "IPAddress"
+    }
+  ],
+  "topCount": 10,
+  "start": 1779280080,
+  "end": 1779366480,
+  "startModulo60": 0,
+  "endModulo60": 0
+}
+```
+
+## 21:07 IP 应用路径被补成四层问题复盘
+
+问题时间：2026-05-21 20:55-21:07 CST
+
+用户问句：
+
+```text
+101.254.114.237 这个IP最近一天主要跑哪些应用
+```
+
+用户给出的合法 API：
+
+```text
+type=groups
+groupType1=IPAddress
+groupArgument1=101.254.114.237
+groupType2=Applications
+groupType3=DefinedApp
+numGroups=3
+```
+
+远端 audit 证明当时 skill 实际发出的是四层：
+
+```text
+type=topValues
+numGroups=4
+groupType1=IPAddress
+groupArgument1=101.254.114.237
+groupType2=Applications
+groupType3=DefinedApp
+groupType4=ConnectedIP
+```
+
+根因：
+
+```text
+resolvedQuery 已经显式传入三层路径：
+IPAddress(101.254.114.237) -> Applications -> DefinedApp
+
+并且上游传了 skipPathPlanning=true。
+
+但 run_napm_query.js 的 applyStaticPathPlanningIfNeeded()
+和 RequirementParserService.applyStaticGroupPathPlanning()
+没有尊重 skipPathPlanning=true。
+
+因此 GroupPathPlannerService 根据“应用/application”关键词继续从静态 groups tree 里选择更深路径，
+把三层显式路径扩成：
+IPAddress -> Applications -> DefinedApp -> ConnectedIP
+```
+
+这不是用户给的三层 API 不合法，也不是三层路径一定没数据；是 skill 执行前把用户明确指定的路径改写了。
+
+本次补丁：
+
+```text
+skills/openclaw-napm-query/scripts/run_napm_query.js
+skills/openclaw-napm-query/services/RequirementParserService.js
+```
+
+新增统一契约：
+
+```text
+如果 resolvedQuery.skipPathPlanning === true
+或 resolvedQuery.executionHints.skipPathPlanning === true
+则不再执行静态路径规划，不追加任何 group 层级。
+```
+
+新增/更新测试：
+
+```text
+test/run-napm-query-drilldown-continuation.test.js
+test/requirement-parser-groups-multilevel.test.js
+```
+
+验证命令：
+
+```bash
+npx jest test/run-napm-query-drilldown-continuation.test.js test/requirement-parser-groups-multilevel.test.js --runInBand
+```
+
+验证结果：
+
+```text
+Test Suites: 2 passed, 2 total
+Tests: 10 passed, 10 total
+```
+
+本地验证发出的 group 参数：
+
+```text
+groupType1=IPAddress
+groupArgument1=101.254.114.237
+groupType2=Applications
+groupType3=DefinedApp
+numGroups=3
+groupType4 不存在
+```

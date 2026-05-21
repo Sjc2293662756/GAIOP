@@ -1377,6 +1377,10 @@ function inferDrilldownPathFromPrompt(groups = [], prompt = '') {
 }
 
 function shouldSkipStaticPathPlanning(query = {}, prompt = '') {
+  if (query?.skipPathPlanning === true || query?.executionHints?.skipPathPlanning === true) {
+    return true;
+  }
+
   const service = String(query?.service || '').trim();
   if (!['topValues', 'averageValues', 'timeValues'].includes(service)) {
     return false;

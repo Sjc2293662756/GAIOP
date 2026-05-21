@@ -3431,7 +3431,7 @@ const plugin = {
           api.logger.warn(`[napm-openclaw-plugin] blocked non-skill tool for NAPM-scoped prompt: tool=${toolName}`);
           return {
             block: true,
-            blockReason: 'NAPM natural-language requests must call napm-skill-query first and may not invoke other tools directly.'
+            blockReason: 'NAPM natural-language requests must call napm-mainflow-query first, or call napm-resolve-query and then napm-skill-query. Direct tools are not allowed.'
           };
         }
 

@@ -96,4 +96,52 @@ describe('napm-openclaw-plugin resolver tools', () => {
 
     expect(result).toBeUndefined();
   });
+
+  test('before_tool_call should block non-NAPM tools and redirect to mainflow resolver', async () => {
+    const hooks = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-resolver-block',
+      conversationId: 'conv-resolver-block',
+      sessionKey: 'session-resolver-block',
+      sessionId: 'session-resolver-block',
+      runId: 'run-resolver-block'
+    };
+    const prompt = '吞吐量最大的前10个IP地址是谁？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'exec',
+      params: {
+        command: 'curl https://101.254.114.238/webservice/NetInside?type=topValues'
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('napm-mainflow-query');
+    expect(result.blockReason).toContain('napm-resolve-query');
+    expect(result.blockReason).toContain('napm-skill-query');
+  });
 });

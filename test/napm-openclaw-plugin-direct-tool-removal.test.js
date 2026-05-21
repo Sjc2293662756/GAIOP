@@ -18,7 +18,7 @@ describe('napm-openclaw-plugin direct tool removal', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should only register napm-skill-query as public NAPM tool/command', () => {
+  test('should register only resolvedQuery-first NAPM tools/commands', () => {
     const hooks = new Map();
     const tools = new Map();
     const commands = new Map();
@@ -46,8 +46,13 @@ describe('napm-openclaw-plugin direct tool removal', () => {
 
     plugin.register(api);
 
-    expect(Array.from(tools.keys())).toEqual(['napm-skill-query']);
-    expect(Array.from(commands.keys())).toEqual(['napm-skill-query']);
+    const expectedResolvedQueryFirstTools = [
+      'napm-resolve-query',
+      'napm-mainflow-query',
+      'napm-skill-query'
+    ];
+    expect(Array.from(tools.keys()).sort()).toEqual(expectedResolvedQueryFirstTools.slice().sort());
+    expect(Array.from(commands.keys()).sort()).toEqual(expectedResolvedQueryFirstTools.slice().sort());
     expect(tools.has('napm-topn')).toBe(false);
     expect(tools.has('napm-average')).toBe(false);
     expect(tools.has('napm-timeseries')).toBe(false);
