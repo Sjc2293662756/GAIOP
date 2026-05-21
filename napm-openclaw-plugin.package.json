@@ -1,0 +1,14 @@
+{
+  "name": "napm-openclaw-plugin",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}

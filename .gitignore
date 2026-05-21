@@ -17,6 +17,7 @@ yarn-error.log*
 tmp_*
 tmp_remote/
 .tmp_payload.json
+.deploy_ts
 .codex-temp/
 .claude/
 

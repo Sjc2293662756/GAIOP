@@ -26,15 +26,85 @@ function getServiceSpec(serviceName = '') {
   return cloneJson(spec?.services?.[normalized] || null);
 }
 
-function getBoundaryMode(defaultMode = 'compat') {
-  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || defaultMode || 'compat').trim().toLowerCase();
+function getQueryContract() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.queryContract || null);
+}
+
+function getObjectAliases() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.objects?.aliases || {});
+}
+
+function getRoutingRules() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.routingRules || {});
+}
+
+function getMetadataRules() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.metadataRules || {});
+}
+
+function getServiceProfiles() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.serviceProfiles || {});
+}
+
+function getObjectCatalog() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.objects?.catalog || {});
+}
+
+function getObjectNormalizationRules() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.objects?.normalizationRules || {});
+}
+
+function getGroupSpec() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.groups || {});
+}
+
+function getMetricSpec() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.metrics || {});
+}
+
+function getClarificationSpec() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.clarification || {});
+}
+
+function getTimeSpec() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.time || {});
+}
+
+function getTemplateSpec() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.templates || {});
+}
+
+function getRuntimeMetadataContracts() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.runtimeMetadataContracts || {});
+}
+
+function getQueryConstructionPolicy() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.queryConstructionPolicy || {});
+}
+
+function getBoundaryMode(defaultMode = 'strict') {
+  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || defaultMode || 'strict').trim().toLowerCase();
   if (raw === 'strict') {
     return 'strict';
   }
   return 'compat';
 }
 
-function isStrictBoundaryMode(defaultMode = 'compat') {
+function isStrictBoundaryMode(defaultMode = 'strict') {
   return getBoundaryMode(defaultMode) === 'strict';
 }
 
@@ -45,6 +115,20 @@ function resetCache() {
 module.exports = {
   loadResolutionSpec,
   getServiceSpec,
+  getQueryContract,
+  getObjectAliases,
+  getRoutingRules,
+  getMetadataRules,
+  getServiceProfiles,
+  getObjectCatalog,
+  getObjectNormalizationRules,
+  getGroupSpec,
+  getMetricSpec,
+  getClarificationSpec,
+  getTimeSpec,
+  getTemplateSpec,
+  getRuntimeMetadataContracts,
+  getQueryConstructionPolicy,
   getBoundaryMode,
   isStrictBoundaryMode,
   resetCache,

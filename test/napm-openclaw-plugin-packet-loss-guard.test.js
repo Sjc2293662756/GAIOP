@@ -22,6 +22,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     const testApi = plugin.__test__;
 
     expect(testApi.isPacketLossClientTopPrompt('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f')).toBe(true);
+    expect(testApi.isPacketLossClientTopPrompt('\u4e22\u5305\u6700\u5927\u7684IP\u5730\u5740\u662f\u8c01\uff1f')).toBe(true);
     expect(testApi.isPacketLossClientTopPrompt('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f')).toBe(false);
   });
 
@@ -31,6 +32,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     expect(resolvedQuery).toMatchObject({
       service: 'topValues',
+      queryModeKey: 'topn',
       metric: 'PLI',
       metrics: ['PLI'],
       topMetric: 'PLI',
@@ -43,7 +45,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(resolvedQuery.end).toBeGreaterThan(resolvedQuery.start);
   });
 
-  test('should preserve raw prompt and avoid injecting resolvedQuery during skill arg preparation', () => {
+  test('should inject packet loss resolvedQuery during skill arg preparation', () => {
     const testApi = plugin.__test__;
     const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
@@ -53,10 +55,17 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
-    expect(prepared.resolvedQuery).toBeUndefined();
+    expect(prepared.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PLI',
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 1
+    });
   });
 
-  test('should reroute direct topn tool back through skill even after a NAPM turn is active', async () => {
+  test('should block removed direct topn tool even after a NAPM turn is active', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -116,8 +125,10 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.params.__napmForwardToSkill).toBe(true);
-    expect(result.params.__napmForwardPrompt).toBe(prompt);
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('napm-topn');
+    expect(result.blockReason).toContain('removed');
+    expect(result.blockReason).toContain('napm-skill-query');
   }, 30000);
 
   test('should preserve remembered packet loss skill reply text', () => {

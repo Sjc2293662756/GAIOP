@@ -317,7 +317,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result.message.content[0].text).not.toContain('RTT');
   }, 30000);
 
-  test('should canonicalize napm-skill-query params back to raw business prompt before tool execution', async () => {
+  test('should block metric inventory skill call without upstream resolvedQuery', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -368,10 +368,41 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.params.prompt).toBe(rawPrompt);
-    expect(result.params.userQuery).toBe(rawPrompt);
-    expect(result.params.resolvedQuery).toBeUndefined();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('resolvedQuery');
+    expect(result.blockReason).toContain('OpenClaw must construct resolvedQuery first');
   }, 30000);
+
+  test('should advertise resolvedQuery-first contract in skill tool description', () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(def) {
+        tools.set(def.name, def);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+    const skillTool = tools.get('napm-skill-query');
+
+    expect(skillTool).toBeTruthy();
+    expect(skillTool.description).toContain('structured resolvedQuery');
+    expect(skillTool.parameters.properties.resolvedQuery.description).toContain('Required');
+  });
 
   test('should block exec when raw session prompt is a business metric inventory ask', async () => {
     const hooks = new Map();
@@ -425,7 +456,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result.blockReason).toContain('napm-skill-query');
   }, 30000);
 
-  test('should reroute direct napm tool through skill first for business metric inventory ask', async () => {
+  test('should block removed direct napm tool for business metric inventory ask', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -477,9 +508,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.params.__napmForwardToSkill).toBe(true);
-    expect(result.params.__napmForwardPrompt).toBe(rawPrompt);
-    expect(result.params.__napmForwardReason).toMatch(/skill_(first|only)/);
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('napm-topn');
+    expect(result.blockReason).toContain('removed');
+    expect(result.blockReason).toContain('napm-skill-query');
   }, 30000);
 
   test('should expand metric inventory details when user asks for detail prompt', async () => {

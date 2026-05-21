@@ -1,24 +1,59 @@
 const runNapmQuery = require('../skills/openclaw-napm-query/scripts/run_napm_query.js');
 
-describe('overview scene routing', () => {
-  test('应用整体 should map to application overview', () => {
-    const resolvedQuery = runNapmQuery.__test__.buildPromptFallbackResolvedQuery('现在应用整体情况怎么样？');
-    expect(resolvedQuery).toBeTruthy();
-    expect(resolvedQuery.service).toBe('overview');
-    expect(resolvedQuery.overviewScene).toBe('application');
+describe('overview scene routing under strict boundary', () => {
+  test('application overview prompt should require upstream resolvedQuery by default', async () => {
+    await expect(runNapmQuery.__test__.resolveInput({
+      prompt: '现在应用整体情况怎么样？'
+    }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
   });
 
-  test('业务整体 should map to business overview', () => {
-    const resolvedQuery = runNapmQuery.__test__.buildPromptFallbackResolvedQuery('现在业务整体情况怎么样？');
-    expect(resolvedQuery).toBeTruthy();
-    expect(resolvedQuery.service).toBe('overview');
-    expect(resolvedQuery.overviewScene).toBe('business');
+  test('business overview resolvedQuery should remain executable', async () => {
+    const input = await runNapmQuery.__test__.resolveInput({
+      prompt: '现在业务整体情况怎么样？'
+    }, {
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'business',
+        semanticConstraints: {
+          operation: 'overview',
+          overviewScene: 'business'
+        },
+        start: 1777982400,
+        end: 1777986000
+      }
+    });
+
+    expect(input.resolvedQuery.service).toBe('overview');
+    expect(input.resolvedQuery.overviewScene).toBe('business');
+    expect(input.resolvedQuery.semanticConstraints.operation).toBe('overview');
   });
 
-  test('业务组整体 should map to business_group overview', () => {
-    const resolvedQuery = runNapmQuery.__test__.buildPromptFallbackResolvedQuery('现在业务组整体情况怎么样？');
-    expect(resolvedQuery).toBeTruthy();
-    expect(resolvedQuery.service).toBe('overview');
-    expect(resolvedQuery.overviewScene).toBe('business_group');
+  test('business-group overview resolvedQuery should remain executable', async () => {
+    const input = await runNapmQuery.__test__.resolveInput({
+      prompt: '现在业务组整体情况怎么样？'
+    }, {
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'business_group',
+        semanticConstraints: {
+          operation: 'overview',
+          overviewScene: 'business_group'
+        },
+        start: 1777982400,
+        end: 1777986000
+      }
+    });
+
+    expect(input.resolvedQuery.service).toBe('overview');
+    expect(input.resolvedQuery.overviewScene).toBe('business_group');
+    expect(input.resolvedQuery.semanticConstraints.overviewScene).toBe('business_group');
   });
 });

@@ -86,8 +86,33 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
 
     expect(result).toBeTruthy();
     expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('必须经 NAPM skill 执行后才能回答');
+    expect(result.content).toContain('当前没有可核验的 NAPM skill 执行记录');
     expect(result.content).not.toContain('Node.js 脚本');
     expect(result.content).not.toContain('约 8 秒');
+  });
+
+  test('should answer execution trace follow-up only from verifiable skill record', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+
+    const ctx = createWeComCtx('meta-followup-trace');
+
+    messageReceived({ content: '丢包最大的IP地址是谁？' }, ctx);
+    await beforePromptBuild({ prompt: '丢包最大的IP地址是谁？' }, ctx);
+
+    messageReceived({ content: '这次你怎么查的？' }, ctx);
+    await beforePromptBuild({ prompt: '这次你怎么查的？' }, ctx);
+
+    const result = await messageSending({
+      content: '这次我直接 curl 调了 NetInside 底层 API，然后用 Python 解析，没有走 skill。'
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('当前没有可核验的 NAPM skill 执行记录');
+    expect(result.content).not.toContain('直接 curl 调了');
+    expect(result.content).not.toContain('Python 解析');
+    expect(result.content).not.toContain('没有走 skill');
   });
 });

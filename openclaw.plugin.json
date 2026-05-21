@@ -1,0 +1,23 @@
+{
+  "id": "napm-openclaw-plugin",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "gatewayBaseUrl": {
+        "type": "string",
+        "title": "NAPM Gateway Base URL"
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "napm-resolve-query",
+      "napm-mainflow-query",
+      "napm-skill-query"
+    ]
+  }
+}

@@ -23,6 +23,7 @@ const QueryValidator = require('./QueryValidator');
 const NapmMetadataService = require('./NapmMetadataService');
 const GroupPathPlannerService = require('./GroupPathPlannerService');
 const QueryMetadataConstraintService = require('./QueryMetadataConstraintService');
+const ResolutionSpecService = require('./ResolutionSpecService');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
 const CsvParser = require('../../../src/utils/CsvParser');
 const TimeUtils = require('../../../src/utils/TimeUtils');
@@ -85,6 +86,23 @@ class RequirementParserService {
     }
 
     try {
+      const specTemplates = ResolutionSpecService.getTemplateSpec();
+      const specEnabled = specTemplates?.stableQueryTemplatesEnabledInSkillRuntime;
+      const specTemplateList = Array.isArray(specTemplates?.stableQueryTemplates)
+        ? specTemplates.stableQueryTemplates
+        : [];
+
+      if (specEnabled === false) {
+        logger.warn('Gateway stable templates are disabled by resolution spec switch.');
+        return [];
+      }
+
+      if (specTemplateList.length > 0) {
+        return specTemplateList
+          .map((template) => this.normalizeStableTemplateDefinition(template))
+          .filter(Boolean);
+      }
+
       const configPath = path.join(__dirname, '../../../config/stable-query-templates.v1.json');
       const raw = fs.readFileSync(configPath, 'utf8');
       const parsed = JSON.parse(raw);

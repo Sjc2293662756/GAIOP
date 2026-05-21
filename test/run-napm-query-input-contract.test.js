@@ -61,96 +61,57 @@ describe('run_napm_query input contract', () => {
     jest.clearAllMocks();
   });
 
-  test('should build prompt-only metric inventory resolvedQuery for plain business metric asks', async () => {
-    const input = await __test__.resolveInput({ prompt: '业务都可以查哪些指标？' }, {});
-
-    expect(input.resolvedQuery.service).toBe('metrics');
-    expect(input.resolvedQuery.queryModeKey).toBe('metadata');
-    expect(input.resolvedQuery.semanticConstraints.operation).toBe('metadata_list');
-    expect(input.resolvedQuery.groups).toEqual([{ type: 'WebApplication' }]);
-    expect(input.resolvedQuery.start).toBeGreaterThan(0);
-    expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
+  test('should require upstream resolvedQuery for prompt-only metric inventory asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '业务都可以查哪些指标？' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
   });
 
-  test('should build prompt-only business inventory resolvedQuery for plain business inventory asks', async () => {
-    const input = await __test__.resolveInput({ prompt: '系统中都有哪些业务？' }, {});
-
-    expect(input.resolvedQuery.service).toBe('groups');
-    expect(input.resolvedQuery.queryModeKey).toBe('metadata');
-    expect(input.resolvedQuery.semanticConstraints.operation).toBe('metadata_list');
-    expect(input.resolvedQuery.semanticConstraints.targetObjectType).toBe('WebApplication');
-    expect(input.resolvedQuery.groups).toEqual([{ type: 'WebApplication' }]);
-    expect(input.resolvedQuery.start).toBeGreaterThan(0);
-    expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
+  test('should require upstream resolvedQuery for prompt-only business inventory asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '系统中都有哪些业务？' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
   });
 
-  test('should not treat explicit business-group inventory ask as business object inventory fallback', () => {
+  test('should still expose business-group inventory detection helper without executing fallback', () => {
     expect(__test__.isPromptFallbackBusinessObjectInventoryPrompt('系统中都有哪些业务组？')).toBe(false);
     expect(__test__.buildPromptFallbackBusinessObjectInventoryResolvedQuery('系统中都有哪些业务组？')).toBeNull();
   });
 
-  test('should build prompt-only overview resolvedQuery for overall overview asks', async () => {
-    const input = await __test__.resolveInput({ prompt: '今天网络整体情况怎么样？' }, {});
-
-    expect(input.resolvedQuery.service).toBe('overview');
-    expect(input.resolvedQuery.queryModeKey).toBe('overview');
-    expect(input.resolvedQuery.semanticConstraints.operation).toBe('overview');
-    expect(input.resolvedQuery.overviewScene).toBe('network');
-    expect(input.resolvedQuery.start).toBeGreaterThan(0);
-    expect(input.resolvedQuery.end).toBeGreaterThan(input.resolvedQuery.start);
+  test('should require upstream resolvedQuery for prompt-only overview asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '今天网络整体情况怎么样？' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
   });
 
-  test('should build direct topValues query for unknown TCP port traffic asks', async () => {
-    const input = await __test__.resolveInput({ prompt: '未知TCP端口流量Top10' }, {});
-
-    expect(input.resolvedQuery.service).toBe('topValues');
-    expect(input.resolvedQuery.queryModeKey).toBe('topn');
-    expect(input.resolvedQuery.metric).toBe('TPIO');
-    expect(input.resolvedQuery.topMetric).toBe('TPIO');
-    expect(input.resolvedQuery.topCount).toBe(10);
-    expect(input.resolvedQuery.groups).toEqual([
-      { type: 'TotalTraffic' },
-      { type: 'IPProtocol', argument: 'TCP' },
-      { type: 'OtherApps' },
-      { type: 'OtherApp' }
-    ]);
-    expect(input.resolvedQuery.semanticConstraints.targetObjectType).toBe('OtherApp');
-    expect(input.resolvedQuery.semanticConstraints.overviewScene).toBe('security');
+  test('should require upstream resolvedQuery for prompt-only unknown TCP port traffic asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '未知TCP端口流量Top10' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED'
+    });
   });
 
-  test('should build direct topValues query for unknown UDP port traffic asks', async () => {
-    const input = await __test__.resolveInput({ prompt: '未知UDP端口流量排行' }, {});
-
-    expect(input.resolvedQuery.service).toBe('topValues');
-    expect(input.resolvedQuery.groups).toEqual([
-      { type: 'TotalTraffic' },
-      { type: 'IPProtocol', argument: 'UDP' },
-      { type: 'OtherApps' },
-      { type: 'OtherApp' }
-    ]);
+  test('should require upstream resolvedQuery for prompt-only unknown UDP port traffic asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '未知UDP端口流量排行' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED'
+    });
   });
 
-  test('should build dual protocol direct query for unknown port traffic asks without protocol', async () => {
-    const input = await __test__.resolveInput({ prompt: '未知端口流量排行' }, {});
-
-    expect(input.resolvedQuery.service).toBe('topValues_multi_protocol');
-    expect(input.resolvedQuery.queryModeKey).toBe('topn');
-    expect(Array.isArray(input.resolvedQuery.protocolQueries)).toBe(true);
-    expect(input.resolvedQuery.protocolQueries).toHaveLength(2);
-    expect(input.resolvedQuery.protocolQueries.map((item) => item.groups)).toEqual([
-      [
-        { type: 'TotalTraffic' },
-        { type: 'IPProtocol', argument: 'TCP' },
-        { type: 'OtherApps' },
-        { type: 'OtherApp' }
-      ],
-      [
-        { type: 'TotalTraffic' },
-        { type: 'IPProtocol', argument: 'UDP' },
-        { type: 'OtherApps' },
-        { type: 'OtherApp' }
-      ]
-    ]);
+  test('should require upstream resolvedQuery for prompt-only dual protocol unknown port asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '未知端口流量排行' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED'
+    });
   });
 
   test('should still block sensitive credential prompts locally', async () => {
@@ -420,14 +381,13 @@ describe('run_napm_query input contract', () => {
     }
   });
 
-  test('should keep packet loss prompt fallback on plain IPAddress topn without auto drilldown expansion', async () => {
-    const input = await __test__.resolveInput({ prompt: '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f' }, {});
-
-    expect(input.resolvedQuery.service).toBe('topValues');
-    expect(input.resolvedQuery.metric).toBe('PLI');
-    expect(input.resolvedQuery.topMetric).toBe('PLI');
-    expect(input.resolvedQuery.topCount).toBe(1);
-    expect(input.resolvedQuery.groups).toEqual([{ type: 'IPAddress' }]);
-    expect(input.resolvedQuery.pathPlanning).toBeUndefined();
+  test('should require upstream resolvedQuery for packet loss ranking asks by default', async () => {
+    await expect(__test__.resolveInput({ prompt: '哪个客户端IP丢包最高？' }, {})).rejects.toMatchObject({
+      code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
+      details: expect.objectContaining({
+        boundaryMode: 'strict',
+        promptReceived: true
+      })
+    });
   });
 });

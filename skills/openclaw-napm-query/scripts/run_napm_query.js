@@ -34,16 +34,101 @@ const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
 const { isBusinessObjectType } = require(path.join(workspaceRoot, 'src/constants/objectMetricOwnership'));
-const { buildSafeUrl } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
+const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
+function normalizeTraceId(value = '') {
+  const text = String(value || '').trim();
+  return text ? text.slice(0, 160) : '';
+}
+
+function buildTraceIdFromPayload(payload = {}, args = {}) {
+  const explicit = normalizeTraceId(
+    payload?.traceId
+    || args?.traceId
+    || payload?.sessionState?.traceId
+    || payload?.session?.traceId
+  );
+  if (explicit) {
+    return explicit;
+  }
+  return `skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function summarizeResolvedQueryForAudit(resolvedQuery = null) {
+  if (!resolvedQuery || typeof resolvedQuery !== 'object' || Array.isArray(resolvedQuery)) {
+    return null;
+  }
+
+  const groups = Array.isArray(resolvedQuery.groups)
+    ? resolvedQuery.groups.map((item) => ({
+        type: item?.type || null,
+        argument: item?.argument ?? null
+      }))
+    : [];
+
+  return {
+    service: String(resolvedQuery.service || '').trim() || null,
+    queryModeKey: String(resolvedQuery.queryModeKey || '').trim() || null,
+    operation: String(
+      resolvedQuery?.semanticConstraints?.operation
+      || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
+      || ''
+    ).trim() || null,
+    overviewScene: String(
+      resolvedQuery.overviewScene
+      || resolvedQuery?.semanticConstraints?.overviewScene
+      || ''
+    ).trim() || null,
+    groups,
+    metric: String(resolvedQuery.metric || '').trim() || null,
+    metrics: Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.slice(0, 20) : [],
+    topMetric: String(resolvedQuery.topMetric || '').trim() || null,
+    topCount: Number.isFinite(Number(resolvedQuery.topCount)) ? Number(resolvedQuery.topCount) : null,
+    granularity: Number.isFinite(Number(resolvedQuery.granularity)) ? Number(resolvedQuery.granularity) : null,
+    start: Number.isFinite(Number(resolvedQuery.start)) ? Number(resolvedQuery.start) : null,
+    end: Number.isFinite(Number(resolvedQuery.end)) ? Number(resolvedQuery.end) : null,
+    hasPathPlanning: Boolean(resolvedQuery.pathPlanning),
+    hasExecutionGuard: Boolean(resolvedQuery?.executionGuard?.blockExecution),
+    hasAnalysisPipeline: Boolean(resolvedQuery.analysisPipeline)
+  };
+}
+
+function buildAuditRequestContext(traceId = null) {
+  return {
+    requestId: traceId || null,
+    feature: 'napm-skill-query'
+  };
+}
+
+function logSkillAudit(event, payload = {}, traceId = null) {
+  try {
+    logAudit(event, payload, buildAuditRequestContext(traceId));
+  } catch (_error) {
+    // best-effort audit logging only
+  }
+}
+
+function detectResolvedQuerySource(args = {}, payload = {}) {
+  if (payload?.resolvedQuery && typeof payload.resolvedQuery === 'object' && !Array.isArray(payload.resolvedQuery)) {
+    return 'payload.resolvedQuery';
+  }
+  if (args?.resolvedQuery) {
+    return '--resolvedQuery';
+  }
+  if (args?.queryJson) {
+    return '--queryJson';
+  }
+  return null;
+}
+
 function getBoundaryMode() {
-  return ResolutionSpecService.getBoundaryMode('compat');
+  return ResolutionSpecService.getBoundaryMode('strict');
 }
 
 function isStrictBoundaryMode() {
-  return ResolutionSpecService.isStrictBoundaryMode('compat');
+  return ResolutionSpecService.isStrictBoundaryMode('strict');
 }
 
 function getResolutionSpec() {
@@ -75,8 +160,8 @@ function parseArgs(argv) {
     if (arg === '--prompt') {
       args.prompt = argv[index + 1];
       index += 1;
-    } else if (arg === '--query') {
-      args.query = argv[index + 1];
+    } else if (arg === '--queryJson') {
+      args.queryJson = argv[index + 1];
       index += 1;
     } else if (arg === '--payload') {
       args.payload = argv[index + 1];
@@ -737,6 +822,41 @@ async function buildHierarchyCatalogPayload(prompt = '') {
   }
 
   const targetGroupType = normalizeDrilldownQuestionTarget(prompt);
+  if (!targetGroupType) {
+    const catalog = await NapmMetadataService.getTopLevelDrilldownCatalog({ maxDepth: 2 });
+    return {
+      service: 'drilldownCatalog',
+      targetGroupType: null,
+      catalog
+    };
+  }
+
+  const result = await NapmMetadataService.getDrilldownPathsForGroupType(targetGroupType, { maxDepth: 2 });
+  if (!result) {
+    return {
+      service: 'drilldownCatalog',
+      targetGroupType,
+      notFound: true
+    };
+  }
+
+  return {
+    service: 'drilldownCatalog',
+    targetGroupType,
+    ...result
+  };
+}
+
+async function buildHierarchyCatalogPayloadFromResolvedQuery(resolvedQuery = null) {
+  if (!resolvedQuery || resolvedQuery.service !== 'drilldownCatalog') {
+    return null;
+  }
+
+  const groups = Array.isArray(resolvedQuery.groups) ? resolvedQuery.groups : [];
+  const targetGroupType = String(
+    groups.find((item) => item && typeof item === 'object' && item.type)?.type || ''
+  ).trim();
+
   if (!targetGroupType) {
     const catalog = await NapmMetadataService.getTopLevelDrilldownCatalog({ maxDepth: 2 });
     return {
@@ -1716,7 +1836,7 @@ async function resolveInput(args, payload) {
     };
   }
 
-  const explicitResolvedQuery = coerceJsonObject(args.query)
+  const explicitResolvedQuery = coerceJsonObject(args.queryJson)
     || parseJsonArg('--resolvedQuery', args.resolvedQuery)
     || payload?.resolvedQuery
     || null;
@@ -1738,87 +1858,10 @@ async function resolveInput(args, payload) {
     };
   }
 
-  if (!isStrictBoundaryMode()) {
-    const promptFallbackResolvedQuery = buildPromptFallbackResolvedQuery(prompt);
-    if (promptFallbackResolvedQuery) {
-      const resolvedQuery = applySessionContinuationToResolvedQuery(
-        promptFallbackResolvedQuery,
-        prompt,
-        requestContext.session
-      );
-      return {
-        prompt,
-        mappingResult: null,
-        resolvedQuery,
-        intentResult: RequirementParserService.buildIntentResult(resolvedQuery, prompt),
-        semanticResolutionResult: RequirementParserService.buildSemanticResolutionResult(resolvedQuery),
-        requestContext,
-        payload
-      };
-    }
-
-    const hierarchyCatalogPayload = await buildHierarchyCatalogPayload(prompt);
-    if (hierarchyCatalogPayload) {
-      return {
-        prompt,
-        mappingResult: null,
-        resolvedQuery: {
-          service: 'drilldownCatalog',
-          userRequirement: prompt,
-          groups: hierarchyCatalogPayload?.targetGroupType
-            ? [{ type: hierarchyCatalogPayload.targetGroupType, argument: null }]
-            : []
-        },
-        intentResult: {
-          objectType: 'IntentResult',
-          userIntent: 'metadata',
-          questionType: 'drilldown_hierarchy',
-          service: 'drilldownCatalog',
-          scopeHint: hierarchyCatalogPayload?.targetGroupType || 'all_top_level_groups',
-          preferOverviewFirst: false,
-          stableTemplateId: null,
-          candidateGeneration: null,
-          metricDomainCandidates: [],
-          confidence: 0.95
-        },
-        semanticResolutionResult: {
-          objectType: 'SemanticResolutionResult',
-          object: hierarchyCatalogPayload?.targetGroupType
-            ? { type: hierarchyCatalogPayload.targetGroupType, value: null }
-            : null,
-          groupPath: hierarchyCatalogPayload?.targetGroupType ? [hierarchyCatalogPayload.targetGroupType] : [],
-          metric: null,
-          metrics: [],
-          metricDomain: null,
-          timeRange: {
-            start: null,
-            end: null
-          },
-          baseline: {
-            type: 'none',
-            timeRangeKey: null,
-            start: null,
-            end: null,
-            compareTo: null
-          },
-          metricSemantic: null,
-          objectSemantic: 'drilldown_hierarchy',
-          pathPlanning: null,
-          stableTemplateId: null,
-          confidence: 0.95,
-          needsClarification: false
-        },
-        hierarchyCatalogPayload,
-        requestContext,
-        payload
-      };
-    }
-  }
-
   const error = new Error('Structured resolvedQuery is required in upstream-execution mode; local prompt parsing is disabled.');
   error.code = 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
   error.details = {
-    acceptedInputs: ['--query', '--resolvedQuery', '--payload.resolvedQuery'],
+    acceptedInputs: ['--queryJson', '--resolvedQuery', 'payload.resolvedQuery'],
     promptReceived: Boolean(prompt),
     boundaryMode: getBoundaryMode()
   };
@@ -1979,8 +2022,30 @@ async function executeUnknownPortDualProtocolQuery(prompt, resolvedQuery) {
 }
 
 async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult) {
+  const traceId = normalizeTraceId(payload?.traceId || payload?.sessionState?.traceId);
+  logSkillAudit('napm_skill_execution_started', {
+    traceId: traceId || null,
+    prompt,
+    service: String(resolvedQuery?.service || '').trim() || null,
+    resolvedQuery,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+    hasIntentResult: Boolean(intentResult)
+  }, traceId);
+
   if (resolvedQuery?.service === 'topValues_multi_protocol') {
-    return executeUnknownPortDualProtocolQuery(prompt, resolvedQuery);
+    const result = await executeUnknownPortDualProtocolQuery(prompt, resolvedQuery);
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId: traceId || null,
+      prompt,
+      service: 'topValues_multi_protocol',
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: Boolean(result?.ok),
+      requestUrl: result?.requestUrl || null,
+      rowCount: Array.isArray(result?.data) ? result.data.length : 0,
+      responseType: 'multi_protocol'
+    }, traceId);
+    return result;
   }
 
   const isOverview = isOverviewResolvedQuery(resolvedQuery);
@@ -2013,7 +2078,7 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
       executeGatewayRequest: RequirementParserService.executeGatewayRequest.bind(RequirementParserService)
     });
 
-    return {
+    const result = {
       ...overviewResult,
       resolvedQuery: focusedOverviewResolvedQuery,
       requestUrl: overviewResult?.requestUrl || discoveryResult?.requestUrl || null,
@@ -2045,33 +2110,94 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
         ...(Array.isArray(overviewResult?.warnings) ? overviewResult.warnings : [])
       ]
     };
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId: traceId || null,
+      prompt,
+      service: String(result?.service || focusedOverviewResolvedQuery?.service || '').trim() || null,
+      resolvedQuery: focusedOverviewResolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(focusedOverviewResolvedQuery),
+      ok: Boolean(result?.ok),
+      requestUrl: result?.requestUrl || null,
+      rowCount: Array.isArray(result?.data) ? result.data.length : 0,
+      responseType: 'overview_with_discovery'
+    }, traceId);
+    return result;
   }
 
   if (isOverview) {
-    return executeOverviewModule({
+    const result = await executeOverviewModule({
       prompt,
       payload,
       intent: intentResult,
       resolvedQuery,
       executeGatewayRequest: RequirementParserService.executeGatewayRequest.bind(RequirementParserService)
     });
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId: traceId || null,
+      prompt,
+      service: String(result?.service || resolvedQuery?.service || '').trim() || null,
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: Boolean(result?.ok),
+      requestUrl: result?.requestUrl || null,
+      rowCount: Array.isArray(result?.data) ? result.data.length : 0,
+      responseType: 'overview'
+    }, traceId);
+    return result;
   }
 
-  return RequirementParserService.executeGatewayRequest(resolvedQuery);
+  const result = await RequirementParserService.executeGatewayRequest(resolvedQuery);
+  logSkillAudit('napm_skill_execution_completed', {
+    traceId: traceId || null,
+    prompt,
+    service: String(result?.service || resolvedQuery?.service || '').trim() || null,
+    resolvedQuery,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+    ok: Boolean(result?.ok),
+    requestUrl: result?.requestUrl || null,
+    rowCount: Array.isArray(result?.data) ? result.data.length : 0,
+    responseType: 'direct_query'
+  }, traceId);
+  return result;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const payload = parseJsonArg('--payload', args.payload) || {};
+  const traceId = buildTraceIdFromPayload(payload, args);
+  payload.traceId = traceId;
   const input = await resolveInput(args, payload);
   const prompt = input.prompt || '';
   const resolvedQuery = input.resolvedQuery || {};
   const mappingResult = input.mappingResult || null;
   const intentResult = input.intentResult || null;
   const semanticResolutionResult = input.semanticResolutionResult || null;
-  const hierarchyCatalogPayload = input.hierarchyCatalogPayload || null;
+  const hierarchyCatalogPayload = input.hierarchyCatalogPayload
+    || await buildHierarchyCatalogPayloadFromResolvedQuery(resolvedQuery)
+    || null;
+  const resolvedQuerySource = detectResolvedQuerySource(args, payload);
+
+  logSkillAudit('napm_skill_resolved_query_received', {
+    traceId,
+    prompt,
+    resolvedQuerySource,
+    boundaryMode: getBoundaryMode(),
+    resolvedQuery,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+    sessionPresent: Boolean(input?.requestContext?.session),
+    sensitiveCredentialRequest: Boolean(input.sensitiveCredentialRequest)
+  }, traceId);
 
   if (input.sensitiveCredentialRequest) {
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId,
+      prompt,
+      service: 'security_refusal',
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: true,
+      responseType: 'security_refusal'
+    }, traceId);
     const output = buildSensitiveCredentialRefusalContract({
       prompt,
       service: 'security_refusal',
@@ -2086,6 +2212,16 @@ async function main() {
 
   const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
   if (clarificationGate?.required) {
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId,
+      prompt,
+      service: String(resolvedQuery?.service || '').trim() || null,
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: true,
+      responseType: 'clarification_required',
+      clarificationQuestion: clarificationGate?.question || null
+    }, traceId);
     const output = buildClarificationContract({
       prompt,
       service: resolvedQuery?.service || null,
@@ -2100,6 +2236,16 @@ async function main() {
   }
 
   if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId,
+      prompt,
+      service: String(resolvedQuery?.service || '').trim() || null,
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: true,
+      responseType: 'execution_guard_blocked',
+      guardMessage: resolvedQuery?.executionGuard?.message || null
+    }, traceId);
     const output = buildClarificationContract({
       prompt,
       service: resolvedQuery?.service || null,
@@ -2121,6 +2267,16 @@ async function main() {
   }
 
   if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId,
+      prompt,
+      service: 'drilldownCatalog',
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: !Boolean(hierarchyCatalogPayload?.notFound),
+      responseType: 'drilldown_catalog',
+      hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null
+    }, traceId);
     const output = buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
     process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
     return;
@@ -2164,6 +2320,14 @@ if (require.main === module) {
   main().catch((error) => {
     const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
     if (isMissingResolvedQuery) {
+      logSkillAudit('napm_skill_missing_resolved_query', {
+        traceId: null,
+        error: {
+          code: error.code || null,
+          message: error.message
+        },
+        details: error.details || null
+      }, null);
       const output = buildMissingResolvedQueryContract({
         prompt: null,
         service: null,
@@ -2175,6 +2339,14 @@ if (require.main === module) {
       process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
       return;
     }
+
+    logSkillAudit('napm_skill_execution_failed', {
+      traceId: null,
+      error: {
+        code: error.code || 'SKILL_EXECUTION_ERROR',
+        message: error.message
+      }
+    }, null);
 
     const summary = buildDecisionSummary('Skill execution failed', error.message, 'FAILED');
     const output = buildOpenClawReplyContract({
@@ -2228,6 +2400,7 @@ module.exports = {
     isHierarchyCatalogPrompt,
     normalizeDrilldownQuestionTarget,
     buildDrilldownCatalogDisplayText,
+    buildHierarchyCatalogPayloadFromResolvedQuery,
     resolveInput,
     buildFocusedOverviewResolvedQuery,
     deriveDiscoveryFocusSelection,

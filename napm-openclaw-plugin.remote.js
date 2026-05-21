@@ -5,7 +5,8 @@ const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
 const NAPM_DIRECT_SKILL_MODE = true;
-const NAPM_SKILL_EXECUTOR = process.env.NAPM_SKILL_EXECUTOR || '/opt/NAPM_Semantic_Gateway/skills/openclaw-napm-query/scripts/run_napm_query.js';
+const NAPM_SKILL_EXECUTOR = process.env.NAPM_SKILL_EXECUTOR
+  || path.join(process.env.HOME || '/home/netinside', '.openclaw/skills/openclaw-napm-query/scripts/run_napm_query.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmDebugApiByPrompt = new Map();
@@ -18,18 +19,16 @@ let cachedPromptRoutingService = null;
 let promptRoutingLookupComplete = false;
 let cachedResolutionSpecService = null;
 let resolutionSpecLookupComplete = false;
+let cachedNapmResolvedQueryResolverService = null;
+let napmResolvedQueryResolverLookupComplete = false;
 let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set([
-  'napm-skill-query',
-  'napm-topn',
-  'napm-average',
-  'napm-timeseries'
+  'napm-resolve-query',
+  'napm-mainflow-query',
+  'napm-skill-query'
 ]);
-const DIRECT_TOOL_FORWARD_MARKER = '__napmForwardToSkill';
-const DIRECT_TOOL_FORWARD_PROMPT = '__napmForwardPrompt';
-const DIRECT_TOOL_FORWARD_REASON = '__napmForwardReason';
 const NAPM_OBJECT_PATTERNS = [
   /napm/i,
   /netinside/i,
@@ -306,7 +305,7 @@ function looksLikeNapmBypassProcessText(text = '') {
     return false;
   }
 
-  return /(?:Node\.js\s*脚本|python3|grep|bash|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
+  return /(?:Node\.js\s*脚本|python3|Python\s*解析|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|绕过|跨过|没走\s*skill|没有走\s*skill|没走任何中间层|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
 }
 
 function isMeaningfulText(value = '') {
@@ -336,6 +335,167 @@ function normalizeObject(value) {
 
 function cloneJsonObject(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+const AUDIT_SENSITIVE_KEYS = new Set([
+  'password',
+  'passwd',
+  'token',
+  'authorization',
+  'secret'
+]);
+
+function truncateAuditText(value = '', maxLength = 4000) {
+  const text = String(value == null ? '' : value);
+  return text.length > maxLength
+    ? `${text.slice(0, maxLength)}...[truncated:${text.length - maxLength}]`
+    : text;
+}
+
+function sanitizeAuditValue(value, depth = 0) {
+  if (value == null) {
+    return value;
+  }
+
+  if (depth >= 5) {
+    return '[max-depth]';
+  }
+
+  if (typeof value === 'string') {
+    return truncateAuditText(value);
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 50).map((item) => sanitizeAuditValue(item, depth + 1));
+    if (value.length > 50) {
+      items.push(`[truncated:${value.length - 50}]`);
+    }
+    return items;
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).slice(0, 80);
+    const normalized = {};
+    entries.forEach(([key, item]) => {
+      if (AUDIT_SENSITIVE_KEYS.has(String(key || '').toLowerCase())) {
+        normalized[key] = '[masked]';
+        return;
+      }
+      normalized[key] = sanitizeAuditValue(item, depth + 1);
+    });
+    if (Object.keys(value).length > 80) {
+      normalized.__truncated__ = Object.keys(value).length - 80;
+    }
+    return normalized;
+  }
+
+  return String(value);
+}
+
+function appendPluginAuditEvent(event, payload = {}) {
+  try {
+    fs.mkdirSync(path.dirname(AUDIT_LOG_PATH), { recursive: true });
+    const normalizedPayload = sanitizeAuditValue(payload);
+    const entry = {
+      timestamp: new Date().toISOString(),
+      channel: 'audit',
+      service: 'napm-openclaw-plugin',
+      event
+    };
+    if (isPlainObject(normalizedPayload)) {
+      Object.assign(entry, normalizedPayload);
+    } else {
+      entry.payload = normalizedPayload;
+    }
+    fs.appendFileSync(AUDIT_LOG_PATH, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (_error) {
+    // best-effort audit logging only
+  }
+}
+
+function normalizeTraceId(value = '') {
+  const text = String(value || '').trim();
+  return text ? truncateAuditText(text, 160) : '';
+}
+
+function buildNapmTraceId(ctx = {}, args = {}) {
+  const explicit = normalizeTraceId(args?.traceId || args?.sessionState?.traceId);
+  if (explicit) {
+    return explicit;
+  }
+
+  const contextParts = [
+    ctx?.runId,
+    ctx?.messageId,
+    ctx?.conversationId,
+    ctx?.sessionId,
+    ctx?.sessionKey,
+    ctx?.agentId
+  ]
+    .map((item) => normalizeTraceId(item))
+    .filter(Boolean);
+
+  if (contextParts.length > 0) {
+    return truncateAuditText(`napm-${contextParts.join('-')}`, 160);
+  }
+
+  return `napm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildAuditContextSnapshot(ctx = {}) {
+  return {
+    conversationId: ctx?.conversationId || null,
+    runId: ctx?.runId || null,
+    messageId: ctx?.messageId || null,
+    sessionId: ctx?.sessionId || null,
+    sessionKey: ctx?.sessionKey || null,
+    agentId: ctx?.agentId || null,
+    accountId: ctx?.accountId || null,
+    channelId: ctx?.channelId || null
+  };
+}
+
+function summarizeResolvedQueryForAudit(resolvedQuery = null) {
+  if (!isPlainObject(resolvedQuery)) {
+    return null;
+  }
+
+  const groups = Array.isArray(resolvedQuery.groups)
+    ? resolvedQuery.groups.map((item) => ({
+        type: item?.type || null,
+        argument: item?.argument ?? null
+      }))
+    : [];
+
+  return {
+    service: String(resolvedQuery.service || '').trim() || null,
+    queryModeKey: String(resolvedQuery.queryModeKey || '').trim() || null,
+    operation: String(
+      resolvedQuery?.semanticConstraints?.operation
+      || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
+      || ''
+    ).trim() || null,
+    overviewScene: String(
+      resolvedQuery.overviewScene
+      || resolvedQuery?.semanticConstraints?.overviewScene
+      || ''
+    ).trim() || null,
+    groups,
+    metric: String(resolvedQuery.metric || '').trim() || null,
+    metrics: Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.slice(0, 20) : [],
+    topMetric: String(resolvedQuery.topMetric || '').trim() || null,
+    topCount: Number.isFinite(Number(resolvedQuery.topCount)) ? Number(resolvedQuery.topCount) : null,
+    granularity: Number.isFinite(Number(resolvedQuery.granularity)) ? Number(resolvedQuery.granularity) : null,
+    start: Number.isFinite(Number(resolvedQuery.start)) ? Number(resolvedQuery.start) : null,
+    end: Number.isFinite(Number(resolvedQuery.end)) ? Number(resolvedQuery.end) : null,
+    hasPathPlanning: Boolean(resolvedQuery.pathPlanning),
+    hasExecutionGuard: Boolean(resolvedQuery?.executionGuard?.blockExecution),
+    hasAnalysisPipeline: Boolean(resolvedQuery.analysisPipeline)
+  };
 }
 
 function normalizeGroupsForPlanning(groups = []) {
@@ -444,6 +604,33 @@ function collectResolutionSpecServiceModuleCandidates() {
   return candidates;
 }
 
+function collectNapmResolvedQueryResolverModuleCandidates() {
+  const candidates = [];
+  const pushCandidate = (candidatePath) => {
+    const normalized = String(candidatePath || '').trim();
+    if (!normalized) {
+      return;
+    }
+
+    const resolved = path.resolve(normalized);
+    if (!candidates.includes(resolved)) {
+      candidates.push(resolved);
+    }
+  };
+
+  pushCandidate(path.resolve(__dirname, 'skills', 'openclaw-napm-query', 'services', 'NapmResolvedQueryResolverService.js'));
+  pushCandidate(path.resolve(__dirname, '..', 'skills', 'openclaw-napm-query', 'services', 'NapmResolvedQueryResolverService.js'));
+  pushCandidate(path.resolve(__dirname, '..', '..', 'skills', 'openclaw-napm-query', 'services', 'NapmResolvedQueryResolverService.js'));
+
+  const workspaceRoot = getSkillWorkspaceRootFromExecutor();
+  if (workspaceRoot) {
+    pushCandidate(path.join(workspaceRoot, 'skills', 'openclaw-napm-query', 'services', 'NapmResolvedQueryResolverService.js'));
+  }
+
+  pushCandidate(path.resolve(process.cwd(), 'skills', 'openclaw-napm-query', 'services', 'NapmResolvedQueryResolverService.js'));
+  return candidates;
+}
+
 function loadSkillDotenvIfAvailable() {
   if (skillDotenvLoaded) {
     return;
@@ -546,17 +733,155 @@ function getResolutionSpecService() {
   return cachedResolutionSpecService;
 }
 
+function getNapmResolvedQueryResolverService() {
+  if (napmResolvedQueryResolverLookupComplete) {
+    return cachedNapmResolvedQueryResolverService;
+  }
+
+  loadSkillDotenvIfAvailable();
+  napmResolvedQueryResolverLookupComplete = true;
+  for (const candidate of collectNapmResolvedQueryResolverModuleCandidates()) {
+    try {
+      cachedNapmResolvedQueryResolverService = require(candidate);
+      break;
+    } catch (_error) {
+      // try next candidate
+    }
+  }
+
+  return cachedNapmResolvedQueryResolverService;
+}
+
 function getBoundaryMode() {
   const service = getResolutionSpecService();
   if (service && typeof service.getBoundaryMode === 'function') {
-    return service.getBoundaryMode('compat');
+    return service.getBoundaryMode('strict');
   }
-  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || 'compat').trim().toLowerCase();
+  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || 'strict').trim().toLowerCase();
   return raw === 'strict' ? 'strict' : 'compat';
 }
 
 function isStrictBoundaryMode() {
   return getBoundaryMode() === 'strict';
+}
+
+function getResolutionSpecQueryContract() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getQueryContract === 'function') {
+    return service.getQueryContract() || null;
+  }
+  return null;
+}
+
+function getResolutionSpecObjectAliases() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getObjectAliases === 'function') {
+    return service.getObjectAliases() || {};
+  }
+  return {};
+}
+
+function getResolutionSpecRoutingRules() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getRoutingRules === 'function') {
+    return service.getRoutingRules() || {};
+  }
+  return {};
+}
+
+function getResolutionSpecMetadataRules() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getMetadataRules === 'function') {
+    return service.getMetadataRules() || {};
+  }
+  return {};
+}
+
+function hasExplicitResolvedQuery(args = {}) {
+  return isPlainObject(args?.resolvedQuery);
+}
+
+function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
+  if (!isPlainObject(resolvedQuery)) {
+    return {
+      ok: false,
+      reason: 'missing_resolved_query',
+      message: 'NAPM natural-language requests must include a structured resolvedQuery before calling napm-skill-query.'
+    };
+  }
+
+  const serviceName = String(resolvedQuery.service || '').trim();
+  if (!serviceName) {
+    return {
+      ok: false,
+      reason: 'missing_service',
+      message: 'resolvedQuery.service is required before calling napm-skill-query.'
+    };
+  }
+
+  const service = getResolutionSpecService();
+  const serviceSpec = service && typeof service.getServiceSpec === 'function'
+    ? service.getServiceSpec(serviceName)
+    : null;
+  if (!serviceSpec) {
+    return {
+      ok: false,
+      reason: 'unknown_service',
+      message: `resolvedQuery.service=${serviceName} is not declared in napm-resolution-spec.v1.json.`
+    };
+  }
+
+  const requiredFields = Array.isArray(serviceSpec.required) ? serviceSpec.required : [];
+  const missingFields = [];
+  requiredFields.forEach((field) => {
+    if (field === 'timeRange') {
+      const start = Number(resolvedQuery.start);
+      const end = Number(resolvedQuery.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) {
+        missingFields.push('start/end');
+      }
+      return;
+    }
+
+    const value = resolvedQuery[field];
+    if (field === 'groups') {
+      if (!Array.isArray(value) || value.length === 0) {
+        missingFields.push(field);
+      }
+      return;
+    }
+
+    if (field === 'metrics') {
+      if (!Array.isArray(value) || value.length === 0) {
+        missingFields.push(field);
+      }
+      return;
+    }
+
+    if (field === 'protocolQueries') {
+      if (!Array.isArray(value) || value.length === 0) {
+        missingFields.push(field);
+      }
+      return;
+    }
+
+    if (value == null || (typeof value === 'string' && !value.trim())) {
+      missingFields.push(field);
+    }
+  });
+
+  if (missingFields.length > 0) {
+    return {
+      ok: false,
+      reason: 'incomplete_resolved_query',
+      message: `resolvedQuery is missing required fields for service=${serviceName}: ${missingFields.join(', ')}.`
+    };
+  }
+
+  return {
+    ok: true,
+    serviceSpec
+  };
 }
 
 function shouldSkipPathPreflight(resolvedQuery = {}) {
@@ -796,6 +1121,27 @@ function isBusinessObjectInventoryPrompt(prompt = '') {
   return getPromptRoutingService().isBusinessObjectInventoryPrompt(prompt);
 }
 
+function isBusinessGroupInventoryPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasGroupScope = /(BusinessGroup|业务组|工作组|业务分组)/i.test(text);
+  if (!hasGroupScope) {
+    return false;
+  }
+
+  const hasInventoryIntent = /(?:(?:系统中|系统里|当前|现在)?[^，。！？\n]{0,8}(?:有哪些|有什么|有哪几个|都有哪些|包含哪些)|列出[^，。！？\n]{0,8}|查看[^，。！？\n]{0,8}|查询[^，。！？\n]{0,8})(?:BusinessGroup|业务组|工作组|业务分组)|(?:BusinessGroup|业务组|工作组|业务分组)[^，。！？\n]{0,8}(?:有哪些|有什么|有哪几个|都有哪些|列表|清单)/i.test(text);
+  if (!hasInventoryIntent) {
+    return false;
+  }
+
+  return !isMetricInventoryPrompt(text)
+    && !isHierarchyCatalogPrompt(text)
+    && !isOverviewPrompt(text);
+}
+
 function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
   const route = getPromptRoutingService().buildBusinessObjectInventoryRoute(prompt);
   return materializePluginPromptRoute(route);
@@ -849,6 +1195,20 @@ function shouldRefreshBusinessObjectInventory(prompt = '', rememberedRecord = nu
   return resolvedService !== 'groups'
     || rememberedOperation !== 'metadata_list'
     || rememberedGroup !== 'WebApplication';
+}
+
+function shouldRefreshBusinessGroupInventory(prompt = '', rememberedRecord = null) {
+  const text = String(prompt || '').trim();
+  if (!isBusinessGroupInventoryPrompt(text)) {
+    return false;
+  }
+
+  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
+  const rememberedOperation = String(rememberedRecord?.resolvedQuery?.semanticConstraints?.operation || '').trim();
+  const rememberedGroup = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || '').trim();
+  return resolvedService !== 'groups'
+    || rememberedOperation !== 'metadata_list'
+    || rememberedGroup !== 'BusinessGroup';
 }
 
 function getOverviewDayStart(offsetDays = 0) {
@@ -988,6 +1348,12 @@ function prepareSkillExecutionArgs(args = {}) {
   if (!prepared.userQuery && prompt) {
     prepared.userQuery = prompt;
   }
+  if (!isPlainObject(prepared.resolvedQuery)) {
+    const packetLossResolvedQuery = buildPacketLossClientTopResolvedQuery(prompt);
+    if (packetLossResolvedQuery) {
+      prepared.resolvedQuery = packetLossResolvedQuery;
+    }
+  }
 
   return applyPathPreflightToSkillArgs(prepared);
 }
@@ -1001,6 +1367,12 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
 
   nextParams.prompt = prompt;
   nextParams.userQuery = prompt;
+  if (!isPlainObject(nextParams.resolvedQuery)) {
+    const packetLossResolvedQuery = buildPacketLossClientTopResolvedQuery(prompt);
+    if (packetLossResolvedQuery) {
+      nextParams.resolvedQuery = packetLossResolvedQuery;
+    }
+  }
 
   return applyPathPreflightToSkillArgs(nextParams);
 }
@@ -1318,6 +1690,7 @@ function buildPacketLossClientTopResolvedQuery(prompt = '', seedResolvedQuery) {
   return {
     ...seed,
     service: 'topValues',
+    queryModeKey: 'topn',
     metric,
     metrics: [metric],
     topMetric: metric,
@@ -1544,6 +1917,7 @@ function buildAssistantTextMessage(text, originalMessage) {
 function buildSkillPayload(args = {}) {
   const prompt = normalizePrompt(args);
   return {
+    traceId: typeof args.traceId === 'string' ? args.traceId : undefined,
     userQuery: prompt || (typeof args.userQuery === 'string' ? args.userQuery : undefined),
     prompt,
     query: normalizeObject(args.query),
@@ -1553,72 +1927,6 @@ function buildSkillPayload(args = {}) {
     sessionState: normalizeObject(args.sessionState),
     clarificationContext: normalizeObject(args.clarificationContext),
     policyAction: typeof args.policyAction === 'string' ? args.policyAction : undefined
-  };
-}
-
-function buildTopnPayload(args = {}) {
-  const { start, end } = normalizeTimeRange(args);
-  return {
-    service: 'topValues',
-    metric: normalizeMetricInput(args.metric),
-    groups: [
-      {
-        type: normalizeGroupInput(args.group)
-      }
-    ],
-    topCount: Number(args.topCount || 5),
-    start,
-    end,
-    format: 'json'
-  };
-}
-
-function buildAveragePayload(args = {}) {
-  const metrics = Array.isArray(args.metrics)
-    ? args.metrics.map((item) => normalizeMetricInput(item)).filter(Boolean)
-    : typeof args.metric === 'string' && args.metric.trim()
-      ? [normalizeMetricInput(args.metric)]
-      : ['TPIO'];
-
-  const { start, end } = normalizeTimeRange(args);
-  const groupType = normalizeGroupInput(args.group);
-  const groupArgument = typeof args.groupArgument === 'string' && args.groupArgument.trim() ? args.groupArgument.trim() : undefined;
-
-  return {
-    service: 'averageValues',
-    metrics,
-    groups: [
-      {
-        type: groupType,
-        ...(groupArgument ? { argument: groupArgument } : {})
-      }
-    ],
-    start,
-    end,
-    format: 'json'
-  };
-}
-
-function buildTimeseriesPayload(args = {}) {
-  const { start, end } = normalizeTimeRange(args);
-  const metric = normalizeMetricInput(args.metric);
-  const groupType = normalizeGroupInput(args.group);
-  const groupArgument = typeof args.groupArgument === 'string' && args.groupArgument.trim() ? args.groupArgument.trim() : undefined;
-  const granularity = normalizeGranularity(args.granularity);
-
-  return {
-    service: 'timeValues',
-    metrics: [metric],
-    groups: [
-      {
-        type: groupType,
-        ...(groupArgument ? { argument: groupArgument } : {})
-      }
-    ],
-    start,
-    end,
-    granularity,
-    format: 'json'
   };
 }
 
@@ -1641,30 +1949,143 @@ function extractSkillJson(stdout) {
 
 async function runSkillExecutor(args = {}) {
   const preparedArgs = prepareSkillExecutionArgs(args);
+  if (!normalizeTraceId(preparedArgs.traceId)) {
+    preparedArgs.traceId = buildNapmTraceId({}, preparedArgs);
+  }
   const payload = buildSkillPayload(preparedArgs);
+  const traceId = normalizeTraceId(payload.traceId) || buildNapmTraceId({}, preparedArgs);
+  if (!payload.traceId) {
+    payload.traceId = traceId;
+  }
   if (isPluginStructuredOverviewInjection(args, preparedArgs)) {
     payload.__pluginOverviewStructured = true;
   }
-  const { stdout, stderr } = await execFileAsync('node', [
-    NAPM_SKILL_EXECUTOR,
-    '--payload',
-    JSON.stringify(payload)
-  ], {
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024,
-    env: {
-      ...process.env,
-      NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-      FORCE_COLOR: '0',
-      NO_COLOR: '1'
-    }
+  appendPluginAuditEvent('napm_plugin_skill_executor_invoked', {
+    traceId,
+    prompt: normalizePrompt(preparedArgs),
+    boundaryMode: getBoundaryMode(),
+    resolvedQuery: normalizeObject(payload.resolvedQuery) || null,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(payload.resolvedQuery),
+    sessionStatePresent: Boolean(payload.sessionState)
   });
 
-  const result = extractSkillJson(stdout);
-  if (stderr && String(stderr).trim()) {
-    result.executorStderr = String(stderr).trim();
+  try {
+    const { stdout, stderr } = await execFileAsync('node', [
+      NAPM_SKILL_EXECUTOR,
+      '--payload',
+      JSON.stringify(payload)
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      env: {
+        ...process.env,
+        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        FORCE_COLOR: '0',
+        NO_COLOR: '1'
+      }
+    });
+
+    const result = extractSkillJson(stdout);
+    if (stderr && String(stderr).trim()) {
+      result.executorStderr = String(stderr).trim();
+    }
+
+    appendPluginAuditEvent('napm_plugin_skill_executor_completed', {
+      traceId,
+      prompt: normalizePrompt(preparedArgs),
+      ok: Boolean(result?.ok),
+      service: String(result?.service || result?.resolvedQuery?.service || '').trim() || null,
+      responseType: String(result?.responseType || '').trim() || null,
+      summaryMode: String(result?.summary?.mode || '').trim() || null,
+      requestUrl: getRequestUrlFromResult(result) || null,
+      resolvedQuery: isPlainObject(result?.resolvedQuery) ? result.resolvedQuery : null,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(result?.resolvedQuery),
+      error: isPlainObject(result?.error)
+        ? result.error
+        : (result?.error ? { message: String(result.error) } : null),
+      executorStderr: result.executorStderr || null
+    });
+
+    return result;
+  } catch (error) {
+    appendPluginAuditEvent('napm_plugin_skill_executor_failed', {
+      traceId,
+      prompt: normalizePrompt(preparedArgs),
+      resolvedQuery: normalizeObject(payload.resolvedQuery) || null,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(payload.resolvedQuery),
+      error: {
+        code: error?.code || null,
+        message: error?.message || String(error)
+      }
+    });
+    throw error;
   }
-  return result;
+}
+
+function buildResolvedQueryForPrompt(prompt = '', args = {}) {
+  const resolver = getNapmResolvedQueryResolverService();
+  if (resolver && typeof resolver.resolvePrompt === 'function') {
+    const resolverResult = resolver.resolvePrompt(prompt, {
+      nowSeconds: args?.nowSeconds
+    });
+    if (resolverResult?.ok && isPlainObject(resolverResult?.resolvedQuery)) {
+      return {
+        source: 'napm-resolve-query',
+        result: resolverResult,
+        resolvedQuery: resolverResult.resolvedQuery
+      };
+    }
+  }
+
+  const promptRoute = getPromptRoutingService().resolvePromptRoute(prompt);
+  const routeResolvedQuery = materializePluginPromptRoute(promptRoute, {
+    pluginStructuredOverview: true
+  });
+  if (isPlainObject(routeResolvedQuery)) {
+    return {
+      source: 'prompt-routing-service',
+      result: null,
+      resolvedQuery: routeResolvedQuery
+    };
+  }
+
+  return {
+    source: 'none',
+    result: null,
+    resolvedQuery: null
+  };
+}
+
+async function runResolvedSkillExecutor(args = {}) {
+  const prompt = normalizePrompt(args);
+  const traceId = normalizeTraceId(args?.traceId) || `napm-resolved-refresh-${Date.now()}`;
+  const nextArgs = isPlainObject(args) ? { ...args } : {};
+  if (!isPlainObject(nextArgs.resolvedQuery)) {
+    const resolverPrompt = normalizePrompt(args?.resolverPrompt || '') || prompt;
+    const resolved = buildResolvedQueryForPrompt(resolverPrompt, args);
+    if (isPlainObject(resolved.resolvedQuery)) {
+      nextArgs.resolvedQuery = resolved.resolvedQuery;
+      if (resolverPrompt !== prompt) {
+        nextArgs.resolvedQuery = {
+          ...nextArgs.resolvedQuery,
+          userRequirement: prompt
+        };
+      }
+      appendPluginAuditEvent('napm_resolver_resolved_query_created', {
+        traceId,
+        prompt,
+        resolverPrompt,
+        source: resolved.source,
+        ok: true,
+        intent: normalizeObject(resolved.result?.intent) || null,
+        resolvedQuery: normalizeObject(nextArgs.resolvedQuery) || null,
+        resolvedQuerySummary: summarizeResolvedQueryForAudit(nextArgs.resolvedQuery),
+        diagnostics: normalizeObject(resolved.result?.diagnostics) || null
+      });
+    }
+  }
+  nextArgs.traceId = traceId;
+  return runSkillExecutor(nextArgs);
 }
 
 function isQueryLikeAction(nextAction) {
@@ -1682,77 +2103,13 @@ function isDirectNapmTool(toolName = '') {
     || normalized === 'napm-timeseries';
 }
 
-function isTruthyInternalFlag(value) {
-  if (value === true || value === 1) {
-    return true;
-  }
-  if (typeof value !== 'string') {
-    return false;
-  }
-  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
-}
-
-function getDirectToolForwardPrompt(args = {}) {
-  const candidates = [
-    args?.[DIRECT_TOOL_FORWARD_PROMPT],
-    args?.prompt,
-    args?.userQuery,
-    args?.query
-  ];
-  const matched = candidates.find((value) => typeof value === 'string' && value.trim());
-  return matched ? matched.trim() : '';
-}
-
-function buildDirectToolForwardParams(params = {}, prompt = '', reason = '') {
-  const forwarded = isPlainObject(params) ? { ...params } : {};
-  const normalizedPrompt = String(prompt || '').trim();
-  if (!normalizedPrompt) {
-    return forwarded;
-  }
-
-  forwarded[DIRECT_TOOL_FORWARD_MARKER] = true;
-  forwarded[DIRECT_TOOL_FORWARD_PROMPT] = normalizedPrompt;
-  if (reason) {
-    forwarded[DIRECT_TOOL_FORWARD_REASON] = String(reason).trim();
-  }
-  return forwarded;
-}
-
-function shouldForwardDirectToolToSkill(toolName = '', args = {}) {
-  return isDirectNapmTool(toolName)
-    && isTruthyInternalFlag(args?.[DIRECT_TOOL_FORWARD_MARKER])
-    && Boolean(getDirectToolForwardPrompt(args));
-}
-
-function buildForwardSkillArgsFromDirectTool(args = {}) {
-  const prompt = getDirectToolForwardPrompt(args);
-  if (!prompt) {
-    return null;
-  }
-
-  return prepareSkillExecutionArgs({
-    prompt,
-    userQuery: prompt
-  });
-}
-
-function toolArgsContainCanonicalTimeRange(params = {}) {
-  return Number(params?.start) > 0 && Number(params?.end) > 0;
-}
-
-function toolArgsLookCanonicalForDirectNapm(toolName = '', params = {}) {
-  if (!isDirectNapmTool(toolName)) {
-    return true;
-  }
-
-  const metric = String(params?.metric || '').trim();
-  const metrics = Array.isArray(params?.metrics)
-    ? params.metrics.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  const group = String(params?.group || '').trim();
-  const allMetricsCanonical = [metric, ...metrics].filter(Boolean).every((item) => looksLikeMetricCode(item));
-  const groupCanonical = /^(?:ClientIPs|BusinessGroup|WebApplication|DefinedApp|Application|Prefix24|IPConversation|TotalTraffic|IPAddress)$/i.test(group);
-  return allMetricsCanonical && groupCanonical && toolArgsContainCanonicalTimeRange(params);
+function buildRemovedDirectToolReply(toolName = '') {
+  const normalized = String(toolName || '').trim() || 'legacy NAPM direct tool';
+  return {
+    ok: false,
+    error: `${normalized} has been removed from this deployment. Use napm-skill-query and let OpenClaw construct structured resolvedQuery instead.`,
+    nextAction: 'USE_NAPM_SKILL_QUERY'
+  };
 }
 
 function makeTextReply(text) {
@@ -2102,7 +2459,7 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
     if (shouldRefreshOverview) {
       try {
         api.logger.warn('[napm-openclaw-plugin] forcing overview prompt through skill executor before final reply');
-        const refreshed = await runSkillExecutor({
+        const refreshed = await runResolvedSkillExecutor({
           prompt: activePrompt,
           userQuery: activePrompt
         });
@@ -2118,7 +2475,7 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
   if (shouldRefreshHierarchyCatalog(activePrompt, rememberedRecord)) {
     try {
       api.logger.warn('[napm-openclaw-plugin] forcing hierarchy prompt through skill executor before final reply');
-      const refreshed = await runSkillExecutor({
+      const refreshed = await runResolvedSkillExecutor({
         prompt: activePrompt,
         userQuery: activePrompt
       });
@@ -2133,9 +2490,16 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
   if (shouldRefreshMetricInventory(activePrompt, rememberedRecord)) {
     try {
       api.logger.warn('[napm-openclaw-plugin] forcing metric-inventory prompt through skill executor before final reply');
-      const refreshed = await runSkillExecutor({
-        prompt: activePrompt,
-        userQuery: activePrompt
+      const rememberedGroup = String(
+        rememberedRecord?.resolvedQuery?.groups?.[0]?.type
+        || getRecentRememberedSkillResult(conversationKey)?.resolvedQuery?.groups?.[0]?.type
+        || ''
+      ).trim();
+      const resolverPrompt = expandMetricInventoryPrompt(activePrompt, rememberedGroup);
+      const refreshed = await runResolvedSkillExecutor({
+        prompt: resolverPrompt,
+        userQuery: resolverPrompt,
+        resolverPrompt
       });
       rememberDebugApi(activePrompt, refreshed, conversationKey);
       const refreshedReply = makeTextReplyFromSkillResult(refreshed);
@@ -2150,7 +2514,7 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
   if (shouldRefreshBusinessObjectInventory(activePrompt, rememberedRecord)) {
     try {
       api.logger.warn('[napm-openclaw-plugin] forcing business-object-inventory prompt through skill executor before final reply');
-      const refreshed = await runSkillExecutor({
+      const refreshed = await runResolvedSkillExecutor({
         prompt: activePrompt,
         userQuery: activePrompt
       });
@@ -2159,6 +2523,21 @@ async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conve
       return refreshedReply.text || '';
     } catch (error) {
       api.logger.error(`[napm-openclaw-plugin] business object inventory refresh failed: ${error.message}`);
+    }
+  }
+
+  if (shouldRefreshBusinessGroupInventory(activePrompt, rememberedRecord)) {
+    try {
+      api.logger.warn('[napm-openclaw-plugin] forcing business-group-inventory prompt through skill executor before final reply');
+      const refreshed = await runResolvedSkillExecutor({
+        prompt: activePrompt,
+        userQuery: activePrompt
+      });
+      rememberDebugApi(activePrompt, refreshed, conversationKey);
+      const refreshedReply = makeTextReplyFromSkillResult(refreshed);
+      return refreshedReply.text || '';
+    } catch (error) {
+      api.logger.error(`[napm-openclaw-plugin] business group inventory refresh failed: ${error.message}`);
     }
   }
 
@@ -2176,6 +2555,7 @@ function shouldForceGenericNapmSkillRefresh(activePrompt = '', guardState = null
     || shouldRefreshHierarchyCatalog(prompt, rememberedRecord)
     || shouldRefreshMetricInventory(prompt, rememberedRecord)
     || shouldRefreshBusinessObjectInventory(prompt, rememberedRecord)
+    || shouldRefreshBusinessGroupInventory(prompt, rememberedRecord)
   ) {
     return false;
   }
@@ -2253,6 +2633,7 @@ function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rem
     || isMetricInventoryPrompt(prompt)
     || isMetricInventoryDetailPrompt(prompt)
     || isBusinessObjectInventoryPrompt(prompt)
+    || isBusinessGroupInventoryPrompt(prompt)
     || isNapmMetaFollowUpPrompt(prompt, guardState)
   ) {
     return true;
@@ -2270,6 +2651,56 @@ function buildSkillRequiredReply() {
     '本轮未拿到有效 skill 结果，因此不展示主链推理、临时脚本或排查过程。',
     '请以技能执行结果为准。'
   ].join('\n');
+}
+
+function hasVerifiableSkillRecord(record = null) {
+  return Boolean(
+    record
+    && isPlainObject(record.result)
+    && isPlainObject(record.resolvedQuery || record.result?.resolvedQuery)
+    && !record.result?.error
+  );
+}
+
+function buildExecutionTraceReplyFromRememberedRecord(record = null) {
+  if (!hasVerifiableSkillRecord(record)) {
+    return [
+      '当前没有可核验的 NAPM skill 执行记录，不能确认刚才实际走了哪条查询链路。',
+      '因此我不会补写任何未被日志证明的执行过程。',
+      '需要以本轮真实的 napm-skill-query 记录和 audit 日志为准。'
+    ].join('\n');
+  }
+
+  const result = record.result;
+  const resolvedQuery = record.resolvedQuery || result.resolvedQuery || {};
+  const service = String(resolvedQuery.service || result.service || '').trim() || 'unknown';
+  const metric = String(resolvedQuery.topMetric || resolvedQuery.metric || '').trim();
+  const groups = Array.isArray(resolvedQuery.groups)
+    ? resolvedQuery.groups
+      .map((group) => String(group?.argument || group?.type || '').trim())
+      .filter(Boolean)
+    : [];
+  const requestUrl = getRequestUrlFromResult(result);
+  const lines = [
+    '这次只能按已记录的 NAPM skill 结果说明查询链路：',
+    `工具：napm-skill-query`,
+    `service：${service}`
+  ];
+
+  if (metric) {
+    lines.push(`metric：${metric}`);
+  }
+  if (groups.length > 0) {
+    lines.push(`groups：${groups.join(' > ')}`);
+  }
+  if (requestUrl) {
+    lines.push(`Debug API：${requestUrl}`);
+  } else {
+    lines.push('Debug API：本条 skill 结果未记录 requestUrl。');
+  }
+  lines.push('未发现可核验记录时，不能补写任何未被日志证明的执行过程。');
+
+  return lines.join('\n');
 }
 
 async function buildGenericNapmSkillRefreshText(api, prompt, conversationKey, conversationState = null) {
@@ -2290,9 +2721,10 @@ async function buildGenericNapmSkillRefreshText(api, prompt, conversationKey, co
       expandedPrompt = expandMetricInventoryPrompt(activePrompt, rememberedGroupType);
     }
     api.logger.warn('[napm-openclaw-plugin] forcing generic NAPM prompt through skill executor before final reply');
-    const refreshed = await runSkillExecutor({
+    const refreshed = await runResolvedSkillExecutor({
       prompt: expandedPrompt,
-      userQuery: expandedPrompt
+      userQuery: expandedPrompt,
+      resolverPrompt: expandedPrompt
     });
     if (!canUseGenericNapmSkillRefreshResult(refreshed)) {
       return '';
@@ -2520,45 +2952,23 @@ function makeToolResult(result) {
   };
 }
 
-function createHttpToolDefinition(name, label, description, parameters, endpoint, payloadBuilder) {
-  return {
-    label,
-    name,
-    description,
-    parameters,
-    execute: async (_toolCallId, args) => {
-      const toolArgs = isPlainObject(args) ? args : {};
-      const forwardedPrompt = getDirectToolForwardPrompt(toolArgs);
-      const shouldForward = shouldForwardDirectToolToSkill(name, toolArgs)
-        || (isDirectNapmTool(name) && Boolean(forwardedPrompt) && isOverviewPrompt(forwardedPrompt));
-
-      let result;
-      if (shouldForward) {
-        const forwardedSkillArgs = buildForwardSkillArgsFromDirectTool(toolArgs);
-        result = await runSkillExecutor(forwardedSkillArgs || { prompt: forwardedPrompt, userQuery: forwardedPrompt });
-      } else {
-        result = await runSkillExecutor({ resolvedQuery: payloadBuilder(toolArgs) });
-      }
-
-      rememberDebugApi(forwardedPrompt || normalizePrompt(toolArgs), result, null);
-      return makeToolResult(result);
-    }
-  };
-}
-
 function createSkillToolDefinition() {
+  const queryContract = getResolutionSpecQueryContract() || {};
+  const acceptedInputs = Array.isArray(queryContract.acceptedInputs)
+    ? queryContract.acceptedInputs.join(', ')
+    : 'payload.resolvedQuery';
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: 'Run the OpenClaw NAPM skill executor first. Use this for any NAPM-related request, including boundary checks for restart/deploy/config/code/db-internal asks about monitored objects like 239web or HIS. The tool returns a structured decision and only executes queries when the skill allows it.',
+    description: `Run the OpenClaw NAPM skill executor with a structured resolvedQuery produced by OpenClaw mainflow. Use this for NAPM-related requests after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}.`,
     parameters: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'Original user prompt for the NAPM skill.' },
-        userQuery: { type: 'string', description: 'Alias of prompt if provided externally.' },
+        prompt: { type: 'string', description: 'Original user prompt retained for traceability after resolvedQuery has been constructed.' },
+        userQuery: { type: 'string', description: 'Alias of prompt for traceability only; do not rely on this instead of resolvedQuery for structured NAPM queries.' },
         decision: { type: 'object', description: 'Optional structured decision object.', additionalProperties: true },
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
-        resolvedQuery: { type: 'object', description: 'Optional fully resolved query payload.', additionalProperties: true },
+        resolvedQuery: { type: 'object', description: 'Required fully resolved query payload for NAPM data, metadata, ranking, trend, overview, and hierarchy requests.', additionalProperties: true },
         sessionState: { type: 'object', description: 'Optional multi-turn session state.', additionalProperties: true },
         clarificationContext: { type: 'object', description: 'Optional clarification state.', additionalProperties: true },
         policyAction: { type: 'string', description: 'Optional upstream policy action override.' }
@@ -2574,6 +2984,142 @@ function createSkillToolDefinition() {
   };
 }
 
+function resolvePromptWithAudit(args = {}, tracePrefix = 'napm-resolver') {
+  const prompt = normalizePrompt(args);
+  const traceId = normalizeTraceId(args?.traceId) || `${tracePrefix}-${Date.now()}`;
+  appendPluginAuditEvent('napm_resolver_request_received', {
+    traceId,
+    prompt,
+    source: 'openclaw_tool'
+  });
+
+  const resolver = getNapmResolvedQueryResolverService();
+  let result = null;
+  if (!resolver || typeof resolver.resolvePrompt !== 'function') {
+    result = {
+      ok: false,
+      source: 'openclaw_mainflow_resolver',
+      prompt,
+      reason: 'resolver_unavailable',
+      message: 'NAPM resolvedQuery resolver service is unavailable.'
+    };
+  } else {
+    result = resolver.resolvePrompt(prompt, {
+      nowSeconds: args?.nowSeconds
+    });
+  }
+
+  appendPluginAuditEvent(result?.ok ? 'napm_resolver_resolved_query_created' : 'napm_resolver_failed', {
+    traceId,
+    prompt,
+    ok: Boolean(result?.ok),
+    reason: result?.reason || null,
+    intent: normalizeObject(result?.intent) || null,
+    resolvedQuery: normalizeObject(result?.resolvedQuery) || null,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(result?.resolvedQuery),
+    diagnostics: normalizeObject(result?.diagnostics) || null
+  });
+
+  return {
+    traceId,
+    prompt,
+    result
+  };
+}
+
+async function runMainflowQuery(args = {}) {
+  const { traceId, prompt, result: resolverResult } = resolvePromptWithAudit(args, 'napm-mainflow');
+  if (!resolverResult?.ok || !isPlainObject(resolverResult?.resolvedQuery)) {
+    return {
+      ok: false,
+      source: 'openclaw_mainflow_query',
+      prompt,
+      resolverResult
+    };
+  }
+
+  const skillArgs = prepareSkillExecutionArgs({
+    prompt,
+    userQuery: prompt,
+    traceId,
+    resolvedQuery: resolverResult.resolvedQuery
+  });
+  const skillResult = await runSkillExecutor(skillArgs);
+  rememberDebugApi(prompt, skillResult, null);
+  appendPluginAuditEvent('napm_mainflow_skill_completed', {
+    traceId,
+    prompt,
+    resolvedQuery: normalizeObject(skillArgs.resolvedQuery) || null,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(skillArgs.resolvedQuery),
+    requestUrl: skillResult?.requestUrl || null,
+    decision: normalizeObject(skillResult?.decision) || null
+  });
+  return {
+    ok: true,
+    source: 'openclaw_mainflow_query',
+    prompt,
+    resolverResult,
+    skillResult
+  };
+}
+
+function makeMainflowToolResult(result = {}) {
+  if (isPlainObject(result?.skillResult)) {
+    const displayText = buildUserFacingSkillText(result.skillResult);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: displayText || JSON.stringify(result.skillResult, null, 2)
+        }
+      ],
+      details: result
+    };
+  }
+  return makeToolResult(result);
+}
+
+function createResolvedQueryResolverToolDefinition() {
+  return {
+    label: 'NAPM Resolve Query',
+    name: 'napm-resolve-query',
+    description: 'OpenClaw mainflow resolver for NAPM natural-language requests. Call this before napm-skill-query to construct a structured resolvedQuery from prompt using napm-resolution-spec.v1.json. This tool does not query NetInside data.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Original NAPM natural-language user prompt.' },
+        userQuery: { type: 'string', description: 'Alias of prompt.' },
+        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' },
+        nowSeconds: { type: 'number', description: 'Optional deterministic current timestamp in seconds for tests.' }
+      },
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => {
+      const { result } = resolvePromptWithAudit(args, 'napm-resolver');
+      return makeToolResult(result);
+    }
+  };
+}
+
+function createMainflowQueryToolDefinition() {
+  return {
+    label: 'NAPM Mainflow Query',
+    name: 'napm-mainflow-query',
+    description: 'Stable OpenClaw mainflow entry for NAPM requests. It constructs resolvedQuery with napm-resolve-query semantics, then calls napm-skill-query with strict structured input.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Original NAPM natural-language user prompt.' },
+        userQuery: { type: 'string', description: 'Alias of prompt.' },
+        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' },
+        nowSeconds: { type: 'number', description: 'Optional deterministic current timestamp in seconds for tests.' }
+      },
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => makeMainflowToolResult(await runMainflowQuery(args))
+  };
+}
+
 function registerCommand(api, definition) {
   api.registerCommand({
     name: definition.name,
@@ -2585,11 +3131,28 @@ function registerCommand(api, definition) {
         return { text: 'Usage: /napm-skill-query <your NAPM question>' };
       }
 
+      if (definition.name === 'napm-resolve-query') {
+        const { result } = resolvePromptWithAudit({ prompt, userQuery: prompt }, 'napm-resolver-command');
+        return makeTextReply(JSON.stringify(result, null, 2));
+      }
+
+      if (definition.name === 'napm-mainflow-query') {
+        const result = await runMainflowQuery({ prompt, userQuery: prompt });
+        if (isPlainObject(result?.skillResult)) {
+          return makeTextReplyFromSkillResult(result.skillResult);
+        }
+        return makeTextReply(JSON.stringify(result, null, 2));
+      }
+
       if (definition.name === 'napm-skill-query') {
         const skillArgs = prepareSkillExecutionArgs({ prompt, userQuery: prompt });
         const result = await runSkillExecutor(skillArgs);
         rememberDebugApi(prompt, result, null);
         return makeTextReplyFromSkillResult(result);
+      }
+
+      if (typeof definition.payloadBuilder !== 'function') {
+        return makeTextReply(JSON.stringify({ ok: false, reason: 'unsupported_command', command: definition.name }, null, 2));
       }
 
       const result = await runSkillExecutor({ resolvedQuery: definition.payloadBuilder({ prompt, userQuery: prompt }) });
@@ -2600,11 +3163,37 @@ function registerCommand(api, definition) {
 }
 
 function buildNapmRoutingSystemContext() {
+  const queryContract = getResolutionSpecQueryContract() || {};
+  const objectAliases = getResolutionSpecObjectAliases();
+  const routingRules = getResolutionSpecRoutingRules();
+  const metadataRules = getResolutionSpecMetadataRules();
+  const businessGroupAliases = Array.isArray(objectAliases?.BusinessGroup) ? objectAliases.BusinessGroup.join(' / ') : '业务组 / 工作组 / BusinessGroup';
+  const webApplicationAliases = Array.isArray(objectAliases?.WebApplication) ? objectAliases.WebApplication.join(' / ') : '业务 / 业务系统 / Web应用 / WebApplication';
+  const metricInventoryRule = metadataRules?.metrics || '当用户询问某对象维度支持哪些指标时使用 metrics metadata 查询。';
+  const groupInventoryRule = metadataRules?.groups || '当用户询问有哪些对象或某对象维度下有哪些成员时使用 groups metadata 查询。';
+  const hierarchyRule = metadataRules?.drilldownCatalog || '当用户询问层级、下钻路径、结构或可达路径时使用 drilldownCatalog。';
+  const businessInventoryService = String(routingRules?.inventory?.businessObjectInventory?.service || 'groups');
+  const businessInventoryMode = String(routingRules?.inventory?.businessObjectInventory?.queryModeKey || 'metadata');
+  const metricInventoryService = String(routingRules?.inventory?.metricInventory?.service || 'metrics');
+  const metricInventoryMode = String(routingRules?.inventory?.metricInventory?.queryModeKey || 'metadata');
+  const acceptedInputs = Array.isArray(queryContract?.acceptedInputs)
+    ? queryContract.acceptedInputs.join(', ')
+    : 'payload.resolvedQuery';
+
   return [
     'You are not a general-purpose assistant in this deployment. Only handle system monitoring, performance analysis, NAPM query, anomaly diagnosis, and result interpretation requests.',
-    'When the user asks about NAPM, NetInside, monitored applications, monitored websites, business systems, WebApplication objects, or known monitored objects such as 239web and HIS, you must call the tool `napm-skill-query` with the raw user prompt before using exec, shell, restart, deployment, or other system-operation tools.',
-    'Questions about hierarchy or drilldown structure, such as which drilldown paths a BusinessGroup or IPAddress supports, must also go through `napm-skill-query` instead of being answered from general knowledge.',
-    'Do not use `napm-timeseries`, `napm-topn`, or `napm-average` for raw natural-language NAPM questions. Only use those direct tools when metric/group/start/end are already explicit canonical NAPM parameters.',
+    'When the user asks a NAPM question, call `napm-mainflow-query` as the preferred single entry. It constructs `resolvedQuery` through the OpenClaw mainflow resolver and then executes `napm-skill-query` with strict structured input.',
+    'If you do not use `napm-mainflow-query`, you must call `napm-resolve-query` first, then pass its `resolvedQuery` unchanged into `napm-skill-query`.',
+    `The accepted structured input channel is: ${acceptedInputs}. Do not rely on raw prompt only when the request is a data query, metadata inventory query, ranking, average, trend, or overview request.`,
+    'OpenClaw mainflow is the owner of resolvedQuery construction. The NAPM skill executes structured queries; it is not the primary owner of prompt-to-query construction in this deployment.',
+    `Interpret plain monitored business wording such as ${webApplicationAliases} as WebApplication scope unless the user explicitly asks for ${businessGroupAliases}.`,
+    `Interpret explicit ${businessGroupAliases} wording as BusinessGroup scope.`,
+    `For inventory questions, use ${groupInventoryRule} Example: "系统中有哪些工作组？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
+    `For business-system inventory questions, Example: "系统中有哪些业务系统？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}].`,
+    `For metric-inventory questions, use ${metricInventoryRule} Example: "业务都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}]. Example: "工作组都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
+    `For hierarchy questions, use ${hierarchyRule} Example: "BusinessGroup 可以往下钻到哪里？" -> service=drilldownCatalog, groups=[{type:"BusinessGroup"}].`,
+    'Questions about hierarchy or drilldown structure, such as which drilldown paths a BusinessGroup or IPAddress supports, must also go through `napm-skill-query` as structured resolvedQuery instead of being answered from general knowledge.',
+    'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first mainflow.',
     'This rule also applies to boundary-check requests such as restart, deploy, modify config, inspect SQL, code debugging, or DB-internal asks when they mention NAPM-monitored objects.',
     'If `napm-skill-query` returns decision.next_action=`REJECT_AND_REDIRECT`, do not call exec, shell, restart, deployment, or configuration tools. Explain that the request is outside the NAPM skill boundary and invite the user to ask a NAPM query, analysis, explanation, or result-interpretation question instead.',
     'If `napm-skill-query` returns `ASK_CLARIFYING_QUESTION`, ask that clarification and stop.',
@@ -2617,74 +3206,17 @@ function buildNapmRoutingSystemContext() {
 }
 
 const skillTool = createSkillToolDefinition();
-const topnTool = createHttpToolDefinition(
-  'napm-topn',
-  'NAPM TopN',
-  'Run a direct NAPM TopN query through the semantic gateway.',
-  {
-    type: 'object',
-    properties: {
-      metric: { type: 'string' },
-      group: { type: 'string' },
-      topCount: { type: 'number' },
-      start: { type: 'number' },
-      end: { type: 'number' }
-    },
-    additionalProperties: false
-  },
-  'local://napm.query.topn',
-  buildTopnPayload
-);
-
-const averageTool = createHttpToolDefinition(
-  'napm-average',
-  'NAPM Average',
-  'Run a direct NAPM average query through the semantic gateway.',
-  {
-    type: 'object',
-    properties: {
-      metric: { type: 'string' },
-      metrics: { type: 'array', items: { type: 'string' } },
-      group: { type: 'string' },
-      groupArgument: { type: 'string' },
-      start: { type: 'number' },
-      end: { type: 'number' }
-    },
-    additionalProperties: false
-  },
-  'local://napm.query.average',
-  buildAveragePayload
-);
-
-const timeseriesTool = createHttpToolDefinition(
-  'napm-timeseries',
-  'NAPM Timeseries',
-  'Run a direct NAPM trend query through the semantic gateway.',
-  {
-    type: 'object',
-    properties: {
-      metric: { type: 'string' },
-      group: { type: 'string' },
-      groupArgument: { type: 'string' },
-      start: { type: 'number' },
-      end: { type: 'number' },
-      granularity: { type: 'string' }
-    },
-    additionalProperties: false
-  },
-  'local://napm.query.timeseries',
-  buildTimeseriesPayload
-);
+const resolverTool = createResolvedQueryResolverToolDefinition();
+const mainflowTool = createMainflowQueryToolDefinition();
 
 const plugin = {
   id: 'napm-openclaw-plugin',
   name: 'NAPM OpenClaw Plugin',
   description: 'Bridge NAPM skill and query requests from OpenClaw into the deployed NAPM semantic gateway.',
   register(api) {
+    api.registerTool(resolverTool);
+    api.registerTool(mainflowTool);
     api.registerTool(skillTool);
-    api.registerTool(topnTool);
-    api.registerTool(averageTool);
-    api.registerTool(timeseriesTool);
 
     api.registerHook(
       'message_received',
@@ -2792,44 +3324,107 @@ const plugin = {
             || isNapmRelatedPrompt(activePrompt)
           );
 
+        if (isDirectNapmTool(toolName)) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
+          return {
+            block: true,
+            blockReason: `${toolName} has been removed from this deployment. Use napm-skill-query instead.`
+          };
+        }
+
         if (toolName === 'napm-skill-query' && activeNapmPrompt && activePrompt) {
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
             updatedAt: Date.now()
           });
-          const canonicalSkillParams = buildCanonicalSkillToolParams(activePrompt, toolParams);
+          const traceId = buildNapmTraceId(ctx, toolParams);
+          const canonicalSkillParams = buildCanonicalSkillToolParams(activePrompt, {
+            ...toolParams,
+            traceId
+          });
           const originalPrompt = normalizePrompt(toolParams);
           const canonicalPrompt = normalizePrompt(canonicalSkillParams);
+          const originalTraceId = normalizeTraceId(toolParams?.traceId);
+          const canonicalTraceId = normalizeTraceId(canonicalSkillParams?.traceId);
           const originalResolvedGroup = String(toolParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
-          if (
+          const boundaryMode = getBoundaryMode();
+          const resolvedQueryValidation = validateResolvedQueryAgainstSpec(canonicalSkillParams?.resolvedQuery);
+          const promptLooksStructuredMetaRequest = Boolean(
+            isMetricInventoryPrompt(activePrompt)
+            || isBusinessObjectInventoryPrompt(activePrompt)
+            || isBusinessGroupInventoryPrompt(activePrompt)
+            || isHierarchyCatalogPrompt(activePrompt)
+            || isOverviewPrompt(activePrompt)
+            || isPacketLossClientTopPrompt(activePrompt)
+          );
+          appendPluginAuditEvent('napm_plugin_skill_call_received', {
+            traceId,
+            toolName,
+            prompt: activePrompt,
+            originalPrompt: originalPrompt || null,
+            boundaryMode,
+            promptLooksStructuredMetaRequest,
+            validation: {
+              ok: Boolean(resolvedQueryValidation.ok),
+              reason: resolvedQueryValidation.reason || null,
+              message: resolvedQueryValidation.message || null
+            },
+            originalResolvedQuery: normalizeObject(toolParams.resolvedQuery) || null,
+            originalResolvedQuerySummary: summarizeResolvedQueryForAudit(toolParams.resolvedQuery),
+            canonicalResolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+            canonicalResolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+            context: buildAuditContextSnapshot(ctx)
+          });
+          if (!resolvedQueryValidation.ok && (boundaryMode === 'strict' || promptLooksStructuredMetaRequest)) {
+            api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid resolvedQuery: reason=${resolvedQueryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
+              traceId,
+              toolName,
+              prompt: activePrompt,
+              boundaryMode,
+              reason: resolvedQueryValidation.reason || null,
+              message: resolvedQueryValidation.message || null,
+              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: `${resolvedQueryValidation.message} OpenClaw must construct resolvedQuery first.`
+            };
+          }
+          const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
               canonicalPrompt !== originalPrompt
               || canonicalResolvedGroup !== originalResolvedGroup
+              || canonicalTraceId !== originalTraceId
             )
+          );
+          appendPluginAuditEvent('napm_plugin_resolved_query_forwarded', {
+            traceId,
+            toolName,
+            prompt: activePrompt,
+            boundaryMode,
+            canonicalized: shouldRewriteSkillParams,
+            validation: {
+              ok: Boolean(resolvedQueryValidation.ok),
+              reason: resolvedQueryValidation.reason || null
+            },
+            resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+            resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+            context: buildAuditContextSnapshot(ctx)
+          });
+          if (
+            shouldRewriteSkillParams
           ) {
             api.logger.warn(`[napm-openclaw-plugin] canonicalized napm-skill-query params: originalPrompt=${originalPrompt || 'none'} canonicalPrompt=${canonicalPrompt} originalGroup=${originalResolvedGroup || 'none'} canonicalGroup=${canonicalResolvedGroup || 'none'}`);
             return {
               params: canonicalSkillParams
             };
           }
-        }
-
-        if (activeNapmPrompt && isDirectNapmTool(toolName) && activePrompt && !shouldForwardDirectToolToSkill(toolName, toolParams)) {
-          const rerouteReason = toolArgsLookCanonicalForDirectNapm(toolName, toolParams)
-            ? 'skill_only_direct_tool_guard'
-            : 'skill_only_non_canonical_direct_tool';
-          api.logger.warn(`[napm-openclaw-plugin] rerouting direct NAPM tool to skill executor: tool=${toolName} reason=${rerouteReason}`);
-          setGuardState(ctx, {
-            ...activePromptState,
-            turnNapmToolUsed: true,
-            updatedAt: Date.now()
-          });
-          return {
-            params: buildDirectToolForwardParams(toolParams, activePrompt, rerouteReason)
-          };
         }
 
         if (activeNapmPrompt && !SAFE_NAPM_TOOL_NAMES.has(toolName)) {
@@ -2896,6 +3491,11 @@ const plugin = {
           }
           const leakedReasoningText = extractTextContent(event?.content);
           const leakedBypassProcessText = looksLikeNapmBypassProcessText(leakedReasoningText);
+          if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
+            return {
+              content: buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+            };
+          }
           const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(leakedReasoningText)
             ? buildRememberedSkillReplyText(rememberedRecord)
             : '';
@@ -3029,6 +3629,11 @@ const plugin = {
           || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const rememberedPromptScopedText = buildPromptScopedReplyTextFromRememberedRecord(activePrompt, rememberedRecord);
+        if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
+          return {
+            message: buildAssistantTextMessage(buildExecutionTraceReplyFromRememberedRecord(rememberedRecord), message)
+          };
+        }
         if (rememberedPromptScopedText) {
           return {
             message: buildAssistantTextMessage(rememberedPromptScopedText, message)
@@ -3082,23 +3687,17 @@ const plugin = {
       endpoint: 'local://napm.skill.query',
       payloadBuilder: buildSkillPayload
     });
+
     registerCommand(api, {
-      name: 'napm-topn',
-      description: 'Run an NAPM TopN query.',
-      endpoint: 'local://napm.query.topn',
-      payloadBuilder: buildTopnPayload
+      name: 'napm-resolve-query',
+      description: 'Construct a NAPM resolvedQuery from a natural-language prompt.',
+      endpoint: 'local://napm.resolve.query'
     });
+
     registerCommand(api, {
-      name: 'napm-average',
-      description: 'Run an NAPM average query.',
-      endpoint: 'local://napm.query.average',
-      payloadBuilder: buildAveragePayload
-    });
-    registerCommand(api, {
-      name: 'napm-timeseries',
-      description: 'Run an NAPM timeseries query.',
-      endpoint: 'local://napm.query.timeseries',
-      payloadBuilder: buildTimeseriesPayload
+      name: 'napm-mainflow-query',
+      description: 'Resolve a NAPM prompt into resolvedQuery and execute it through napm-skill-query.',
+      endpoint: 'local://napm.mainflow.query'
     });
   }
 };
@@ -3112,11 +3711,17 @@ module.exports.__test__ = {
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,
   buildRememberedSkillReplyText,
+  buildExecutionTraceReplyFromRememberedRecord,
   buildSkillRequiredReply,
   buildOverviewResolvedQuery,
   buildMetricInventoryResolvedQuery,
   buildPacketLossClientTopResolvedQuery,
   buildPromptScopedReplyTextFromRememberedRecord,
+  createResolvedQueryResolverToolDefinition,
+  createMainflowQueryToolDefinition,
+  getNapmResolvedQueryResolverService,
+  resolvePromptWithAudit,
+  runMainflowQuery,
   inferOverviewScene,
   inferMetricInventoryGroup,
   isBusinessObjectInventoryPrompt,
