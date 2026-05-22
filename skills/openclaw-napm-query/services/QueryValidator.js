@@ -26,12 +26,27 @@ class QueryValidator {
       errors.push('Service type is required');
     }
 
-    if (!target.start || !target.end) {
+    const hasStart = Boolean(target.start);
+    const hasEnd = Boolean(target.end);
+    const startNumber = Number(target.start);
+    const endNumber = Number(target.end);
+
+    if (!hasStart || !hasEnd) {
       errors.push('Start and end timestamps are required');
     }
 
-    if (target.start > target.end) {
+    if (Number.isFinite(startNumber) && Number.isFinite(endNumber) && startNumber > endNumber) {
       errors.push('Start timestamp must be before end timestamp');
+    }
+
+    if (
+      hasStart
+      && hasEnd
+      && Number.isFinite(startNumber)
+      && Number.isFinite(endNumber)
+      && (startNumber % 60 !== 0 || endNumber % 60 !== 0)
+    ) {
+      errors.push('Start and end timestamps must be aligned to 60-second minute boundaries');
     }
 
     if (target.service && !VALID_SERVICES.has(target.service)) {

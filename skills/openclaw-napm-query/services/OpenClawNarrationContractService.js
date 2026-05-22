@@ -1,8 +1,16 @@
+/**
+ * OpenClawNarrationContractService.js
+ *
+ * 负责把查询结果转换成 OpenClaw 可消费的 narration contract。
+ * 它会把原始 rows、structuredRows、overview、summary 等执行结果统一收口成
+ * narrationStructure / narrationInput / renderPolicy，方便后续生成最终用户回复。
+ */
 const {
   isBusinessObjectType,
   getMetricCategoriesForObjectType
 } = require('../../../src/constants/objectMetricOwnership');
 
+// 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
 function toFiniteNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
@@ -50,6 +58,9 @@ function formatTimestamp(timestamp) {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
+/**
+ * 从 payload、summary 和 resolvedQuery 中统一抽取时间范围，并生成面向用户的展示文本。
+ */
 function normalizeTimeRange(payload = {}, summary = {}) {
   const resolvedQuery = payload?.resolvedQuery || {};
   const summaryRange = summary?.timeRange && typeof summary.timeRange === 'object'
@@ -177,6 +188,10 @@ function toPlainSummary(summary = {}) {
   };
 }
 
+/**
+ * 统一规范化 narration 使用的结果行。
+ * 不同 service 的返回结构差异较大，这里把 groups / metrics / 普通查询行收敛成统一字段集。
+ */
 function normalizeNarrationRows(service, rows = [], fallbackRows = []) {
   const useFallbackRows = ['groups', 'metrics'].includes(String(service || '').trim())
     && Array.isArray(fallbackRows)
@@ -304,6 +319,66 @@ function extractMetricValue(row, metricId = null) {
   return toFiniteNumber(row?.rawValue ?? row?.value);
 }
 
+function findMetricValueRecord(row, metricId = null) {
+  const metricValues = Array.isArray(row?.metricValues) ? row.metricValues : [];
+  if (metricValues.length === 0) {
+    return null;
+  }
+
+  const exactMetric = metricValues.find((item) => {
+    const currentMetricId = String(item?.metric?.id || item?.metric?.Id || '').trim();
+    return metricId ? currentMetricId === metricId : Boolean(currentMetricId);
+  });
+  return exactMetric || metricValues[0] || null;
+}
+
+function extractMetricLabel(row, metricId = null) {
+  const record = findMetricValueRecord(row, metricId);
+  return pickFirstNonEmptyValue(record?.metric, ['label', 'Label', 'name', 'Name'])
+    || metricId
+    || null;
+}
+
+function extractMetricUnit(row, metricId = null) {
+  const record = findMetricValueRecord(row, metricId);
+  return pickFirstNonEmptyValue(record, ['unit', 'Unit'])
+    || (metricId && row?.units && typeof row.units === 'object' ? row.units[metricId] : null)
+    || row?.unit
+    || null;
+}
+
+function buildTopnDisplayText(narration = {}) {
+  if (!narration || narration.responseType !== 'topn') {
+    return null;
+  }
+
+  const items = Array.isArray(narration.items) ? narration.items : [];
+  if (items.length === 0) {
+    return null;
+  }
+
+  const metricLabel = String(
+    items.find((item) => item?.metricLabel)?.metricLabel
+    || items[0]?.metric
+    || 'value'
+  ).trim();
+  const objectLabel = String(narration.objectType || 'object').trim();
+  const lines = [];
+  const timeRangeText = String(narration?.timeRange?.displayText || '').trim();
+  if (timeRangeText) {
+    lines.push(timeRangeText);
+  }
+  lines.push(`| 排名 | ${objectLabel} | ${metricLabel} |`);
+  lines.push('| --- | --- | --- |');
+  items.forEach((item, index) => {
+    const rank = Number.isFinite(Number(item?.rank)) ? Number(item.rank) : index + 1;
+    const object = String(item?.object || '').trim();
+    const value = String(item?.formattedValue || item?.value || item?.rawValue || '').trim();
+    lines.push(`| ${rank} | ${object || '缺少对象标签'} | ${value || 'no_data'} |`);
+  });
+  return lines.join('\n');
+}
+
 function normalizeFollowUpPrompts(payload = {}) {
   return (Array.isArray(payload?.followUpActions) ? payload.followUpActions : [])
     .map((item) => String(item?.query || item?.replyText || item?.label || item?.value || '').trim())
@@ -333,11 +408,30 @@ function resolveResponseType(payload = {}, hasResultData = false) {
   return hasResultData ? 'query' : 'decision_result';
 }
 
+/**
+ * 构造 TopN / 排名类 narration 结构。
+ */
 function buildTopnStructure(payload, rows, followUpPrompts) {
   const metricId = extractMetricId(payload);
   const sortMetricId = extractSortMetricId(payload);
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const items = rows.slice(0, 10).map((row, index) => {
+    const rawValue = extractMetricValue(row, metricId);
+    const unit = extractMetricUnit(row, metricId);
+    return {
+      rank: Number.isFinite(Number(row.rank)) ? Number(row.rank) : index + 1,
+      objectType,
+      object: row?.object || null,
+      metric: metricId,
+      metricLabel: extractMetricLabel(row, metricId),
+      rawValue,
+      value: row?.value || formatMetricValue(rawValue, unit),
+      formattedValue: formatMetricValue(rawValue, unit),
+      unit,
+      groupPath: row?.groupPath || null
+    };
+  });
   const explanationMetricText = metricId && sortMetricId && metricId !== sortMetricId
     ? `查询指标为 ${metricId}，排序指标为 ${sortMetricId}`
     : (metricId ? `围绕 ${metricId} 指标` : null);
@@ -348,21 +442,14 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
       ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。请直接概括前列对象、领先程度和明显差距。`
       : '这是一个排行结果。请直接概括前列对象、领先程度和明显差距。',
     timeRange,
-    items: rows.slice(0, 10).map((row, index) => ({
-      rank: Number.isFinite(Number(row.rank)) ? Number(row.rank) : index + 1,
-      object: row?.object || `object_${index + 1}`,
-      metric: metricId,
-      rawValue: extractMetricValue(row, metricId),
-      value: row?.value || formatMetricValue(
-        extractMetricValue(row, metricId),
-        row?.units?.[metricId] || row?.unit || null
-      ),
-      unit: row?.units?.[metricId] || row?.unit || null
-    })),
+    objectType,
+    displayText: buildTopnDisplayText({ responseType: 'topn', objectType, timeRange, items }),
+    items,
     nextActions: followUpPrompts
   };
 }
 
+// 构造趋势类 narration 结构。
 function buildTrendStructure(payload, rows, structuredSeries, followUpPrompts) {
   const metricId = extractMetricId(payload);
   const points = Array.isArray(structuredSeries?.points) ? structuredSeries.points : rows;
@@ -449,6 +536,10 @@ function buildApplicationOverviewSummary(modules = []) {
   return lines.slice(0, 4);
 }
 
+/**
+ * 构造概览类 narration 结构。
+ * 这里会把 overview scene、模块摘要和发现项统一包装成“可直接叙述”的结果对象。
+ */
 function buildOverviewStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const scene = String(payload?.overview?.scene || '').trim();
@@ -458,14 +549,14 @@ function buildOverviewStructure(payload, followUpPrompts) {
   const discoveryObject = String(discovery?.selectedObject || '').trim();
   const discoveryMetric = String(discovery?.metric || '').trim();
   const sceneLabelMap = {
-    system: '????',
-    business: '????',
-    business_group: '?????',
-    application: '????',
-    network: '????',
-    security: '????'
+    system: '系统概览',
+    business: '业务概览',
+    business_group: '业务组概览',
+    application: '应用概览',
+    network: '网络概览',
+    security: '安全概览'
   };
-  const sceneLabel = sceneLabelMap[scene] || '????';
+  const sceneLabel = sceneLabelMap[scene] || '概览';
   const overviewQueries = Array.isArray(payload?.overview?.queries) ? payload.overview.queries : [];
   const summaryHighlights = Array.isArray(payload?.summary?.highlights)
     ? payload.summary.highlights.filter(Boolean).map((item) => String(item))
@@ -490,12 +581,12 @@ function buildOverviewStructure(payload, followUpPrompts) {
     ? applicationSummary
     : [...summaryHighlights, ...topFindings].slice(0, 8);
   const explanation = scene === 'application'
-    ? '?????????????????????????????????????'
-    : '??' + sceneLabel + '??????????????????????????????';
+    ? '这是应用概览结果，请优先总结告警、吞吐、访问趋势、体验趋势和失败热点。'
+    : `这是${sceneLabel}结果，请优先总结核心发现、异常热点和建议关注方向。`;
 
   return {
     responseType: 'overview',
-    title: sceneLabel + '??',
+    title: sceneLabel,
     explanation,
     timeRange,
     scene,
@@ -516,6 +607,8 @@ function buildOverviewStructure(payload, followUpPrompts) {
       : (Array.isArray(payload?.overview?.nextActions) ? payload.overview.nextActions.slice(0, 6) : [])
   };
 }
+
+// 构造对比类 narration 结构。
 function buildCompareStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
@@ -528,6 +621,7 @@ function buildCompareStructure(payload, followUpPrompts) {
   };
 }
 
+// 构造清单类 narration 结构，适用于对象列表与指标列表两类元数据结果。
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const listTypeLabel = responseType === 'group_list' ? '对象列表' : '指标列表';
@@ -568,6 +662,7 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
   };
 }
 
+// 构造普通查询 narration 结构。
 function buildGenericStructure(payload, rows, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
@@ -583,6 +678,7 @@ function buildGenericStructure(payload, rows, followUpPrompts) {
   };
 }
 
+// 构造决策结果 narration 结构，适用于没有结果集、只有处理结论的场景。
 function buildDecisionStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   return {
@@ -594,6 +690,9 @@ function buildDecisionStructure(payload, followUpPrompts) {
   };
 }
 
+/**
+ * 根据结果类型分派到不同 narration builder，生成统一 narrationStructure。
+ */
 function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], structuredSeries = null) {
   const followUpPrompts = normalizeFollowUpPrompts(payload);
   const responseType = resolveResponseType(
@@ -625,6 +724,7 @@ function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], s
   return buildGenericStructure(payload, rows, followUpPrompts);
 }
 
+// 生成供 OpenClaw 渲染阶段使用的 render policy。
 function buildRenderPolicy(payload = {}) {
   return {
     language: 'zh-CN',
@@ -652,6 +752,10 @@ function buildRenderPolicy(payload = {}) {
   };
 }
 
+/**
+ * 主入口：把执行结果转换成 OpenClaw 最终回复契约。
+ * 除 narrationStructure 外，还会补齐 summary、displayText、timeRange 和 renderPolicy。
+ */
 function buildOpenClawReplyContract(data = {}, options = {}) {
   if (!data || typeof data !== 'object') {
     return data;
@@ -717,6 +821,9 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
   const narrationStructure = data.narrationStructure && typeof data.narrationStructure === 'object'
     ? data.narrationStructure
     : buildNarrationStructure(data, rows, structuredRows, structuredSeries);
+  if (!summary.displayText && narrationStructure?.responseType === 'topn' && narrationStructure?.displayText) {
+    summary.displayText = narrationStructure.displayText;
+  }
   const followUpPrompts = normalizeFollowUpPrompts(data);
 
   return {

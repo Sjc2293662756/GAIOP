@@ -2149,6 +2149,63 @@ function appendDebugApi(text, requestUrl) {
   return `${body}\n\nDebug API:\n${url}`;
 }
 
+function buildTopnUserFacingText(result = {}, narration = {}) {
+  if (String(narration?.responseType || '').trim() !== 'topn') {
+    return '';
+  }
+
+  const summary = isPlainObject(result?.summary) ? result.summary : {};
+  const requestUrl = result?.requestUrl || summary?.requestUrl || '';
+  const timeRangeText = String(
+    narration?.timeRange?.displayText
+    || result?.narrationInput?.summary?.timeRange?.displayText
+    || summary?.timeRange?.displayText
+    || ''
+  ).trim();
+  const items = Array.isArray(narration.items) ? narration.items : [];
+  if (items.length === 0) {
+    return '';
+  }
+
+  const objectLabel = String(narration?.objectType || result?.resolvedQuery?.groups?.[0]?.type || '对象').trim();
+  const metricLabel = String(
+    items.find((item) => String(item?.metricLabel || '').trim())?.metricLabel
+    || items[0]?.metric
+    || result?.resolvedQuery?.metric
+    || '指标值'
+  ).trim();
+  const rows = items
+    .map((item, index) => {
+      const object = String(item?.object || '').trim();
+      const rawValue = item?.rawValue ?? item?.value ?? item?.formattedValue;
+      const value = String(item?.formattedValue || item?.value || formatNumber(rawValue)).trim();
+      if (!object) {
+        return null;
+      }
+      return {
+        rank: Number.isFinite(Number(item?.rank)) ? Number(item.rank) : index + 1,
+        object,
+        value: value || 'no_data'
+      };
+    })
+    .filter(Boolean);
+
+  if (rows.length === 0) {
+    return appendDebugApi('查询已返回 TopN 结果，但缺少对象标签，不能生成“谁最多”的结论。', requestUrl);
+  }
+
+  const lines = [];
+  if (timeRangeText) {
+    lines.push(timeRangeText);
+  }
+  lines.push(`| 排名 | ${objectLabel} | ${metricLabel} |`);
+  lines.push('| --- | --- | --- |');
+  rows.forEach((row) => {
+    lines.push(`| ${row.rank} | ${row.object} | ${row.value} |`);
+  });
+  return appendDebugApi(lines.join('\n'), requestUrl);
+}
+
 function getMetricInventoryScopeLabel(groupType = '') {
   const normalized = String(groupType || '').trim();
   if (normalized === 'WebApplication') return '业务';
@@ -2828,6 +2885,10 @@ function buildUserFacingSkillText(result) {
       : null);
   if (narration) {
     if (String(narration?.responseType || '').trim() === 'topn') {
+      const topnText = buildTopnUserFacingText(result, narration);
+      if (topnText) {
+        return topnText;
+      }
       const timeRangeText = String(
         narration?.timeRange?.displayText
         || result?.narrationInput?.summary?.timeRange?.displayText
@@ -3743,5 +3804,6 @@ module.exports.__test__ = {
   shouldRefreshMetricInventory,
   prepareSkillExecutionArgs,
   shouldAllowNapmReasoningPreview,
+  buildTopnUserFacingText,
   extractOverviewSceneFromRememberedRecord
 };

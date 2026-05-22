@@ -1,6 +1,14 @@
+/**
+ * GroupPathPlannerService.js
+ *
+ * 负责根据静态 groups tree、当前 query 形态和用户问句语义，
+ * 规划一条更适合执行的对象路径（group path）。
+ * 它常用于把“顶层对象 + 下钻意图”收敛成明确的多层 groups 结构。
+ */
 const NapmMetadataService = require('./NapmMetadataService');
 const GroupBuilder = require('./GroupBuilder');
 
+// 问句中的对象概念提示，用于给候选路径打分时提升相关分支权重。
 const PROMPT_CONCEPTS = [
   {
     id: 'other_app',
@@ -82,6 +90,7 @@ const PROMPT_CONCEPTS = [
   }
 ];
 
+// 在缺少更强语义信号时使用的默认下钻分支偏好。
 const DEFAULT_BRANCHES = {
   WebApplication: [
     ['ClientIPs', 'IPAddress'],
@@ -124,12 +133,18 @@ const DEFAULT_BRANCHES = {
   ]
 };
 
+/**
+ * 路径规划服务
+ * 负责从静态 groups tree 中枚举候选路径，并结合语义信号挑选最佳执行路径。
+ */
 class GroupPathPlannerService {
+  // 复用元数据服务与 group type 解析能力，统一路径中的对象类型口径。
   constructor() {
     this.napmMetadataService = NapmMetadataService;
     this.groupBuilder = GroupBuilder;
   }
 
+  // 统一 groupType 表达，兼容静态树、运行时 key 与自然语言别名。
   normalizeGroupType(groupType = '') {
     const raw = String(groupType || '').trim();
     if (!raw) {
@@ -141,6 +156,7 @@ class GroupPathPlannerService {
     return mapped || runtimeKey;
   }
 
+  // 把输入 groups 规范化成仅保留 type/argument 的标准结构。
   normalizeGroups(groups = []) {
     if (!Array.isArray(groups)) {
       return [];
@@ -154,6 +170,7 @@ class GroupPathPlannerService {
       .filter((item) => item.type);
   }
 
+  // 从 query 的多个语义来源中收集目标对象类型候选。
   collectTargetTypes(query = {}) {
     const candidates = [
       query?.semanticConstraints?.targetObjectType,
@@ -189,6 +206,10 @@ class GroupPathPlannerService {
     return PROMPT_CONCEPTS.filter((item) => item.patterns.some((pattern) => pattern.test(text)));
   }
 
+  /**
+   * 判断当前 query 是否值得尝试做路径规划。
+   * 只有存在已有 groups、尚未规划过，且问句呈现下钻/对象切换信号时才会进入。
+   */
   shouldAttemptPlan(query = {}, prompt = '', groups = []) {
     const currentGroups = this.normalizeGroups(groups);
     if (currentGroups.length === 0) {
@@ -217,6 +238,7 @@ class GroupPathPlannerService {
     return targetTypes.some((item) => item && item !== currentTerminalType);
   }
 
+  // 读取并规范化静态 groups tree，作为路径规划的候选空间。
   getStaticGroupsTree() {
     const rawTree = this.napmMetadataService.loadStaticGroupsTreeRaw();
     if (!Array.isArray(rawTree) || rawTree.length === 0) {
@@ -226,6 +248,7 @@ class GroupPathPlannerService {
     return rawTree.map((node) => this.napmMetadataService.normalizeGroupNode(node, []));
   }
 
+  // 根据锚点对象类型找到静态树中最相关的起始节点。
   findAnchorNodes(anchorType = '') {
     const target = this.normalizeGroupType(anchorType);
     if (!target) {
@@ -238,6 +261,10 @@ class GroupPathPlannerService {
     return matches.sort((left, right) => this.napmMetadataService.scoreGroupNode(right) - this.napmMetadataService.scoreGroupNode(left));
   }
 
+  /**
+   * 从锚点节点向下收集候选路径记录。
+   * 这里返回的是“原始路径 + 运行时路径 + 终点能力”等评分所需上下文。
+   */
   collectCandidatePaths(anchorType = '', options = {}) {
     const nodes = this.findAnchorNodes(anchorType);
     if (nodes.length === 0) {
@@ -261,6 +288,10 @@ class GroupPathPlannerService {
     return this.napmMetadataService.dedupeDrilldownPathRecords(records);
   }
 
+  /**
+   * 判断候选路径与当前已有 groups 的对齐关系。
+   * 结果会告诉后续逻辑是精确前缀、需要补中间层，还是根本不兼容。
+   */
   alignCandidatePath(candidatePath = [], existingGroups = []) {
     const path = Array.isArray(candidatePath) ? candidatePath.map((item) => this.normalizeGroupType(item)).filter(Boolean) : [];
     const groups = this.normalizeGroups(existingGroups);
@@ -321,6 +352,7 @@ class GroupPathPlannerService {
     };
   }
 
+  // 基于候选路径和对齐结果生成最终 plannedGroups，并尽量继承已有 argument。
   buildPlannedGroups(candidatePath = [], alignment = null, existingGroups = []) {
     const groups = candidatePath.map((type) => ({
       type: this.normalizeGroupType(type),
@@ -344,6 +376,7 @@ class GroupPathPlannerService {
     return groups;
   }
 
+  // 当缺少显式语义提示时，给内置默认分支一点基础加分。
   scoreDefaultBranch(anchorType = '', candidatePath = []) {
     const branches = DEFAULT_BRANCHES[this.normalizeGroupType(anchorType)] || [];
     if (branches.length === 0) {
@@ -363,6 +396,10 @@ class GroupPathPlannerService {
     return 0;
   }
 
+  /**
+   * 为单条候选路径打分。
+   * 分数会综合路径修复程度、下钻意图、终点可查询性、概念命中和语义目标命中。
+   */
   scoreCandidate(record = {}, context = {}) {
     const candidatePath = Array.isArray(record?.runtimePath) ? record.runtimePath.map((item) => this.normalizeGroupType(item)) : [];
     const alignment = this.alignCandidatePath(candidatePath, context.groups);
@@ -447,6 +484,7 @@ class GroupPathPlannerService {
     };
   }
 
+  // 生成适合外部日志和调试展示的候选路径摘要。
   buildCandidateSummary(candidate = {}) {
     return {
       path: Array.isArray(candidate.path) ? candidate.path.slice() : [],
@@ -469,6 +507,10 @@ class GroupPathPlannerService {
     ));
   }
 
+  /**
+   * 主入口：为当前 query 规划最佳 group path。
+   * 如果最佳候选不明显、得分过低，或者规划后与原 groups 等价，则返回 null。
+   */
   planPath(query = {}, prompt = '', options = {}) {
     const groups = this.normalizeGroups(options?.groups || query?.groups || []);
     if (groups.length === 0) {

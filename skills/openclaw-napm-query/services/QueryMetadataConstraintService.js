@@ -1,16 +1,9 @@
 /**
  * QueryMetadataConstraintService.js
- * 
- * 查询元数据约束服务
- * 
- * 负责对查询进行规范化和兼容性检查，包括：
- * - 指标字段规范化
- * - 分组字段规范化
- * - TopCount 规范化
- * - 时间粒度规范化
- * - 兼容性检查和修正
- * 
- * 修改日期：2026-04-15
+ *
+ * 负责在执行前对查询对象做静态元数据约束和兼容性修正。
+ * 主要处理指标字段、分组字段、TopCount、粒度以及“指标-对象”兼容关系，
+ * 让后续执行链路拿到更稳定的 query shape。
  */
 const DimensionMappingService = require('./DimensionMappingService');
 const MetricMappingService = require('./MetricMappingService');
@@ -49,7 +42,8 @@ class QueryMetadataConstraintService {
       };
     }
 
-    // 鎵ц鍚勭被瑙勮寖鍖栧鐞?    this.normalizeMetricFields(baseQuery, corrections);
+    // 依次执行各类字段规范化与兼容性修正。
+    this.normalizeMetricFields(baseQuery, corrections);
     this.normalizeGroupFields(baseQuery, originalText, warnings, corrections);
     this.normalizeTopCount(baseQuery, corrections);
     this.normalizeGranularity(baseQuery, corrections);
@@ -361,6 +355,7 @@ class QueryMetadataConstraintService {
     };
   }
 
+  // 提取 query 中显式给出的目标对象类型，用于兼容性修正时判断是否应保留用户意图。
   extractExplicitTargetObjectType(query = {}) {
     const fromSemantic = String(query?.semanticConstraints?.targetObjectType || '').trim();
     if (fromSemantic) {

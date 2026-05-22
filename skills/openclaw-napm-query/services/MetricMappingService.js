@@ -212,6 +212,9 @@ class MetricMappingService {
     return metrics;
   }
 
+  /**
+   * 从查询文本里做最长匹配，找出最可能对应的指标定义。
+   */
   findMetricByQueryText(text = '') {
     const normalizedText = this.normalizeMetricText(text);
     if (!normalizedText) {
@@ -242,6 +245,9 @@ class MetricMappingService {
     return best;
   }
 
+  /**
+   * 统一规范化指标描述文本，便于描述匹配时忽略空格、括号和大小写差异。
+   */
   normalizeMetricText(value = '') {
     return String(value || '')
       .trim()

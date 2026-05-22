@@ -181,23 +181,23 @@ Tests: 51 passed, 51 total
 部署主机：
 
 ```text
-101.254.114.237
+<OPENCLAW_HOST>
 ```
 
 覆盖文件：
 
 ```text
-/home/netinside/.openclaw/extensions/napm-openclaw-plugin/index.js
-/home/netinside/.openclaw/extensions/napm-openclaw-plugin/openclaw.plugin.json
-/home/netinside/.openclaw/skills/openclaw-napm-query/services/NapmResolvedQueryResolverService.js
-/home/netinside/.openclaw/npm/node_modules/@wecom/wecom-openclaw-plugin/dist/src/monitor.js
-/home/netinside/.openclaw/docs-2026-05-21-OpenClaw-resolvedQuery构造器落地说明.md
+<OPENCLAW_HOME>/extensions/napm-openclaw-plugin/index.js
+<OPENCLAW_HOME>/extensions/napm-openclaw-plugin/openclaw.plugin.json
+<OPENCLAW_HOME>/skills/openclaw-napm-query/services/NapmResolvedQueryResolverService.js
+<OPENCLAW_HOME>/npm/node_modules/@wecom/wecom-openclaw-plugin/dist/src/monitor.js
+<OPENCLAW_HOME>/docs-2026-05-21-OpenClaw-resolvedQuery构造器落地说明.md
 ```
 
 备份目录：
 
 ```text
-/home/netinside/.openclaw/deploy_backups/20260521_182828_resolvedquery_resolver
+<OPENCLAW_HOME>/deploy_backups/20260521_182828_resolvedquery_resolver
 ```
 
 WeCom 入口调整：
@@ -347,7 +347,7 @@ Tests: 12 passed, 12 total
 用户问句：
 
 ```text
-101.254.114.237 这个IP最近一天主要跑哪些应用
+<OPENCLAW_HOST> 这个IP最近一天主要跑哪些应用
 ```
 
 用户给出的合法 API：
@@ -355,7 +355,7 @@ Tests: 12 passed, 12 total
 ```text
 type=groups
 groupType1=IPAddress
-groupArgument1=101.254.114.237
+groupArgument1=<OPENCLAW_HOST>
 groupType2=Applications
 groupType3=DefinedApp
 numGroups=3
@@ -367,7 +367,7 @@ numGroups=3
 type=topValues
 numGroups=4
 groupType1=IPAddress
-groupArgument1=101.254.114.237
+groupArgument1=<OPENCLAW_HOST>
 groupType2=Applications
 groupType3=DefinedApp
 groupType4=ConnectedIP
@@ -377,7 +377,7 @@ groupType4=ConnectedIP
 
 ```text
 resolvedQuery 已经显式传入三层路径：
-IPAddress(101.254.114.237) -> Applications -> DefinedApp
+IPAddress(<OPENCLAW_HOST>) -> Applications -> DefinedApp
 
 并且上游传了 skipPathPlanning=true。
 
@@ -431,9 +431,87 @@ Tests: 10 passed, 10 total
 
 ```text
 groupType1=IPAddress
-groupArgument1=101.254.114.237
+groupArgument1=<OPENCLAW_HOST>
 groupType2=Applications
 groupType3=DefinedApp
 numGroups=3
 groupType4 不存在
+```
+
+## 09:33 最近一小时被解析成默认窗口问题复盘
+
+问题时间：2026-05-22 09:33 CST
+
+用户问句：
+
+```text
+最近一小时连接失败数最多的是谁？
+```
+
+问题表现：
+
+```text
+napm-mainflow-query / napm-resolve-query 能识别指标和排行意图，
+但 resolver 没有真正解析“最近一小时”，仍按默认时间窗生成 resolvedQuery。
+模型随后手工构造了 start/end=1779409980/1779413580 再查询。
+```
+
+根因：
+
+```text
+NapmResolvedQueryResolverService 只有 buildLast24HoursTimeRange()。
+resolveTopValuesPrompt() 对所有 TopN 查询都调用这个固定 24h 时间窗。
+它没有显式时间优先逻辑，也没有“未说明时间则默认最近一小时”的规则。
+```
+
+本次补丁：
+
+```text
+新增 inferTimeRange()
+新增 buildLast1HourTimeRange()
+保留 buildLast24HoursTimeRange()
+```
+
+时间规则：
+
+```text
+1. 用户明确说“最近一小时 / 过去1小时 / last hour” -> last1hour
+2. 用户明确说“过去24小时 / 最近一天 / last 24 hours” -> last24hours
+3. 用户明确说 N 小时 / N 分钟 / N 天 -> 按 N 解析
+4. 用户未说明时间 -> 默认 last1hour
+5. 所有 start/end 都按分钟对齐
+```
+
+本地验证：
+
+```json
+{
+  "prompt": "最近一小时连接失败数最多的是谁？",
+  "service": "topValues",
+  "metric": "RFCI",
+  "groups": [
+    {
+      "type": "IPAddress"
+    }
+  ],
+  "topCount": 1,
+  "start": 1779409980,
+  "end": 1779413580,
+  "timeRange": {
+    "key": "last1hour"
+  }
+}
+```
+
+回归测试：
+
+```bash
+npx jest test/napm-resolved-query-resolver-service.test.js --runInBand
+```
+
+结果：
+
+```text
+Test Suites: 1 passed, 1 total
+Tests: 8 passed, 8 total
 ```

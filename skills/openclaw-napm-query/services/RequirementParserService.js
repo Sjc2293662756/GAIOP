@@ -45,6 +45,7 @@ const {
  * 当前 skill 运行时中的核心执行服务，负责将结构化查询执行为 NAPM 请求。
  */
 class RequirementParserService {
+  // 初始化执行期依赖，包括元数据服务、路径规划器和稳定模板缓存。
   constructor() {
     this.metricMappingService = MetricMappingService;
     this.napmClient = new NapmClient();
@@ -57,6 +58,9 @@ class RequirementParserService {
     this.stableQueryTemplates = this.loadStableQueryTemplates();
   }
 
+  /**
+   * 按首层对象类型过滤指标库存，优先保留与当前对象归属兼容的指标。
+   */
   filterMetricInventoryForOwnership(groups = [], metrics = []) {
     const items = Array.isArray(metrics) ? metrics : [];
     const firstType = String(groups?.[0]?.type || '').trim();
@@ -79,6 +83,10 @@ class RequirementParserService {
     return Boolean(this.gatewayTemplatesDisabled);
   }
 
+  /**
+   * 加载稳定查询模板。
+   * 优先读取 resolution spec 中的运行时模板定义，其次回退到本地 JSON 配置。
+   */
   loadStableQueryTemplates() {
     if (this.areGatewayTemplatesDisabled()) {
       logger.warn('Gateway stable templates are disabled by environment flag.');
@@ -154,6 +162,10 @@ class RequirementParserService {
     return normalized;
   }
 
+  /**
+   * 归一化稳定模板定义，统一 groupPath、allowedGroupPaths、metric 列表和推断参数。
+   * 这里也会做一次指标归属兼容性校验，避免模板在运行时生成不可执行请求。
+   */
   normalizeStableTemplateDefinition(template = null) {
     if (!template || typeof template !== 'object') {
       return null;
@@ -243,6 +255,7 @@ class RequirementParserService {
     return normalized;
   }
 
+  // 生成适合审计日志输出的请求摘要，避免在日志中打印整份运行时对象。
   buildGatewayRequestSummary(gatewayRequest) {
     if (!gatewayRequest) {
       return null;
@@ -387,6 +400,10 @@ class RequirementParserService {
     return Array.from(candidates).slice(0, 5);
   }
 
+  /**
+   * 基于动态元数据结果对查询做最后一轮收口。
+   * 主要补齐 group argument、修正 metric，并把路径规划结果落回最终请求。
+   */
   applyMetadataDrivenFinalization(query, dynamicMetadataReview = null, baseResult = null, pathPlan = null) {
     if (!query || typeof query !== 'object') {
       return query;
@@ -573,9 +590,8 @@ class RequirementParserService {
     });
 
     if (allowRuntimeSupportedFallback) {
-      // For multilevel paths, metricsForGroup is the final runtime executability signal.
-      // Keep ownership-compatible metrics first, but do not discard runtime-supported
-      // alternatives entirely when static ownership tables do not model that path.
+      // 对多层路径来说，metricsForGroup 更接近上游真实可执行能力。
+      // 因此先保留静态归属兼容指标，再补入运行时确认可用的候选，避免误杀。
       runtimeSupportedIds.forEach((metricId) => {
         if (seen.has(metricId)) {
           return;
@@ -615,6 +631,9 @@ class RequirementParserService {
     return Array.from(deduped.values());
   }
 
+  /**
+   * 当多层 groups 查询无法直接拿到子对象清单时，尝试改走 topValues 做清单兜底。
+   */
   async tryExecuteInventoryFallback(gatewayRequest, metadataReview = null, requestContext = null) {
     if (!this.isMultilevelGroupsInventoryQuery(gatewayRequest)) {
       return null;
@@ -663,6 +682,7 @@ class RequirementParserService {
     return null;
   }
 
+  // 为 averageValues 多层路径构造 topValues 回退请求，尽量保住可执行性。
   buildMultilevelDataServiceFallbackQuery(gatewayRequest = {}, metadataReview = null) {
     const groups = Array.isArray(gatewayRequest?.groups) ? gatewayRequest.groups.filter(Boolean) : [];
     if (groups.length < 2) {
@@ -712,6 +732,9 @@ class RequirementParserService {
     };
   }
 
+  /**
+   * 执行前做一次动态元数据审查，提前发现组对象、指标和路径是否真实可用。
+   */
   async reviewGatewayRequestMetadata(gatewayRequest = {}) {
     if (!gatewayRequest || typeof gatewayRequest !== 'object') {
       return null;
@@ -727,6 +750,10 @@ class RequirementParserService {
     }
   }
 
+  /**
+   * 统一准备执行态查询。
+   * 这里会依次做形态归一化、静态约束、动态约束、最终收口，以及回退链路预判。
+   */
   async prepareGatewayExecution(gatewayRequest = {}, requestContext = null) {
     const normalizedQuery = this.normalizeTopLevelQueryShape(gatewayRequest);
     const staticConstraint = this.queryMetadataConstraintService.constrain(
@@ -760,21 +787,12 @@ class RequirementParserService {
   }
 
   /**
-   * 瑙ｆ瀽鐢ㄦ埛闇€姹備负缃戝叧璇锋眰
-   * 
-   * parse闃舵鍙仛"鏀舵暃鎴愬彲鎵ц璇锋眰"锛屼笉鐩存帴璁块棶涓婃父銆?   * 瀹冪殑鐩爣鏄敖閲忚緭鍑轰竴涓ǔ瀹氥€佸彲瀹¤銆佸彲鍥炴斁鐨刧atewayRequest銆?   * 
-   * @param {string} userRequirement - 鐢ㄦ埛闇€姹傛枃鏈?   * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 缃戝叧璇锋眰瀵硅薄
-   */
-  /**
-   * 瑙ｆ瀽骞舵墽琛岀敤鎴烽渶姹?   * 
-   * @param {string} userRequirement - 鐢ㄦ埛闇€姹傛枃鏈?   * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 鎵ц缁撴灉
-   */
-  /**
-   * 鎵ц缃戝叧璇锋眰
-   * 
-   * execute闃舵鎵嶇湡姝ｅ彂璧蜂笂娓歌姹傦紝骞跺湪杩欓噷琛equestUrl銆乫allback鍜屽璁℃棩蹇椼€?   * 
-   * @param {object} gatewayRequest - 缃戝叧璇锋眰瀵硅薄
-   * @param {object} requestContext - 璇锋眰涓婁笅鏂?   * @returns {object} - 鎵ц鍝嶅簲瀵硅薄
+   * 直接执行网关请求。
+   * 这个阶段不再改写语义，只负责参数校验、请求组装、上游调用、审计记录和错误收口。
+   *
+   * @param {object} gatewayRequest - 已结构化的执行态查询对象
+   * @param {object} requestContext - 请求上下文
+   * @returns {Promise<object>} - 上游执行结果、调试参数与错误信息
    */
   async executeDirectGatewayRequest(gatewayRequest, requestContext = null) {
     // 网关仅负责按上游结构化参数执行查询，不在本地改写查询语义或执行策略。
@@ -792,8 +810,8 @@ class RequirementParserService {
 
     try {
       logger.info('\n========================================');
-      logger.info('=== 璇箟缃戝叧璋冪敤 ===');
-      logger.info('姝ｅ湪瑙ｆ瀽缃戝叧璇锋眰JSON...');
+      logger.info('=== 语义网关调用 ===');
+      logger.info('正在解析网关请求 JSON...');
 
       const queryRequest = {
         service: passthroughGatewayRequest.service,
@@ -937,7 +955,7 @@ class RequirementParserService {
         Object.assign(params, this.groupBuilder.buildGroupParams(queryRequest.groups));
       }
 
-      logger.info('姝ｅ湪鏋勫缓URL...');
+      logger.info('正在构建 URL...');
       const fullParams = {
         UserName: this.napmClient.username,
         Password: this.napmClient.password,
@@ -947,7 +965,7 @@ class RequirementParserService {
       response.requestParamsMasked = maskSensitiveParams(fullParams);
       const url = buildSafeUrl(this.napmClient.baseUrl, fullParams);
       response.requestUrl = url;
-      logger.info('鎷兼帴濂界殑URL:');
+      logger.info('拼接好的 URL:');
       logger.info(url);
       logger.info('========================================');
 
@@ -957,17 +975,17 @@ class RequirementParserService {
         url
       }, requestContext);
 
-      logger.info('姝ｅ湪璇锋眰URL...');
+      logger.info('正在请求 URL...');
       const rawPayload = await this.napmClient.get(params);
       const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
-      logger.info('璇锋眰鍒扮殑鏁版嵁:');
+      logger.info('请求到的数据:');
       logger.info(typeof rawPayload === 'string' ? rawPayload.substring(0, 200) + (rawPayload.length > 200 ? '...' : '') : JSON.stringify(rawPayload).substring(0, 200));
-      logger.info('鏁版嵁闀垮害:', csvText.length);
+      logger.info('数据长度:', csvText.length);
 
-      logger.info('姝ｅ湪瑙ｆ瀽鏁版嵁...');
+      logger.info('正在解析数据...');
       const data = this.parseNapmPayload(rawPayload);
-      logger.info('瑙ｆ瀽鍒版暟鎹鏁?', data.length);
-      logger.info('瑙ｆ瀽鍚庣殑鏁版嵁:');
+      logger.info('解析到数据行数:', data.length);
+      logger.info('解析后的数据:');
       logger.info(JSON.stringify(data.slice(0, 3), null, 2));
 
       response.ok = true;
@@ -984,7 +1002,7 @@ class RequirementParserService {
 
       return response;
     } catch (error) {
-      logger.error('缃戝叧璇锋眰鎵ц澶辫触:', error.message);
+      logger.error('网关请求执行失败:', error.message);
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
       if (upstreamGuard) {
         response.error = upstreamGuard;
@@ -1009,6 +1027,10 @@ class RequirementParserService {
     }
   }
 
+  /**
+   * 执行完整网关请求主链。
+   * 先跑准备阶段，再尝试直接执行，必要时启用库存兜底或 service 级回退。
+   */
   async executeGatewayRequest(gatewayRequest, requestContext = null) {
     const prepared = await this.prepareGatewayExecution(gatewayRequest, requestContext);
     if (prepared?.inventoryFallback) {
@@ -1047,6 +1069,7 @@ class RequirementParserService {
     return directResult;
   }
 
+  // 仅在 WebApplication 单对象明细查询被 averageValues 拒绝时启用 topValues 行过滤回退。
   shouldUseTopValuesDetailFallback(gatewayRequest, error) {
     return Boolean(
       gatewayRequest?.service === 'averageValues' &&
@@ -1058,6 +1081,9 @@ class RequirementParserService {
     );
   }
 
+  /**
+   * 用 topValues 拉大样本后在本地做目标对象过滤，兼容部分上游不支持的单对象明细场景。
+   */
   async executeTopValuesDetailFallback(gatewayRequest, requestContext = null) {
     const [targetGroup] = gatewayRequest.groups || [];
     const params = {
@@ -1109,12 +1135,11 @@ class RequirementParserService {
   }
 
   /**
-   * 瑙ｆ瀽NAPM鍝嶅簲鏁版嵁
-   * 
-   * 鏀寔JSON鏁扮粍銆丣SON瀵硅薄銆丆SV瀛楃涓茬瓑澶氱鏍煎紡
-   * 
-   * @param {any} rawPayload - 鍘熷鍝嶅簲鏁版嵁
-   * @returns {array} - 瑙ｆ瀽鍚庣殑鏁版嵁鏁扮粍
+   * 解析 NAPM 返回载荷。
+   * 支持数组 JSON、对象 JSON、以及 CSV 字符串三种常见格式。
+   *
+   * @param {any} rawPayload - 上游原始响应
+   * @returns {array} - 标准化后的数据行数组
    */
   parseNapmPayload(rawPayload) {
     if (Array.isArray(rawPayload)) {
@@ -1156,14 +1181,11 @@ class RequirementParserService {
   }
 
   /**
-   * 后处理网关请求
-   * 
-   * 应用稳定查询约束、扩展双向指标、添加时间语义等
-   * 
-   * @param {object} gatewayRequest - 网关请求对象
-   * @param {string} userRequirement - 用户需求文本
-   * @param {object} mappingResult - 映射结果对象
-   * @returns {object} - 处理后的网关请求
+   * 构造轻量意图结果对象，供外部记录“用户在问什么”而不是“最终怎么执行”。
+   *
+   * @param {object} partialQuery - 当前阶段的部分查询对象
+   * @param {string} userRequirement - 用户原始需求文本
+   * @returns {object} - 意图摘要结果
    */
   buildIntentResult(partialQuery, userRequirement = '') {
     const query = partialQuery && typeof partialQuery === 'object' ? partialQuery : {};
@@ -1209,6 +1231,9 @@ class RequirementParserService {
     };
   }
 
+  /**
+   * 构造语义解析结果摘要，便于外部理解对象、指标、时间和路径是如何被收敛的。
+   */
   buildSemanticResolutionResult(partialQuery) {
     const query = partialQuery && typeof partialQuery === 'object' ? partialQuery : {};
     const groups = Array.isArray(query?.groups) ? query.groups : [];
@@ -1261,6 +1286,7 @@ class RequirementParserService {
     };
   }
 
+  // 以下是请求归一化与静态路径规划相关逻辑，负责把不同来源的 query shape 收口成统一结构。
   normalizeTopLevelGroupType(groupType = '') {
     const raw = String(groupType || '').trim();
     if (!raw) {
@@ -1298,6 +1324,9 @@ class RequirementParserService {
     return normalized;
   }
 
+  /**
+   * 统一规范执行态 query 的对象类型、候选提示、模板定义和路径规划输入。
+   */
   normalizeTopLevelQueryShape(gatewayRequest) {
     if (!gatewayRequest || typeof gatewayRequest !== 'object') {
       return gatewayRequest;
@@ -1402,6 +1431,9 @@ class RequirementParserService {
     return this.applyStaticGroupPathPlanning(request, userRequirement);
   }
 
+  /**
+   * 在真正执行前应用一次静态 group path 规划，把隐式路径补成可执行的显式路径。
+   */
   applyStaticGroupPathPlanning(gatewayRequest, userRequirement = '') {
     if (!gatewayRequest || typeof gatewayRequest !== 'object') {
       return gatewayRequest;
@@ -1438,6 +1470,10 @@ class RequirementParserService {
     return request;
   }
 
+  /**
+   * 在稳定模板集合中匹配最合适的模板。
+   * 评分会综合 service、对象路径、关键字、协议词和指标提示。
+   */
   matchStableQueryTemplate(gatewayRequest, userRequirement) {
     if (this.areGatewayTemplatesDisabled()) {
       return null;
@@ -1629,6 +1665,10 @@ class RequirementParserService {
     return metric || null;
   }
 
+  /**
+   * 把稳定模板中的绑定信息应用到当前请求。
+   * 模板可以补 service、metric、groupPath、topCount 和默认时间范围。
+   */
   applyStableTemplateBindings(request, template, userRequirement = '') {
     if (this.areGatewayTemplatesDisabled()) {
       return;
@@ -1700,6 +1740,7 @@ class RequirementParserService {
     }
   }
 
+  // 按模板路径生成 groups，并尽量从现有对象、上下文和文本中补齐 argument。
   buildGroupsFromStableTemplate(groupPath = [], existingGroups = [], contextGroups = [], userRequirement = '') {
     const sources = [
       ...(Array.isArray(existingGroups) ? existingGroups : []),
@@ -1731,6 +1772,9 @@ class RequirementParserService {
     });
   }
 
+  /**
+   * 从用户文本中提取可直接绑定到稳定模板的参数，例如协议名、引用名和 /24 网段。
+   */
   extractStableTemplateArguments(userRequirement = '') {
     const text = String(userRequirement || '');
     const quoted = Array.from(
@@ -1786,6 +1830,9 @@ class RequirementParserService {
     return inferred;
   }
 
+  /**
+   * 当用户明确表达“双向/进出都看”时，把单指标扩展为入向 + 出向指标对。
+   */
   expandMetricsForBidirectionalHint(gatewayRequest, userRequirement) {
     if (!gatewayRequest || !userRequirement) {
       return gatewayRequest;
@@ -1846,6 +1893,7 @@ class RequirementParserService {
     };
   }
 
+  // 以下逻辑用于把 requestContext 中的对象提示注入语义候选，帮助收敛最终目标对象类型。
   resolveContextObjectTypeHint(requestContext = null) {
     if (!requestContext || typeof requestContext !== 'object') {
       return '';
@@ -1946,6 +1994,9 @@ class RequirementParserService {
       .sort((a, b) => b.score - a.score);
   }
 
+  /**
+   * 将请求上下文中的对象语义种子写回 mappingResult，提升对象判定稳定性。
+   */
   applyRequestContextSemanticSeed(mappingResult = null, requestContext = null) {
     if (!mappingResult || typeof mappingResult !== 'object') {
       return mappingResult;
@@ -2098,6 +2149,9 @@ class RequirementParserService {
     );
   }
 
+  /**
+   * 当语义候选已经高度确定目标对象时，主动把 groups 末端类型对齐到该目标。
+   */
   alignGroupsWithSemanticTarget(query = null) {
     if (!query || typeof query !== 'object') {
       return query;
@@ -2143,6 +2197,10 @@ class RequirementParserService {
     return next;
   }
 
+  /**
+   * 判断是否应该优先采用语义映射阶段产出的 resolvedQuery。
+   * 只有在置信度、元数据可执行性和澄清状态都满足时才会放行。
+   */
   shouldPreferMappedQuery(mappingResult) {
     const resolvedQuery = mappingResult?.resolvedQuery;
     if (!resolvedQuery || !resolvedQuery.service) {
@@ -2209,6 +2267,9 @@ class RequirementParserService {
     );
   }
 
+  /**
+   * 合并默认 gatewayRequest 与语义映射结果，得到更完整的执行态查询。
+   */
   mergeWithMappedQuery(gatewayRequest, mappedQuery, userRequirement) {
     const request = gatewayRequest || {};
     const mapped = mappedQuery || {};
@@ -2262,6 +2323,7 @@ class RequirementParserService {
     };
   }
 
+  // 以下是 topN / 排名类问句的辅助解析逻辑。
   roundToNearestMinute(timestamp) {
     const adjustedTimestamp = Math.floor(timestamp / 60) * 60;
     logger.info('时间戳调整', `${timestamp} -> ${adjustedTimestamp}`);
@@ -2391,11 +2453,12 @@ class RequirementParserService {
     return total + current;
   }
 
+  // 过滤非法指标，至少保证后续执行链路中始终存在一个可用 metric。
   validateMetrics(metrics) {
     const validMetrics = [];
     
     metrics.forEach(code => {
-      logger.info(`楠岃瘉鎸囨爣浠ｇ爜: ${code}`, {
+      logger.info(`验证指标代码: ${code}`, {
         isValid: this.metricMappingService.isValidMetricCode(code)
       });
       
@@ -2405,11 +2468,11 @@ class RequirementParserService {
     });
 
     if (validMetrics.length === 0) {
-      logger.warn('娌℃湁鏈夋晥鎸囨爣锛屼娇鐢ㄩ粯璁ゆ寚鏍? TPIO');
+      logger.warn('没有有效指标，使用默认指标 TPIO');
       return ['TPIO'];
     }
 
-    logger.info('楠岃瘉鍚巑etrics:', validMetrics.join(','));
+    logger.info('验证后的 metrics:', validMetrics.join(','));
     return validMetrics;
   }
 
@@ -2417,7 +2480,7 @@ class RequirementParserService {
     if (!this.metricMappingService.isValidMetricCode(metric) || !metrics.includes(metric)) {
       if (metrics.length > 0) {
         const newMetric = metrics[0];
-        logger.info('topMetric鏃犳晥锛屼娇鐢╩etrics涓殑绗竴涓寚鏍?', newMetric);
+        logger.info('topMetric 无效，使用 metrics 中的第一个指标:', newMetric);
         return newMetric;
       }
     }
@@ -2430,7 +2493,7 @@ class RequirementParserService {
       return false;
     }
 
-    // Respect explicit ranking-metric intent from users.
+    // 尊重用户显式给出的“按某个指标排序/排行”意图，避免被默认指标覆盖。
     if (/(排序指标|排行指标|top\s*metric|topmetric)/i.test(raw)) {
       return true;
     }
@@ -2450,8 +2513,11 @@ class RequirementParserService {
     return false;
   }
 
-  // Legacy local assistant-state query builders removed from main chain.
+  // 以下保留的是历史 assistant-state 场景下的模板化 topN 构造能力，当前作为兼容回退链路。
 
+  /**
+   * 读取内嵌的 topN 模板兜底定义，适用于配置缺失时的常见排行问题。
+   */
   buildEmbeddedTopnTemplate(templateId = '') {
     const key = String(templateId || '').trim();
     if (!key) {
@@ -2520,6 +2586,7 @@ class RequirementParserService {
     });
   }
 
+  // 生成一份最保守的默认查询，供缺少足够语义信息时兜底使用。
   getDefaultGatewayRequest(userRequirement) {
     const start = this.roundToNearestMinute(TimeUtils.getYesterdayStart());
     const end = this.roundToNearestMinute(TimeUtils.getYesterdayEnd());
@@ -2537,6 +2604,9 @@ class RequirementParserService {
     };
   }
 
+  /**
+   * 根据 rankingTargetType 和 topMetricHint 动态生成一个临时 topN 模板。
+   */
   buildDynamicTopnTemplate(templateId = '', rankingTargetType = '', topMetricHint = '') {
     const id = String(templateId || '').trim();
     const groupType = String(rankingTargetType || '').trim();
@@ -2564,6 +2634,10 @@ class RequirementParserService {
     });
   }
 
+  /**
+   * 基于 assistant state 构造 topN 查询。
+   * 优先复用稳定模板，其次回退到内嵌模板或动态生成模板。
+   */
   buildTopnQueryFromAssistantState(partialQuery = {}, userRequirement = '') {
     if (this.areGatewayTemplatesDisabled()) {
       return null;

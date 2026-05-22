@@ -1,11 +1,9 @@
 /**
  * NapmMetadataService.js
- * 
- * 描述：NAPM 元数据服务模块
- * 功能：从 NAPM 后端服务获取各种元数据（指标、分组、应用、用户、页面等），
- *       提供缓存机制减少重复请求，并对返回数据进行标准化处理
- * 作者：系统生成
- * 修改日期：2026-04-15
+ *
+ * 负责统一访问 NAPM 元数据接口，并对结果做缓存与标准化处理。
+ * 覆盖指标、分组树、命名对象列表、group arguments、可用粒度、路径可用指标等元数据能力，
+ * 是语义解析和执行准备阶段最核心的元数据支撑服务之一。
  */
 
 const NodeCache = require('node-cache');
@@ -16,14 +14,13 @@ const NapmClient = require('./NapmClient');
 const DimensionMappingService = require('./DimensionMappingService');
 const logger = require('../../../src/utils/logger');
 
-  /**
+/**
  * NAPM 元数据服务类
- * 负责获取和缓存 NAPM 后端服务的各种元数据
+ * 负责获取、缓存并标准化 NAPM 后端服务的各种元数据。
  */
 class NapmMetadataService {
   /**
-   * 构造函数
-   * 初始化 NAPM 客户端和缓存实例
+   * 初始化 NAPM 客户端、缓存实例以及 groups tree 的读取策略。
    */
   constructor() {
     /** @type {NapmClient} NAPM API 客户端实例 */
@@ -390,7 +387,10 @@ class NapmMetadataService {
   }
 
   /**
-   * 获取分组路径支持的指标列�?   * @param {array} groups - 分组数组
+   * 获取指定分组路径在运行时真正支持的指标列表。
+   * 这个接口常被用来校验“某条路径 + 某个指标”是否真实可执行。
+   *
+   * @param {array} groups - 分组数组
    * @returns {array} - 指标列表
    */
   async getMetricsForGroupPath(groups = []) {
@@ -854,7 +854,9 @@ class NapmMetadataService {
   }
 
   /**
-   * 获取分组类型的别名列�?   * @param {string} groupType - 分组类型
+   * 获取指定分组类型在对象维度定义中的别名列表。
+   *
+   * @param {string} groupType - 分组类型
    * @returns {array} - 别名数组
    */
   getAliases(groupType) {
@@ -870,6 +872,7 @@ class NapmMetadataService {
     logger.info('NapmMetadataService cache cleared');
   }
 
+  // 决定 groups tree 的读取优先级，支持 static / remote / auto 三种模式。
   resolveGroupsTreeSources() {
     if (this.groupsTreeMode === 'remote') {
       return ['remote'];
@@ -880,6 +883,7 @@ class NapmMetadataService {
     return ['static', 'remote'];
   }
 
+  // 从本地静态 JSON 文件加载 groups tree 原始定义，并缓存到内存中复用。
   loadStaticGroupsTreeRaw() {
     if (Array.isArray(this.staticGroupsTreeRaw)) {
       return this.staticGroupsTreeRaw;
@@ -912,8 +916,10 @@ class NapmMetadataService {
       return null;
     }
   }
-/**
-   * 为分组定义评分（用于排序）
+
+  /**
+   * 为分组定义打分，用于在多个同名 groupType 中优先挑选更适合作为主定义的节点。
+   *
    * @param {object} definition - 分组定义
    * @returns {number} - 评分值
    */

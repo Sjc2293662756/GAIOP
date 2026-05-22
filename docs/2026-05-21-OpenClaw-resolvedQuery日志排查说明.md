@@ -14,7 +14,7 @@
 
 默认日志文件：
 
-- `/home/netinside/.openclaw/logs/audit.log`
+- `<OPENCLAW_HOME>/logs/audit.log`
 
 如果环境变量 `NAPM_AUDIT_LOG_PATH` 被单独配置，则以环境变量为准。
 
@@ -130,25 +130,25 @@ skill 会记录这些事件：
 ### 6.1 直接看最近的 NAPM 审计日志
 
 ```bash
-tail -f /home/netinside/.openclaw/logs/audit.log | grep napm_
+tail -f <OPENCLAW_HOME>/logs/audit.log | grep napm_
 ```
 
 ### 6.2 只看 plugin 侧 `resolvedQuery` 入口
 
 ```bash
-tail -f /home/netinside/.openclaw/logs/audit.log | grep 'napm_plugin_'
+tail -f <OPENCLAW_HOME>/logs/audit.log | grep 'napm_plugin_'
 ```
 
 ### 6.3 只看 skill 侧执行情况
 
 ```bash
-tail -f /home/netinside/.openclaw/logs/audit.log | grep 'napm_skill_'
+tail -f <OPENCLAW_HOME>/logs/audit.log | grep 'napm_skill_'
 ```
 
 ### 6.4 按某次 `traceId` 精确筛选
 
 ```bash
-grep 'napm-xxxx' /home/netinside/.openclaw/logs/audit.log
+grep 'napm-xxxx' <OPENCLAW_HOME>/logs/audit.log
 ```
 
 实际使用时，把 `napm-xxxx` 替换成日志里的真实 `traceId`。
@@ -253,16 +253,62 @@ grep 'napm-xxxx' /home/netinside/.openclaw/logs/audit.log
 
 预期：
 
-- strict 模式下，必须由上游显式产出：
+- 当前版本允许 plugin 对该高频、无歧义问法做窄口补齐：
   - `service=topValues`
+  - `queryModeKey=topn`
   - `metric=PLI`
   - `topMetric=PLI`
   - `groups=[{type:"IPAddress"}]`
+  - `topCount=1`
 
-如果 plugin 直接拦截：
+判断：
 
-- 说明不是 skill 错
-- 而是上游没有把问法结构化
+- 如果上游已经显式传入上述 `resolvedQuery`，plugin 应直接放行。
+- 如果上游只传 raw prompt，但问法明确是“丢包 + IP/客户端/地址 + 最大/最高/top/谁/哪个”，plugin 可补齐上述窄口 `resolvedQuery` 并放行。
+- 如果缺少这些字段且不属于该窄口问法，plugin 仍应拦截，说明上游没有把问法结构化。
+
+远端真实验证样例：
+
+```text
+丢包最大的IP地址是谁？
+```
+
+已验证会补齐：
+
+```json
+{
+  "service": "topValues",
+  "queryModeKey": "topn",
+  "metric": "PLI",
+  "metrics": ["PLI"],
+  "topMetric": "PLI",
+  "groups": [{ "type": "IPAddress" }],
+  "topCount": 1
+}
+```
+
+并返回：
+
+```text
+<TOP_PACKET_LOSS_IP>
+PLI=87.5%
+```
+
+### `这次你怎么查的？`
+
+预期：
+
+- 有本轮 skill 记录时，只能基于记录中的 `resolvedQuery`、`requestUrl`、`result` 回答。
+- 没有本轮 skill 记录时，必须回答“当前没有可核验的 NAPM skill 执行记录”。
+
+禁止在没有日志证据时声称：
+
+- 直接 `curl`
+- Python 解析
+- 直连 NetInside 底层 API
+- 没走 skill
+- skill 拒绝了
+- OpenClaw 没构造 `resolvedQuery`
 
 ## 10. 结论
 

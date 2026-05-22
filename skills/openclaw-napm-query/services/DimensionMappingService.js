@@ -1,10 +1,8 @@
 /**
  * DimensionMappingService.js
- * 
- * 说明：维度映射服务模块
- * 功能：管理对象维度与指标域之间的映射关系，提供维度信息查询、指标域查询、兼容性检查等功能
- * 作者：系统生成
- * 修改日期：2026-04-15
+ *
+ * 负责维护对象维度、指标域和指标兼容对象之间的静态映射关系。
+ * 这个服务本身不访问上游，只对常量表做统一封装，供语义约束和兼容性判断复用。
  */
 
 const { OBJECT_DIMENSIONS } = require('../../../src/constants/objectDimensions');
@@ -19,9 +17,9 @@ const {
 const MetricMappingService = require('./MetricMappingService');
 
 /**
-   * 维度映射服务类
-   * 负责管理对象维度与指标域之间的映射关系
-   */
+ * 维度映射服务类
+ * 负责统一读取对象维度与指标域元数据，并提供常用查询接口。
+ */
 class DimensionMappingService {
   /**
    * 获取所有对象维度

@@ -48,6 +48,7 @@ jest.mock('../skills/openclaw-napm-query/scripts/overview-module', () => {
 const overviewModule = require('../skills/openclaw-napm-query/scripts/overview-module');
 const { __test__ } = require('../skills/openclaw-napm-query/scripts/run_napm_query');
 const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+const QueryValidator = require('../skills/openclaw-napm-query/services/QueryValidator');
 
 describe('run_napm_query input contract', () => {
   const originalBoundaryMode = process.env.NAPM_RESOLUTION_BOUNDARY_MODE;
@@ -159,6 +160,34 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
+  test('should minute-align explicit resolvedQuery timestamps before execution', async () => {
+    process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
+
+    const input = await __test__.resolveInput({
+      prompt: 'top ip by packet loss'
+    }, {
+      resolvedQuery: {
+        service: 'topValues',
+        metric: 'PLI',
+        metrics: ['PLI'],
+        topMetric: 'PLI',
+        groups: [{ type: 'IPAddress' }],
+        start: 1779413047,
+        end: 1779499449,
+        timeRange: {
+          key: 'custom',
+          start: 1779413047,
+          end: 1779499449
+        }
+      }
+    });
+
+    expect(input.resolvedQuery.start).toBe(1779413040);
+    expect(input.resolvedQuery.end).toBe(1779499440);
+    expect(input.resolvedQuery.timeRange.start).toBe(1779413040);
+    expect(input.resolvedQuery.timeRange.end).toBe(1779499440);
+  });
+
   test('should keep discover-then-overview pipeline shape when resolvedQuery requests composite analysis', async () => {
     const input = await __test__.resolveInput({
       prompt: '找到连接失败数最多的地址，然后对这个地址进行综合分析'
@@ -190,6 +219,49 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.analysisPipeline.discoveryQuery.topMetric).toBe('RFCI');
     expect(input.resolvedQuery.start).toBe(1777982400);
     expect(input.resolvedQuery.end).toBe(1777986000);
+  });
+
+  test('should minute-align discovery pipeline timestamps', async () => {
+    const input = await __test__.resolveInput({
+      prompt: 'discover then overview'
+    }, {
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'network',
+        analysisPipeline: {
+          discoveryQuery: {
+            service: 'topValues',
+            groups: [{ type: 'IPAddress' }],
+            metrics: ['RFCI'],
+            topMetric: 'RFCI',
+            topCount: 1,
+            start: 1779413047,
+            end: 1779499449
+          }
+        },
+        start: 1779413047,
+        end: 1779499449
+      }
+    });
+
+    expect(input.resolvedQuery.start).toBe(1779413040);
+    expect(input.resolvedQuery.end).toBe(1779499440);
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.start).toBe(1779413040);
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.end).toBe(1779499440);
+  });
+
+  test('should reject non-minute-aligned gateway requests at validation boundary', () => {
+    expect(() => QueryValidator.validateGatewayRequest({
+      service: 'topValues',
+      metric: 'PLI',
+      metrics: ['PLI'],
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 10,
+      start: 1779413047,
+      end: 1779499449
+    })).toThrow('60-second minute boundaries');
   });
 
   test('should support payload.sessionState as session continuation source', async () => {

@@ -1,7 +1,15 @@
+/**
+ * PromptRoutingService.js
+ *
+ * 负责在完整语义解析前，对明显可识别的问句做快速路由。
+ * 主要覆盖概览问句、指标清单、业务对象清单和层级目录等场景，
+ * 让系统可以直接生成 resolvedQuery 雏形或专用路由结果。
+ */
 function normalizePromptText(prompt = '') {
   return typeof prompt === 'string' ? prompt.trim() : '';
 }
 
+// 深拷贝简单 JSON 对象，避免路由物化时修改原始 route 定义。
 function cloneJson(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
 }
@@ -17,6 +25,7 @@ function isOverviewPrompt(prompt = '') {
   return hasOverviewIntent && hasNapmDomain;
 }
 
+  // 从“对象层级/路径”类问句中提取目标对象类型。
 function normalizeHierarchyQuestionTarget(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -47,6 +56,7 @@ function normalizeHierarchyQuestionTarget(prompt = '') {
   return matched ? matched.value : null;
 }
 
+// 判断是否是在询问对象下钻目录、层级结构或可达路径。
 function isHierarchyCatalogPrompt(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -67,6 +77,7 @@ function isMetricInventoryPrompt(prompt = '') {
   return /(?:(?:哪些|有什么|有哪[^，。！？\n]{0,8}|都有哪些)[^，。！？\n]{0,12}指标|指标[^，。！？\n]{0,12}(?:哪些|有什么|有哪[^，。！？\n]{0,8}|可查|能查|支持)|(?:可查|能查|支持)[^，。！？\n]{0,12}(?:哪些|有什么|有哪)[^，。！？\n]{0,6}指标)/i.test(text);
 }
 
+// 从“有哪些指标”类问句中推断指标清单应挂在哪个对象类型之下。
 function inferMetricInventoryGroup(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text || !isMetricInventoryPrompt(text)) {
@@ -83,6 +94,7 @@ function inferMetricInventoryGroup(prompt = '') {
   return '';
 }
 
+// 判断是否是在查询业务对象清单，而不是指标清单或系统概览。
 function isBusinessObjectInventoryPrompt(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -105,6 +117,7 @@ function isBusinessObjectInventoryPrompt(prompt = '') {
   return /(业务|业务系统|Web应用|web应用|网站|站点)/i.test(text);
 }
 
+// 推断概览类问句更偏向哪个业务场景。
 function inferOverviewScene(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -129,6 +142,7 @@ function inferOverviewScene(prompt = '') {
   return 'system';
 }
 
+// 统一概览场景 key，兼容中英文和别名写法。
 function normalizeOverviewSceneKey(scene = '') {
   const normalized = String(scene || '').trim().toLowerCase();
   if (!normalized) {
@@ -162,6 +176,7 @@ function normalizeOverviewSceneKey(scene = '') {
   return normalized;
 }
 
+// 从问句中推断概览类路由所需的时间范围 key。
 function inferOverviewTimeRangeKey(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -177,6 +192,7 @@ function inferOverviewTimeRangeKey(prompt = '') {
   return 'last24hours';
 }
 
+// 构造“指标清单”快捷路由。
 function buildMetricInventoryRoute(prompt = '') {
   const text = normalizePromptText(prompt);
   const groupType = inferMetricInventoryGroup(text);
@@ -202,6 +218,7 @@ function buildMetricInventoryRoute(prompt = '') {
   };
 }
 
+// 构造“业务对象清单”快捷路由。
 function buildBusinessObjectInventoryRoute(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!isBusinessObjectInventoryPrompt(text)) {
@@ -226,6 +243,7 @@ function buildBusinessObjectInventoryRoute(prompt = '') {
   };
 }
 
+// 构造“系统/业务/网络概览”快捷路由。
 function buildOverviewRoute(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!isOverviewPrompt(text)) {
@@ -252,6 +270,10 @@ function buildOverviewRoute(prompt = '') {
   };
 }
 
+/**
+ * 主入口：根据问句特征挑选最合适的快捷路由。
+ * 会按“指标清单 -> 业务对象清单 -> unknown port -> 层级目录 -> 概览”的顺序依次匹配。
+ */
 function resolvePromptRoute(prompt = '', options = {}) {
   const text = normalizePromptText(prompt);
   if (!text) {
@@ -309,6 +331,10 @@ function resolvePromptRoute(prompt = '', options = {}) {
   return buildOverviewRoute(text);
 }
 
+/**
+ * 把快捷路由结果物化成可执行的 resolvedQuery 形态。
+ * 这里会补时间范围，并允许外部继续做统一 shape 规范化。
+ */
 function materializePromptRouteResolvedQuery(route = null, options = {}) {
   if (!route || typeof route !== 'object' || !route.query) {
     return null;

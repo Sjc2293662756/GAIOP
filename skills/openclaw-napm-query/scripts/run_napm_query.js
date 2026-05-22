@@ -178,6 +178,8 @@ function parseArgs(argv) {
     } else if (arg === '--session') {
       args.session = argv[index + 1];
       index += 1;
+    } else if (arg === '--raw') {
+      args.raw = true;
     }
   }
 
@@ -445,6 +447,46 @@ function normalizeQueryGroups(groups = []) {
     : [];
 }
 
+function floorToMinute(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return Math.floor(numeric / 60) * 60;
+}
+
+function normalizeResolvedQueryTimeRange(query = {}) {
+  if (!query || typeof query !== 'object' || Array.isArray(query)) {
+    return query;
+  }
+
+  if (Number.isFinite(Number(query.start)) && Number(query.start) > 0) {
+    query.start = floorToMinute(query.start);
+  }
+  if (Number.isFinite(Number(query.end)) && Number(query.end) > 0) {
+    query.end = floorToMinute(query.end);
+  }
+  if (query.timeRange && typeof query.timeRange === 'object' && !Array.isArray(query.timeRange)) {
+    if (Number.isFinite(Number(query.timeRange.start)) && Number(query.timeRange.start) > 0) {
+      query.timeRange.start = floorToMinute(query.timeRange.start);
+    }
+    if (Number.isFinite(Number(query.timeRange.end)) && Number(query.timeRange.end) > 0) {
+      query.timeRange.end = floorToMinute(query.timeRange.end);
+    }
+  }
+  if (query.analysisPipeline?.discoveryQuery && typeof query.analysisPipeline.discoveryQuery === 'object') {
+    query.analysisPipeline.discoveryQuery = normalizeResolvedQueryTimeRange(query.analysisPipeline.discoveryQuery);
+  }
+  if (Array.isArray(query.protocolQueries)) {
+    query.protocolQueries = query.protocolQueries.map((item) => (
+      item && typeof item === 'object'
+        ? normalizeResolvedQueryTimeRange(item)
+        : item
+    ));
+  }
+  return query;
+}
+
 function inferOverviewSceneFromObjectType(objectType = '') {
   return OVERVIEW_SCENE_BY_OBJECT_TYPE[String(objectType || '').trim()] || null;
 }
@@ -508,7 +550,7 @@ function buildDiscoveryQuery(baseResolvedQuery = {}, prompt = '') {
   if (query.service === 'topValues' && !query.topMetric) {
     query.topMetric = query.metric || query.metrics?.[0] || baseResolvedQuery?.topMetric || null;
   }
-  return query;
+  return normalizeResolvedQueryTimeRange(query);
 }
 
 function deriveDiscoveryFocusSelection(analysisPipeline = {}, discoveryQuery = {}, discoveryResult = {}) {
@@ -1182,7 +1224,7 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
       : 3600;
   }
 
-  return query;
+  return normalizeResolvedQueryTimeRange(query);
 }
 
 function cloneGroups(groups = []) {
@@ -1203,8 +1245,8 @@ function normalizeSessionState(session = null) {
     active_domain: session.active_domain || null,
     last_time_range: session.last_time_range && typeof session.last_time_range === 'object'
       ? {
-        start: Number(session.last_time_range.start) || null,
-        end: Number(session.last_time_range.end) || null
+        start: floorToMinute(session.last_time_range.start),
+        end: floorToMinute(session.last_time_range.end)
       }
       : null,
     last_metric: String(session.last_metric || '').trim() || null,
@@ -1445,7 +1487,7 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
   const sessionState = normalizeSessionState(session);
   if (!hasUsableSessionContext(sessionState)) {
     applyStaticPathPlanningIfNeeded(query, prompt);
-    return query;
+    return normalizeResolvedQueryShape(query, prompt);
   }
 
   const continuationInstruction = extractContinuationInstruction(query);
@@ -2026,6 +2068,7 @@ async function executeUnknownPortDualProtocolQuery(prompt, resolvedQuery) {
 }
 
 async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult) {
+  resolvedQuery = normalizeResolvedQueryShape(resolvedQuery, prompt);
   const traceId = normalizeTraceId(payload?.traceId || payload?.sessionState?.traceId);
   logSkillAudit('napm_skill_execution_started', {
     traceId: traceId || null,
@@ -2303,6 +2346,7 @@ async function main() {
     overview: executionResult?.overview || null,
     requestUrl: executionResult?.requestUrl || null,
     requestParamsJson: executionResult?.requestParams || null,
+    rawApiResponse: args.raw ? executionResult?.rawApiResponse ?? null : undefined,
     summary,
     error: executionResult?.error || null,
     warnings: Array.isArray(executionResult?.warnings) ? executionResult.warnings : [],
@@ -2382,6 +2426,8 @@ module.exports = {
     getBoundaryMode,
     isStrictBoundaryMode,
     getResolutionSpec,
+    floorToMinute,
+    normalizeResolvedQueryTimeRange,
     hasExplicitRankingMetricInText,
     normalizeResolvedQueryShape,
     normalizeSessionState,

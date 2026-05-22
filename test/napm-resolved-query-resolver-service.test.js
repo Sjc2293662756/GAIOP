@@ -15,9 +15,9 @@ describe('NapmResolvedQueryResolverService', () => {
       topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       topCount: 1,
-      start: 1779264000,
+      start: 1779346800,
       end: 1779350400,
-      timeRange: { key: 'last24hours' },
+      timeRange: { key: 'last1hour' },
       semanticConstraints: {
         operation: 'rank_top',
         direction: 'desc'
@@ -51,11 +51,66 @@ describe('NapmResolvedQueryResolverService', () => {
       metric: 'TPIO',
       groups: [{ type: 'IPAddress' }],
       topCount: 10,
-      start: 1779280080,
+      start: 1779362880,
       end: 1779366480
     });
     expect(result.resolvedQuery.start % 60).toBe(0);
     expect(result.resolvedQuery.end % 60).toBe(0);
+  });
+
+  test('should normalize externally provided resolvedQuery timestamps to minute boundaries', () => {
+    const resolvedQuery = ResolverService.normalizeResolvedQueryTimeRange({
+      service: 'topValues',
+      start: 1779413047,
+      end: 1779499449,
+      timeRange: {
+        key: 'custom',
+        start: 1779413047,
+        end: 1779499449
+      }
+    });
+
+    expect(resolvedQuery.start).toBe(1779413040);
+    expect(resolvedQuery.end).toBe(1779499440);
+    expect(resolvedQuery.timeRange.start).toBe(1779413040);
+    expect(resolvedQuery.timeRange.end).toBe(1779499440);
+    expect(resolvedQuery.start % 60).toBe(0);
+    expect(resolvedQuery.end % 60).toBe(0);
+  });
+
+  test('should honor explicit last one hour prompt over default window', () => {
+    const result = ResolverService.resolvePrompt('最近一小时连接失败数最多的是谁？', {
+      nowSeconds: 1779413580
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      metric: 'RFCI',
+      metrics: ['RFCI'],
+      topMetric: 'RFCI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 1,
+      start: 1779409980,
+      end: 1779413580,
+      timeRange: { key: 'last1hour' }
+    });
+  });
+
+  test('should honor explicit last 24 hours prompt', () => {
+    const result = ResolverService.resolvePrompt('过去24小时吞吐量最大的前10个IP地址是谁？', {
+      nowSeconds: 1779413580
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      metric: 'TPIO',
+      topCount: 10,
+      start: 1779327180,
+      end: 1779413580,
+      timeRange: { key: 'last24hours' }
+    });
   });
 
   test('should resolve work group inventory prompt into groups metadata_list', () => {

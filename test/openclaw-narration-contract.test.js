@@ -64,7 +64,7 @@ describe('OpenClawNarrationContractService', () => {
       rows: [
         { object: '111.36.57.69', values: { PLI: 15.77 }, units: { PLI: '%' } },
         { object: '51.91.64.198', values: { PLI: 3.76 }, units: { PLI: '%' } },
-        { object: '101.254.114.240', values: { PLI: 2.92 }, units: { PLI: '%' } }
+        { object: '192.0.2.40', values: { PLI: 2.92 }, units: { PLI: '%' } }
       ]
     }, {
       forwardDisplayText: false
@@ -74,6 +74,55 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.narrationStructure.explanation).toContain('查询指标为 PLI');
     expect(payload.narrationStructure.explanation).toContain('排序指标为 TPIO');
     expect(payload.narrationStructure.items[0].metric).toBe('PLI');
+  });
+
+  test('should bind TopN object labels with metric values for RFCI narration', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'topValues',
+      resolvedQuery: {
+        service: 'topValues',
+        metric: 'RFCI',
+        metrics: ['RFCI'],
+        topMetric: 'RFCI',
+        groups: [{ type: 'IPAddress' }]
+      },
+      summary: {
+        title: 'Ranking result',
+        rowCount: 2,
+        empty: false,
+        topMetric: 'RFCI'
+      },
+      rows: [
+        {
+          group: { argument: '192.0.2.39', key: 'IPAddress', label: 'IP地址' },
+          groupPath: 'v12.0.0:engine 0/0/napm/DB>clientIP 192.0.2.39',
+          metricValues: [
+            { metric: { id: 'RFCI', label: '连接失败数(TCP服务器)', unit: '#' }, value: 43792, unit: 'files' }
+          ]
+        },
+        {
+          group: { argument: '192.0.2.40', key: 'IPAddress', label: 'IP地址' },
+          groupPath: 'v12.0.0:engine 0/0/napm/DB>clientIP 192.0.2.40',
+          metricValues: [
+            { metric: { id: 'RFCI', label: '连接失败数(TCP服务器)', unit: '#' }, value: 1671, unit: 'files' }
+          ]
+        }
+      ]
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.responseType).toBe('topn');
+    expect(payload.narrationStructure.items[0]).toMatchObject({
+      objectType: 'IPAddress',
+      object: '192.0.2.39',
+      metric: 'RFCI',
+      metricLabel: '连接失败数(TCP服务器)',
+      rawValue: 43792,
+      formattedValue: '43792 files'
+    });
+    expect(payload.summary.displayText).toContain('| 1 | 192.0.2.39 | 43792 files |');
+    expect(payload.summary.displayText).not.toContain('object_1');
   });
 
   test('should preserve display text when verbatim forwarding is enabled', () => {

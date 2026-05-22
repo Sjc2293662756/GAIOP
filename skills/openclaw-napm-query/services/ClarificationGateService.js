@@ -1,4 +1,12 @@
+/**
+ * ClarificationGateService.js
+ *
+ * 负责在查询执行前判断是否需要向用户发起澄清。
+ * 它会综合执行保护、实体识别、对象类型、路径、指标和时间范围等信息，
+ * 生成统一的 clarification gate 结果，供上层决定是继续执行还是先追问。
+ */
 class ClarificationGateService {
+  // 深拷贝简单对象，避免在构造 evidence 时污染原始输入。
   clone(value) {
     return value && typeof value === 'object'
       ? JSON.parse(JSON.stringify(value))
@@ -42,6 +50,7 @@ class ClarificationGateService {
     return mapping[String(metric || '').trim()] || String(metric || '').trim() || '指标';
   }
 
+  // 组合用户原始问句和候选补充词，生成可直接回填到对话中的澄清回复文本。
   buildReplyText(baseQuery = '', suffix = '') {
     const base = String(baseQuery || '').trim();
     const token = String(suffix || '').trim();
@@ -54,6 +63,7 @@ class ClarificationGateService {
     return `${base} ${token}`.trim();
   }
 
+  // 生成默认 gate 结构，作为所有澄清判断分支的统一返回底座。
   buildDefaultGate(extra = {}) {
     return {
       required: false,
@@ -67,6 +77,10 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 基于 executionGuard 构造阻断型澄清 gate。
+   * 这类 gate 通常说明当前对象或路径无法直接执行，优先级最高。
+   */
   buildExecutionGuardGate(resolvedQuery = null) {
     const guard = resolvedQuery?.executionGuard;
     if (!guard?.blockExecution) {
@@ -116,6 +130,10 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 基于实体消歧结果构造澄清 gate。
+   * 当识别到了实体，但无法唯一确认其真实对象时，提示用户二次确认。
+   */
   buildEntityGate(entityResolve, resolvedQuery = null) {
     if (!entityResolve?.clarification?.required) {
       return null;
@@ -157,6 +175,9 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 当对象类型存在多个高相近候选时，构造对象类型澄清 gate。
+   */
   buildObjectGate(resolvedQuery = null) {
     const semanticOperation = String(
       resolvedQuery?.semanticConstraints?.operation
@@ -231,6 +252,9 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 当路径规划候选过多且置信度不足时，要求用户确认查询路径。
+   */
   buildPathGate(pathResolve, resolvedQuery = null) {
     const candidates = Array.isArray(pathResolve?.template_candidates)
       ? pathResolve.template_candidates
@@ -268,6 +292,9 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 当指标解析没有收敛到唯一指标时，构造指标澄清 gate。
+   */
   buildMetricGate(metricResolve, resolvedQuery = null) {
     const suggestions = Array.isArray(metricResolve?.suggestions) ? metricResolve.suggestions : [];
     const domainCandidates = Array.isArray(metricResolve?.metric_domain_candidates)
@@ -321,6 +348,9 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 当时间范围缺失时，给出非阻断型时间建议。
+   */
   buildTimeGate(timeResolve, resolvedQuery = null) {
     const start = Number(resolvedQuery?.start || timeResolve?.time_range?.start || 0);
     const end = Number(resolvedQuery?.end || timeResolve?.time_range?.end || 0);
@@ -355,6 +385,9 @@ class ClarificationGateService {
     };
   }
 
+  /**
+   * 主入口：按固定优先级依次评估各种澄清信号，返回第一个命中的 gate。
+   */
   assess(input = {}) {
     const resolvedQuery = input.resolvedQuery || null;
     const entityResolve = input.entityResolve || null;
