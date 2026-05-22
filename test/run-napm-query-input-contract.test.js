@@ -82,11 +82,6 @@ describe('run_napm_query input contract', () => {
     });
   });
 
-  test('should still expose business-group inventory detection helper without executing fallback', () => {
-    expect(__test__.isPromptFallbackBusinessObjectInventoryPrompt('系统中都有哪些业务组？')).toBe(false);
-    expect(__test__.buildPromptFallbackBusinessObjectInventoryResolvedQuery('系统中都有哪些业务组？')).toBeNull();
-  });
-
   test('should require upstream resolvedQuery for prompt-only overview asks by default', async () => {
     await expect(__test__.resolveInput({ prompt: '今天网络整体情况怎么样？' }, {})).rejects.toMatchObject({
       code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED',
@@ -268,7 +263,12 @@ describe('run_napm_query input contract', () => {
     const input = await __test__.resolveInput({}, {
       resolvedQuery: {
         service: 'topValues',
-        topCount: 5
+        topCount: 5,
+        executionHints: {
+          inheritMetric: true,
+          inheritGroups: true,
+          inheritTimeRange: true
+        }
       },
       sessionState: {
         last_result_available: true,
@@ -332,6 +332,9 @@ describe('run_napm_query input contract', () => {
   test('should apply static tree path planning during query normalization', () => {
     const request = RequirementParserService.normalizeTopLevelQueryShape({
       service: 'groups',
+      executionOptions: {
+        allowPathRepair: true
+      },
       groups: [{ type: 'BusinessGroup', argument: '服务器网段' }],
       userRequirement: '看这个业务组下面的应用'
     });
@@ -435,8 +438,49 @@ describe('run_napm_query input contract', () => {
 
     try {
       const result = await __test__.executeResolvedQuery(
-        '未知端口流量排行',
-        __test__.buildPromptFallbackUnknownPortDualProtocolResolvedQuery('未知端口流量排行'),
+        '????????',
+        {
+          service: 'topValues_multi_protocol',
+          queryModeKey: 'topn',
+          semanticConstraints: {
+            operation: 'topn',
+            targetObjectType: 'OtherApp',
+            scopeHints: ['unknown_port_traffic', 'TCP', 'UDP'],
+            overviewScene: 'security'
+          },
+          start: 1779410400,
+          end: 1779414000,
+          metric: 'TPIO',
+          metrics: ['TPIO'],
+          topMetric: 'TPIO',
+          topCount: 10,
+          format: 'json',
+          userRequirement: '????????',
+          protocolQueries: ['TCP', 'UDP'].map((protocol) => ({
+            service: 'topValues',
+            queryModeKey: 'topn',
+            semanticConstraints: {
+              operation: 'topn',
+              targetObjectType: 'OtherApp',
+              scopeHints: ['unknown_port_traffic', protocol],
+              overviewScene: 'security'
+            },
+            start: 1779410400,
+            end: 1779414000,
+            metric: 'TPIO',
+            metrics: ['TPIO'],
+            topMetric: 'TPIO',
+            topCount: 10,
+            groups: [
+              { type: 'TotalTraffic' },
+              { type: 'IPProtocol', argument: protocol },
+              { type: 'OtherApps' },
+              { type: 'OtherApp' }
+            ],
+            format: 'json',
+            userRequirement: '????????'
+          }))
+        },
         {},
         {}
       );

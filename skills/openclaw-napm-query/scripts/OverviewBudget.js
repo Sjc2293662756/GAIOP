@@ -1,3 +1,10 @@
+/**
+ * OverviewBudget.js
+ *
+ * 负责定义概览查询的预算模型。
+ * 这里统一管理 fast / standard / deep 三种深度对应的查询数、子查询数、超时和重试上限，
+ * 供概览规划器和执行器共同使用。
+ */
 const DEPTH_LEVELS = {
   fast: 1,
   standard: 2,
@@ -28,6 +35,7 @@ const OVERVIEW_BUDGETS = {
   }
 };
 
+// 统一规范化深度相关输入，兼容中英文别名写法。
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -63,6 +71,9 @@ function normalizeDepthKey(value) {
   return map[key] || null;
 }
 
+/**
+ * 从 payload、intent、resolvedQuery 和原始问句中推断当前概览应采用的查询深度。
+ */
 function resolveOverviewDepth({ prompt, payload, intent, resolvedQuery } = {}) {
   const fromPayload = normalizeDepthKey(
     payload?.overviewDepth
@@ -99,6 +110,7 @@ function resolveOverviewDepth({ prompt, payload, intent, resolvedQuery } = {}) {
   return 'standard';
 }
 
+// 根据深度 key 返回一份独立的预算配置副本，避免外部误改全局常量。
 function getOverviewBudget(depth = 'standard') {
   const normalizedDepth = normalizeDepthKey(depth) || 'standard';
   return {

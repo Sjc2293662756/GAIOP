@@ -24,14 +24,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(testApi.isMetricInventoryPrompt('业务都可以查哪些指标？')).toBe(true);
     expect(testApi.inferMetricInventoryGroup('业务都可以查哪些指标？')).toBe('WebApplication');
     expect(testApi.inferMetricInventoryGroup('业务组都可以查哪些指标？')).toBe('BusinessGroup');
-    expect(testApi.buildMetricInventoryResolvedQuery('业务都可以查哪些指标？')).toMatchObject({
-      service: 'metrics',
-      semanticConstraints: {
-        operation: 'metadata_list',
-        targetObjectType: 'WebApplication'
-      },
-      groups: [{ type: 'WebApplication' }]
-    });
+    expect(testApi.buildMetricInventoryResolvedQuery('业务都可以查哪些指标？')).toBeNull();
   });
 
   test('should classify detailed metric inventory follow-up as detail prompt', () => {
@@ -116,7 +109,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result).toBeUndefined();
   }, 30000);
 
-  test('should rewrite metric inventory reply during async message_sending path', async () => {
+  test('should require upstream resolvedQuery instead of rewriting metric inventory reply during async message_sending path', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -184,20 +177,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result).toBeTruthy();
-    expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('业务视角可查指标，建议先按指标分类来理解');
-    expect(result.content).toContain('业务网络');
-    expect(result.content).toContain('业务访问');
-    expect(result.content).toContain('业务性能');
-    expect(result.content).toContain('响应代码');
-    expect(result.content).toContain('页面优化');
-    expect(result.content).not.toContain('TPIO');
-    expect(result.content).not.toContain('丢包');
-    expect(result.content).not.toContain('RTT');
+    expect(result).toBeUndefined();
   }, 30000);
 
-  test('should force skill refresh for NAPM metric ask even when model never called tool', async () => {
+  test('should require upstream resolvedQuery when model never called tool', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -244,19 +227,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result).toBeTruthy();
-    expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('业务视角可查指标，建议先按指标分类来理解');
-    expect(result.content).toContain('业务网络');
-    expect(result.content).toContain('业务访问');
-    expect(result.content).toContain('业务性能');
-    expect(result.content).toContain('响应代码');
-    expect(result.content).not.toContain('TPIO');
-    expect(result.content).not.toContain('RTT');
-    expect(result.content).not.toContain('丢包');
+    expect(result).toBeUndefined();
   }, 30000);
 
-  test('should rewrite wrong BusinessGroup-style business reply during before_message_write', async () => {
+  test('should not rewrite business metric inventory reply during before_message_write', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -308,13 +282,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toBeTruthy();
-    expect(result.message.content[0].text).toContain('业务视角可查指标，建议先按指标分类来理解');
-    expect(result.message.content[0].text).toContain('业务网络');
-    expect(result.message.content[0].text).toContain('业务访问');
-    expect(result.message.content[0].text).not.toContain('BusinessGroup');
-    expect(result.message.content[0].text).not.toContain('BGPKTS');
-    expect(result.message.content[0].text).not.toContain('RTT');
+    expect(result).toBeUndefined();
   }, 30000);
 
   test('should block metric inventory skill call without upstream resolvedQuery', async () => {
@@ -514,7 +482,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result.blockReason).toContain('napm-skill-query');
   }, 30000);
 
-  test('should expand metric inventory details when user asks for detail prompt', async () => {
+  test('should require upstream resolvedQuery for metric inventory details without a remembered skill result', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -567,11 +535,6 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'This is a NAPM metric inquiry — let me query the skill to get a clear picture.'
     }, ctx);
 
-    expect(result).toBeTruthy();
-    expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('业务视角下，各指标分类对应的代表指标如下');
-    expect(result.content).toContain('业务访问：');
-    expect(result.content).toContain('PGNPGE');
-    expect(result.content).not.toContain('This is a NAPM metric inquiry');
+    expect(result).toBeUndefined();
   }, 30000);
 });

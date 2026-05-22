@@ -1,44 +1,26 @@
 const { __test__ } = require('../skills/openclaw-napm-query/scripts/run_napm_query');
 
 describe('run_napm_query drilldown continuation', () => {
-  test('should detect drilldown-style prompts', () => {
-    expect(__test__.isDrilldownPrompt('继续往下钻看看明细')).toBe(true);
-    expect(__test__.isDrilldownPrompt('看下客户端IP')).toBe(false);
-  });
-
-  test('should infer default web application descent path', () => {
+  test('should infer default web application descent path in helper', () => {
     const groups = __test__.inferDrilldownPathFromPrompt(
-      [{ type: 'WebApplication', argument: '回溯238web' }],
-      '继续下钻'
+      [{ type: 'WebApplication', argument: 'demo-web' }],
+      'show client ip detail'
     );
 
     expect(groups).toEqual([
-      { type: 'WebApplication', argument: '回溯238web' },
+      { type: 'WebApplication', argument: 'demo-web' },
       { type: 'ClientIPs', argument: null },
       { type: 'IPAddress', argument: null }
     ]);
   });
 
-  test('should infer explicit business group application path', () => {
-    const groups = __test__.inferDrilldownPathFromPrompt(
-      [{ type: 'BusinessGroup', argument: '服务器网段' }],
-      '看下这个业务组下面的应用'
-    );
-
-    expect(groups).toEqual([
-      { type: 'BusinessGroup', argument: '服务器网段' },
-      { type: 'Applications', argument: null },
-      { type: 'DefinedApp', argument: null }
-    ]);
-  });
-
-  test('should inherit session scope for follow-up query', () => {
+  test('should not infer session scope for follow-up query without explicit inheritance', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
         service: 'topValues',
         topCount: 5
       },
-      '看明细',
+      'show details',
       {
         last_result_available: true,
         turn_expiry: 3,
@@ -48,7 +30,40 @@ describe('run_napm_query drilldown continuation', () => {
           end: 1777986000
         },
         last_groups: [
-          { type: 'WebApplication', argument: '回溯238web' }
+          { type: 'WebApplication', argument: 'demo-web' }
+        ]
+      }
+    );
+
+    expect(resolvedQuery.metric).toBeUndefined();
+    expect(resolvedQuery.metrics).toBeUndefined();
+    expect(resolvedQuery.start).toBeUndefined();
+    expect(resolvedQuery.end).toBeUndefined();
+    expect(resolvedQuery.groups).toBeUndefined();
+  });
+
+  test('should inherit session fields only when resolvedQuery explicitly asks for them', () => {
+    const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
+      {
+        service: 'topValues',
+        topCount: 5,
+        executionHints: {
+          inheritMetric: true,
+          inheritGroups: true,
+          inheritTimeRange: true
+        }
+      },
+      'show same scope',
+      {
+        last_result_available: true,
+        turn_expiry: 3,
+        last_metric: 'RFCI',
+        last_time_range: {
+          start: 1777982400,
+          end: 1777986000
+        },
+        last_groups: [
+          { type: 'WebApplication', argument: 'demo-web' }
         ]
       }
     );
@@ -58,9 +73,7 @@ describe('run_napm_query drilldown continuation', () => {
     expect(resolvedQuery.start).toBe(1777982400);
     expect(resolvedQuery.end).toBe(1777986000);
     expect(resolvedQuery.groups).toEqual([
-      { type: 'WebApplication', argument: '回溯238web' },
-      { type: 'ClientIPs', argument: null },
-      { type: 'IPAddress', argument: null }
+      { type: 'WebApplication', argument: 'demo-web' }
     ]);
   });
 
@@ -70,9 +83,12 @@ describe('run_napm_query drilldown continuation', () => {
         service: 'topValues',
         metric: 'TPIO',
         metrics: ['TPIO'],
-        groups: [{ type: 'DefinedApp', argument: 'HTTPS' }]
+        groups: [{ type: 'DefinedApp', argument: 'HTTPS' }],
+        executionHints: {
+          inheritTimeRange: true
+        }
       },
-      '看趋势',
+      'show trend',
       {
         last_result_available: true,
         turn_expiry: 3,
@@ -82,7 +98,7 @@ describe('run_napm_query drilldown continuation', () => {
           end: 1777986000
         },
         last_groups: [
-          { type: 'WebApplication', argument: '回溯238web' }
+          { type: 'WebApplication', argument: 'demo-web' }
         ]
       }
     );
@@ -99,16 +115,20 @@ describe('run_napm_query drilldown continuation', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
         service: 'topValues',
+        executionHints: {
+          inheritMetric: true,
+          inheritTimeRange: true
+        },
         pathPlanning: {
           followUpAction: 'drilldown',
           plannedGroups: [
-            { type: 'WebApplication', argument: '回溯238web' },
+            { type: 'WebApplication', argument: 'demo-web' },
             { type: 'ClientIPs' },
             { type: 'IPAddress' }
           ]
         }
       },
-      '需要',
+      'use planned path',
       {
         last_result_available: true,
         turn_expiry: 3,
@@ -118,13 +138,13 @@ describe('run_napm_query drilldown continuation', () => {
           end: 1777986000
         },
         last_groups: [
-          { type: 'BusinessGroup', argument: '服务器网段' }
+          { type: 'BusinessGroup', argument: 'server-segment' }
         ]
       }
     );
 
     expect(resolvedQuery.groups).toEqual([
-      { type: 'WebApplication', argument: '回溯238web' },
+      { type: 'WebApplication', argument: 'demo-web' },
       { type: 'ClientIPs', argument: null },
       { type: 'IPAddress', argument: null }
     ]);
@@ -133,20 +153,19 @@ describe('run_napm_query drilldown continuation', () => {
     expect(resolvedQuery.end).toBe(1777986000);
   });
 
-  test('should preserve explicit multilevel path when path planning is disabled', () => {
+  test('should preserve explicit multilevel path by default', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
         service: 'topValues',
         metric: 'TPIO',
         metrics: ['TPIO'],
         groups: [
-          { type: 'IPAddress', argument: '101.254.114.237' },
+          { type: 'IPAddress', argument: '192.0.2.10' },
           { type: 'Applications' },
           { type: 'DefinedApp' }
-        ],
-        skipPathPlanning: true
+        ]
       },
-      '101.254.114.237 这个IP最近一天主要跑哪些应用',
+      '192.0.2.10 applications',
       null
     );
 
@@ -155,14 +174,33 @@ describe('run_napm_query drilldown continuation', () => {
       'Applications',
       'DefinedApp'
     ]);
-    expect(resolvedQuery.groups[0].argument).toBe('101.254.114.237');
+    expect(resolvedQuery.groups[0].argument).toBe('192.0.2.10');
     expect(resolvedQuery.pathPlanning).toBeUndefined();
   });
 
-  test('should plan page family drilldown through PageFamilies container', () => {
+  test('should not plan page family drilldown without explicit repair permission', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
         service: 'groups',
+        groups: [{ type: 'WebApplication', argument: 'demo-web' }]
+      },
+      'show page family for this web application',
+      null
+    );
+
+    expect(resolvedQuery.groups).toEqual([
+      { type: 'WebApplication', argument: 'demo-web' }
+    ]);
+    expect(resolvedQuery.pathPlanning).toBeUndefined();
+  });
+
+  test('should plan page family drilldown only when execution repair is explicit', () => {
+    const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
+      {
+        service: 'groups',
+        executionOptions: {
+          allowPathRepair: true
+        },
         groups: [{ type: 'WebApplication', argument: 'demo-web' }]
       },
       'show page family for this web application',

@@ -78,7 +78,14 @@ class QueryValidator {
       } else {
         logger.error('Query validation failed', { errors, queryRequest: target });
       }
-      throw new Error(errors.join('; '));
+      const error = new Error(errors.join('; '));
+      error.code = 'QUERY_SHAPE_INVALID';
+      error.details = {
+        mode,
+        errors,
+        service: target.service || null
+      };
+      throw error;
     }
 
     if (mode === 'gateway') {

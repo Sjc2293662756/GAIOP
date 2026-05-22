@@ -107,7 +107,7 @@ describe('business metric ownership guardrails', () => {
     expect(DimensionMappingService.getObjectsForMetric('UEII', { onlySupportedByCurrentSkill: true })).not.toContain('ClientBusinessGroup');
   });
 
-  test('should correct incompatible WebApplication throughput query toward a network object', () => {
+  test('should preserve incompatible WebApplication throughput query without metadata repair', () => {
     const result = QueryMetadataConstraintService.constrain({
       service: 'averageValues',
       metric: 'TPIO',
@@ -116,11 +116,27 @@ describe('business metric ownership guardrails', () => {
       userRequirement: '业务吞吐量是多少'
     }, '业务吞吐量是多少');
 
+    expect(result.query.groups[0].type).toBe('WebApplication');
+    expect(result.compatibility.isCompatible).toBe(false);
+  });
+
+  test('should correct incompatible WebApplication throughput query only with metadata repair', () => {
+    const result = QueryMetadataConstraintService.constrain({
+      service: 'averageValues',
+      metric: 'TPIO',
+      metrics: ['TPIO'],
+      groups: [{ type: 'WebApplication' }],
+      executionOptions: {
+        allowMetadataRepair: true
+      },
+      userRequirement: 'web throughput'
+    }, 'web throughput');
+
     expect(result.query.groups[0].type).not.toBe('WebApplication');
     expect(result.compatibility.isCompatible).toBe(true);
   });
 
-  test('should correct incompatible ClientBusinessGroup packet-loss query toward a non-business object', () => {
+  test('should preserve incompatible ClientBusinessGroup packet-loss query without metadata repair', () => {
     const result = QueryMetadataConstraintService.constrain({
       service: 'averageValues',
       metric: 'PLI',
@@ -129,8 +145,8 @@ describe('business metric ownership guardrails', () => {
       userRequirement: '发起组丢包率是多少'
     }, '发起组丢包率是多少');
 
-    expect(result.query.groups[0].type).not.toBe('ClientBusinessGroup');
-    expect(result.compatibility.isCompatible).toBe(true);
+    expect(result.query.groups[0].type).toBe('ClientBusinessGroup');
+    expect(result.compatibility.isCompatible).toBe(false);
   });
 
   test('should expose business-owned default metric candidates for WebApplication first', () => {

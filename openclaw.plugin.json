@@ -18,8 +18,6 @@
   },
   "contracts": {
     "tools": [
-      "napm-resolve-query",
-      "napm-mainflow-query",
       "napm-skill-query"
     ]
   }

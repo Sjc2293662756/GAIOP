@@ -26,26 +26,14 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(testApi.isPacketLossClientTopPrompt('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f')).toBe(false);
   });
 
-  test('should build packet loss helper resolvedQuery', () => {
+  test('should not build packet loss helper resolvedQuery in strict-only boundary', () => {
     const testApi = plugin.__test__;
     const resolvedQuery = testApi.buildPacketLossClientTopResolvedQuery('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f');
 
-    expect(resolvedQuery).toMatchObject({
-      service: 'topValues',
-      queryModeKey: 'topn',
-      metric: 'PLI',
-      metrics: ['PLI'],
-      topMetric: 'PLI',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 1,
-      format: 'json',
-      userRequirement: '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f'
-    });
-    expect(resolvedQuery.start).toBeGreaterThan(0);
-    expect(resolvedQuery.end).toBeGreaterThan(resolvedQuery.start);
+    expect(resolvedQuery).toBeNull();
   });
 
-  test('should inject packet loss resolvedQuery during skill arg preparation', () => {
+  test('should preserve raw packet loss prompt without injecting resolvedQuery', () => {
     const testApi = plugin.__test__;
     const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
@@ -55,14 +43,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
-    expect(prepared.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      queryModeKey: 'topn',
-      metric: 'PLI',
-      topMetric: 'PLI',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 1
-    });
+    expect(prepared.resolvedQuery).toBeUndefined();
   });
 
   test('should block removed direct topn tool even after a NAPM turn is active', async () => {
@@ -131,9 +112,9 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(result.blockReason).toContain('napm-skill-query');
   }, 30000);
 
-  test('should preserve remembered packet loss skill reply text', () => {
+  test('should preserve remembered packet loss skill display text', () => {
     const testApi = plugin.__test__;
-    const reply = testApi.buildPromptScopedReplyTextFromRememberedRecord('\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f', {
+    const reply = testApi.buildRememberedSkillReplyText({
       resolvedQuery: {
         service: 'topValues',
         metric: 'PLI',

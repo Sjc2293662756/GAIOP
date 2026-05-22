@@ -32,24 +32,23 @@ describe('napm-openclaw-plugin path preflight', () => {
     }
   });
 
-  test('should keep standalone path preflight helper available for explicit planning', () => {
+  test('should not rewrite resolvedQuery through plugin path preflight', () => {
     const testApi = plugin.__test__;
-    const next = testApi.applyPathPreflightToResolvedQuery({
+    const original = {
       service: 'groups',
       groups: [{ type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }],
       format: 'json'
-    }, '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528', null);
+    };
+    const next = testApi.applyPathPreflightToResolvedQuery(
+      original,
+      '\u770b\u8fd9\u4e2a\u4e1a\u52a1\u7ec4\u4e0b\u9762\u7684\u5e94\u7528',
+      null
+    );
 
     expect(next.groups).toEqual([
-      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' },
-      { type: 'Applications', argument: null },
-      { type: 'DefinedApp', argument: null }
+      { type: 'BusinessGroup', argument: '\u670d\u52a1\u5668\u7f51\u6bb5' }
     ]);
-    expect(next.pathPlanning).toMatchObject({
-      applied: true,
-      preflightSource: 'napm_openclaw_plugin',
-      selectedPath: ['BusinessGroup', 'Applications', 'DefinedApp']
-    });
+    expect(next.pathPlanning).toBeUndefined();
   });
 
   test('should preserve explicit resolvedQuery during skill arg preparation', () => {

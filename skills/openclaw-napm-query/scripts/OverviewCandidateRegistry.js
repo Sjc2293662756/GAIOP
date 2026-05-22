@@ -1,3 +1,10 @@
+/**
+ * OverviewCandidateRegistry.js
+ *
+ * 维护 overview 模式下可供选择的候选模块注册表。
+ * 文件主体是静态配置数据，描述每个候选模块的场景、优先级、请求模板、依赖关系和能力标签；
+ * 文件尾部提供少量只读访问函数，供 planner 和调试逻辑查询。
+ */
 const OVERVIEW_CANDIDATES = [
   {
     id: 'topDefinedAppThroughput',
@@ -363,7 +370,7 @@ const OVERVIEW_CANDIDATES = [
   },
   {
     id: 'topApplicationThroughput',
-    label: '?????????',
+    label: '应用吞吐排行',
     scenes: ['network'],
     role: 'primary',
     priority: 92,
@@ -1198,8 +1205,10 @@ const OVERVIEW_SCENE_PROFILES = {
   }
 };
 
+// 为 candidateId 提供 O(1) 访问能力，避免外部每次都线性扫描整个注册表。
 const CANDIDATE_MAP = new Map(OVERVIEW_CANDIDATES.map((candidate) => [candidate.id, candidate]));
 
+// 返回 candidate 的深拷贝，确保注册表数据始终保持只读。
 function cloneCandidate(candidate) {
   return candidate ? JSON.parse(JSON.stringify(candidate)) : null;
 }
@@ -1208,6 +1217,7 @@ function cloneSceneProfile(profile) {
   return profile ? JSON.parse(JSON.stringify(profile)) : null;
 }
 
+// 按 scene 过滤候选模块；scene 为空时返回全部候选。
 function listOverviewCandidates(scene = null) {
   const normalizedScene = String(scene || '').trim();
   return OVERVIEW_CANDIDATES
@@ -1219,6 +1229,7 @@ function getOverviewCandidate(candidateId) {
   return cloneCandidate(CANDIDATE_MAP.get(candidateId));
 }
 
+// 读取指定 scene 的概览场景画像配置。
 function getOverviewSceneProfile(scene = null) {
   const normalizedScene = String(scene || '').trim();
   return cloneSceneProfile(OVERVIEW_SCENE_PROFILES[normalizedScene]);

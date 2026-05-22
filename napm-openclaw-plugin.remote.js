@@ -24,52 +24,52 @@ let napmResolvedQueryResolverLookupComplete = false;
 let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
-const SAFE_NAPM_TOOL_NAMES = new Set([
+const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query']);
+const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
-  'napm-mainflow-query',
-  'napm-skill-query'
+  'napm-mainflow-query'
 ]);
 const NAPM_OBJECT_PATTERNS = [
   /napm/i,
   /netinside/i,
   /239web/i,
   /\bhis\b/i,
-  /\u89c2\u67a2/,
-  /\u667a\u7ef4/
+  /观枢/,
+  /智维/
 ];
 const NAPM_DOMAIN_PATTERNS = [
-  /\u7cfb\u7edf/,
-  /\u7f51\u7edc/,
-  /\u5e94\u7528/,
-  /\u4e1a\u52a1/,
+  /系统/,
+  /网络/,
+  /应用/,
+  /业务/,
   /web\s*application/i,
   /webapp/i,
-  /\u7f51\u7ad9/,
-  /\u9875\u9762/,
-  /\u6d41\u91cf/,
-  /\u541e\u5410/,
-  /\u54cd\u5e94/,
-  /\u65f6\u5ef6/,
-  /\u5ef6\u8fdf/,
-  /\u5f02\u5e38/,
-  /\u544a\u8b66/,
-  /\u4e22\u5305/,
-  /\u91cd\u4f20/,
-  /\u6027\u80fd/,
-  /\u76d1\u63a7/,
+  /网站/,
+  /页面/,
+  /流量/,
+  /吞吐/,
+  /响应/,
+  /时延/,
+  /延迟/,
+  /异常/,
+  /告警/,
+  /丢包/,
+  /重传/,
+  /性能/,
+  /监控/,
   /http/i,
   /[45]xx/i
 ];
 const SYSTEM_DOMAIN_HINT_PATTERNS = [
-  /\u670d\u52a1/,
-  /\u7ed3\u679c/,
-  /\u5206\u6790/,
-  /\u6392\u67e5/,
-  /\u8d8b\u52bf/,
-  /\u6392\u884c/,
-  /\u6392\u540d/,
-  /\u60c5\u51b5/,
-  /\u72b6\u6001/
+  /服务/,
+  /结果/,
+  /分析/,
+  /排查/,
+  /趋势/,
+  /排行/,
+  /排名/,
+  /情况/,
+  /状态/
 ];
 
 const fetchImpl = (...args) => {
@@ -753,16 +753,24 @@ function getNapmResolvedQueryResolverService() {
 }
 
 function getBoundaryMode() {
-  const service = getResolutionSpecService();
-  if (service && typeof service.getBoundaryMode === 'function') {
-    return service.getBoundaryMode('strict');
-  }
-  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || 'strict').trim().toLowerCase();
-  return raw === 'strict' ? 'strict' : 'compat';
+  return 'strict';
 }
 
 function isStrictBoundaryMode() {
   return getBoundaryMode() === 'strict';
+}
+
+function shouldEnableDevResolverTools() {
+  const raw = String(process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function isSafeNapmToolName(toolName) {
+  const normalized = String(toolName || '').trim();
+  if (SAFE_NAPM_TOOL_NAMES.has(normalized)) {
+    return true;
+  }
+  return shouldEnableDevResolverTools() && DEV_RESOLVER_TOOL_NAMES.has(normalized);
 }
 
 function getResolutionSpecQueryContract() {
@@ -906,64 +914,7 @@ function resolvePathPlanningSeedGroups(resolvedQuery = {}, sessionState = null, 
 }
 
 function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, prompt = '', sessionState = null) {
-  if (!isPlainObject(resolvedQuery) || shouldSkipPathPreflight(resolvedQuery)) {
-    return resolvedQuery;
-  }
-
-  if (Array.isArray(resolvedQuery?.pathPlanning?.plannedGroups) && resolvedQuery.pathPlanning.plannedGroups.length > 0) {
-    return resolvedQuery;
-  }
-
-  const pathPlannerService = getGroupPathPlannerService();
-  if (!pathPlannerService || typeof pathPlannerService.planPath !== 'function') {
-    return resolvedQuery;
-  }
-
-  const seedGroups = resolvePathPlanningSeedGroups(resolvedQuery, sessionState, prompt);
-  if (seedGroups.length === 0) {
-    return resolvedQuery;
-  }
-
-  const query = cloneJsonObject(resolvedQuery);
-  const pathPlan = pathPlannerService.planPath(query, prompt, {
-    groups: seedGroups
-  });
-  if (!pathPlan?.plannedGroups?.length) {
-    return query;
-  }
-
-  const targetType = String(pathPlan.plannedGroups[pathPlan.plannedGroups.length - 1]?.type || '').trim() || null;
-  query.groups = pathPlan.plannedGroups;
-  query.pathPlanning = {
-    ...(isPlainObject(query.pathPlanning) ? query.pathPlanning : {}),
-    ...pathPlan,
-    preflightSource: 'napm_openclaw_plugin'
-  };
-
-  if (targetType || pathPlan.followUpAction) {
-    query.semanticConstraints = {
-      ...(isPlainObject(query.semanticConstraints) ? query.semanticConstraints : {}),
-      ...(targetType ? { targetObjectType: targetType } : {}),
-      ...(
-        pathPlan.followUpAction && !String(query?.semanticConstraints?.followUpAction || '').trim()
-          ? { followUpAction: pathPlan.followUpAction }
-          : {}
-      )
-    };
-  }
-
-  if (targetType) {
-    query.resolutionHints = {
-      ...(isPlainObject(query.resolutionHints) ? query.resolutionHints : {}),
-      group: {
-        ...(isPlainObject(query?.resolutionHints?.group) ? query.resolutionHints.group : {}),
-        type: targetType,
-        source: String(query?.resolutionHints?.group?.source || '').trim() || 'plugin_path_preflight'
-      }
-    };
-  }
-
-  return query;
+  return resolvedQuery;
 }
 
 function applyPathPreflightToSkillArgs(args = {}) {
@@ -1143,72 +1094,11 @@ function isBusinessGroupInventoryPrompt(prompt = '') {
 }
 
 function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
-  const route = getPromptRoutingService().buildBusinessObjectInventoryRoute(prompt);
-  return materializePluginPromptRoute(route);
+  return null;
 }
 
 function buildMetricInventoryResolvedQuery(prompt = '') {
-  const route = getPromptRoutingService().buildMetricInventoryRoute(prompt);
-  return materializePluginPromptRoute(route);
-}
-
-function shouldRefreshMetricInventory(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  const rememberedGroup = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  if (isMetricInventoryDetailPrompt(text) && rememberedGroup) {
-    return false;
-  }
-  const effectivePrompt = expandMetricInventoryPrompt(text, rememberedGroup);
-  if (!isMetricInventoryPrompt(effectivePrompt)) {
-    return false;
-  }
-
-  const expectedGroup = inferMetricInventoryGroup(effectivePrompt);
-  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-  const rememberedOperation = String(rememberedRecord?.resolvedQuery?.semanticConstraints?.operation || '').trim();
-
-  return resolvedService !== 'metrics'
-    || rememberedOperation !== 'metadata_list'
-    || !expectedGroup
-    || rememberedGroup !== expectedGroup;
-}
-
-function shouldRefreshHierarchyCatalog(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!isHierarchyCatalogPrompt(text)) {
-    return false;
-  }
-
-  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-  return resolvedService !== 'drilldownCatalog';
-}
-
-function shouldRefreshBusinessObjectInventory(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!isBusinessObjectInventoryPrompt(text)) {
-    return false;
-  }
-
-  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-  const rememberedOperation = String(rememberedRecord?.resolvedQuery?.semanticConstraints?.operation || '').trim();
-  const rememberedGroup = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  return resolvedService !== 'groups'
-    || rememberedOperation !== 'metadata_list'
-    || rememberedGroup !== 'WebApplication';
-}
-
-function shouldRefreshBusinessGroupInventory(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!isBusinessGroupInventoryPrompt(text)) {
-    return false;
-  }
-
-  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-  const rememberedOperation = String(rememberedRecord?.resolvedQuery?.semanticConstraints?.operation || '').trim();
-  const rememberedGroup = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  return resolvedService !== 'groups'
-    || rememberedOperation !== 'metadata_list'
-    || rememberedGroup !== 'BusinessGroup';
+  return null;
 }
 
 function getOverviewDayStart(offsetDays = 0) {
@@ -1267,57 +1157,14 @@ function parseOverviewTimeRange(timeRangeKey = 'last24hours') {
 }
 
 function materializePluginPromptRoute(route = null, options = {}) {
-  return getPromptRoutingService().materializePromptRouteResolvedQuery(route, {
-    resolveTimeRange: (timeRangeKey) => parseOverviewTimeRange(timeRangeKey),
-    roundTimeValue: roundToNearestMinute,
-    pluginStructuredOverview: Boolean(options.pluginStructuredOverview)
-  });
+  return null;
 }
 
 function buildOverviewResolvedQuery(prompt = '') {
-  const route = getPromptRoutingService().buildOverviewRoute(prompt);
-  return materializePluginPromptRoute(route, { pluginStructuredOverview: true });
+  return null;
 }
 
 function resolvePromptInjectedResolvedQuery(prompt = '', currentResolvedQuery = undefined, options = {}) {
-  if (isStrictBoundaryMode()) {
-    return null;
-  }
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return null;
-  }
-
-  const existingResolvedQuery = normalizeObject(currentResolvedQuery);
-  const promptRoute = getPromptRoutingService().resolvePromptRoute(text);
-  const promptResolvedQuery = materializePluginPromptRoute(promptRoute, {
-    pluginStructuredOverview: Boolean(options.pluginStructuredOverview)
-  });
-  const promptService = String(promptResolvedQuery?.service || '').trim();
-
-  if (isPlainObject(promptResolvedQuery) && promptService && promptService !== 'overview') {
-    return promptResolvedQuery;
-  }
-
-  const packetLossResolvedQuery = buildPacketLossClientTopResolvedQuery(text, existingResolvedQuery);
-  if (packetLossResolvedQuery) {
-    return packetLossResolvedQuery;
-  }
-
-  if (Boolean(options.allowOverviewReplacement)) {
-    const overviewResolvedQuery = promptService === 'overview'
-      ? promptResolvedQuery
-      : buildOverviewResolvedQuery(text);
-    if (shouldReplaceWithPromptOverview(existingResolvedQuery, overviewResolvedQuery)) {
-      return overviewResolvedQuery;
-    }
-    return null;
-  }
-
-  if (!isPlainObject(existingResolvedQuery) && isPlainObject(promptResolvedQuery)) {
-    return promptResolvedQuery;
-  }
-
   return null;
 }
 
@@ -1348,12 +1195,6 @@ function prepareSkillExecutionArgs(args = {}) {
   if (!prepared.userQuery && prompt) {
     prepared.userQuery = prompt;
   }
-  if (!isPlainObject(prepared.resolvedQuery)) {
-    const packetLossResolvedQuery = buildPacketLossClientTopResolvedQuery(prompt);
-    if (packetLossResolvedQuery) {
-      prepared.resolvedQuery = packetLossResolvedQuery;
-    }
-  }
 
   return applyPathPreflightToSkillArgs(prepared);
 }
@@ -1367,12 +1208,6 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
 
   nextParams.prompt = prompt;
   nextParams.userQuery = prompt;
-  if (!isPlainObject(nextParams.resolvedQuery)) {
-    const packetLossResolvedQuery = buildPacketLossClientTopResolvedQuery(prompt);
-    if (packetLossResolvedQuery) {
-      nextParams.resolvedQuery = packetLossResolvedQuery;
-    }
-  }
 
   return applyPathPreflightToSkillArgs(nextParams);
 }
@@ -1671,36 +1506,7 @@ function isPacketLossClientTopPrompt(prompt = '') {
 }
 
 function buildPacketLossClientTopResolvedQuery(prompt = '', seedResolvedQuery) {
-  const text = String(prompt || '').trim();
-  if (!isPacketLossClientTopPrompt(text)) {
-    return null;
-  }
-
-  const metric = /(\u6d41\u51fa|\u51fa\u5411|outbound|uplink)/i.test(text) ? 'PLO' : 'PLI';
-  const seed = isPlainObject(seedResolvedQuery) ? seedResolvedQuery : {};
-  const timeWindow = findRecentPacketLossAuditWindow(metric);
-  const defaultRange = getDefaultTimeRange();
-  const start = Number(seed.start || timeWindow?.start || defaultRange.start);
-  const end = Number(seed.end || timeWindow?.end || defaultRange.end);
-  const topCountCandidate = Number(seed.topCount);
-  if (!(start > 0) || !(end > 0)) {
-    return null;
-  }
-
-  return {
-    ...seed,
-    service: 'topValues',
-    queryModeKey: 'topn',
-    metric,
-    metrics: [metric],
-    topMetric: metric,
-    groups: [{ type: 'IPAddress' }],
-    topCount: topCountCandidate > 0 ? topCountCandidate : 1,
-    start,
-    end,
-    format: 'json',
-    userRequirement: text
-  };
+  return null;
 }
 
 function includesAnyKeyword(text, keywords = []) {
@@ -1878,7 +1684,7 @@ function isOutOfScopeNapmRequest(prompt) {
 
 function isDangerousSystemTool(toolName) {
   const normalized = String(toolName || '').trim().toLowerCase();
-  if (!normalized || SAFE_NAPM_TOOL_NAMES.has(normalized)) {
+  if (!normalized || isSafeNapmToolName(normalized)) {
     return false;
   }
 
@@ -2023,32 +1829,6 @@ async function runSkillExecutor(args = {}) {
 }
 
 function buildResolvedQueryForPrompt(prompt = '', args = {}) {
-  const resolver = getNapmResolvedQueryResolverService();
-  if (resolver && typeof resolver.resolvePrompt === 'function') {
-    const resolverResult = resolver.resolvePrompt(prompt, {
-      nowSeconds: args?.nowSeconds
-    });
-    if (resolverResult?.ok && isPlainObject(resolverResult?.resolvedQuery)) {
-      return {
-        source: 'napm-resolve-query',
-        result: resolverResult,
-        resolvedQuery: resolverResult.resolvedQuery
-      };
-    }
-  }
-
-  const promptRoute = getPromptRoutingService().resolvePromptRoute(prompt);
-  const routeResolvedQuery = materializePluginPromptRoute(promptRoute, {
-    pluginStructuredOverview: true
-  });
-  if (isPlainObject(routeResolvedQuery)) {
-    return {
-      source: 'prompt-routing-service',
-      result: null,
-      resolvedQuery: routeResolvedQuery
-    };
-  }
-
   return {
     source: 'none',
     result: null,
@@ -2149,74 +1929,6 @@ function appendDebugApi(text, requestUrl) {
   return `${body}\n\nDebug API:\n${url}`;
 }
 
-function buildTopnUserFacingText(result = {}, narration = {}) {
-  if (String(narration?.responseType || '').trim() !== 'topn') {
-    return '';
-  }
-
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const requestUrl = result?.requestUrl || summary?.requestUrl || '';
-  const timeRangeText = String(
-    narration?.timeRange?.displayText
-    || result?.narrationInput?.summary?.timeRange?.displayText
-    || summary?.timeRange?.displayText
-    || ''
-  ).trim();
-  const items = Array.isArray(narration.items) ? narration.items : [];
-  if (items.length === 0) {
-    return '';
-  }
-
-  const objectLabel = String(narration?.objectType || result?.resolvedQuery?.groups?.[0]?.type || '对象').trim();
-  const metricLabel = String(
-    items.find((item) => String(item?.metricLabel || '').trim())?.metricLabel
-    || items[0]?.metric
-    || result?.resolvedQuery?.metric
-    || '指标值'
-  ).trim();
-  const rows = items
-    .map((item, index) => {
-      const object = String(item?.object || '').trim();
-      const rawValue = item?.rawValue ?? item?.value ?? item?.formattedValue;
-      const value = String(item?.formattedValue || item?.value || formatNumber(rawValue)).trim();
-      if (!object) {
-        return null;
-      }
-      return {
-        rank: Number.isFinite(Number(item?.rank)) ? Number(item.rank) : index + 1,
-        object,
-        value: value || 'no_data'
-      };
-    })
-    .filter(Boolean);
-
-  if (rows.length === 0) {
-    return appendDebugApi('查询已返回 TopN 结果，但缺少对象标签，不能生成“谁最多”的结论。', requestUrl);
-  }
-
-  const lines = [];
-  if (timeRangeText) {
-    lines.push(timeRangeText);
-  }
-  lines.push(`| 排名 | ${objectLabel} | ${metricLabel} |`);
-  lines.push('| --- | --- | --- |');
-  rows.forEach((row) => {
-    lines.push(`| ${row.rank} | ${row.object} | ${row.value} |`);
-  });
-  return appendDebugApi(lines.join('\n'), requestUrl);
-}
-
-function getMetricInventoryScopeLabel(groupType = '') {
-  const normalized = String(groupType || '').trim();
-  if (normalized === 'WebApplication') return '业务';
-  if (normalized === 'BusinessGroup') return '业务组';
-  if (normalized === 'ClientBusinessGroup') return '客户端业务组';
-  if (normalized === 'PageFamily') return '页面族';
-  if (normalized === 'User') return '用户';
-  if (normalized === 'DefinedApp' || normalized === 'Application') return '应用';
-  return normalized || '当前对象';
-}
-
 function isMetricInventoryDetailPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
@@ -2224,223 +1936,6 @@ function isMetricInventoryDetailPrompt(prompt = '') {
   }
 
   return /(?:详细|详情|展开|具体|明细|全部|所有|列出来|编码|code|metric\s*code|具体指标|分类下|每一类|分别是)/i.test(text);
-}
-
-function getMetricInventoryCategories(groupType = '') {
-  const normalized = String(groupType || '').trim();
-  if (normalized === 'WebApplication' || normalized === 'ClientBusinessGroup') {
-    return [
-      { name: '业务网络', description: '关注业务页面相关的请求流量、页面流量和页面大小。', sampleIds: ['PGBYTI', 'PGBYTO', 'PGSIZEI', 'PGSIZEO'] },
-      { name: '业务访问', description: '关注页面访问次数、访问率以及客户端/服务端访问量。', sampleIds: ['PGNPGE', 'PGNPGC', 'PGNPGS', 'PGRT'] },
-      { name: '业务性能', description: '关注页面时延、慢页面率和慢页面占比等用户体验指标。', sampleIds: ['PGSLRT', 'PGSLPCT', 'PGTME'] },
-      { name: '响应代码', description: '关注 HTTP 响应数量以及 200/400/500 等状态码分布。', sampleIds: ['PGNOBJE', 'PGHTTP200', 'PGHTTP400', 'PGHTTP500'] },
-      { name: '页面优化', description: '关注页面优化覆盖率及部分优化/全优化相关指标。', sampleIds: ['POPT', 'PPOPT', 'PFOPT'] }
-    ];
-  }
-
-  if (normalized === 'BusinessGroup') {
-    return [
-      { name: '数据包', description: '关注业务组相关的数据包数量、大小和方向分布。', sampleIds: ['PKIO', 'PKI', 'PKO'] },
-      { name: '网络流量', description: '关注吞吐、流量大小以及进出方向流量。', sampleIds: ['TPIO', 'TPI', 'TPO', 'BYTIO'] },
-      { name: '传输效率', description: '关注利用率、转发效率等链路传输质量。', sampleIds: ['GPI', 'GPO', 'UTI', 'UTO'] },
-      { name: '网络性能', description: '关注丢包、重传、RTT 和时延相关质量指标。', sampleIds: ['PLI', 'PLO', 'RTTI', 'RTXI'] },
-      { name: '网络连接', description: '关注连接请求、并发连接、失败连接等连接类指标。', sampleIds: ['CONI', 'CCNI', 'RFCI', 'RFRI'] },
-      { name: '应用访问', description: '关注重置、重试、事务请求等应用访问行为。', sampleIds: ['RSTSI', 'RSTSO', 'TRNI', 'TRNO'] },
-      { name: '应用性能', description: '关注服务器响应时间、应用响应时间和事务处理性能。', sampleIds: ['TRTI', 'TRTO', 'ARTI', 'ARTO'] },
-      { name: '用户体验', description: '关注用户体验指数等体验类指标。', sampleIds: ['UEII', 'UEIO'] },
-      { name: '安全分析', description: '关注异常请求、失败连接和行为特征等安全场景指标。', sampleIds: ['CONI', 'RFCI', 'FILI', 'RFRI'] }
-    ];
-  }
-
-  return [];
-}
-
-function expandMetricInventoryPrompt(prompt = '', groupType = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return '';
-  }
-
-  if (!isMetricInventoryDetailPrompt(text) || isMetricInventoryPrompt(text)) {
-    return text;
-  }
-
-  const scopeLabel = getMetricInventoryScopeLabel(groupType);
-  return `${scopeLabel}都可以查哪些指标？${text}`;
-}
-
-function buildMetricInventoryUserFacingText(result, narration) {
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const requestUrl = result?.requestUrl || summary?.requestUrl || '';
-  const items = Array.isArray(narration?.items) ? narration.items : [];
-  if (items.length === 0) {
-    return '';
-  }
-
-  const groupType = String(result?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  const scopeLabel = getMetricInventoryScopeLabel(groupType);
-  const timeRangeText = String(
-    narration?.timeRange?.displayText
-    || result?.narrationInput?.summary?.timeRange?.displayText
-    || summary?.timeRange?.displayText
-    || ''
-  ).trim();
-  const sample = items
-    .slice(0, 12)
-    .map((item) => {
-      const id = String(item?.id || '').trim();
-      const value = String(item?.value || item?.label || '').trim();
-      if (id && value) return `${id}（${value}）`;
-      return id || value;
-    })
-    .filter(Boolean);
-
-  if (sample.length === 0) {
-    return '';
-  }
-
-  const promptText = String(
-    result?.prompt
-    || result?.resolvedQuery?.userRequirement
-    || result?.narrationInput?.resolvedQuery?.userRequirement
-    || ''
-  ).trim();
-  const detailPrompt = isMetricInventoryDetailPrompt(promptText);
-  const categories = getMetricInventoryCategories(groupType);
-  const lines = [];
-  if (timeRangeText) {
-    lines.push(timeRangeText);
-  }
-
-  if (categories.length > 0 && !detailPrompt) {
-    lines.push(`${scopeLabel}视角可查指标，建议先按指标分类来理解：`);
-    categories.forEach((category) => {
-      lines.push(`${category.name}：${category.description}`);
-    });
-    lines.push('如果你要看详细指标，我可以继续按某个分类展开具体指标和编码。');
-    return appendDebugApi(lines.join('\n'), requestUrl);
-  }
-
-  if (categories.length > 0 && detailPrompt) {
-    lines.push(`${scopeLabel}视角下，各指标分类对应的代表指标如下：`);
-    categories.forEach((category) => {
-      const hits = sample.filter((item) => category.sampleIds.some((id) => item.startsWith(`${id}（`) || item === id));
-      const displayItems = hits.length > 0
-        ? hits
-        : category.sampleIds
-          .map((id) => sample.find((item) => item.startsWith(`${id}（`) || item === id))
-          .filter(Boolean);
-      lines.push(`${category.name}：${displayItems.join('、') || '当前结果未返回该分类代表指标'}`);
-    });
-    return appendDebugApi(lines.join('\n'), requestUrl);
-  }
-
-  lines.push(`${scopeLabel}视角可查指标主要包括：${sample.join('、')}`);
-  return appendDebugApi(lines.join('\n'), requestUrl);
-}
-
-function buildMetricInventoryDetailTextFromRememberedRecord(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!isMetricInventoryDetailPrompt(text)) {
-    return '';
-  }
-
-  const result = rememberedRecord?.result;
-  const narration = isPlainObject(result?.narrationStructure)
-    ? result.narrationStructure
-    : (isPlainObject(result?.narrationInput?.result?.narrationStructure)
-      ? result.narrationInput.result.narrationStructure
-      : null);
-  if (!narration) {
-    return '';
-  }
-
-  const groupType = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || result?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  const categories = getMetricInventoryCategories(groupType);
-  const items = Array.isArray(narration?.items) ? narration.items : [];
-  if (!groupType || categories.length === 0 || items.length === 0) {
-    return '';
-  }
-
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const requestUrl = result?.requestUrl || summary?.requestUrl || '';
-  const timeRangeText = String(
-    narration?.timeRange?.displayText
-    || result?.narrationInput?.summary?.timeRange?.displayText
-    || summary?.timeRange?.displayText
-    || ''
-  ).trim();
-  const sample = items
-    .slice(0, 20)
-    .map((item) => {
-      const id = String(item?.id || '').trim();
-      const value = String(item?.value || item?.label || '').trim();
-      if (id && value) return `${id}（${value}）`;
-      return id || value;
-    })
-    .filter(Boolean);
-  if (sample.length === 0) {
-    return '';
-  }
-
-  const lines = [];
-  if (timeRangeText) {
-    lines.push(timeRangeText);
-  }
-  lines.push(`${getMetricInventoryScopeLabel(groupType)}视角下，各指标分类对应的代表指标如下：`);
-  categories.forEach((category) => {
-    const displayItems = category.sampleIds
-      .map((id) => sample.find((item) => item.startsWith(`${id}（`) || item === id))
-      .filter(Boolean);
-    lines.push(`${category.name}：${displayItems.join('、') || '当前结果未返回该分类代表指标'}`);
-  });
-  return appendDebugApi(lines.join('\n'), requestUrl);
-}
-
-function buildMetricInventorySummaryTextFromCategories(groupType = '') {
-  const normalized = String(groupType || '').trim();
-  const categories = getMetricInventoryCategories(normalized);
-  if (categories.length === 0) {
-    return '';
-  }
-
-  const lines = [`${getMetricInventoryScopeLabel(normalized)}视角可查指标，建议先按指标分类来理解：`];
-  categories.forEach((category) => {
-    lines.push(`${category.name}：${category.description}`);
-  });
-  lines.push('如果你要看详细指标，我可以继续按某个分类展开具体指标和编码。');
-  return lines.join('\n');
-}
-
-function buildMetricInventoryReplyTextFromRememberedRecord(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!text || !rememberedRecord || !isPlainObject(rememberedRecord.result)) {
-    return '';
-  }
-
-  const rememberedGroup = String(rememberedRecord?.resolvedQuery?.groups?.[0]?.type || '').trim();
-  const effectivePrompt = expandMetricInventoryPrompt(text, rememberedGroup);
-  if (!isMetricInventoryPrompt(effectivePrompt)) {
-    return '';
-  }
-
-  const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-  const rememberedOperation = String(rememberedRecord?.resolvedQuery?.semanticConstraints?.operation || '').trim();
-  if (resolvedService !== 'metrics' || rememberedOperation !== 'metadata_list') {
-    return '';
-  }
-
-  const expectedGroup = inferMetricInventoryGroup(effectivePrompt);
-  if (expectedGroup && rememberedGroup && expectedGroup !== rememberedGroup) {
-    return '';
-  }
-
-  if (isMetricInventoryDetailPrompt(text)) {
-    return buildMetricInventoryDetailTextFromRememberedRecord(text, rememberedRecord);
-  }
-
-  const rememberedReply = makeTextReplyFromSkillResult(rememberedRecord.result);
-  return String(rememberedReply?.text || '').trim();
 }
 
 function buildRememberedSkillReplyText(rememberedRecord = null) {
@@ -2452,226 +1947,21 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
   return String(rememberedReply?.text || '').trim();
 }
 
-function buildPromptScopedReplyTextFromRememberedRecord(prompt = '', rememberedRecord = null) {
-  const text = String(prompt || '').trim();
-  if (!text || !rememberedRecord || !isPlainObject(rememberedRecord.result)) {
-    return '';
-  }
-
-  if (!isOverviewPrompt(text) && !isPacketLossClientTopPrompt(text)) {
-    return '';
-  }
-
-  const result = rememberedRecord.result;
-  if (result?.error) {
-    return '';
-  }
-
-  const hasRows = Array.isArray(result?.rows) && result.rows.length > 0;
-  const hasOverview = isPlainObject(result?.overview);
-  if (!hasRows && !hasOverview) {
-    return '';
-  }
-
-  const rememberedReply = makeTextReplyFromSkillResult(result);
-  return String(rememberedReply?.text || '').trim();
+function buildSkillRequiredReply() {
+  return [
+    '当前问题必须经 NAPM skill 执行后才能回答。',
+    '本轮未拿到有效 skill 结果，因此不展示主链推理、临时脚本或排查过程。',
+    '请以技能执行结果为准。'
+  ].join('\n');
 }
 
-function containsWrongMetricInventoryContent(groupType = '', content = '') {
-  const normalizedGroup = String(groupType || '').trim();
-  const text = String(content || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  if (normalizedGroup === 'WebApplication' || normalizedGroup === 'ClientBusinessGroup') {
-    return /(?:\bBusinessGroup\b|业务组|工作组|\bBG[A-Z0-9]{2,}\b|BGPKTS|BGBITS|BGRTT|BGRTTP|BGRETRANS|BGRST|总吞吐|入向吞吐|出向吞吐|连接请求数|并发连接数|失败请求数|丢包率|重传率|\bRTT\b|最高告警级别|告警数量)/i.test(text);
-  }
-
-  return false;
-}
-
-async function buildAsyncRefreshedReplyText(api, prompt, rememberedRecord, conversationKey) {
-  const activePrompt = String(prompt || '').trim();
-  if (!activePrompt) {
-    return '';
-  }
-
-  const rememberedDetailText = buildMetricInventoryDetailTextFromRememberedRecord(activePrompt, rememberedRecord);
-  if (rememberedDetailText) {
-    return rememberedDetailText;
-  }
-
-  const rememberedMetricInventoryText = buildMetricInventoryReplyTextFromRememberedRecord(activePrompt, rememberedRecord);
-  if (rememberedMetricInventoryText) {
-    return rememberedMetricInventoryText;
-  }
-
-  if (activePrompt && isOverviewPrompt(activePrompt)) {
-    const resolvedService = String(rememberedRecord?.resolvedQuery?.service || '').trim();
-    const expectedOverviewScene = normalizeOverviewSceneKey(inferOverviewScene(activePrompt));
-    const rememberedOverviewScene = extractOverviewSceneFromRememberedRecord(rememberedRecord);
-    const shouldRefreshOverview = resolvedService !== 'overview'
-      || rememberedOverviewScene !== expectedOverviewScene;
-    if (shouldRefreshOverview) {
-      try {
-        api.logger.warn('[napm-openclaw-plugin] forcing overview prompt through skill executor before final reply');
-        const refreshed = await runResolvedSkillExecutor({
-          prompt: activePrompt,
-          userQuery: activePrompt
-        });
-        rememberDebugApi(activePrompt, refreshed, conversationKey);
-        const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-        return refreshedReply.text || '';
-      } catch (error) {
-        api.logger.error(`[napm-openclaw-plugin] overview refresh failed: ${error.message}`);
-      }
-    }
-  }
-
-  if (shouldRefreshHierarchyCatalog(activePrompt, rememberedRecord)) {
-    try {
-      api.logger.warn('[napm-openclaw-plugin] forcing hierarchy prompt through skill executor before final reply');
-      const refreshed = await runResolvedSkillExecutor({
-        prompt: activePrompt,
-        userQuery: activePrompt
-      });
-      rememberDebugApi(activePrompt, refreshed, conversationKey);
-      const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-      return refreshedReply.text || '';
-    } catch (error) {
-      api.logger.error(`[napm-openclaw-plugin] hierarchy refresh failed: ${error.message}`);
-    }
-  }
-
-  if (shouldRefreshMetricInventory(activePrompt, rememberedRecord)) {
-    try {
-      api.logger.warn('[napm-openclaw-plugin] forcing metric-inventory prompt through skill executor before final reply');
-      const rememberedGroup = String(
-        rememberedRecord?.resolvedQuery?.groups?.[0]?.type
-        || getRecentRememberedSkillResult(conversationKey)?.resolvedQuery?.groups?.[0]?.type
-        || ''
-      ).trim();
-      const resolverPrompt = expandMetricInventoryPrompt(activePrompt, rememberedGroup);
-      const refreshed = await runResolvedSkillExecutor({
-        prompt: resolverPrompt,
-        userQuery: resolverPrompt,
-        resolverPrompt
-      });
-      rememberDebugApi(activePrompt, refreshed, conversationKey);
-      const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-      return refreshedReply.text || '';
-    } catch (error) {
-      api.logger.error(`[napm-openclaw-plugin] metric inventory refresh failed: ${error.message}`);
-      const fallbackGroup = inferMetricInventoryGroup(activePrompt);
-      return buildMetricInventorySummaryTextFromCategories(fallbackGroup);
-    }
-  }
-
-  if (shouldRefreshBusinessObjectInventory(activePrompt, rememberedRecord)) {
-    try {
-      api.logger.warn('[napm-openclaw-plugin] forcing business-object-inventory prompt through skill executor before final reply');
-      const refreshed = await runResolvedSkillExecutor({
-        prompt: activePrompt,
-        userQuery: activePrompt
-      });
-      rememberDebugApi(activePrompt, refreshed, conversationKey);
-      const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-      return refreshedReply.text || '';
-    } catch (error) {
-      api.logger.error(`[napm-openclaw-plugin] business object inventory refresh failed: ${error.message}`);
-    }
-  }
-
-  if (shouldRefreshBusinessGroupInventory(activePrompt, rememberedRecord)) {
-    try {
-      api.logger.warn('[napm-openclaw-plugin] forcing business-group-inventory prompt through skill executor before final reply');
-      const refreshed = await runResolvedSkillExecutor({
-        prompt: activePrompt,
-        userQuery: activePrompt
-      });
-      rememberDebugApi(activePrompt, refreshed, conversationKey);
-      const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-      return refreshedReply.text || '';
-    } catch (error) {
-      api.logger.error(`[napm-openclaw-plugin] business group inventory refresh failed: ${error.message}`);
-    }
-  }
-
-  return '';
-}
-
-function shouldForceGenericNapmSkillRefresh(activePrompt = '', guardState = null, rememberedRecord = null) {
-  const prompt = String(activePrompt || '').trim();
-  if (!prompt) {
-    return false;
-  }
-
-  if (
-    isOverviewPrompt(prompt)
-    || shouldRefreshHierarchyCatalog(prompt, rememberedRecord)
-    || shouldRefreshMetricInventory(prompt, rememberedRecord)
-    || shouldRefreshBusinessObjectInventory(prompt, rememberedRecord)
-    || shouldRefreshBusinessGroupInventory(prompt, rememberedRecord)
-  ) {
-    return false;
-  }
-
-  const napmRelated = Boolean(
-    guardState?.napmRelated
-    || isNapmRelatedPrompt(prompt)
+function hasVerifiableSkillRecord(record = null) {
+  return Boolean(
+    record
+    && isPlainObject(record.result)
+    && isPlainObject(record.resolvedQuery || record.result?.resolvedQuery)
+    && !record.result?.error
   );
-  if (!napmRelated) {
-    return false;
-  }
-
-  if (guardState?.turnNapmToolUsed) {
-    return false;
-  }
-
-  const rememberedPromptKey = normalizePromptKey(rememberedRecord?.result?.prompt || rememberedRecord?.resolvedQuery?.userRequirement || '');
-  const currentPromptKey = normalizePromptKey(prompt);
-  const rememberedFresh = Boolean(
-    rememberedRecord
-    && rememberedPromptKey
-    && rememberedPromptKey === currentPromptKey
-    && (Date.now() - Number(rememberedRecord.updatedAt || 0) <= RESULT_CACHE_MAX_AGE_MS)
-  );
-
-  return !rememberedFresh;
-}
-
-function canUseGenericNapmSkillRefreshResult(result = null) {
-  if (!isPlainObject(result)) {
-    return false;
-  }
-
-  const errorCode = String(result?.error?.code || '').trim();
-  if (errorCode === 'UPSTREAM_RESOLVED_QUERY_REQUIRED') {
-    return false;
-  }
-
-  if (String(result?.responseMode || '').trim() === 'machine_narration_input') {
-    return true;
-  }
-
-  if (String(result?.displayText || '').trim()) {
-    return true;
-  }
-
-  if (String(result?.replyText || '').trim()) {
-    return true;
-  }
-
-  if (isPlainObject(result?.resolvedQuery)) {
-    return true;
-  }
-
-  if (Array.isArray(result?.rows) && result.rows.length > 0) {
-    return true;
-  }
-
-  return false;
 }
 
 function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rememberedRecord = null) {
@@ -2699,23 +1989,6 @@ function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rem
   return Boolean(
     guardState?.napmRelated
     || isNapmRelatedPrompt(prompt)
-  );
-}
-
-function buildSkillRequiredReply() {
-  return [
-    '当前问题必须经 NAPM skill 执行后才能回答。',
-    '本轮未拿到有效 skill 结果，因此不展示主链推理、临时脚本或排查过程。',
-    '请以技能执行结果为准。'
-  ].join('\n');
-}
-
-function hasVerifiableSkillRecord(record = null) {
-  return Boolean(
-    record
-    && isPlainObject(record.result)
-    && isPlainObject(record.resolvedQuery || record.result?.resolvedQuery)
-    && !record.result?.error
   );
 }
 
@@ -2758,41 +2031,6 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   lines.push('未发现可核验记录时，不能补写任何未被日志证明的执行过程。');
 
   return lines.join('\n');
-}
-
-async function buildGenericNapmSkillRefreshText(api, prompt, conversationKey, conversationState = null) {
-  const activePrompt = String(prompt || '').trim();
-  if (!activePrompt) {
-    return '';
-  }
-
-  try {
-    let expandedPrompt = activePrompt;
-    const rememberedRecord = getRememberedSkillResult(activePrompt, conversationKey);
-    const rememberedGroupType = String(
-      rememberedRecord?.resolvedQuery?.groups?.[0]?.type
-      || conversationState?.lastMetricInventoryGroup
-      || ''
-    ).trim();
-    if (isMetricInventoryDetailPrompt(activePrompt) && rememberedGroupType) {
-      expandedPrompt = expandMetricInventoryPrompt(activePrompt, rememberedGroupType);
-    }
-    api.logger.warn('[napm-openclaw-plugin] forcing generic NAPM prompt through skill executor before final reply');
-    const refreshed = await runResolvedSkillExecutor({
-      prompt: expandedPrompt,
-      userQuery: expandedPrompt,
-      resolverPrompt: expandedPrompt
-    });
-    if (!canUseGenericNapmSkillRefreshResult(refreshed)) {
-      return '';
-    }
-    rememberDebugApi(activePrompt, refreshed, conversationKey);
-    const refreshedReply = makeTextReplyFromSkillResult(refreshed);
-    return refreshedReply.text || '';
-  } catch (error) {
-    api.logger.error(`[napm-openclaw-plugin] generic NAPM refresh failed: ${error.message}`);
-    return '';
-  }
 }
 
 function selectActivePromptText(conversationState = null, guardState = null, fallbackPrompt = '') {
@@ -2873,99 +2111,8 @@ function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardStat
 function buildUserFacingSkillText(result) {
   const summary = isPlainObject(result?.summary) ? result.summary : {};
   const requestUrl = result?.requestUrl || summary?.requestUrl || '';
-  const displayText = String(result?.displayText || summary?.displayText || '').trim();
-  if (displayText) {
-    return appendDebugApi(displayText, requestUrl);
-  }
-
-  const narration = isPlainObject(result?.narrationStructure)
-    ? result.narrationStructure
-    : (isPlainObject(result?.narrationInput?.result?.narrationStructure)
-      ? result.narrationInput.result.narrationStructure
-      : null);
-  if (narration) {
-    if (String(narration?.responseType || '').trim() === 'topn') {
-      const topnText = buildTopnUserFacingText(result, narration);
-      if (topnText) {
-        return topnText;
-      }
-      const timeRangeText = String(
-        narration?.timeRange?.displayText
-        || result?.narrationInput?.summary?.timeRange?.displayText
-        || summary?.timeRange?.displayText
-        || ''
-      ).trim();
-      const items = Array.isArray(narration.items) ? narration.items : [];
-      const topItem = items[0] || null;
-      const topObject = String(topItem?.object || '').trim();
-      const metricId = String(topItem?.metric || result?.resolvedQuery?.metric || '').trim().toUpperCase();
-      const rawValue = Number(topItem?.rawValue ?? topItem?.value);
-      const metricUnit = String(topItem?.unit || '').trim() || '%';
-      const userRequirement = String(
-        result?.prompt
-        || result?.resolvedQuery?.userRequirement
-        || result?.narrationInput?.resolvedQuery?.userRequirement
-        || ''
-      ).trim();
-      if (
-        topObject
-        && Number.isFinite(rawValue)
-        && ['PLI', 'PLO'].includes(metricId)
-        && /(\u4e22\u5305|\u4e22\u5305\u7387|packet\s*loss|loss)/i.test(userRequirement)
-      ) {
-        const lines = [];
-        if (timeRangeText) {
-          lines.push(timeRangeText);
-        }
-        const sortMetric = String(result?.resolvedQuery?.topMetric || summary?.topMetric || '').trim().toUpperCase();
-        const rankingText = sortMetric && sortMetric !== metricId
-          ? `默认按 ${sortMetric} 排序`
-          : `按 ${metricId} 排序`;
-        const metricLabel = metricId === 'PLO' ? '\u51fa\u5411\u4e22\u5305\u7387' : '\u6d41\u5165\u4e22\u5305\u7387';
-        lines.push(`当前${rankingText}，丢包最大的地址是 ${topObject}，${metricLabel} ${formatNumber(rawValue)}${metricUnit}。`);
-        return appendDebugApi(lines.join('\n'), requestUrl);
-      }
-    }
-
-    if (String(narration?.responseType || '').trim() === 'metric_list') {
-      const metricInventoryText = buildMetricInventoryUserFacingText(result, narration);
-      if (metricInventoryText) {
-        return metricInventoryText;
-      }
-    }
-
-    const lines = [];
-    const timeRangeText = String(
-      narration?.timeRange?.displayText
-      || result?.narrationInput?.summary?.timeRange?.displayText
-      || ''
-    ).trim();
-    if (timeRangeText) {
-      lines.push(timeRangeText);
-    }
-    if (typeof narration.explanation === 'string' && narration.explanation.trim()) {
-      lines.push(narration.explanation.trim());
-    }
-    const items = Array.isArray(narration.items) ? narration.items : [];
-    if (items.length > 0) {
-      const sample = items
-        .slice(0, 12)
-        .map((item) => {
-          const id = String(item?.id || '').trim();
-          const value = String(item?.value || item?.label || '').trim();
-          if (id && value) return `${id}（${value}）`;
-          return id || value;
-        })
-        .filter(Boolean);
-      if (sample.length > 0) {
-        lines.push(`可查指标示例：${sample.join('、')}`);
-      }
-    }
-    if (lines.length > 0) {
-      return appendDebugApi(lines.join('\n'), requestUrl);
-    }
-  }
-  return '';
+  const displayText = String(result?.displayText || summary?.displayText || result?.replyText || '').trim();
+  return displayText ? appendDebugApi(displayText, requestUrl) : '';
 }
 
 function makeTextReplyFromSkillResult(result) {
@@ -3021,7 +2168,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the OpenClaw NAPM skill executor with a structured resolvedQuery produced by OpenClaw mainflow. Use this for NAPM-related requests after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}.`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery already produced by OpenClaw upstream. This is the only production NAPM tool entry; use it after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}.`,
     parameters: {
       type: 'object',
       properties: {
@@ -3144,7 +2291,7 @@ function createResolvedQueryResolverToolDefinition() {
   return {
     label: 'NAPM Resolve Query',
     name: 'napm-resolve-query',
-    description: 'OpenClaw mainflow resolver for NAPM natural-language requests. Call this before napm-skill-query to construct a structured resolvedQuery from prompt using napm-resolution-spec.v1.json. This tool does not query NetInside data.',
+    description: 'Diagnostic-only NAPM resolver. Enable with NAPM_ENABLE_DEV_RESOLVER_TOOLS=true to inspect local prompt-to-resolvedQuery behavior. This tool is not registered in production.',
     parameters: {
       type: 'object',
       properties: {
@@ -3166,7 +2313,7 @@ function createMainflowQueryToolDefinition() {
   return {
     label: 'NAPM Mainflow Query',
     name: 'napm-mainflow-query',
-    description: 'Stable OpenClaw mainflow entry for NAPM requests. It constructs resolvedQuery with napm-resolve-query semantics, then calls napm-skill-query with strict structured input.',
+    description: 'Diagnostic-only NAPM mainflow runner. Enable with NAPM_ENABLE_DEV_RESOLVER_TOOLS=true to resolve a prompt locally and execute the skill. This tool is not registered in production.',
     parameters: {
       type: 'object',
       properties: {
@@ -3243,10 +2390,10 @@ function buildNapmRoutingSystemContext() {
 
   return [
     'You are not a general-purpose assistant in this deployment. Only handle system monitoring, performance analysis, NAPM query, anomaly diagnosis, and result interpretation requests.',
-    'When the user asks a NAPM question, call `napm-mainflow-query` as the preferred single entry. It constructs `resolvedQuery` through the OpenClaw mainflow resolver and then executes `napm-skill-query` with strict structured input.',
-    'If you do not use `napm-mainflow-query`, you must call `napm-resolve-query` first, then pass its `resolvedQuery` unchanged into `napm-skill-query`.',
+    'When the user asks a NAPM question, call `napm-skill-query` only after OpenClaw upstream has produced a complete structured `resolvedQuery`.',
+    '`napm-resolve-query` and `napm-mainflow-query` are diagnostic-only tools and are not production query paths. Do not choose them unless they are explicitly enabled for development diagnostics.',
     `The accepted structured input channel is: ${acceptedInputs}. Do not rely on raw prompt only when the request is a data query, metadata inventory query, ranking, average, trend, or overview request.`,
-    'OpenClaw mainflow is the owner of resolvedQuery construction. The NAPM skill executes structured queries; it is not the primary owner of prompt-to-query construction in this deployment.',
+    'OpenClaw upstream is the owner of resolvedQuery construction. The NAPM plugin only forwards structured queries, and the NAPM skill only executes them.',
     `Interpret plain monitored business wording such as ${webApplicationAliases} as WebApplication scope unless the user explicitly asks for ${businessGroupAliases}.`,
     `Interpret explicit ${businessGroupAliases} wording as BusinessGroup scope.`,
     `For inventory questions, use ${groupInventoryRule} Example: "系统中有哪些工作组？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
@@ -3254,7 +2401,7 @@ function buildNapmRoutingSystemContext() {
     `For metric-inventory questions, use ${metricInventoryRule} Example: "业务都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}]. Example: "工作组都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For hierarchy questions, use ${hierarchyRule} Example: "BusinessGroup 可以往下钻到哪里？" -> service=drilldownCatalog, groups=[{type:"BusinessGroup"}].`,
     'Questions about hierarchy or drilldown structure, such as which drilldown paths a BusinessGroup or IPAddress supports, must also go through `napm-skill-query` as structured resolvedQuery instead of being answered from general knowledge.',
-    'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first mainflow.',
+    'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first production entry.',
     'This rule also applies to boundary-check requests such as restart, deploy, modify config, inspect SQL, code debugging, or DB-internal asks when they mention NAPM-monitored objects.',
     'If `napm-skill-query` returns decision.next_action=`REJECT_AND_REDIRECT`, do not call exec, shell, restart, deployment, or configuration tools. Explain that the request is outside the NAPM skill boundary and invite the user to ask a NAPM query, analysis, explanation, or result-interpretation question instead.',
     'If `napm-skill-query` returns `ASK_CLARIFYING_QUESTION`, ask that clarification and stop.',
@@ -3275,8 +2422,10 @@ const plugin = {
   name: 'NAPM OpenClaw Plugin',
   description: 'Bridge NAPM skill and query requests from OpenClaw into the deployed NAPM semantic gateway.',
   register(api) {
-    api.registerTool(resolverTool);
-    api.registerTool(mainflowTool);
+    if (shouldEnableDevResolverTools()) {
+      api.registerTool(resolverTool);
+      api.registerTool(mainflowTool);
+    }
     api.registerTool(skillTool);
 
     api.registerHook(
@@ -3370,7 +2519,7 @@ const plugin = {
         const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
         const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
 
-        if ((activePromptState?.generalOutOfScopeRequested || activePromptState?.outOfScopeBoundaryRequested) && !SAFE_NAPM_TOOL_NAMES.has(toolName)) {
+        if ((activePromptState?.generalOutOfScopeRequested || activePromptState?.outOfScopeBoundaryRequested) && !isSafeNapmToolName(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked tool for out-of-scope prompt: tool=${toolName}`);
           return {
             block: true,
@@ -3488,15 +2637,15 @@ const plugin = {
           }
         }
 
-        if (activeNapmPrompt && !SAFE_NAPM_TOOL_NAMES.has(toolName)) {
+        if (activeNapmPrompt && !isSafeNapmToolName(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked non-skill tool for NAPM-scoped prompt: tool=${toolName}`);
           return {
             block: true,
-            blockReason: 'NAPM natural-language requests must call napm-mainflow-query first, or call napm-resolve-query and then napm-skill-query. Direct tools are not allowed.'
+            blockReason: 'NAPM requests must use the single production entry napm-skill-query with an upstream-produced resolvedQuery. Resolver/mainflow diagnostic tools are not production query paths.'
           };
         }
 
-        if (activeNapmPrompt && SAFE_NAPM_TOOL_NAMES.has(toolName)) {
+        if (activeNapmPrompt && isSafeNapmToolName(toolName)) {
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
@@ -3572,20 +2721,6 @@ const plugin = {
                 content: rememberedReplyText
               };
             }
-            const refreshedText = await buildAsyncRefreshedReplyText(api, activePrompt, rememberedRecord, conversationKey);
-            if (refreshedText) {
-              return {
-                content: refreshedText
-              };
-            }
-            const genericNapmRefreshText = shouldForceGenericNapmSkillRefresh(activePrompt, guardState, rememberedRecord)
-              ? await buildGenericNapmSkillRefreshText(api, activePrompt, conversationKey, conversationState)
-              : '';
-            if (genericNapmRefreshText) {
-              return {
-                content: genericNapmRefreshText
-              };
-            }
             return {
               content: buildSkillRequiredReply()
             };
@@ -3602,47 +2737,12 @@ const plugin = {
                 cancel: true
               };
             }
-            const refreshedText = await buildAsyncRefreshedReplyText(api, activePrompt, rememberedRecord, conversationKey);
-            if (refreshedText) {
-              return {
-                content: refreshedText
-              };
-            }
-            const genericNapmRefreshText = shouldForceGenericNapmSkillRefresh(activePrompt, guardState, rememberedRecord)
-              ? await buildGenericNapmSkillRefreshText(api, activePrompt, conversationKey, conversationState)
-              : '';
-            if (genericNapmRefreshText) {
-              return {
-                content: genericNapmRefreshText
-              };
-            }
             return {
               content: buildSkillRequiredReply()
             };
           }
-          const refreshedText = await buildAsyncRefreshedReplyText(api, activePrompt, rememberedRecord, conversationKey);
-          if (refreshedText) {
-            return {
-              content: refreshedText
-            };
-          }
 
-          const genericNapmRefreshText = shouldForceGenericNapmSkillRefresh(activePrompt, guardState, rememberedRecord)
-            ? await buildGenericNapmSkillRefreshText(api, activePrompt, conversationKey, conversationState)
-            : '';
-          if (genericNapmRefreshText) {
-            return {
-              content: genericNapmRefreshText
-            };
-          }
-
-          const requestUrl = getRememberedDebugApi(conversationState?.prompt, conversationKey) || getRecentDebugApiFallback();
-          if (!requestUrl || !shouldExposeUpstreamApi()) {
-            return undefined;
-          }
-          return {
-            content: appendDebugApi(event?.content, requestUrl)
-          };
+          return undefined;
         }
 
         return {
@@ -3689,17 +2789,6 @@ const plugin = {
           || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
           || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
-        const rememberedPromptScopedText = buildPromptScopedReplyTextFromRememberedRecord(activePrompt, rememberedRecord);
-        if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
-          return {
-            message: buildAssistantTextMessage(buildExecutionTraceReplyFromRememberedRecord(rememberedRecord), message)
-          };
-        }
-        if (rememberedPromptScopedText) {
-          return {
-            message: buildAssistantTextMessage(rememberedPromptScopedText, message)
-          };
-        }
         const existingText = extractMessageText(message);
         if (looksLikeNapmBypassProcessText(existingText)) {
           const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReply();
@@ -3720,20 +2809,6 @@ const plugin = {
             message: buildAssistantTextMessage(buildSkillRequiredReply(), message)
           };
         }
-        const metricInventoryGroup = inferMetricInventoryGroup(expandMetricInventoryPrompt(activePrompt, conversationState?.lastMetricInventoryGroup || ''));
-        if (
-          metricInventoryGroup
-          && !isMetricInventoryDetailPrompt(activePrompt)
-          && containsWrongMetricInventoryContent(metricInventoryGroup, existingText)
-        ) {
-          const fallbackText = buildMetricInventorySummaryTextFromCategories(metricInventoryGroup);
-          if (fallbackText) {
-            return {
-              message: buildAssistantTextMessage(fallbackText, message)
-            };
-          }
-        }
-
         return undefined;
       },
       {
@@ -3749,17 +2824,19 @@ const plugin = {
       payloadBuilder: buildSkillPayload
     });
 
-    registerCommand(api, {
-      name: 'napm-resolve-query',
-      description: 'Construct a NAPM resolvedQuery from a natural-language prompt.',
-      endpoint: 'local://napm.resolve.query'
-    });
+    if (shouldEnableDevResolverTools()) {
+      registerCommand(api, {
+        name: 'napm-resolve-query',
+        description: 'Diagnostic-only: construct a NAPM resolvedQuery from a natural-language prompt.',
+        endpoint: 'local://napm.resolve.query'
+      });
 
-    registerCommand(api, {
-      name: 'napm-mainflow-query',
-      description: 'Resolve a NAPM prompt into resolvedQuery and execute it through napm-skill-query.',
-      endpoint: 'local://napm.mainflow.query'
-    });
+      registerCommand(api, {
+        name: 'napm-mainflow-query',
+        description: 'Diagnostic-only: resolve a NAPM prompt into resolvedQuery and execute it through napm-skill-query.',
+        endpoint: 'local://napm.mainflow.query'
+      });
+    }
   }
 };
 
@@ -3768,6 +2845,8 @@ module.exports.default = plugin;
 module.exports.__test__ = {
   getBoundaryMode,
   isStrictBoundaryMode,
+  shouldEnableDevResolverTools,
+  isSafeNapmToolName,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,
@@ -3777,7 +2856,6 @@ module.exports.__test__ = {
   buildOverviewResolvedQuery,
   buildMetricInventoryResolvedQuery,
   buildPacketLossClientTopResolvedQuery,
-  buildPromptScopedReplyTextFromRememberedRecord,
   createResolvedQueryResolverToolDefinition,
   createMainflowQueryToolDefinition,
   getNapmResolvedQueryResolverService,
@@ -3792,18 +2870,12 @@ module.exports.__test__ = {
   isNapmMetaFollowUpPrompt,
   isPacketLossClientTopPrompt,
   looksLikeNapmBypassProcessText,
-  shouldForceGenericNapmSkillRefresh,
   shouldRequireSkillBackedReply,
-  canUseGenericNapmSkillRefreshResult,
   normalizeHierarchyQuestionTarget,
   normalizeOverviewSceneKey,
   shouldReplaceWithPromptOverview,
   rememberSkillResult,
-  shouldRefreshBusinessObjectInventory,
-  shouldRefreshHierarchyCatalog,
-  shouldRefreshMetricInventory,
   prepareSkillExecutionArgs,
   shouldAllowNapmReasoningPreview,
-  buildTopnUserFacingText,
   extractOverviewSceneFromRememberedRecord
 };

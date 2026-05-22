@@ -59,6 +59,9 @@ describe('RequirementParserService multilevel execution fallback', () => {
       semanticConstraints: {
         operation: 'metadata_list'
       },
+      executionOptions: {
+        allowInventoryFallback: true
+      },
       groups: [
         { type: 'BusinessGroup', argument: '服务器网段' },
         { type: 'Applications' },
@@ -127,6 +130,9 @@ describe('RequirementParserService multilevel execution fallback', () => {
       metric: 'PGNPGC',
       metrics: ['PGNPGC'],
       format: 'json',
+      executionOptions: {
+        allowServiceFallback: true
+      },
       groups: [
         { type: 'BusinessGroup', argument: '服务器网段' },
         { type: 'Applications' },
@@ -189,6 +195,9 @@ describe('RequirementParserService multilevel execution fallback', () => {
       format: 'json',
       semanticConstraints: {
         operation: 'metadata_list'
+      },
+      executionOptions: {
+        allowInventoryFallback: true
       },
       groups: [
         { type: 'WebApplication', argument: '回函238web' },

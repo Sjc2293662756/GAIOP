@@ -1,3 +1,8 @@
+/**
+ * 文件作用：
+ * 负责 NAPM 概览类查询的统一编排，包含场景识别、时间范围归一化、
+ * 候选概览模块装配、元数据预检、执行计划构建与执行，以及结果归并摘要。
+ */
 const NapmMetadataService = require('../services/NapmMetadataService');
 const { listOverviewCandidates, getOverviewSceneProfile } = require('./OverviewCandidateRegistry');
 const { resolveOverviewDepth, getOverviewBudget } = require('./OverviewBudget');
@@ -9,6 +14,7 @@ const { reduceOverviewResults } = require('./OverviewResultReducer');
 const DEFAULT_TOP_COUNT = 5;
 const DEFAULT_OVERVIEW_WINDOW_SECONDS = 24 * 60 * 60;
 
+// 将常见对象分组类型映射到概览场景，便于从 resolvedQuery 反推概览视角。
 const GROUP_TYPE_SCENE_MAP = {
   BusinessGroup: 'business_group',
   WebApplication: 'business',
@@ -21,6 +27,7 @@ const GROUP_TYPE_SCENE_MAP = {
   TotalTraffic: 'system'
 };
 
+// 当上游没有显式给出场景时，尝试从自然语言提示词中推断概览场景。
 const SCENE_HINT_PATTERNS = [
   { scene: 'business_group', regex: /(业务组|工作组|业务分组|businessgroup|business group)/i },
   { scene: 'security', regex: /(未知.{0,8}(tcp|udp)?.{0,8}(端口|应用).{0,8}(流量|吞吐|带宽)|(tcp|udp).{0,8}未知.{0,8}(端口|应用).{0,8}(流量|吞吐|带宽))/i },
@@ -71,6 +78,7 @@ function pickFirstValue(source = {}, keys = []) {
   return null;
 }
 
+// 兼容多种返回结构，从行数据中抽取最合适的指标值单元。
 function extractMetricValueCell(row, preferredMetricId = null) {
   const metricValues = Array.isArray(row?.metricValues) ? row.metricValues : [];
   if (metricValues.length > 0) {
@@ -289,6 +297,7 @@ function summarizeAverageMetricRows(label, rows = [], preferredMetricIds = []) {
   };
 }
 
+// 针对不同概览模块输出统一的摘要结构，便于最终聚合展示。
 function buildOverviewModuleInsight(candidate = {}, rows = []) {
   const label = String(candidate?.label || candidate?.candidateId || '').trim() || 'overview';
   const service = String(candidate?.service || '').trim();
@@ -315,6 +324,7 @@ function buildOverviewModuleInsight(candidate = {}, rows = []) {
   };
 }
 
+// 将场景别名、中文关键词统一映射为内部使用的标准 scene key。
 function normalizeSceneKey(scene) {
   const key = normalizeText(scene);
   if (!key) {
@@ -349,6 +359,7 @@ function normalizeSceneKey(scene) {
   return map[key] || null;
 }
 
+// 概览查询默认按分钟对齐，若未给出合法范围则回退到最近 24 小时。
 function resolveOverviewTimeRange(start, end) {
   const safeStart = roundToNearestMinute(start);
   const safeEnd = roundToNearestMinute(end);
@@ -373,6 +384,7 @@ function mapResolvedQueryToScene(resolvedQuery = {}) {
   return null;
 }
 
+// 场景判定遵循“显式输入优先，提示词和分组兜底”的策略，尽量复用上游判断。
 function resolveOverviewScene({ prompt, payload, intent, resolvedQuery } = {}) {
   const fromPayload = normalizeSceneKey(
     payload?.overviewScene
@@ -547,6 +559,7 @@ function pickBestGroupValue(row, targetGroupType, metricHints = []) {
   return null;
 }
 
+// 从概览结果中抽取用于下钻或二次查询的 Top 对象值，需兼容多种返回字段形态。
 function extractTopGroupValues(rows, targetGroupType, metricHints = [], limit = DEFAULT_TOP_COUNT) {
   const values = [];
   const seen = new Set();
@@ -588,6 +601,7 @@ function applyArgumentByTargetParam(groups = [], targetParam, argumentValue) {
   return groups;
 }
 
+// 元数据预检是概览编排的保护层，用于提前发现候选模块的粒度/分组兼容性问题。
 async function loadOverviewMetadataReviewSafely(candidates = [], timeRange = null) {
   const warnings = [];
   const byCandidateId = {};
@@ -639,6 +653,7 @@ async function loadOverviewMetadataReviewSafely(candidates = [], timeRange = nul
   };
 }
 
+// 仅构造标准概览候选查询，不执行请求，便于调试或外部复用。
 function buildOverviewQueries(scene, start, end) {
   const timeRange = resolveOverviewTimeRange(start, end);
   const sceneProfile = getOverviewSceneProfile(scene);
@@ -666,6 +681,7 @@ function buildOverviewQueries(scene, start, end) {
   }));
 }
 
+// 概览主入口：串联场景识别、规划、执行与结果归并，并输出统一的 overview 结构。
 async function executeOverviewModule(options = {}) {
   const executeGatewayRequest = options.executeGatewayRequest;
   if (typeof executeGatewayRequest !== 'function') {

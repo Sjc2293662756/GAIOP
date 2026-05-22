@@ -12,13 +12,10 @@ describe('napm-openclaw-plugin overview scene guards', () => {
     }
   });
 
-  test('should still expose overview helper route for business-group overview prompts', () => {
+  test('should not expose overview helper route in strict-only boundary', () => {
     const resolvedQuery = testApi.buildOverviewResolvedQuery('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f');
 
-    expect(resolvedQuery).toBeTruthy();
-    expect(resolvedQuery.service).toBe('overview');
-    expect(resolvedQuery.overviewScene).toBe('business_group');
-    expect(resolvedQuery.pluginStructuredOverview).toBe(true);
+    expect(resolvedQuery).toBeNull();
   });
 
   test('should preserve explicit non-overview resolvedQuery during skill arg preparation', () => {

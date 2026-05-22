@@ -12,6 +12,8 @@ const path = require('path');
 
 const NapmClient = require('./NapmClient');
 const DimensionMappingService = require('./DimensionMappingService');
+const MetadataTruthSourcePolicy = require('./MetadataTruthSourcePolicy');
+const ObjectMetadataRegistry = require('./ObjectMetadataRegistry');
 const logger = require('../../../src/utils/logger');
 
 /**
@@ -330,6 +332,73 @@ class NapmMetadataService {
   }
 
   /**
+   * Resolve the authoritative runtime-object instance provider for an object type.
+   * The local groups tree may describe hierarchy, but instance lists must come
+   * from an explicit southbound live API provider.
+   */
+  async resolveObjectInstanceProviderMetadata(objectType = '') {
+    const metadata = ObjectMetadataRegistry.resolveObjectInstanceProvider(objectType);
+    if (!metadata) {
+      return null;
+    }
+
+    if (metadata.providerType === 'groupArguments') {
+      const definition = await this.getGroupDefinition(metadata.effectiveObjectType);
+      const argumentType = Number(definition?.argumentType);
+      if (!Number.isFinite(argumentType)) {
+        const error = new Error(`Unable to resolve argumentType for object instance metadata: ${metadata.effectiveObjectType}`);
+        error.code = 'METADATA_ARGUMENT_TYPE_UNRESOLVED';
+        error.details = {
+          requestedObjectType: metadata.requestedObjectType || null,
+          effectiveObjectType: metadata.effectiveObjectType || null,
+          providerType: metadata.providerType || null
+        };
+        throw error;
+      }
+      metadata.argumentType = argumentType;
+    }
+
+    return metadata;
+  }
+
+  async listObjectInstances(objectType = '', keyword = '') {
+    const provider = await this.resolveObjectInstanceProviderMetadata(objectType);
+    if (!provider) {
+      return null;
+    }
+
+    let rows = [];
+    if (provider.providerType === 'applications') {
+      rows = await this.getApplications(keyword);
+    } else if (provider.providerType === 'businessGroups') {
+      rows = await this.getBusinessGroups(keyword);
+    } else if (provider.providerType === 'groupArguments') {
+      rows = await this.getGroupArguments(provider.effectiveObjectType, keyword);
+    }
+
+    return this.decorateObjectInstanceRows(rows, provider);
+  }
+
+  decorateObjectInstanceRows(rows = [], provider = {}) {
+    if (!Array.isArray(rows)) {
+      return rows;
+    }
+
+    return rows.map((item) => ({
+      ...(item || {}),
+      type: item?.type || provider.effectiveObjectType || provider.requestedObjectType || null,
+      objectType: provider.effectiveObjectType || provider.requestedObjectType || null,
+      requestedObjectType: provider.requestedObjectType || null,
+      effectiveObjectType: provider.effectiveObjectType || null,
+      metadataTruthDomain: provider.metadataTruthDomain || MetadataTruthSourcePolicy.TRUTH_DOMAINS.OBJECT_INSTANCES,
+      providerType: provider.providerType || null,
+      source: provider.source || MetadataTruthSourcePolicy.SOURCES.SOUTHBOUND_LIVE_API,
+      argumentType: Number.isFinite(Number(provider.argumentType)) ? Number(provider.argumentType) : null,
+      fallbackUsed: Boolean(provider.fallbackUsed)
+    }));
+  }
+
+  /**
    * 获取分组定义（优先级最高的）
    * @param {string} groupType - 分组类型
    * @returns {object|null} - 分组定义对象
@@ -346,8 +415,9 @@ class NapmMetadataService {
    */
   async getGroupDefinitions(groupType) {
     const flattened = await this.getFlattenedGroups();
+    const target = this.normalizeRuntimeGroupKey(groupType);
     return flattened
-      .filter(item => item.key === groupType)
+      .filter(item => this.normalizeRuntimeGroupKey(item.key) === target)
       .sort((a, b) => this.scoreGroupDefinition(b) - this.scoreGroupDefinition(a));
   }
 
@@ -368,6 +438,18 @@ class NapmMetadataService {
       return [];
     }
 
+    const argumentType = Number(definition.argumentType);
+    if (!Number.isFinite(argumentType)) {
+      const error = new Error(`Unable to resolve argumentType for group type: ${groupType}`);
+      error.code = 'METADATA_ARGUMENT_TYPE_UNRESOLVED';
+      error.details = {
+        requestedObjectType: groupType,
+        effectiveObjectType: groupType,
+        providerType: 'groupArguments'
+      };
+      throw error;
+    }
+
     const cacheKey = `metadata:groupArguments:${groupType}:${keyword}`;
     const cached = this.cache.get(cacheKey);
     if (cached) {
@@ -376,7 +458,7 @@ class NapmMetadataService {
 
     const params = {
       type: 'groupArguments',
-      argumentType: definition.argumentType,
+      argumentType,
       json: 'true'
     };
 
@@ -471,8 +553,12 @@ class NapmMetadataService {
           issues.push(`group_cannot_query:${firstGroup.type}`);
         }
 
-        if (groupDefinition.hasArgument) {
-          const groupArguments = await this.getGroupArguments(firstGroup.type);
+        const isSingleGroupPath = Array.isArray(query.groups) && query.groups.length === 1;
+        if (groupDefinition.hasArgument && isSingleGroupPath) {
+          const objectInstances = await this.listObjectInstances(firstGroup.type);
+          const groupArguments = Array.isArray(objectInstances)
+            ? objectInstances
+            : await this.getGroupArguments(firstGroup.type);
           result.groupArguments = groupArguments;
 
           if (firstGroup.argument) {

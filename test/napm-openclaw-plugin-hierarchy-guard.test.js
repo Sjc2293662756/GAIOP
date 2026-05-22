@@ -100,7 +100,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     expect(result).toBeUndefined();
   }, 30000);
 
-  test('should force hierarchy skill refresh during message_sending even when model skipped tool', async () => {
+  test('should require upstream resolvedQuery for hierarchy prompt when model skipped tool', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -149,8 +149,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
 
     expect(result).toBeTruthy();
     expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('BusinessGroup');
-    expect(result.content).toContain('下钻');
-    expect(result.content).not.toContain('通常包括');
+    expect(result.content).toContain('必须经 NAPM skill 执行后才能回答');
+    expect(result.content).toContain('本轮未拿到有效 skill 结果');
   }, 30000);
 });

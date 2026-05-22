@@ -1,3 +1,10 @@
+/**
+ * OverviewResultReducer.js
+ *
+ * 负责把 overview 执行结果压缩成最终概览对象和摘要。
+ * 它会把 executionItems 转成 modules、topFindings、overview summary 和 displayText，
+ * 让上层可以直接拿去渲染或转成 narration contract。
+ */
 function formatOverviewTimeRange(overview) {
   const start = Number(overview?.start || 0);
   const end = Number(overview?.end || 0);
@@ -19,6 +26,7 @@ function formatOverviewTimeRange(overview) {
   return `数据时间：${formatter.format(new Date(start * 1000))} 至 ${formatter.format(new Date(end * 1000))}`;
 }
 
+// 生成概览类展示文本，优先突出时间范围、重点对象和模块摘要。
 function buildOverviewDisplayText(overview) {
   const timeRangeText = formatOverviewTimeRange(overview);
   const scene = String(overview?.scene || '').trim();
@@ -68,6 +76,7 @@ function buildOverviewDisplayText(overview) {
   return lines.join('\n');
 }
 
+// 生成概览执行摘要，供最终输出和日志审计使用。
 function buildOverviewSummary(overview) {
   return {
     mode: 'GO_OVERVIEW_QUERY',
@@ -86,6 +95,9 @@ function buildOverviewSummary(overview) {
   };
 }
 
+/**
+ * 主入口：把 compiledPlan + executionResult 归并成可直接消费的 overview 结果。
+ */
 function reduceOverviewResults({
   scene,
   depth,

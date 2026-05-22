@@ -25,19 +25,11 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(testApi.isBusinessObjectInventoryPrompt('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f')).toBe(false);
   });
 
-  test('should build business object inventory helper resolvedQuery', () => {
+  test('should not build business object inventory helper resolvedQuery in strict-only boundary', () => {
     const testApi = plugin.__test__;
     const resolvedQuery = testApi.buildBusinessObjectInventoryResolvedQuery('\u5f53\u524d\u6709\u54ea\u4e9b\u4e1a\u52a1\u5bf9\u8c61\uff1f');
 
-    expect(resolvedQuery).toMatchObject({
-      service: 'groups',
-      queryModeKey: 'metadata',
-      semanticConstraints: {
-        operation: 'metadata_list',
-        targetObjectType: 'WebApplication'
-      },
-      groups: [{ type: 'WebApplication' }]
-    });
+    expect(resolvedQuery).toBeNull();
   });
 
   test('should preserve raw prompt and avoid injecting resolvedQuery during skill arg preparation', () => {

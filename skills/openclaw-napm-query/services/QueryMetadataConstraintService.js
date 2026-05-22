@@ -67,6 +67,13 @@ class QueryMetadataConstraintService {
     return query ? JSON.parse(JSON.stringify(query)) : query;
   }
 
+  shouldAllowMetadataRepair(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowMetadataRepair === true
+      || query?.executionHints?.allowMetadataRepair === true
+    );
+  }
+
   /**
    * 统一化卷云遗留的维度对象类型。
    * 说明：当前元数据维度使用 DefinedApp，不再直接使用 Application。
@@ -101,7 +108,18 @@ class QueryMetadataConstraintService {
       return;
     }
 
+    const allowMetadataRepair = this.shouldAllowMetadataRepair(query);
+
     if (query.metric && !MetricMappingService.isValidMetricCode(query.metric)) {
+      if (!allowMetadataRepair) {
+        corrections.push({
+          field: 'metric',
+          action: 'preserve_invalid_metric_without_repair',
+          from: query.metric
+        });
+        return;
+      }
+
       corrections.push({
         field: 'metric',
         action: 'fallback_to_default_metric',
@@ -119,19 +137,44 @@ class QueryMetadataConstraintService {
           action: 'mirror_metric_field',
           to: query.metrics
         });
-      } else {
+      } else if (allowMetadataRepair) {
         query.metrics = ['TPIO'];
         corrections.push({
           field: 'metrics',
           action: 'fallback_to_default_metric',
           to: query.metrics
         });
+      } else {
+        corrections.push({
+          field: 'metrics',
+          action: 'preserve_missing_metrics_without_repair'
+        });
+        return;
       }
     }
 
-    query.metrics = query.metrics.map(metric => (
-      MetricMappingService.isValidMetricCode(metric) ? metric : 'TPIO'
-    ));
+    query.metrics = query.metrics
+      .map(metric => {
+        if (MetricMappingService.isValidMetricCode(metric)) {
+          return metric;
+        }
+        if (allowMetadataRepair) {
+          corrections.push({
+            field: 'metrics',
+            action: 'fallback_invalid_metric_to_default',
+            from: metric,
+            to: 'TPIO'
+          });
+          return 'TPIO';
+        }
+        corrections.push({
+          field: 'metrics',
+          action: 'preserve_invalid_metric_without_repair',
+          from: metric
+        });
+        return metric;
+      })
+      .filter(Boolean);
 
     if (!query.metric && query.service === 'topValues') {
       query.metric = query.metrics[0];
@@ -164,7 +207,14 @@ class QueryMetadataConstraintService {
       return;
     }
 
+    const allowMetadataRepair = this.shouldAllowMetadataRepair(query);
+
     if (!Array.isArray(query.groups) || query.groups.length === 0) {
+      if (!allowMetadataRepair) {
+        warnings.push('missing_groups_without_repair');
+        return;
+      }
+
       query.groups = [{ type: 'IPAddress' }];
       corrections.push({
         field: 'groups',
@@ -186,6 +236,15 @@ class QueryMetadataConstraintService {
       if (!dimension) {
         warnings.push(`unknown_group_type:${normalized.type}`);
         if (index === 0) {
+          if (!allowMetadataRepair) {
+            corrections.push({
+              field: 'groups.type',
+              action: 'preserve_unknown_group_without_repair',
+              to: normalized.type
+            });
+            return normalized;
+          }
+
           normalized.type = 'IPAddress';
           corrections.push({
             field: 'groups.type',
@@ -308,6 +367,19 @@ class QueryMetadataConstraintService {
     const preferredObjects = DimensionMappingService.getPreferredObjectsForMetric(metric)
       .filter(item => compatibleObjects.includes(item));
     const currentGroup = Array.isArray(query.groups) && query.groups[0] ? query.groups[0].type : null;
+    if (!currentGroup) {
+      warnings.push(`metric_group_missing:${metric}`);
+      return {
+        metric,
+        domainId,
+        domainLabel: domainMeta ? domainMeta.label : null,
+        compatibleObjects,
+        preferredObjects,
+        selectedGroup: null,
+        isCompatible: false
+      };
+    }
+
     const isCompatible = currentGroup ? compatibleObjects.includes(currentGroup) : false;
     const explicitTarget = this.extractExplicitTargetObjectType(query);
     const shouldPreserveExplicitTarget = Boolean(
@@ -331,7 +403,7 @@ class QueryMetadataConstraintService {
             ? `metric_group_ownership_incompatible:${metric}:${currentGroup}`
             : `metric_group_incompatible:${metric}:${currentGroup}`
         );
-        if (fallbackGroup && fallbackGroup !== currentGroup) {
+        if (fallbackGroup && fallbackGroup !== currentGroup && this.shouldAllowMetadataRepair(query)) {
           query.groups[0].type = fallbackGroup;
           delete query.groups[0].argument;
           corrections.push({
@@ -441,7 +513,11 @@ class QueryMetadataConstraintService {
     if (Array.isArray(metadataReview.groupArguments) && metadataReview.groupArguments.length > 0) {
       const firstGroup = Array.isArray(constrained.groups) && constrained.groups[0] ? constrained.groups[0] : null;
       if (firstGroup && firstGroup.argument) {
-        const matched = metadataReview.groupArguments.some(item => String(item.value).toLowerCase() === String(firstGroup.argument).toLowerCase());
+        const scopedGroupArguments = this.filterGroupArgumentsByObjectNamespace(
+          metadataReview.groupArguments,
+          firstGroup.type
+        );
+        const matched = scopedGroupArguments.some(item => String(item.value).toLowerCase() === String(firstGroup.argument).toLowerCase());
         if (!matched) {
           warnings.push(`group_argument_not_in_dynamic_metadata:${firstGroup.type}:${firstGroup.argument}`);
         }
@@ -454,6 +530,31 @@ class QueryMetadataConstraintService {
       corrections,
       dynamicReview: metadataReview
     };
+  }
+
+  filterGroupArgumentsByObjectNamespace(groupArguments = [], groupType = '') {
+    const expected = this.normalizeLegacyGroupType(groupType, 0);
+    const scoped = groupArguments.filter((item) => this.isGroupArgumentInObjectNamespace(item, expected));
+    return scoped.length > 0 ? scoped : groupArguments;
+  }
+
+  isGroupArgumentInObjectNamespace(item = {}, expected = '') {
+    if (!expected) {
+      return true;
+    }
+
+    const types = [
+      item.requestedObjectType,
+      item.effectiveObjectType,
+      item.objectType,
+      item.type
+    ].map(value => this.normalizeLegacyGroupType(value, 0)).filter(Boolean);
+
+    if (types.length === 0) {
+      return true;
+    }
+
+    return types.includes(expected);
   }
 }
 

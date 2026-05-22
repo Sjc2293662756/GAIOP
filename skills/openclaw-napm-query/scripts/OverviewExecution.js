@@ -1,7 +1,17 @@
+/**
+ * OverviewExecution.js
+ *
+ * 负责执行已经编译完成的 overview plan。
+ * 它会按预算串行执行 root query，并在允许时继续派生 child query，
+ * 同时统计执行结果、跳过原因和整体耗时信息。
+ */
 function deepClone(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
 }
 
+/**
+ * 执行单条 query，并在失败时按预算进行有限重试。
+ */
 async function executeSingleQuery(query, executeGatewayRequest, retries = 0) {
   let attempts = 0;
   let lastError = null;
@@ -35,6 +45,7 @@ async function executeSingleQuery(query, executeGatewayRequest, retries = 0) {
   };
 }
 
+// 根据 child plan 的 deriveArgument 配置，推断它要从父结果里抽取哪一类对象值。
 function buildChildArgumentTargetType(childPlan) {
   const targetParam = String(childPlan?.deriveArgument?.targetParam || '').trim();
   const groups = Array.isArray(childPlan?.querySeed?.groups) ? childPlan.querySeed.groups : [];
@@ -46,10 +57,14 @@ function buildChildArgumentTargetType(childPlan) {
   return groups[0]?.type || null;
 }
 
+// 判断概览执行是否已经超出当前预算设定的总超时时间。
 function isTimeoutExceeded(startedAt, timeoutMs) {
   return timeoutMs > 0 && (Date.now() - startedAt) >= timeoutMs;
 }
 
+/**
+ * 主入口：执行编译好的 overview plan，并返回结构化执行结果。
+ */
 async function executeOverviewPlan({
   compiledPlan,
   executeGatewayRequest,

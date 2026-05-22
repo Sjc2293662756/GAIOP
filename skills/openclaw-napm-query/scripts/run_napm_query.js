@@ -1463,7 +1463,19 @@ function shouldSkipStaticPathPlanning(query = {}, prompt = '') {
     && isPacketLossMetric;
 }
 
+function shouldAllowExecutionPathRepair(query = {}) {
+  return Boolean(
+    query?.executionOptions?.allowPathRepair === true
+    || query?.executionHints?.allowPathRepair === true
+    || query?.pathPlanning?.allowExecutionRepair === true
+  );
+}
+
 function applyStaticPathPlanningIfNeeded(query = {}, prompt = '') {
+  if (!shouldAllowExecutionPathRepair(query)) {
+    return query;
+  }
+
   if (shouldSkipStaticPathPlanning(query, prompt)) {
     return query;
   }
@@ -1493,22 +1505,23 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
   const continuationInstruction = extractContinuationInstruction(query);
   const explicitGroups = cloneGroups(query.groups);
   const sessionGroups = cloneGroups(sessionState.last_groups);
-  const shouldDrilldown = continuationInstruction.requestedAction === 'drilldown'
-    || isDrilldownPrompt(prompt);
+  const shouldDrilldown = continuationInstruction.requestedAction === 'drilldown';
 
   if (continuationInstruction.plannedGroups.length > 0) {
     query.groups = continuationInstruction.plannedGroups;
   } else if (explicitGroups.length === 0 && sessionGroups.length > 0) {
-    query.groups = shouldDrilldown
-      ? inferDrilldownPathFromPrompt(sessionGroups, prompt)
-      : sessionGroups;
-  } else if (explicitGroups.length > 0 && shouldDrilldown) {
+    if (shouldDrilldown && shouldAllowExecutionPathRepair(query)) {
+      query.groups = inferDrilldownPathFromPrompt(sessionGroups, prompt);
+    } else if (continuationInstruction.inheritGroups) {
+      query.groups = sessionGroups;
+    }
+  } else if (explicitGroups.length > 0 && shouldDrilldown && shouldAllowExecutionPathRepair(query)) {
     query.groups = inferDrilldownPathFromPrompt(explicitGroups, prompt);
   } else if (continuationInstruction.inheritGroups && explicitGroups.length === 0 && sessionGroups.length > 0) {
     query.groups = sessionGroups;
   }
 
-  if ((!query.metric && sessionState.last_metric) || continuationInstruction.inheritMetric) {
+  if (continuationInstruction.inheritMetric && sessionState.last_metric) {
     query.metric = sessionState.last_metric;
   }
   if ((!Array.isArray(query.metrics) || query.metrics.length === 0) && query.metric) {
@@ -1516,7 +1529,7 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
   }
 
   if (
-    (!hasExplicitTimeRange(query) || continuationInstruction.inheritTimeRange)
+    continuationInstruction.inheritTimeRange
     && sessionState.last_time_range?.start
     && sessionState.last_time_range?.end
   ) {
@@ -1533,286 +1546,8 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
   return normalizeResolvedQueryShape(query, prompt);
 }
 
-function inferPromptFallbackOverviewScene(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (isUnknownPortTrafficPrompt(text)) {
-    return 'security';
-  }
-  return PromptRoutingService.inferOverviewScene(text);
-}
-
-function inferPromptFallbackTimeRangeKey(prompt = '') {
-  return PromptRoutingService.inferOverviewTimeRangeKey(prompt);
-}
-
-function isUnknownPortTrafficPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hasUnknownTarget = /(未知|其它|其他).{0,8}(tcp|udp)?.{0,8}(端口|应用)|\bother\s*app\b|\botherapp\b/i.test(text);
-  const hasTrafficIntent = /(流量|吞吐|吞吐量|带宽|throughput|bandwidth)/i.test(text);
-  return hasUnknownTarget && hasTrafficIntent;
-}
-
-function detectUnknownPortProtocol(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!isUnknownPortTrafficPrompt(text)) {
-    return null;
-  }
-
-  const hasTcp = /(^|[^A-Za-z])(tcp)([^A-Za-z]|$)/i.test(text);
-  const hasUdp = /(^|[^A-Za-z])(udp)([^A-Za-z]|$)/i.test(text);
-  if (hasTcp && !hasUdp) {
-    return 'TCP';
-  }
-  if (hasUdp && !hasTcp) {
-    return 'UDP';
-  }
-  return null;
-}
-
-function buildPromptFallbackUnknownPortResolvedQuery(prompt = '') {
-  const text = String(prompt || '').trim();
-  const protocol = detectUnknownPortProtocol(text);
-  if (!protocol) {
-    return null;
-  }
-
-  if (/(趋势|变化|走势|曲线|按时间|trend|timevalues|平均|avg|average|概览|总览|整体|overview)/i.test(text)) {
-    return null;
-  }
-
-  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
-  const range = TimeUtils.parseTimeRange(timeRangeKey);
-
-  return normalizeResolvedQueryShape({
-    service: 'topValues',
-    queryModeKey: 'topn',
-    semanticConstraints: {
-      operation: 'topn',
-      targetObjectType: 'OtherApp',
-      scopeHints: ['unknown_port_traffic', protocol],
-      overviewScene: 'security'
-    },
-    start: Math.floor(Number(range.start || 0) / 60) * 60,
-    end: Math.floor(Number(range.end || 0) / 60) * 60,
-    metric: 'TPIO',
-    metrics: ['TPIO'],
-    topMetric: 'TPIO',
-    topCount: 10,
-    groups: [
-      { type: 'TotalTraffic' },
-      { type: 'IPProtocol', argument: protocol },
-      { type: 'OtherApps' },
-      { type: 'OtherApp' }
-    ],
-    format: 'json',
-    userRequirement: text
-  }, text);
-}
-
-function buildPromptFallbackUnknownPortDualProtocolResolvedQuery(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!isUnknownPortTrafficPrompt(text)) {
-    return null;
-  }
-
-  if (detectUnknownPortProtocol(text)) {
-    return null;
-  }
-
-  if (/(趋势|变化|走势|曲线|按时间|trend|timevalues|平均|avg|average|概览|总览|整体|overview)/i.test(text)) {
-    return null;
-  }
-
-  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
-  const range = TimeUtils.parseTimeRange(timeRangeKey);
-  const start = Math.floor(Number(range.start || 0) / 60) * 60;
-  const end = Math.floor(Number(range.end || 0) / 60) * 60;
-
-  const buildProtocolQuery = (protocol) => ({
-    service: 'topValues',
-    queryModeKey: 'topn',
-    semanticConstraints: {
-      operation: 'topn',
-      targetObjectType: 'OtherApp',
-      scopeHints: ['unknown_port_traffic', protocol],
-      overviewScene: 'security'
-    },
-    start,
-    end,
-    metric: 'TPIO',
-    metrics: ['TPIO'],
-    topMetric: 'TPIO',
-    topCount: 10,
-    groups: [
-      { type: 'TotalTraffic' },
-      { type: 'IPProtocol', argument: protocol },
-      { type: 'OtherApps' },
-      { type: 'OtherApp' }
-    ],
-    format: 'json',
-    userRequirement: text
-  });
-
-  return normalizeResolvedQueryShape({
-    service: 'topValues_multi_protocol',
-    queryModeKey: 'topn',
-    semanticConstraints: {
-      operation: 'topn',
-      targetObjectType: 'OtherApp',
-      scopeHints: ['unknown_port_traffic', 'TCP', 'UDP'],
-      overviewScene: 'security'
-    },
-    start,
-    end,
-    metric: 'TPIO',
-    metrics: ['TPIO'],
-    topMetric: 'TPIO',
-    topCount: 10,
-    format: 'json',
-    userRequirement: text,
-    protocolQueries: [
-      buildProtocolQuery('TCP'),
-      buildProtocolQuery('UDP')
-    ]
-  }, text);
-}
-
 function isMetricInventoryPrompt(prompt = '') {
   return PromptRoutingService.isMetricInventoryPrompt(prompt);
-}
-
-function inferPromptFallbackMetricInventoryGroup(prompt = '') {
-  return PromptRoutingService.inferMetricInventoryGroup(prompt) || null;
-}
-
-function buildPromptFallbackMetricInventoryResolvedQuery(prompt = '') {
-  const route = PromptRoutingService.buildMetricInventoryRoute(prompt);
-  return materializePromptRouteResolvedQuery(route);
-}
-
-function materializePromptRouteResolvedQuery(route = null) {
-  return PromptRoutingService.materializePromptRouteResolvedQuery(route, {
-    resolveTimeRange: (timeRangeKey) => TimeUtils.parseTimeRange(timeRangeKey),
-    roundTimeValue: (value) => Math.floor(Number(value || 0) / 60) * 60,
-    normalizeResolvedQueryShape
-  });
-}
-
-function isPromptFallbackBusinessObjectInventoryPrompt(prompt = '') {
-  return PromptRoutingService.isBusinessObjectInventoryPrompt(prompt);
-}
-
-function buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt = '') {
-  const route = PromptRoutingService.buildBusinessObjectInventoryRoute(prompt);
-  return materializePromptRouteResolvedQuery(route);
-}
-
-function isPromptFallbackPacketLossClientTopPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hasLoss = /(丢包|丢包率|packet\s*loss|loss)/i.test(text);
-  const hasRanking = /(最多|最高|最大|排行|排名|top|谁|哪个)/i.test(text);
-  const hasAddressScope = /(客户端|client|地址|\bip\b|ip地址|远端|对端)/i.test(text);
-
-  return hasLoss && hasRanking && hasAddressScope;
-}
-
-function buildPromptFallbackPacketLossClientTopResolvedQuery(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!isPromptFallbackPacketLossClientTopPrompt(text)) {
-    return null;
-  }
-
-  const metric = /(流出|出向|outbound|uplink)/i.test(text) ? 'PLO' : 'PLI';
-  const timeRangeKey = inferPromptFallbackTimeRangeKey(text);
-  const range = TimeUtils.parseTimeRange(timeRangeKey);
-
-  return normalizeResolvedQueryShape({
-    service: 'topValues',
-    queryModeKey: 'topn',
-    semanticConstraints: {
-      operation: 'topn',
-      targetObjectType: 'IPAddress',
-      metricDomain: 'loss'
-    },
-    start: Math.floor(Number(range.start || 0) / 60) * 60,
-    end: Math.floor(Number(range.end || 0) / 60) * 60,
-    metric,
-    metrics: [metric],
-    topMetric: metric,
-    topCount: 1,
-    groups: [{ type: 'IPAddress' }],
-    format: 'json',
-    userRequirement: text
-  }, text);
-}
-
-function looksLikePromptOnlyOverview(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hasOverviewIntent = /(整体|总体|概览|总览|overall|overview|global|怎么样|情况|状态)/i.test(text);
-  const hasNapmDomain = /(napm|netinside|系统|网络|应用|业务|web应用|网站|页面|流量|吞吐|时延|响应|异常|告警|丢包|重传|性能|监控)/i.test(text);
-  return hasOverviewIntent && hasNapmDomain;
-}
-
-function buildPromptFallbackResolvedQuery(prompt = '') {
-  const metricInventoryResolvedQuery = buildPromptFallbackMetricInventoryResolvedQuery(prompt);
-  if (metricInventoryResolvedQuery) {
-    return metricInventoryResolvedQuery;
-  }
-
-  const businessObjectInventoryResolvedQuery = buildPromptFallbackBusinessObjectInventoryResolvedQuery(prompt);
-  if (businessObjectInventoryResolvedQuery) {
-    return businessObjectInventoryResolvedQuery;
-  }
-
-  const packetLossClientTopResolvedQuery = buildPromptFallbackPacketLossClientTopResolvedQuery(prompt);
-  if (packetLossClientTopResolvedQuery) {
-    return packetLossClientTopResolvedQuery;
-  }
-
-  const unknownPortResolvedQuery = buildPromptFallbackUnknownPortResolvedQuery(prompt);
-  if (unknownPortResolvedQuery) {
-    return unknownPortResolvedQuery;
-  }
-
-  const unknownPortDualProtocolResolvedQuery = buildPromptFallbackUnknownPortDualProtocolResolvedQuery(prompt);
-  if (unknownPortDualProtocolResolvedQuery) {
-    return unknownPortDualProtocolResolvedQuery;
-  }
-
-  if (!looksLikePromptOnlyOverview(prompt)) {
-    return null;
-  }
-
-  const timeRangeKey = inferPromptFallbackTimeRangeKey(prompt);
-  const range = TimeUtils.parseTimeRange(timeRangeKey);
-  const scene = inferPromptFallbackOverviewScene(prompt);
-
-  return normalizeResolvedQueryShape({
-    service: 'overview',
-    queryModeKey: 'overview',
-    overviewScene: scene,
-    semanticConstraints: {
-      operation: 'overview',
-      overviewScene: scene
-    },
-    start: Math.floor(Number(range.start || 0) / 60) * 60,
-    end: Math.floor(Number(range.end || 0) / 60) * 60,
-    groups: [],
-    format: 'json',
-    userRequirement: prompt
-  }, prompt);
 }
 
 async function resolveInput(args, payload) {
@@ -2435,17 +2170,6 @@ module.exports = {
     isDrilldownPrompt,
     inferDrilldownPathFromPrompt,
     applySessionContinuationToResolvedQuery,
-    isUnknownPortTrafficPrompt,
-    detectUnknownPortProtocol,
-    buildPromptFallbackResolvedQuery,
-    buildPromptFallbackUnknownPortResolvedQuery,
-    buildPromptFallbackUnknownPortDualProtocolResolvedQuery,
-    buildPromptFallbackMetricInventoryResolvedQuery,
-    buildPromptFallbackBusinessObjectInventoryResolvedQuery,
-    isPromptFallbackPacketLossClientTopPrompt,
-    buildPromptFallbackPacketLossClientTopResolvedQuery,
-    inferPromptFallbackMetricInventoryGroup,
-    isPromptFallbackBusinessObjectInventoryPrompt,
     isMetricInventoryPrompt,
     isHierarchyCatalogPrompt,
     normalizeDrilldownQuestionTarget,

@@ -135,15 +135,10 @@ function getQueryConstructionPolicy() {
 
 /**
  * 获取边界模式。
- * 仅识别 strict，其余输入统一降级为 compat，避免环境变量出现脏值时影响运行。
+ * 运行时固定 strict，兼容模式已下线，环境变量不再打开 prompt fallback。
  */
 function getBoundaryMode(defaultMode = 'strict') {
-  // 环境变量优先，未配置时再回退到调用方传入值和默认 strict。
-  const raw = String(process.env.NAPM_RESOLUTION_BOUNDARY_MODE || defaultMode || 'strict').trim().toLowerCase();
-  if (raw === 'strict') {
-    return 'strict';
-  }
-  return 'compat';
+  return 'strict';
 }
 
 // 判断当前是否处于严格边界模式，供外部直接进行布尔判断。

@@ -2,23 +2,57 @@ const path = require('path');
 
 describe('napm-openclaw-plugin resolver tools', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
-  let plugin = null;
+  const originalDevResolverTools = process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
 
-  beforeAll(() => {
+  function loadPlugin({ devResolverTools = false } = {}) {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    if (devResolverTools) {
+      process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS = 'true';
+    } else {
+      delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
+    }
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
-  });
+    return require('../.codex-temp/napm-openclaw-plugin.remote.js');
+  }
 
   afterAll(() => {
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
-      return;
+    } else {
+      process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
     }
-    process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
+
+    if (originalDevResolverTools === undefined) {
+      delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
+    } else {
+      process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS = originalDevResolverTools;
+    }
   });
 
-  test('should register resolver and mainflow tools for OpenClaw', () => {
+  test('should register only napm-skill-query in production by default', () => {
+    const plugin = loadPlugin();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook() {}
+    };
+
+    plugin.register(api);
+
+    expect(Array.from(tools.keys())).toEqual(['napm-skill-query']);
+  });
+
+  test('should register resolver and mainflow tools only when diagnostic flag is enabled', () => {
+    const plugin = loadPlugin({ devResolverTools: true });
     const tools = new Map();
     const api = {
       config: {},
@@ -41,7 +75,8 @@ describe('napm-openclaw-plugin resolver tools', () => {
     expect(tools.has('napm-skill-query')).toBe(true);
   });
 
-  test('resolver tool should construct resolvedQuery without calling skill executor', async () => {
+  test('resolver tool should construct resolvedQuery without calling skill executor for diagnostics', async () => {
+    const plugin = loadPlugin();
     const resolverTool = plugin.__test__.createResolvedQueryResolverToolDefinition();
     const result = await resolverTool.execute('tool-call-1', {
       prompt: '系统中有哪些工作组？'
@@ -55,7 +90,8 @@ describe('napm-openclaw-plugin resolver tools', () => {
     });
   });
 
-  test('before_tool_call should allow napm-resolve-query for active NAPM prompt', async () => {
+  test('before_tool_call should allow napm-resolve-query only in diagnostic mode', async () => {
+    const plugin = loadPlugin({ devResolverTools: true });
     const hooks = new Map();
     const api = {
       config: {},
@@ -97,7 +133,8 @@ describe('napm-openclaw-plugin resolver tools', () => {
     expect(result).toBeUndefined();
   });
 
-  test('before_tool_call should block non-NAPM tools and redirect to mainflow resolver', async () => {
+  test('before_tool_call should block non-NAPM tools and redirect to production skill entry', async () => {
+    const plugin = loadPlugin();
     const hooks = new Map();
     const api = {
       config: {},
@@ -140,8 +177,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
 
     expect(result).toBeTruthy();
     expect(result.block).toBe(true);
-    expect(result.blockReason).toContain('napm-mainflow-query');
-    expect(result.blockReason).toContain('napm-resolve-query');
     expect(result.blockReason).toContain('napm-skill-query');
+    expect(result.blockReason).toContain('resolvedQuery');
   });
 });

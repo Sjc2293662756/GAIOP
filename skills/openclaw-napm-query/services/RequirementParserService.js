@@ -31,7 +31,6 @@ const logger = require('../../../src/utils/logger');
 const { logAudit, buildSafeUrl, maskSensitiveParams, buildOrderedParams } = require('../../../src/utils/auditLogger');
 const {
   filterMetricsForObjectType,
-  isBusinessObjectType,
   rankMetricIdsForObjectType,
   resolveMetricOwnershipObjectType,
   isMetricCompatibleWithGroupPath
@@ -54,8 +53,33 @@ class RequirementParserService {
     this.napmMetadataService = NapmMetadataService;
     this.groupPathPlannerService = GroupPathPlannerService;
     this.queryMetadataConstraintService = QueryMetadataConstraintService;
+    this.assertDependencyContracts();
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
     this.stableQueryTemplates = this.loadStableQueryTemplates();
+  }
+
+  assertDependencyContracts() {
+    const requiredFunctions = {
+      filterMetricsForObjectType,
+      rankMetricIdsForObjectType,
+      resolveMetricOwnershipObjectType,
+      isMetricCompatibleWithGroupPath
+    };
+    const missing = Object.entries(requiredFunctions)
+      .filter(([, fn]) => typeof fn !== 'function')
+      .map(([name]) => name);
+
+    if (missing.length === 0) {
+      return true;
+    }
+
+    const error = new Error(`Dependency contract mismatch: objectMetricOwnership missing functions: ${missing.join(', ')}`);
+    error.code = 'DEPENDENCY_CONTRACT_MISMATCH';
+    error.details = {
+      module: 'src/constants/objectMetricOwnership',
+      missing
+    };
+    throw error;
   }
 
   /**
@@ -81,6 +105,42 @@ class RequirementParserService {
 
   areGatewayTemplatesDisabled() {
     return Boolean(this.gatewayTemplatesDisabled);
+  }
+
+  shouldAllowPathRepair(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowPathRepair === true
+      || query?.executionHints?.allowPathRepair === true
+      || query?.pathPlanning?.allowExecutionRepair === true
+    );
+  }
+
+  shouldAllowMetadataRepair(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowMetadataRepair === true
+      || query?.executionHints?.allowMetadataRepair === true
+    );
+  }
+
+  shouldAllowServiceFallback(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowServiceFallback === true
+      || query?.executionHints?.allowServiceFallback === true
+    );
+  }
+
+  shouldAllowInventoryFallback(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowInventoryFallback === true
+      || query?.executionHints?.allowInventoryFallback === true
+    );
+  }
+
+  shouldAllowStableTemplateRepair(query = {}) {
+    return Boolean(
+      query?.executionOptions?.allowStableTemplateRepair === true
+      || query?.executionHints?.allowStableTemplateRepair === true
+    );
   }
 
   /**
@@ -417,7 +477,9 @@ class RequirementParserService {
       ...(Array.isArray(request?.semanticConstraints?.scopeHints) ? request.semanticConstraints.scopeHints : [])
     ].map((item) => String(item || '').trim()).filter(Boolean)));
 
-    const plannedGroups = Array.isArray(pathPlan?.plannedGroups) ? pathPlan.plannedGroups : [];
+    const plannedGroups = this.shouldAllowPathRepair(request) && Array.isArray(pathPlan?.plannedGroups)
+      ? pathPlan.plannedGroups
+      : [];
     if (plannedGroups.length > 0) {
       request.groups = plannedGroups.map((item) => ({
         type: item?.type,
@@ -433,7 +495,13 @@ class RequirementParserService {
     }
 
     const firstGroup = Array.isArray(request.groups) && request.groups[0] ? request.groups[0] : null;
-    if (firstGroup && !firstGroup.argument && Array.isArray(dynamicMetadataReview?.groupArguments) && dynamicMetadataReview.groupArguments.length > 0) {
+    if (
+      this.shouldAllowMetadataRepair(request)
+      && firstGroup
+      && !firstGroup.argument
+      && Array.isArray(dynamicMetadataReview?.groupArguments)
+      && dynamicMetadataReview.groupArguments.length > 0
+    ) {
       const matchedHint = scopeHints.find((hint) => (
         !this.looksLikePureTimeScopeHint(hint) &&
         dynamicMetadataReview.groupArguments.some((item) => (
@@ -471,7 +539,7 @@ class RequirementParserService {
         const matchedMetric = metricCandidates.find((metricId) => supportedMetricSet.has(metricId))
           || String(supportedMetrics[0]?.id || '').trim()
           || null;
-        if (matchedMetric) {
+        if (matchedMetric && this.shouldAllowMetadataRepair(request)) {
           request.metric = matchedMetric;
           request.metrics = [matchedMetric];
         }
@@ -635,6 +703,10 @@ class RequirementParserService {
    * 当多层 groups 查询无法直接拿到子对象清单时，尝试改走 topValues 做清单兜底。
    */
   async tryExecuteInventoryFallback(gatewayRequest, metadataReview = null, requestContext = null) {
+    if (!this.shouldAllowInventoryFallback(gatewayRequest)) {
+      return null;
+    }
+
     if (!this.isMultilevelGroupsInventoryQuery(gatewayRequest)) {
       return null;
     }
@@ -684,6 +756,10 @@ class RequirementParserService {
 
   // 为 averageValues 多层路径构造 topValues 回退请求，尽量保住可执行性。
   buildMultilevelDataServiceFallbackQuery(gatewayRequest = {}, metadataReview = null) {
+    if (!this.shouldAllowServiceFallback(gatewayRequest)) {
+      return null;
+    }
+
     const groups = Array.isArray(gatewayRequest?.groups) ? gatewayRequest.groups.filter(Boolean) : [];
     if (groups.length < 2) {
       return null;
@@ -786,6 +862,102 @@ class RequirementParserService {
     };
   }
 
+  normalizeExecutableQueryShape(gatewayRequest = {}) {
+    const query = gatewayRequest && typeof gatewayRequest === 'object'
+      ? this.normalizeExecutableQueryShape(gatewayRequest)
+      : {};
+
+    if (query.service === 'metrics' || query.service === 'groups') {
+      delete query.metric;
+      delete query.metrics;
+      delete query.topMetric;
+      return query;
+    }
+
+    const metricCandidates = [
+      ...(Array.isArray(query.metrics) ? query.metrics : []),
+      query.metric,
+      query.topMetric
+    ].map((metricId) => String(metricId || '').trim()).filter(Boolean);
+
+    const seen = new Set();
+    const normalizedMetrics = [];
+    metricCandidates.forEach((metricId) => {
+      const normalizedMetric = metricId.toUpperCase();
+      if (seen.has(normalizedMetric)) {
+        return;
+      }
+      seen.add(normalizedMetric);
+      normalizedMetrics.push(normalizedMetric);
+    });
+
+    if (normalizedMetrics.length > 0) {
+      query.metrics = normalizedMetrics;
+    } else {
+      delete query.metrics;
+    }
+
+    if (query.metric) {
+      query.metric = String(query.metric).trim().toUpperCase();
+    } else if (normalizedMetrics.length > 0) {
+      query.metric = normalizedMetrics[0];
+    }
+
+    if (query.service === 'topValues') {
+      if (query.topMetric) {
+        query.topMetric = String(query.topMetric).trim().toUpperCase();
+      } else if (query.metric) {
+        query.topMetric = query.metric;
+      } else if (normalizedMetrics.length > 0) {
+        query.topMetric = normalizedMetrics[0];
+      }
+    }
+
+    return query;
+  }
+
+  buildMetricCsv(queryRequest = {}, service = '') {
+    const metrics = Array.isArray(queryRequest.metrics)
+      ? queryRequest.metrics.map((metricId) => String(metricId || '').trim()).filter(Boolean)
+      : [];
+    if (metrics.length > 0) {
+      return metrics.join(',');
+    }
+
+    const fallbackMetric = String(
+      queryRequest.metric
+      || (service === 'topValues' ? queryRequest.topMetric : '')
+      || ''
+    ).trim();
+    if (fallbackMetric) {
+      return fallbackMetric;
+    }
+
+    const error = new Error(`Metrics are required for ${service || queryRequest.service || 'query'} execution`);
+    error.code = 'QUERY_SHAPE_INVALID';
+    error.details = {
+      service: service || queryRequest.service || null,
+      metric: queryRequest.metric || null,
+      topMetric: queryRequest.topMetric || null,
+      metrics: queryRequest.metrics || null
+    };
+    throw error;
+  }
+
+  buildExecutionFailureError(error) {
+    const localCodes = new Set([
+      'QUERY_SHAPE_INVALID',
+      'DEPENDENCY_CONTRACT_MISMATCH',
+      'METADATA_ARGUMENT_TYPE_UNRESOLVED'
+    ]);
+    const code = localCodes.has(error?.code) ? error.code : 'NAPM_UPSTREAM_ERROR';
+    return {
+      code,
+      message: error?.message || String(error),
+      ...(error?.details ? { details: error.details } : {})
+    };
+  }
+
   /**
    * 直接执行网关请求。
    * 这个阶段不再改写语义，只负责参数校验、请求组装、上游调用、审计记录和错误收口。
@@ -804,6 +976,7 @@ class RequirementParserService {
       service: null,
       data: null,
       error: null,
+      metadata: null,
       requestParams: null,
       requestParamsMasked: null
     };
@@ -876,23 +1049,12 @@ class RequirementParserService {
         let namedList = null;
         let metadataTypeForDebug = 'groups';
         let metadataParams = null;
-        let metadataArgumentTypeForDebug = null;
+        let instanceProviderMetadata = null;
 
-        if (firstType === 'Application' || firstType === 'DefinedApp') {
-          namedList = await this.napmMetadataService.getApplications(firstArgument);
-          metadataTypeForDebug = 'applications';
-        } else if (isBusinessObjectType(firstType)) {
-          // 业务类顶层对象列表统一走 groupArguments 口径。
-          namedList = await this.napmMetadataService.getGroupArguments(firstType, firstArgument);
-          metadataTypeForDebug = 'groupArguments';
-          const businessDefinition = await this.napmMetadataService.getGroupDefinition(firstType);
-          metadataArgumentTypeForDebug = Number(businessDefinition?.argumentType);
-          if (!Number.isFinite(metadataArgumentTypeForDebug)) {
-            metadataArgumentTypeForDebug = 4;
-          }
-        } else if (firstType === 'BusinessGroup') {
-          namedList = await this.napmMetadataService.getBusinessGroups(firstArgument);
-          metadataTypeForDebug = 'businessGroups';
+        instanceProviderMetadata = await this.napmMetadataService.resolveObjectInstanceProviderMetadata(firstType);
+        if (instanceProviderMetadata) {
+          namedList = await this.napmMetadataService.listObjectInstances(firstType, firstArgument);
+          metadataTypeForDebug = instanceProviderMetadata.apiType;
         }
 
         if (Array.isArray(namedList)) {
@@ -907,7 +1069,7 @@ class RequirementParserService {
           } else if (metadataTypeForDebug === 'groupArguments') {
             metadataParams = {
               type: 'groupArguments',
-              argumentType: metadataArgumentTypeForDebug,
+              argumentType: instanceProviderMetadata.argumentType,
               json: 'true'
             };
           } else {
@@ -920,9 +1082,11 @@ class RequirementParserService {
           response.ok = true;
           response.service = queryRequest.service;
           response.data = namedList;
+          response.metadata = instanceProviderMetadata;
           logAudit('napm_metadata_named_groups_completed', {
             gatewayRequest: this.buildGatewayRequestSummary({ ...queryRequest, groups: metadataGroups }),
             execution: this.buildExecutionDataSummary(namedList),
+            metadata: instanceProviderMetadata,
             params: response.requestParamsMasked,
             url: response.requestUrl
           }, requestContext);
@@ -942,12 +1106,12 @@ class RequirementParserService {
 
       if (queryRequest.service === 'topValues') {
         params.topMetric = queryRequest.topMetric || queryRequest.metric;
-        params.metrics = queryRequest.metrics.join(',');
+        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
         params.topCount = queryRequest.topCount || 20;
       } else if (queryRequest.service === 'averageValues') {
-        params.metrics = queryRequest.metrics.join(',');
+        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
       } else if (queryRequest.service === 'timeValues') {
-        params.metrics = queryRequest.metrics.join(',');
+        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
         params.granularity = queryRequest.granularity;
       }
 
@@ -1014,13 +1178,10 @@ class RequirementParserService {
         return response;
       }
 
-      response.error = {
-        code: 'NAPM_UPSTREAM_ERROR',
-        message: error.message
-      };
+      response.error = this.buildExecutionFailureError(error);
       logAudit('napm_execution_failed', {
         gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest),
-        error: error.message
+        error: response.error
       }, requestContext);
       logger.info('========================================\n');
       return response;
@@ -1444,6 +1605,10 @@ class RequirementParserService {
       return request;
     }
 
+    if (!this.shouldAllowPathRepair(request)) {
+      return request;
+    }
+
     const pathPlan = this.groupPathPlannerService.planPath(request, userRequirement, {
       groups: request.groups
     });
@@ -1671,6 +1836,10 @@ class RequirementParserService {
    */
   applyStableTemplateBindings(request, template, userRequirement = '') {
     if (this.areGatewayTemplatesDisabled()) {
+      return;
+    }
+
+    if (!this.shouldAllowStableTemplateRepair(request)) {
       return;
     }
 

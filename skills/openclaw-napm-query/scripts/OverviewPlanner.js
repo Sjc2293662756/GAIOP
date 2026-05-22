@@ -1,3 +1,10 @@
+/**
+ * OverviewPlanner.js
+ *
+ * 负责在候选概览模块集合中挑选“这次该查哪些模块”。
+ * 它会综合场景、问题类型、指标域、对象类型、深度预算和元数据健康度，
+ * 对 root / child candidate 打分并生成 overview plan。
+ */
 const { DEPTH_LEVELS } = require('./OverviewBudget');
 const { getOverviewSceneProfile } = require('./OverviewCandidateRegistry');
 const {
@@ -5,6 +12,7 @@ const {
   getSemanticMetricDomainAliases
 } = require('../../../src/constants/metricDomains');
 
+// 规划期打分与过滤策略，统一定义 root/child 评分权重及元数据问题处理规则。
 const DEFAULT_OVERVIEW_PLANNING_POLICY = {
   hardMetadataIssuePrefixes: [
     'group_not_found:',
@@ -42,6 +50,7 @@ const DEFAULT_OVERVIEW_PLANNING_POLICY = {
   }
 };
 
+// 统一规范化 planner 中涉及的自由文本。
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -60,6 +69,7 @@ function parseRequestedTopCount(prompt = '') {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+// 根据 prompt、intent 和 resolvedQuery 推断当前问句更像哪种概览问题。
 function inferQuestionType(prompt = '', intent = {}, resolvedQuery = {}) {
   const fromIntent = normalizeText(intent?.questionType || intent?.userIntent);
   if (fromIntent && fromIntent !== 'query') {
@@ -122,6 +132,7 @@ function inferMetricCodes(intent = {}, resolvedQuery = {}) {
   ]).map((item) => String(item).toUpperCase());
 }
 
+// 收集 query 当前涉及到的对象类型，为 candidate 打分时提供语义提示。
 function inferObjectTypes(resolvedQuery = {}) {
   const values = [];
   const push = (value) => {
@@ -147,6 +158,10 @@ function inferObjectTypes(resolvedQuery = {}) {
   return uniqueStrings(values);
 }
 
+/**
+ * 从 prompt / resolvedQuery / metadataReview 中提取 overview 规划所需的 slots。
+ * 这些 slots 会贯穿后续 candidate 选择和 query 编译过程。
+ */
 function extractOverviewSlots({ prompt = '', resolvedQuery = {}, intent = {}, scene = null, metadataReview = null } = {}) {
   const groups = Array.isArray(resolvedQuery?.groups) ? resolvedQuery.groups : [];
   const contextGroups = Array.isArray(resolvedQuery?.contextGroups) ? resolvedQuery.contextGroups : [];
@@ -207,9 +222,10 @@ function getDepthProfileCandidates(depthProfiles = {}, depth = 'standard') {
   if (!depthProfiles || typeof depthProfiles !== 'object') {
     return [];
   }
-  return Array.isArray(depthProfiles[depth]) ? depthProfiles[depth] : [];
+    return Array.isArray(depthProfiles[depth]) ? depthProfiles[depth] : [];
 }
 
+// 读取指定 candidate 的动态元数据健康状况，并区分 hard issue 与 soft issue。
 function getMetadataHealth(candidateId, metadataReview = {}, planningPolicy = DEFAULT_OVERVIEW_PLANNING_POLICY) {
   const candidateReview = metadataReview?.byCandidateId?.[candidateId] || {};
   const issues = Array.isArray(candidateReview?.issues) ? candidateReview.issues : [];
@@ -222,6 +238,9 @@ function getMetadataHealth(candidateId, metadataReview = {}, planningPolicy = DE
   };
 }
 
+/**
+ * 为 root candidate 打分，并判断它是否可被选入本轮 overview plan。
+ */
 function evaluateRootCandidate(candidate, context) {
   const planningPolicy = context.planningPolicy || DEFAULT_OVERVIEW_PLANNING_POLICY;
   const slotRequirements = Array.isArray(candidate.slotRequirements) ? candidate.slotRequirements : [];
@@ -298,6 +317,10 @@ function evaluateRootCandidate(candidate, context) {
   };
 }
 
+/**
+ * 为 child candidate 打分。
+ * child query 必须依附 parent selection，因此这里会同时考虑父模块得分和当前深度预算。
+ */
 function evaluateChildCandidate(candidate, parentSelection, context) {
   const planningPolicy = context.planningPolicy || DEFAULT_OVERVIEW_PLANNING_POLICY;
   if (context.budget.maxChildren <= 0) {
@@ -368,6 +391,9 @@ function evaluateChildCandidate(candidate, parentSelection, context) {
   };
 }
 
+/**
+ * 主入口：根据候选集、场景、深度和元数据状况构建 overview plan。
+ */
 function buildOverviewPlan({
   candidates = [],
   scene,

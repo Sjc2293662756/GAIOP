@@ -2,10 +2,12 @@ const path = require('path');
 
 describe('napm-openclaw-plugin direct tool removal', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalDevResolverTools = process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
   let plugin = null;
 
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     jest.resetModules();
     plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
   });
@@ -13,12 +15,18 @@ describe('napm-openclaw-plugin direct tool removal', () => {
   afterAll(() => {
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
-      return;
+    } else {
+      process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
     }
-    process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
+
+    if (originalDevResolverTools === undefined) {
+      delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
+    } else {
+      process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS = originalDevResolverTools;
+    }
   });
 
-  test('should register only resolvedQuery-first NAPM tools/commands', () => {
+  test('should register only production resolvedQuery-first NAPM tool/command', () => {
     const hooks = new Map();
     const tools = new Map();
     const commands = new Map();
@@ -46,13 +54,8 @@ describe('napm-openclaw-plugin direct tool removal', () => {
 
     plugin.register(api);
 
-    const expectedResolvedQueryFirstTools = [
-      'napm-resolve-query',
-      'napm-mainflow-query',
-      'napm-skill-query'
-    ];
-    expect(Array.from(tools.keys()).sort()).toEqual(expectedResolvedQueryFirstTools.slice().sort());
-    expect(Array.from(commands.keys()).sort()).toEqual(expectedResolvedQueryFirstTools.slice().sort());
+    expect(Array.from(tools.keys())).toEqual(['napm-skill-query']);
+    expect(Array.from(commands.keys())).toEqual(['napm-skill-query']);
     expect(tools.has('napm-topn')).toBe(false);
     expect(tools.has('napm-average')).toBe(false);
     expect(tools.has('napm-timeseries')).toBe(false);

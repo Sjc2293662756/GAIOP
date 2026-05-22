@@ -1,7 +1,7 @@
 const { __test__ } = require('../skills/openclaw-napm-query/scripts/run_napm_query');
 const NapmMetadataService = require('../skills/openclaw-napm-query/services/NapmMetadataService');
 
-describe('run_napm_query hierarchy catalog prompt fallback', () => {
+describe('run_napm_query hierarchy catalog contract', () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
