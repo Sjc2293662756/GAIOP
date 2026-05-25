@@ -155,7 +155,7 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
-  test('should minute-align explicit resolvedQuery timestamps before execution', async () => {
+  test('should minute-align root resolvedQuery timestamps and strip nested timeRange execution timestamps before execution', async () => {
     process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
 
     const input = await __test__.resolveInput({
@@ -179,8 +179,7 @@ describe('run_napm_query input contract', () => {
 
     expect(input.resolvedQuery.start).toBe(1779413040);
     expect(input.resolvedQuery.end).toBe(1779499440);
-    expect(input.resolvedQuery.timeRange.start).toBe(1779413040);
-    expect(input.resolvedQuery.timeRange.end).toBe(1779499440);
+    expect(input.resolvedQuery.timeRange).toEqual({ key: 'custom' });
   });
 
   test('should keep discover-then-overview pipeline shape when resolvedQuery requests composite analysis', async () => {

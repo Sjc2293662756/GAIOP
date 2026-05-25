@@ -55,7 +55,12 @@ Executor output should stay machine-readable, but OpenClaw should turn it into t
 
 ## Semantic Reminders
 
-- `系统中有哪些web应用` means list `WebApplication` objects, not the broad protocol `applications` endpoint.
+- Do not answer application inventory from `groups-tree.static.json` `Application` nodes. The tree is hierarchy metadata, not the application catalog truth source.
+- Plain `系统中有哪些应用` is ambiguous. Clarify whether the user wants `WebApplication(Type=3)`, `DefinedApp(Type=2)`, `BuiltinApplication(Type=1)`, `CompositeApplication(Type=4)`, or `OtherApp`.
+- `系统中有哪些web应用` / `系统中有哪些业务` means list `WebApplication` catalog objects from `applications Type=3`; runtime metric execution still uses `groupType=WebApplication`.
+- `系统中有哪些已定义应用` means list `DefinedApp` catalog objects from `applications Type=2`.
+- `系统中有哪些自动识别应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` means list `CompositeApplication` catalog objects from `applications Type=4`.
+- `系统中有哪些内置应用` means list `BuiltinApplication` catalog objects from `applications Type=1`.
 - `数据包数量`, `包数量`, `包个数`, `数据包个数`, `包流量` mean metric `PKIO`.
 - `服务器响应时间` / `服务端响应时间` means `TRTI`, not `RTTI`.
 - `RTT`, `往返时延`, `网络时延`, and `延迟` are latency / RTT concepts.

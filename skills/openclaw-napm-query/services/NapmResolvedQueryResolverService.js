@@ -10,6 +10,7 @@
 const {
   loadResolutionSpec
 } = require('./ResolutionSpecService');
+const TimeRangeService = require('./ResolvedQueryTimeRangeService');
 
 // 深拷贝 spec 等 JSON 兼容对象，避免解析阶段修改共享配置。
 function cloneJson(value) {
@@ -76,11 +77,13 @@ function findAliasMatch(text = '', aliasMap = {}, options = {}) {
 
 // 向下取整到分钟，保证生成的时间窗口对齐执行层常用时间粒度。
 function alignToMinute(seconds = Math.floor(Date.now() / 1000)) {
+  return TimeRangeService.alignToMinute(seconds);
   const rawEnd = Number(seconds) > 0 ? Math.floor(Number(seconds)) : Math.floor(Date.now() / 1000);
   return Math.floor(rawEnd / 60) * 60;
 }
 
 function buildRelativeTimeRange(key, seconds, nowSeconds = Math.floor(Date.now() / 1000)) {
+  return TimeRangeService.buildRelativeTimeRange(key, seconds, nowSeconds);
   const end = alignToMinute(nowSeconds);
   const start = alignToMinute(end - seconds);
   return {
@@ -108,21 +111,54 @@ function normalizeResolvedQueryTimeRange(resolvedQuery = {}) {
     && !Array.isArray(next.timeRange)
   ) {
     next.timeRange = { ...next.timeRange };
-    if (Number.isFinite(Number(next.timeRange.start)) && Number(next.timeRange.start) > 0) {
-      next.timeRange.start = alignToMinute(next.timeRange.start);
-    }
-    if (Number.isFinite(Number(next.timeRange.end)) && Number(next.timeRange.end) > 0) {
-      next.timeRange.end = alignToMinute(next.timeRange.end);
-    }
+    delete next.timeRange.start;
+    delete next.timeRange.end;
   }
   return next;
 }
 
+function validateResolvedQueryTimeContract(resolvedQuery = {}) {
+  const service = String(resolvedQuery?.service || '').trim();
+  const requiresExecutableTime = new Set([
+    'topValues',
+    'averageValues',
+    'timeValues',
+    'overview',
+    'topValues_multi_protocol'
+  ]).has(service);
+
+  if (!requiresExecutableTime) {
+    return { ok: true };
+  }
+
+  const hasRootStart = Number.isFinite(Number(resolvedQuery.start)) && Number(resolvedQuery.start) > 0;
+  const hasRootEnd = Number.isFinite(Number(resolvedQuery.end)) && Number(resolvedQuery.end) > 0;
+  if (hasRootStart && hasRootEnd) {
+    return { ok: true };
+  }
+
+  const hasNestedStart = Number.isFinite(Number(resolvedQuery?.timeRange?.start)) && Number(resolvedQuery.timeRange.start) > 0;
+  const hasNestedEnd = Number.isFinite(Number(resolvedQuery?.timeRange?.end)) && Number(resolvedQuery.timeRange.end) > 0;
+  return {
+    ok: false,
+    reason: 'missing_root_execution_time',
+    message: 'Cannot construct resolvedQuery because executable start/end must be root-level fields.',
+    details: {
+      service,
+      hasRootStart,
+      hasRootEnd,
+      nestedTimeRangeProvided: hasNestedStart || hasNestedEnd
+    }
+  };
+}
+
 function buildLast1HourTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
+  return TimeRangeService.buildLast1HourTimeRange(nowSeconds);
   return buildRelativeTimeRange('last1hour', 60 * 60, nowSeconds);
 }
 
 function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
+  return TimeRangeService.buildLast24HoursTimeRange(nowSeconds);
   return buildRelativeTimeRange('last24hours', 24 * 60 * 60, nowSeconds);
 }
 
@@ -131,6 +167,7 @@ function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
  * 当前以“最近 N 分钟 / 小时 / 天”为主，兜底到最近 1 小时。
  */
 function inferTimeRange(prompt = '', nowSeconds = Math.floor(Date.now() / 1000)) {
+  return TimeRangeService.resolveTimeRange(prompt, { nowSeconds });
   const text = normalizeText(prompt);
   const lower = normalizeLower(text);
 
@@ -228,6 +265,28 @@ function inferGroup(prompt = '', spec = {}, options = {}) {
   if (/业务系统|Web应用|网站|站点|WebApplication/i.test(text)) {
     preferredIds.push('WebApplication');
   }
+  if (/内置应用|内置端口应用|系统内置应用|BuiltinApplication/i.test(text)) {
+    preferredIds.push('BuiltinApplication');
+  }
+  if (/自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|组合应用|CompositeApplication|composite\s*application/i.test(text)) {
+    preferredIds.push('CompositeApplication');
+  }
+  if (/已定义应用|服务器应用|协议应用|DefinedApp|Application/i.test(text)) {
+    preferredIds.push('DefinedApp');
+  }
+  if (/未知应用|未知端口|OtherApp/i.test(text)) {
+    preferredIds.push('OtherApp');
+  }
+
+  if (/\u4e1a\u52a1\u7ec4|\u5de5\u4f5c\u7ec4|\u4e1a\u52a1\u5206\u7ec4|BusinessGroup/i.test(text)) {
+    preferredIds.unshift('BusinessGroup');
+  }
+  if (/\u4e1a\u52a1\u7cfb\u7edf|Web\u5e94\u7528|web\u5e94\u7528|\u7f51\u7ad9|\u7ad9\u70b9|WebApplication/i.test(text)) {
+    preferredIds.unshift('WebApplication');
+  }
+  if (/\u4e1a\u52a1/.test(text) && !/\u4e1a\u52a1\u7ec4|\u4e1a\u52a1\u5206\u7ec4/.test(text)) {
+    preferredIds.unshift('WebApplication');
+  }
 
   const match = findAliasMatch(text, objectAliases, { preferredIds });
   if (match) {
@@ -253,11 +312,79 @@ function inferGroup(prompt = '', spec = {}, options = {}) {
 }
 
 function isMetadataListPrompt(prompt = '') {
+  const text = normalizeText(prompt);
+  if (/(?:\u7cfb\u7edf\u4e2d|\u7cfb\u7edf\u91cc|\u5f53\u524d|\u73b0\u5728|\u90fd)?[^，。！？\n]{0,12}(?:\u6709\u54ea\u4e9b|\u6709\u4ec0\u4e48|\u6709\u54ea\u51e0\u4e2a|\u90fd\u6709\u54ea\u4e9b|\u5305\u542b\u54ea\u4e9b|\u5217\u8868|\u6e05\u5355)/.test(text)) {
+    return true;
+  }
+  if (/(?:\u5217\u51fa|\u67e5\u770b|\u67e5\u8be2)[^，。！？\n]{0,12}(?:\u4e1a\u52a1|\u4e1a\u52a1\u7cfb\u7edf|WebApplication|Web\u5e94\u7528|web\u5e94\u7528|\u5e94\u7528|\u5de5\u4f5c\u7ec4|\u4e1a\u52a1\u7ec4)/i.test(text)) {
+    return true;
+  }
   return includesAny(prompt, ['有哪些', '有什么', '列表', '清单', '对象列表', '都有哪些']);
 }
 
 function isMetricInventoryPrompt(prompt = '') {
   return includesAny(prompt, ['哪些指标', '什么指标', '可查哪些指标', '可以查哪些指标', '支持哪些指标', '指标列表']);
+}
+
+function isPlainApplicationCatalogPrompt(prompt = '') {
+  const text = normalizeText(prompt);
+  if (!isMetadataListPrompt(text)) {
+    return false;
+  }
+  if (!/应用|Application/i.test(text)) {
+    return false;
+  }
+  return !/已定义应用|服务器应用|服务应用|协议应用|自动识别应用|特征识别应用|内置应用|内置端口应用|系统内置应用|复合协议|复合应用|多协议应用|组合应用|Web应用|web应用|业务系统|业务|网站|站点|未知应用|未知端口|其他应用|其它应用|WebApplication|DefinedApp|BuiltinApplication|CompositeApplication|OtherApp/i.test(text);
+}
+
+function inferApplicationCatalogGroup(prompt = '', fallbackGroup = 'WebApplication') {
+  const text = normalizeText(prompt);
+
+  if (/工作组|业务组|业务分组|BusinessGroup/i.test(text)) {
+    return 'BusinessGroup';
+  }
+  if (/内置应用|内置端口应用|系统内置应用|BuiltinApplication/i.test(text)) {
+    return 'BuiltinApplication';
+  }
+  if (/自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|组合应用|CompositeApplication|composite\s*application/i.test(text)) {
+    return 'CompositeApplication';
+  }
+  if (/未知应用|未知端口|OtherApp/i.test(text)) {
+    return 'OtherApp';
+  }
+  if (/已定义应用|服务器应用|协议应用|DefinedApp/i.test(text)) {
+    return 'DefinedApp';
+  }
+  if (/业务系统|Web应用|web应用|网站|站点|业务|WebApplication/i.test(text)) {
+    return 'WebApplication';
+  }
+
+  return fallbackGroup || 'WebApplication';
+}
+
+function inferApplicationCatalogGroupByUnicode(prompt = '', fallbackGroup = 'WebApplication') {
+  const text = normalizeText(prompt);
+
+  if (/\u5de5\u4f5c\u7ec4|\u4e1a\u52a1\u7ec4|\u4e1a\u52a1\u5206\u7ec4|BusinessGroup/i.test(text)) {
+    return 'BusinessGroup';
+  }
+  if (/\u5185\u7f6e\u5e94\u7528|\u5185\u7f6e\u7aef\u53e3\u5e94\u7528|\u7cfb\u7edf\u5185\u7f6e\u5e94\u7528|BuiltinApplication/i.test(text)) {
+    return 'BuiltinApplication';
+  }
+  if (/\u81ea\u52a8\u8bc6\u522b\u5e94\u7528|\u7279\u5f81\u8bc6\u522b\u5e94\u7528|\u590d\u5408\u534f\u8bae|\u590d\u5408\u5e94\u7528|\u591a\u534f\u8bae\u5e94\u7528|\u7ec4\u5408\u5e94\u7528|CompositeApplication|composite\s*application/i.test(text)) {
+    return 'CompositeApplication';
+  }
+  if (/\u672a\u77e5\u5e94\u7528|\u672a\u77e5\u7aef\u53e3|OtherApp/i.test(text)) {
+    return 'OtherApp';
+  }
+  if (/\u5df2\u5b9a\u4e49\u5e94\u7528|\u670d\u52a1\u5668\u5e94\u7528|\u534f\u8bae\u5e94\u7528|DefinedApp/i.test(text)) {
+    return 'DefinedApp';
+  }
+  if (/\u4e1a\u52a1\u7cfb\u7edf|Web\u5e94\u7528|web\u5e94\u7528|\u7f51\u7ad9|\u7ad9\u70b9|\u4e1a\u52a1|WebApplication/i.test(text)) {
+    return 'WebApplication';
+  }
+
+  return fallbackGroup || 'WebApplication';
 }
 
 function isDrilldownCatalogPrompt(prompt = '') {
@@ -293,6 +420,15 @@ function buildDiagnostics(extra = {}) {
 
 // 构造成功解析结果。
 function success(prompt, intent, resolvedQuery, diagnostics = {}) {
+  const timeContract = validateResolvedQueryTimeContract(resolvedQuery);
+  if (!timeContract.ok) {
+    return failure(prompt, timeContract.reason, timeContract.message, {
+      ...diagnostics,
+      phase: 'time_contract_validation',
+      timeContract: timeContract.details
+    });
+  }
+
   return {
     ok: true,
     source: 'openclaw_mainflow_resolver',
@@ -386,8 +522,29 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
   }
 
   if (isMetadataListPrompt(prompt)) {
+    if (isPlainApplicationCatalogPrompt(prompt)) {
+      return failure(
+        prompt,
+        'ambiguous_application_catalog',
+        'Cannot construct resolvedQuery because plain application inventory is ambiguous. Ask for business/WebApplication, defined applications, builtin applications, composite applications, or unknown applications.',
+        {
+          phase: 'object_resolution',
+          ambiguousObject: 'Application',
+          candidates: [
+            'WebApplication',
+            'DefinedApp',
+            'BuiltinApplication',
+            'CompositeApplication',
+            'OtherApp'
+          ]
+        }
+      );
+    }
+
     const explicitBusinessGroup = /工作组|业务组|BusinessGroup/i.test(prompt);
-    const resolvedGroupType = explicitBusinessGroup ? 'BusinessGroup' : groupType;
+    const resolvedGroupType = explicitBusinessGroup
+      ? 'BusinessGroup'
+      : inferApplicationCatalogGroup(prompt, groupType);
     return success(
       prompt,
       {
@@ -443,7 +600,8 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     start: timeRange.start,
     end: timeRange.end,
     timeRange: {
-      key: timeRange.key
+      key: timeRange.key,
+      displayText: timeRange.displayText
     },
     format: 'json',
     userRequirement: normalizeText(prompt),
@@ -454,7 +612,13 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     resolutionHints: {
       constructedBy: 'openclaw_mainflow_resolver',
       matchedMetricAlias: metricMatch.matchedAlias || null,
-      matchedGroupAlias: groupMatch?.matchedAlias || null
+      matchedGroupAlias: groupMatch?.matchedAlias || null,
+      time: {
+        source: timeRange.source || 'time_range_resolver',
+        key: timeRange.key,
+        displayText: timeRange.displayText,
+        alignment: timeRange.alignment || 'minute_floor'
+      }
     }
   };
 
@@ -520,6 +684,8 @@ module.exports = {
   inferTimeRange,
   buildLast1HourTimeRange,
   buildLast24HoursTimeRange,
+  resolveTimeRange: TimeRangeService.resolveTimeRange,
   alignToMinute,
-  normalizeResolvedQueryTimeRange
+  normalizeResolvedQueryTimeRange,
+  validateResolvedQueryTimeContract
 };

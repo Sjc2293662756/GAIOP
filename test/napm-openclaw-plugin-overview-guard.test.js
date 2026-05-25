@@ -71,7 +71,9 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       userQuery: prompt,
       resolvedQuery: {
         service: 'topValues',
+        queryModeKey: 'topn',
         metric: 'BYTIO',
+        metrics: ['BYTIO'],
         groups: [{ type: 'BusinessGroup' }],
         start: 1778227800,
         end: 1778314200,

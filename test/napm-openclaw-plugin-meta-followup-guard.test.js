@@ -63,6 +63,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     const testApi = plugin.__test__;
     expect(testApi.isNapmMetaFollowUpPrompt('你这次用了多长时间？时间都消耗在哪里了？', { napmRelated: true })).toBe(true);
     expect(testApi.isNapmMetaFollowUpPrompt('你构成api的思路是什么和方法来源是哪里？', { napmRelated: true })).toBe(true);
+    expect(testApi.isNapmMetaFollowUpPrompt('这个你是怎么查询的？', { napmRelated: true })).toBe(true);
     expect(testApi.isNapmMetaFollowUpPrompt('今天星期几？', { napmRelated: true })).toBe(false);
   });
 
@@ -114,5 +115,98 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(result.content).not.toContain('直接 curl 调了');
     expect(result.content).not.toContain('Python 解析');
     expect(result.content).not.toContain('没有走 skill');
+  });
+
+  test('should answer business inventory trace from recent skill metadata instead of model inference', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const testApi = plugin.__test__;
+
+    const ctx = createWeComCtx('business-inventory-trace');
+
+    messageReceived({ content: '现在系统中有哪些业务？' }, ctx);
+    await beforePromptBuild({ prompt: '现在系统中有哪些业务？' }, ctx);
+    testApi.rememberSkillResult('现在系统中有哪些业务？', {
+      ok: true,
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }],
+        semanticConstraints: {
+          operation: 'metadata_list'
+        }
+      },
+      requestParamsJson: {
+        type: 'applications',
+        json: 'true'
+      },
+      metadata: {
+        providerType: 'applications',
+        apiType: 'applications',
+        applicationTypeFilter: [3]
+      },
+      summary: {
+        displayText: '系统中目前有 9 个业务系统（WebApplication，applications Type=3）'
+      }
+    }, '');
+
+    messageReceived({ content: '这个你是怎么查询的呢？' }, ctx);
+    await beforePromptBuild({ prompt: '这个你是怎么查询的呢？' }, ctx);
+
+    const result = await messageSending({
+      content: 'applications 接口返回的是近期有流量数据的活跃应用，所以 Esxi-Web 和 Zabbix-web 近期有流量了。'
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('requestParams：{"type":"applications","json":"true"}');
+    expect(result.content).toContain('providerType=applications');
+    expect(result.content).toContain('applicationTypeFilter=[3]');
+    expect(result.content).toContain('这不是按流量活跃度过滤');
+    expect(result.content).toContain('也不是中文名称过滤');
+    expect(result.content).not.toContain('近期有流量数据的活跃应用');
+    expect(result.content).not.toContain('近期有流量了');
+  });
+
+  test('should replace unsupported active-traffic explanation in business inventory answer', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const testApi = plugin.__test__;
+
+    const ctx = createWeComCtx('business-inventory-active-claim');
+    const prompt = '现在系统中有哪些业务？';
+    const displayText = [
+      '系统中目前有 9 个业务系统（WebApplication，applications Type=3）：',
+      '1. 回溯238web',
+      '2. Esxi-Web',
+      '查询口径：南向 applications 目录，按 Type=3 识别 WebApplication/业务系统；这不是按流量活跃度过滤，也不是中文名称过滤。'
+    ].join('\n');
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+    testApi.rememberSkillResult(prompt, {
+      ok: true,
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        groups: [{ type: 'WebApplication' }]
+      },
+      summary: {
+        displayText
+      }
+    }, '');
+
+    const result = await messageSending({
+      content: '现在系统中有 9 个业务系统，通过 type=applications 接口查询，返回近期有活跃流量的业务应用。'
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('不是按流量活跃度过滤');
+    expect(result.content).toContain('不是中文名称过滤');
+    expect(result.content).not.toContain('近期有活跃流量');
   });
 });

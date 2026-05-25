@@ -89,7 +89,9 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       userQuery: prompt,
       resolvedQuery: {
         service: 'topValues',
+        queryModeKey: 'topn',
         metric: 'TPIO',
+        metrics: ['TPIO'],
         groups: [{ type: 'BusinessGroup' }],
         start: 1778227800,
         end: 1778314200,
@@ -163,7 +165,9 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       userQuery: prompt,
       resolvedQuery: {
         service: 'topValues',
+        queryModeKey: 'topn',
         metric: 'TPIO',
+        metrics: ['TPIO'],
         groups: [{ type: 'BusinessGroup' }],
         start: 1778227800,
         end: 1778314200,

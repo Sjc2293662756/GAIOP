@@ -37,6 +37,7 @@ function normalizeHierarchyQuestionTarget(prompt = '') {
     { pattern: /\bIPAddress\b|IP地址|客户端IP|服务端IP|\bIP\b/i, value: 'IPAddress' },
     { pattern: /\bPrefix24\b|\/24|24位前缀|子网|网段/i, value: 'Prefix24' },
     { pattern: /\bWebApplication\b|Web应用|web应用|网站|站点|业务系统/i, value: 'WebApplication' },
+    { pattern: /\bCompositeApplication\b|复合协议|复合应用|多协议应用|组合应用/i, value: 'CompositeApplication' },
     { pattern: /\bDefinedApp\b|\bApplication\b|已知应用|协议应用|应用/i, value: 'DefinedApp' },
     { pattern: /\bOtherApp\b|其他应用/i, value: 'OtherApp' },
     { pattern: /\bBusinessGroupLink\b|业务组链路/i, value: 'BusinessGroupLink' },
@@ -88,6 +89,7 @@ function inferMetricInventoryGroup(prompt = '') {
   if (/(BusinessGroup|业务组|工作组|业务分组)/i.test(text)) return 'BusinessGroup';
   if (/(PageFamily|页面族|页面分类)/i.test(text)) return 'PageFamily';
   if (/(^|[^A-Za-z])User([^A-Za-z]|$)|用户/.test(text)) return 'User';
+  if (/(CompositeApplication|自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|组合应用)/i.test(text)) return 'CompositeApplication';
   if (/(DefinedApp|Application|已知应用|协议应用)/i.test(text)) return 'DefinedApp';
   if (/(WebApplication|Web应用|web应用|网站|站点|业务系统)/i.test(text)) return 'WebApplication';
   if (/业务/.test(text)) return 'WebApplication';
@@ -115,6 +117,18 @@ function isBusinessObjectInventoryPrompt(prompt = '') {
   }
 
   return /(业务|业务系统|Web应用|web应用|网站|站点)/i.test(text);
+}
+
+function isPlainApplicationInventoryPrompt(prompt = '') {
+  const text = normalizePromptText(prompt);
+  if (!text) {
+    return false;
+  }
+  const hasInventoryIntent = /(?:(?:系统中|现在|当前)?[^，。！？\n]{0,8}(?:有哪些|有什么|有哪几个|都有哪些|包含哪些)|列出[^，。！？\n]{0,8}|查看[^，。！？\n]{0,8})(?:应用|Application)/i.test(text);
+  if (!hasInventoryIntent) {
+    return false;
+  }
+  return !/(业务|业务系统|Web应用|web应用|网站|站点|已定义应用|服务器应用|协议应用|自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|内置应用|内置端口应用|未知应用|未知端口|其他应用|其它应用|WebApplication|DefinedApp|BuiltinApplication|CompositeApplication|OtherApp)/i.test(text);
 }
 
 // 推断概览类问句更偏向哪个业务场景。
@@ -299,6 +313,17 @@ function resolvePromptRoute(prompt = '', options = {}) {
     return businessObjectInventoryRoute;
   }
 
+  if (isPlainApplicationInventoryPrompt(text)) {
+    return {
+      routeType: 'ambiguous_application_inventory',
+      prompt: text,
+      clarification: {
+        reason: 'plain_application_inventory_is_ambiguous',
+        candidates: ['WebApplication', 'DefinedApp', 'BuiltinApplication', 'CompositeApplication', 'OtherApp']
+      }
+    };
+  }
+
   if (includeUnknownPort && unknownPortRouteBuilder) {
     const unknownPortRoute = unknownPortRouteBuilder(text);
     if (unknownPortRoute) {
@@ -380,6 +405,7 @@ module.exports = {
   inferOverviewScene,
   inferOverviewTimeRangeKey,
   isBusinessObjectInventoryPrompt,
+  isPlainApplicationInventoryPrompt,
   isHierarchyCatalogPrompt,
   isMetricInventoryPrompt,
   isOverviewPrompt,

@@ -33,7 +33,6 @@ const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
-const { isBusinessObjectType } = require(path.join(workspaceRoot, 'src/constants/objectMetricOwnership'));
 const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
@@ -467,12 +466,8 @@ function normalizeResolvedQueryTimeRange(query = {}) {
     query.end = floorToMinute(query.end);
   }
   if (query.timeRange && typeof query.timeRange === 'object' && !Array.isArray(query.timeRange)) {
-    if (Number.isFinite(Number(query.timeRange.start)) && Number(query.timeRange.start) > 0) {
-      query.timeRange.start = floorToMinute(query.timeRange.start);
-    }
-    if (Number.isFinite(Number(query.timeRange.end)) && Number(query.timeRange.end) > 0) {
-      query.timeRange.end = floorToMinute(query.timeRange.end);
-    }
+    delete query.timeRange.start;
+    delete query.timeRange.end;
   }
   if (query.analysisPipeline?.discoveryQuery && typeof query.analysisPipeline.discoveryQuery === 'object') {
     query.analysisPipeline.discoveryQuery = normalizeResolvedQueryTimeRange(query.analysisPipeline.discoveryQuery);
@@ -705,74 +700,6 @@ function isOverviewResolvedQuery(resolvedQuery = null) {
   return resolvedQuery?.service === 'overview'
     || resolvedQuery?.queryModeKey === 'overview'
     || semanticOperation === 'overview';
-}
-
-function isMetadataBusinessInventory(resolvedQuery = {}) {
-  const service = String(resolvedQuery?.service || '').trim();
-  const firstGroupType = String(resolvedQuery?.groups?.[0]?.type || '').trim();
-  const operation = String(
-    resolvedQuery?.semanticConstraints?.operation
-    || resolvedQuery?.candidateSpec?.semantic_constraints?.operation
-    || ''
-  ).trim();
-
-  return service === 'groups'
-    && isBusinessObjectType(firstGroupType)
-    && operation === 'metadata_list';
-}
-
-function isNoiseWebApplicationLabel(label = '') {
-  const raw = String(label || '').trim();
-  if (!raw) {
-    return true;
-  }
-  return /^(?:Other Group|Other Web Application)$/i.test(raw);
-}
-
-function isProtocolStyleWebApplicationLabel(label = '') {
-  const raw = String(label || '').trim();
-  if (!raw) {
-    return true;
-  }
-  if (/[\u4e00-\u9fa5]/.test(raw)) {
-    return false;
-  }
-  if (/[a-z]/.test(raw)) {
-    return false;
-  }
-
-  const normalized = raw.toUpperCase();
-  const exactProtocolLabels = new Set([
-    'AIM-TCP', 'AIM-UDP', 'DNS', 'HTTP', 'HTTPS', 'ICMP', 'IMAP', 'POP3', 'SMTP', 'SSH', 'TELNET',
-    'FTP-CONTROL', 'FTP-DATA', 'MSSQL-TCP', 'MSSQL-UDP', 'RTCP'
-  ]);
-  if (exactProtocolLabels.has(normalized)) {
-    return true;
-  }
-
-  if (
-    /^(?:MS-|SAP-|ORACLE-|SUN-RPC|NETBIOS|SQL\*NET|RTP|RTSP|SIP|H323|FTP|SMTP|SSH|DNS|HTTP|HTTPS|ICMP|TELNET|IMAP|POP3|MSSQL|VMWARE-SRV|MS-WBT-SRV|KAZAA|GNUTELLA|RBT-WANOPT)/.test(normalized)
-  ) {
-    return true;
-  }
-
-  return /^(?:[A-Z0-9*]+(?:[-_][A-Z0-9*]+){0,8})$/.test(normalized);
-}
-
-function filterBusinessSystemRows(rows = []) {
-  const items = Array.isArray(rows) ? rows : [];
-  const filtered = items.filter((item) => {
-    const label = String(item?.label || item?.Label || item?.value || item?.name || '').trim();
-    if (isNoiseWebApplicationLabel(label)) {
-      return false;
-    }
-    if (isProtocolStyleWebApplicationLabel(label)) {
-      return false;
-    }
-    return true;
-  });
-
-  return filtered.length > 0 ? filtered : items;
 }
 
 function buildFollowUpActionsFromGate(gate = null) {
@@ -2065,10 +1992,7 @@ async function main() {
   }
 
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
-  const rawRows = Array.isArray(executionResult?.data) ? executionResult.data : [];
-  const rows = isMetadataBusinessInventory(resolvedQuery)
-    ? filterBusinessSystemRows(rawRows)
-    : rawRows;
+  const rows = Array.isArray(executionResult?.data) ? executionResult.data : [];
   const service = executionResult?.service || resolvedQuery?.service || null;
   const summary = executionResult?.summary || buildSummary(service, resolvedQuery, rows);
   const output = buildOpenClawReplyContract({
@@ -2081,6 +2005,7 @@ async function main() {
     overview: executionResult?.overview || null,
     requestUrl: executionResult?.requestUrl || null,
     requestParamsJson: executionResult?.requestParams || null,
+    metadata: executionResult?.metadata || null,
     rawApiResponse: args.raw ? executionResult?.rawApiResponse ?? null : undefined,
     summary,
     error: executionResult?.error || null,

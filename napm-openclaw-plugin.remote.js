@@ -289,7 +289,7 @@ function isNapmMetaFollowUpPrompt(prompt = '', previousState = null) {
   }
 
   const hasReference = /(?:这次|刚才|上一条|上一次|这个|该查询|这个查询|上面|前面|刚刚)/i.test(text);
-  const hasMetaIntent = /(?:思路|构成|构造|怎么查|如何查|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源|耗时|多长时间|时间都消耗在哪里|耗在哪里)/i.test(text);
+  const hasMetaIntent = /(?:思路|构成|构造|怎么查(?:询)?|如何查(?:询)?|查询流程|查询过程|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源|耗时|多长时间|时间都消耗在哪里|耗在哪里)/i.test(text);
   const previousNapmRelated = Boolean(previousState?.napmRelated || previousState?.domainRelated);
 
   if (hasMetaIntent && previousNapmRelated) {
@@ -306,6 +306,17 @@ function looksLikeNapmBypassProcessText(text = '') {
   }
 
   return /(?:Node\.js\s*脚本|python3|Python\s*解析|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|绕过|跨过|没走\s*skill|没有走\s*skill|没走任何中间层|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
+}
+
+function looksLikeUnsupportedBusinessInventoryExplanation(text = '') {
+  const content = String(text || '').trim();
+  if (!content) {
+    return false;
+  }
+
+  const mentionsBusinessInventory = /(?:业务系统|WebApplication|type=applications|applications\s+接口|南向\s*applications|业务应用)/i.test(content);
+  const unsupportedExplanation = /(?:近期有(?:活跃)?流量|有流量数据|活跃(?:流量|应用|业务)|没有活跃流量|无流量|刚好没有活跃|现在有了|重新出现|被移除|名称有变化|中文(?:字符|名称).*过滤|全是中文)/i.test(content);
+  return mentionsBusinessInventory && unsupportedExplanation;
 }
 
 function isMeaningfulText(value = '') {
@@ -464,6 +475,9 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
     return null;
   }
 
+  const timeRange = isPlainObject(resolvedQuery.timeRange) ? resolvedQuery.timeRange : null;
+  const nestedTimeRangeStart = Number.isFinite(Number(timeRange?.start)) ? Number(timeRange.start) : null;
+  const nestedTimeRangeEnd = Number.isFinite(Number(timeRange?.end)) ? Number(timeRange.end) : null;
   const groups = Array.isArray(resolvedQuery.groups)
     ? resolvedQuery.groups.map((item) => ({
         type: item?.type || null,
@@ -492,6 +506,11 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
     granularity: Number.isFinite(Number(resolvedQuery.granularity)) ? Number(resolvedQuery.granularity) : null,
     start: Number.isFinite(Number(resolvedQuery.start)) ? Number(resolvedQuery.start) : null,
     end: Number.isFinite(Number(resolvedQuery.end)) ? Number(resolvedQuery.end) : null,
+    timeRangeKey: String(resolvedQuery.timeRangeKey || timeRange?.key || '').trim() || null,
+    nestedTimeRangeStart,
+    nestedTimeRangeEnd,
+    hasNestedTimeRangeStart: nestedTimeRangeStart !== null,
+    hasNestedTimeRangeEnd: nestedTimeRangeEnd !== null,
     hasPathPlanning: Boolean(resolvedQuery.pathPlanning),
     hasExecutionGuard: Boolean(resolvedQuery?.executionGuard?.blockExecution),
     hasAnalysisPipeline: Boolean(resolvedQuery.analysisPipeline)
@@ -840,6 +859,33 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
   }
 
   const requiredFields = Array.isArray(serviceSpec.required) ? serviceSpec.required : [];
+  const requiresRootStart = requiredFields.includes('start');
+  const requiresRootEnd = requiredFields.includes('end');
+  const rootStart = Number(resolvedQuery.start);
+  const rootEnd = Number(resolvedQuery.end);
+  const hasValidRootStart = Number.isFinite(rootStart) && rootStart > 0;
+  const hasValidRootEnd = Number.isFinite(rootEnd) && rootEnd > rootStart;
+  const nestedStart = Number(resolvedQuery?.timeRange?.start);
+  const nestedEnd = Number(resolvedQuery?.timeRange?.end);
+  const hasNestedStart = Number.isFinite(nestedStart) && nestedStart > 0;
+  const hasNestedEnd = Number.isFinite(nestedEnd) && nestedEnd > 0;
+
+  if ((requiresRootStart || requiresRootEnd) && (!hasValidRootStart || !hasValidRootEnd) && (hasNestedStart || hasNestedEnd)) {
+    return {
+      ok: false,
+      reason: 'invalid_time_field_location',
+      message: `resolvedQuery.service=${serviceName} must put executable timestamps at root-level start/end. timeRange.start/timeRange.end are declarative only and cannot be used for execution.`
+    };
+  }
+
+  if ((requiresRootStart || requiresRootEnd) && hasValidRootStart && hasValidRootEnd && (rootStart % 60 !== 0 || rootEnd % 60 !== 0)) {
+    return {
+      ok: false,
+      reason: 'invalid_time_boundary_alignment',
+      message: `resolvedQuery.service=${serviceName} root-level start/end must be aligned to 60-second minute boundaries before calling napm-skill-query.`
+    };
+  }
+
   const missingFields = [];
   requiredFields.forEach((field) => {
     if (field === 'timeRange') {
@@ -889,6 +935,27 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
   return {
     ok: true,
     serviceSpec
+  };
+}
+
+function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin_boundary',
+    responseType: 'BOUNDARY_VALIDATION_ERROR',
+    prompt: normalizePrompt(args),
+    decision: {
+      next_action: 'RECONSTRUCT_RESOLVED_QUERY',
+      reason: validation.reason || 'invalid_resolved_query',
+      message: validation.message || 'resolvedQuery failed plugin boundary validation.'
+    },
+    error: {
+      code: 'UPSTREAM_RESOLVED_QUERY_INVALID',
+      reason: validation.reason || 'invalid_resolved_query',
+      message: validation.message || 'resolvedQuery failed plugin boundary validation.'
+    },
+    resolvedQuery: normalizeObject(args?.resolvedQuery) || null,
+    resolvedQuerySummary: summarizeResolvedQueryForAudit(args?.resolvedQuery)
   };
 }
 
@@ -1398,6 +1465,15 @@ function getRecentRememberedSkillResult(conversationKey = '') {
   return latestNapmResult.conversationKey === scopeKey
     ? latestNapmResult
     : null;
+}
+
+function getRememberedRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
+  const metaFollowUp = isNapmMetaFollowUpPrompt(activePrompt, guardState || conversationState);
+  return getRememberedSkillResult(activePrompt, conversationKey)
+    || getRememberedSkillResult(activePrompt, '')
+    || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
+    || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null)
+    || (metaFollowUp ? getRecentRememberedSkillResult('') : null);
 }
 
 function getRememberedMetricInventoryFollowUpRecord(prompt = '', conversationState = null, conversationKey = '') {
@@ -1947,6 +2023,17 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
   return String(rememberedReply?.text || '').trim();
 }
 
+function buildBusinessInventoryCorrectedReply(rememberedRecord = null) {
+  const rememberedText = buildRememberedSkillReplyText(rememberedRecord);
+  if (rememberedText) {
+    return rememberedText;
+  }
+  return [
+    '当前业务清单回答必须以 NAPM skill 返回结果为准。',
+    'WebApplication 业务系统目录的查询口径是 applications Type=3；不能解释为近期活跃流量过滤，也不能按中文名称过滤。'
+  ].join('\n');
+}
+
 function buildSkillRequiredReply() {
   return [
     '当前问题必须经 NAPM skill 执行后才能回答。',
@@ -2011,6 +2098,10 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
       .filter(Boolean)
     : [];
   const requestUrl = getRequestUrlFromResult(result);
+  const requestParams = isPlainObject(result?.requestParamsJson)
+    ? result.requestParamsJson
+    : (isPlainObject(result?.requestParams) ? result.requestParams : null);
+  const metadata = isPlainObject(result?.metadata) ? result.metadata : null;
   const lines = [
     '这次只能按已记录的 NAPM skill 结果说明查询链路：',
     `工具：napm-skill-query`,
@@ -2022,6 +2113,22 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   }
   if (groups.length > 0) {
     lines.push(`groups：${groups.join(' > ')}`);
+  }
+  if (requestParams) {
+    lines.push(`requestParams：${JSON.stringify(requestParams)}`);
+  }
+  if (metadata) {
+    lines.push(`metadata：providerType=${metadata.providerType || 'unknown'}，apiType=${metadata.apiType || 'unknown'}，applicationTypeFilter=${Array.isArray(metadata.applicationTypeFilter) ? JSON.stringify(metadata.applicationTypeFilter) : 'null'}`);
+  }
+  if (
+    service === 'groups'
+    && String(resolvedQuery?.groups?.[0]?.type || '').trim() === 'WebApplication'
+    && metadata?.providerType === 'applications'
+    && Array.isArray(metadata?.applicationTypeFilter)
+    && metadata.applicationTypeFilter.map(Number).includes(3)
+  ) {
+    lines.push('业务查询口径：WebApplication 清单来自南向 applications 目录，并按 Type=3 做业务系统类型筛选。');
+    lines.push('注意：这不是按流量活跃度过滤，也不是中文名称过滤；不能把对象增减解释为近期有无流量，除非另有指标查询结果证明。');
   }
   if (requestUrl) {
     lines.push(`Debug API：${requestUrl}`);
@@ -2165,10 +2272,13 @@ function createSkillToolDefinition() {
   const acceptedInputs = Array.isArray(queryContract.acceptedInputs)
     ? queryContract.acceptedInputs.join(', ')
     : 'payload.resolvedQuery';
+  const timeConstructionRules = Array.isArray(queryContract.constructionRules)
+    ? queryContract.constructionRules.join(' ')
+    : 'Executable timestamps must be root-level start/end.';
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery already produced by OpenClaw upstream. This is the only production NAPM tool entry; use it after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}.`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery already produced by OpenClaw upstream. This is the only production NAPM tool entry; use it after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -2176,7 +2286,67 @@ function createSkillToolDefinition() {
         userQuery: { type: 'string', description: 'Alias of prompt for traceability only; do not rely on this instead of resolvedQuery for structured NAPM queries.' },
         decision: { type: 'object', description: 'Optional structured decision object.', additionalProperties: true },
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
-        resolvedQuery: { type: 'object', description: 'Required fully resolved query payload for NAPM data, metadata, ranking, trend, overview, and hierarchy requests.', additionalProperties: true },
+        resolvedQuery: {
+          type: 'object',
+          description: 'Required fully resolved query payload. For executable data services such as topValues, averageValues, timeValues, overview, and topValues_multi_protocol, put Unix-second execution timestamps at root-level start and end, aligned to 60-second minute boundaries. Do not put executable timestamps only in timeRange.start/timeRange.end; timeRange is declarative metadata only.',
+          properties: {
+            service: { type: 'string' },
+            queryModeKey: { type: 'string' },
+            metrics: { type: 'array', items: { type: 'string' } },
+            metric: { type: 'string' },
+            topMetric: { type: 'string' },
+            groups: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string' },
+                  argument: {}
+                },
+                additionalProperties: true
+              }
+            },
+            topCount: { type: 'number' },
+            start: {
+              type: 'number',
+              description: 'Required root-level execution start timestamp in Unix seconds for executable data services. Must be aligned to a 60-second minute boundary.'
+            },
+            end: {
+              type: 'number',
+              description: 'Required root-level execution end timestamp in Unix seconds for executable data services. Must be aligned to a 60-second minute boundary and greater than start.'
+            },
+            timeRange: {
+              type: 'object',
+              description: 'Declarative metadata only, for key/displayText such as {key:"last24hours"}. Do not place executable start/end here.',
+              properties: {
+                key: { type: 'string' },
+                displayText: { type: 'string' }
+              },
+              additionalProperties: false
+            },
+            format: { type: 'string' },
+            semanticConstraints: { type: 'object', additionalProperties: true },
+            pathPlanning: { type: 'object', additionalProperties: true },
+            resolutionHints: { type: 'object', additionalProperties: true }
+          },
+          required: ['service'],
+          allOf: [
+            {
+              if: {
+                properties: {
+                  service: {
+                    enum: ['topValues', 'averageValues', 'timeValues', 'overview', 'topValues_multi_protocol']
+                  }
+                },
+                required: ['service']
+              },
+              then: {
+                required: ['start', 'end']
+              }
+            }
+          ],
+          additionalProperties: true
+        },
         sessionState: { type: 'object', description: 'Optional multi-turn session state.', additionalProperties: true },
         clarificationContext: { type: 'object', description: 'Optional clarification state.', additionalProperties: true },
         policyAction: { type: 'string', description: 'Optional upstream policy action override.' }
@@ -2185,6 +2355,18 @@ function createSkillToolDefinition() {
     },
     execute: async (_toolCallId, args) => {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
+      const validation = validateResolvedQueryAgainstSpec(preparedArgs?.resolvedQuery);
+      if (!validation.ok) {
+        appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
+          traceId: normalizeTraceId(preparedArgs?.traceId) || buildNapmTraceId({}, preparedArgs),
+          prompt: normalizePrompt(preparedArgs),
+          reason: validation.reason || null,
+          message: validation.message || null,
+          resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
+          resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
+        });
+        return makeToolResult(buildResolvedQueryBoundaryFailureResult(validation, preparedArgs));
+      }
       const result = await runSkillExecutor(preparedArgs);
       rememberDebugApi(normalizePrompt(preparedArgs), result, null);
       return makeToolResult(result);
@@ -2394,8 +2576,17 @@ function buildNapmRoutingSystemContext() {
     '`napm-resolve-query` and `napm-mainflow-query` are diagnostic-only tools and are not production query paths. Do not choose them unless they are explicitly enabled for development diagnostics.',
     `The accepted structured input channel is: ${acceptedInputs}. Do not rely on raw prompt only when the request is a data query, metadata inventory query, ranking, average, trend, or overview request.`,
     'OpenClaw upstream is the owner of resolvedQuery construction. The NAPM plugin only forwards structured queries, and the NAPM skill only executes them.',
+    'Executable time contract: for topValues, averageValues, timeValues, overview, and topValues_multi_protocol, resolvedQuery MUST include root-level `start` and `end` Unix-second timestamps before calling `napm-skill-query`.',
+    '`start` and `end` MUST be aligned to 60-second minute boundaries. Round or floor the time window during resolvedQuery construction, not inside the skill executor.',
+    'Time must be resolved by deterministic time-range rules, not by ad-hoc narration. Map explicit user wording first: 今天/today -> timeRange.key=today; 昨天/yesterday -> yesterday; 最近一小时/过去一小时 -> last1hour; 最近24小时/过去一天 -> last24hours. If the user provides no time, default to last1hour.',
+    'For today/yesterday, compute dynamic local-day windows from the runtime date: start is 00:00:00 local time and end is 23:59:00 local time. Never hard-code example timestamps from previous turns.',
+    'Preserve the resolved time source in `resolutionHints.time`, for example `{source:"time_range_resolver", key:"today", alignment:"minute_floor"}`.',
+    '`timeRange` is declarative metadata only, such as `{key:"last24hours", displayText:"最近24小时"}`. Never use `timeRange.start` or `timeRange.end` as the only executable timestamps.',
+    'Bad resolvedQuery example: `{service:"topValues", timeRange:{start:1779638400,end:1779724799}}`. Good example: `{service:"topValues", start:1779638400, end:1779724740, timeRange:{key:"today"}}`.',
     `Interpret plain monitored business wording such as ${webApplicationAliases} as WebApplication scope unless the user explicitly asks for ${businessGroupAliases}.`,
     `Interpret explicit ${businessGroupAliases} wording as BusinessGroup scope.`,
+    'For inventory wording such as "现在系统中有哪些业务？" or "系统中有哪些业务？", construct groups=[{type:"WebApplication"}]. Do not switch to BusinessGroup because WebApplication has many entries or appears ambiguous.',
+    'For WebApplication/business inventory, the skill will list applications Type=3. For BusinessGroup/workgroup inventory, the user must explicitly say 业务组, 工作组, or BusinessGroup.',
     `For inventory questions, use ${groupInventoryRule} Example: "系统中有哪些工作组？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For business-system inventory questions, Example: "系统中有哪些业务系统？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}].`,
     `For metric-inventory questions, use ${metricInventoryRule} Example: "业务都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}]. Example: "工作组都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
@@ -2691,10 +2882,7 @@ const plugin = {
 
         if (!outOfScopeBoundaryRequested) {
           const activePrompt = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
-          const rememberedRecord = getRememberedSkillResult(activePrompt, conversationKey)
-            || getRememberedSkillResult(activePrompt, '')
-            || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
-            || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null);
+          const rememberedRecord = getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
           const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
           if (shouldAllowNapmReasoningPreviewForCtx(ctx) && isStreamingPreviewMessageEvent(event)) {
             return undefined;
@@ -2704,6 +2892,11 @@ const plugin = {
           if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
             return {
               content: buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+            };
+          }
+          if (looksLikeUnsupportedBusinessInventoryExplanation(leakedReasoningText)) {
+            return {
+              content: buildBusinessInventoryCorrectedReply(rememberedRecord)
             };
           }
           const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(leakedReasoningText)
@@ -2784,12 +2977,19 @@ const plugin = {
         }
 
         const activePrompt = selectActivePromptText(conversationState, guardState, extractMessageText(message));
-        const rememberedRecord = getRememberedSkillResult(activePrompt, conversationKey)
-          || getRememberedSkillResult(activePrompt, '')
-          || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
-          || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null);
+        const rememberedRecord = getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
+        if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
+          return {
+            message: buildAssistantTextMessage(buildExecutionTraceReplyFromRememberedRecord(rememberedRecord), message)
+          };
+        }
+        if (looksLikeUnsupportedBusinessInventoryExplanation(existingText)) {
+          return {
+            message: buildAssistantTextMessage(buildBusinessInventoryCorrectedReply(rememberedRecord), message)
+          };
+        }
         if (looksLikeNapmBypassProcessText(existingText)) {
           const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReply();
           return {
@@ -2847,12 +3047,15 @@ module.exports.__test__ = {
   isStrictBoundaryMode,
   shouldEnableDevResolverTools,
   isSafeNapmToolName,
+  summarizeResolvedQueryForAudit,
+  validateResolvedQueryAgainstSpec,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,
   buildRememberedSkillReplyText,
   buildExecutionTraceReplyFromRememberedRecord,
   buildSkillRequiredReply,
+  getRememberedRecordForPrompt,
   buildOverviewResolvedQuery,
   buildMetricInventoryResolvedQuery,
   buildPacketLossClientTopResolvedQuery,
@@ -2870,6 +3073,7 @@ module.exports.__test__ = {
   isNapmMetaFollowUpPrompt,
   isPacketLossClientTopPrompt,
   looksLikeNapmBypassProcessText,
+  looksLikeUnsupportedBusinessInventoryExplanation,
   shouldRequireSkillBackedReply,
   normalizeHierarchyQuestionTarget,
   normalizeOverviewSceneKey,

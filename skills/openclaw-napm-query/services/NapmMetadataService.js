@@ -369,7 +369,10 @@ class NapmMetadataService {
 
     let rows = [];
     if (provider.providerType === 'applications') {
-      rows = await this.getApplications(keyword);
+      rows = this.filterApplicationsByProvider(
+        await this.getApplications(keyword),
+        provider
+      );
     } else if (provider.providerType === 'businessGroups') {
       rows = await this.getBusinessGroups(keyword);
     } else if (provider.providerType === 'groupArguments') {
@@ -379,23 +382,71 @@ class NapmMetadataService {
     return this.decorateObjectInstanceRows(rows, provider);
   }
 
+  filterApplicationsByProvider(rows = [], provider = {}) {
+    if (!Array.isArray(rows)) {
+      return [];
+    }
+
+    const filter = Array.isArray(provider.applicationTypeFilter)
+      ? provider.applicationTypeFilter.map(Number).filter(Number.isFinite)
+      : [];
+
+    if (filter.length === 0) {
+      return rows;
+    }
+
+    return rows.filter((item) => {
+      const applicationType = this.extractApplicationType(item);
+      return Number.isFinite(applicationType) && filter.includes(applicationType);
+    });
+  }
+
+  extractApplicationType(item = {}) {
+    const candidates = [
+      item.applicationType,
+      item.Type,
+      item.typeCode,
+      item.rawType,
+      item.raw?.Type,
+      item.raw?.type
+    ];
+
+    for (const candidate of candidates) {
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+
+    return null;
+  }
+
   decorateObjectInstanceRows(rows = [], provider = {}) {
     if (!Array.isArray(rows)) {
       return rows;
     }
 
-    return rows.map((item) => ({
-      ...(item || {}),
-      type: item?.type || provider.effectiveObjectType || provider.requestedObjectType || null,
-      objectType: provider.effectiveObjectType || provider.requestedObjectType || null,
-      requestedObjectType: provider.requestedObjectType || null,
-      effectiveObjectType: provider.effectiveObjectType || null,
-      metadataTruthDomain: provider.metadataTruthDomain || MetadataTruthSourcePolicy.TRUTH_DOMAINS.OBJECT_INSTANCES,
-      providerType: provider.providerType || null,
-      source: provider.source || MetadataTruthSourcePolicy.SOURCES.SOUTHBOUND_LIVE_API,
-      argumentType: Number.isFinite(Number(provider.argumentType)) ? Number(provider.argumentType) : null,
-      fallbackUsed: Boolean(provider.fallbackUsed)
-    }));
+    return rows.map((item) => {
+      const applicationType = this.extractApplicationType(item);
+      return {
+        ...(item || {}),
+        type: provider.effectiveObjectType || provider.requestedObjectType || item?.type || null,
+        objectType: provider.effectiveObjectType || provider.requestedObjectType || null,
+        requestedObjectType: provider.requestedObjectType || null,
+        effectiveObjectType: provider.effectiveObjectType || null,
+        executionGroupType: provider.executionGroupType || provider.effectiveObjectType || null,
+        metadataTruthDomain: provider.metadataTruthDomain || MetadataTruthSourcePolicy.TRUTH_DOMAINS.OBJECT_INSTANCES,
+        providerType: provider.providerType || null,
+        source: provider.source || MetadataTruthSourcePolicy.SOURCES.SOUTHBOUND_LIVE_API,
+        argumentType: Number.isFinite(Number(provider.argumentType)) ? Number(provider.argumentType) : null,
+        applicationType: Number.isFinite(applicationType) ? applicationType : null,
+        applicationTypeFilter: Array.isArray(provider.applicationTypeFilter)
+          ? provider.applicationTypeFilter.slice()
+          : null,
+        applicationCatalogRole: provider.applicationCatalogRole || null,
+        fallbackUsed: Boolean(provider.fallbackUsed)
+      };
+    });
   }
 
   /**
@@ -921,7 +972,15 @@ class NapmMetadataService {
           }
           return {
             value: String(value),
-            label: String(label)
+            label: String(label),
+            applicationType: Number.isFinite(Number(item.Type ?? item.type ?? item.applicationType))
+              ? Number(item.Type ?? item.type ?? item.applicationType)
+              : null,
+            Type: item.Type ?? item.type ?? item.applicationType ?? null,
+            description: item.Description || item.description || null,
+            status: item.Status || item.status || null,
+            id: item.Id || item.id || null,
+            raw: item
           };
         }
         return null;

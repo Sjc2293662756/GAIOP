@@ -621,11 +621,42 @@ function buildCompareStructure(payload, followUpPrompts) {
   };
 }
 
+function getListItemValue(row = {}, labelKey = 'label') {
+  return row?.[labelKey] || row?.object || row?.value || row?.label || row?.name || null;
+}
+
+function isWebApplicationCatalogList(payload = {}, responseType = '', objectType = '') {
+  const metadata = payload?.metadata && typeof payload.metadata === 'object'
+    ? payload.metadata
+    : {};
+  return responseType === 'group_list'
+    && objectType === 'WebApplication'
+    && metadata.providerType === 'applications'
+    && Array.isArray(metadata.applicationTypeFilter)
+    && metadata.applicationTypeFilter.map(Number).includes(3);
+}
+
+function buildWebApplicationCatalogDisplayText(rows = []) {
+  const lines = [`系统中目前有 ${rows.length} 个业务系统（WebApplication，applications Type=3）：`];
+  rows.forEach((row, index) => {
+    const value = String(getListItemValue(row, 'label') || '').trim();
+    if (value) {
+      lines.push(`${index + 1}. ${value}`);
+    }
+  });
+  lines.push('查询口径：南向 applications 目录，按 Type=3 识别 WebApplication/业务系统；这不是按流量活跃度过滤，也不是中文名称过滤。');
+  return lines.join('\n');
+}
+
 // 构造清单类 narration 结构，适用于对象列表与指标列表两类元数据结果。
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const listTypeLabel = responseType === 'group_list' ? '对象列表' : '指标列表';
   const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const metadata = payload?.metadata && typeof payload.metadata === 'object'
+    ? payload.metadata
+    : null;
+  const webApplicationCatalogList = isWebApplicationCatalogList(payload, responseType, objectType);
   const itemIds = rows.map((row) => String(row?.id || '').trim()).filter(Boolean);
   const sampleMetricIds = itemIds.slice(0, 12);
   const businessOwnedMetricList = sampleMetricIds.join('、');
@@ -644,20 +675,33 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
       return `这是一个${listTypeLabel}，请优先基于已返回的指标项来总结，不要扩展到列表中没有出现的其他指标类别。`;
     }
 
+    if (webApplicationCatalogList) {
+      return '这是 WebApplication 业务系统目录。查询口径是南向 applications 接口返回的应用目录，并按 Type=3 做业务系统类型筛选；请原样列出返回 items，不要按中文名称、活跃流量、是否有近期流量或名称风格再次过滤，也不要把缺失对象解释为被移除或无流量。';
+    }
+
     return `这是一个${listTypeLabel}，请优先概括总数、代表性对象，以及是否更像业务系统列表还是协议类列表。`;
   })();
+  const items = rows.map((row, index) => ({
+    rank: index + 1,
+    value: getListItemValue(row, labelKey),
+    type: row?.type || null,
+    id: row?.id || null,
+    applicationType: Number.isFinite(Number(row?.applicationType)) ? Number(row.applicationType) : null,
+    status: row?.status || row?.Status || null
+  }));
+  const displayText = webApplicationCatalogList
+    ? buildWebApplicationCatalogDisplayText(rows)
+    : null;
 
   return {
     responseType,
     title: payload?.summary?.title || listTypeLabel,
     explanation,
     timeRange,
-    items: rows.slice(0, 20).map((row, index) => ({
-      rank: index + 1,
-      value: row?.[labelKey] || row?.object || row?.value || null,
-      type: row?.type || null,
-      id: row?.id || null
-    })),
+    metadata,
+    itemCount: rows.length,
+    items,
+    displayText,
     nextActions: followUpPrompts
   };
 }
@@ -822,6 +866,9 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     ? data.narrationStructure
     : buildNarrationStructure(data, rows, structuredRows, structuredSeries);
   if (!summary.displayText && narrationStructure?.responseType === 'topn' && narrationStructure?.displayText) {
+    summary.displayText = narrationStructure.displayText;
+  }
+  if (!summary.displayText && narrationStructure?.responseType === 'group_list' && narrationStructure?.displayText) {
     summary.displayText = narrationStructure.displayText;
   }
   const followUpPrompts = normalizeFollowUpPrompts(data);

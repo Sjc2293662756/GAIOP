@@ -1,0 +1,174 @@
+const path = require('path');
+
+describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
+  const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  let plugin = null;
+
+  beforeAll(() => {
+    process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    jest.resetModules();
+    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+  });
+
+  afterAll(() => {
+    if (originalExecutor === undefined) {
+      delete process.env.NAPM_SKILL_EXECUTOR;
+      return;
+    }
+    process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
+  });
+
+  function createHarness() {
+    const hooks = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+    return { hooks };
+  }
+
+  test('should reject executable timestamps carried only by timeRange at plugin boundary', async () => {
+    const { hooks } = createHarness();
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-time-contract',
+      conversationId: 'conv-time-contract',
+      sessionKey: 'session-time-contract',
+      sessionId: 'session-time-contract',
+      runId: 'run-time-contract'
+    };
+    const prompt = '丢包率最高的IP是谁？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'topValues',
+          queryModeKey: 'topn',
+          groups: [{ type: 'IPAddress' }],
+          metrics: ['PLI'],
+          topMetric: 'PLI',
+          topCount: 1,
+          timeRange: {
+            start: 1779638400,
+            end: 1779724799
+          },
+          format: 'json'
+        }
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('root-level start/end');
+    expect(result.blockReason).toContain('timeRange.start/timeRange.end');
+  });
+
+  test('should allow minute-aligned root start/end for executable data query', async () => {
+    const { hooks } = createHarness();
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-time-contract-ok',
+      conversationId: 'conv-time-contract-ok',
+      sessionKey: 'session-time-contract-ok',
+      sessionId: 'session-time-contract-ok',
+      runId: 'run-time-contract-ok'
+    };
+    const prompt = '丢包率最高的IP是谁？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'topValues',
+          queryModeKey: 'topn',
+          groups: [{ type: 'IPAddress' }],
+          metrics: ['PLI'],
+          topMetric: 'PLI',
+          topCount: 1,
+          start: 1779638400,
+          end: 1779724740,
+          timeRange: {
+            key: 'today',
+            displayText: '今天'
+          },
+          format: 'json'
+        }
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.params).toMatchObject({
+      resolvedQuery: {
+        service: 'topValues',
+        start: 1779638400,
+        end: 1779724740
+      }
+    });
+  });
+
+  test('tool execute should return boundary error before calling skill for malformed time contract', async () => {
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook() {}
+    };
+    plugin.register(api);
+
+    const result = await tools.get('napm-skill-query').execute('tool-time-contract', {
+      prompt: '丢包率最高的IP是谁？',
+      userQuery: '丢包率最高的IP是谁？',
+      resolvedQuery: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'IPAddress' }],
+        metrics: ['PLI'],
+        topMetric: 'PLI',
+        topCount: 1,
+        timeRange: {
+          start: 1779638400,
+          end: 1779724799
+        },
+        format: 'json'
+      }
+    });
+
+    expect(result.details.ok).toBe(false);
+    expect(result.details.error.code).toBe('UPSTREAM_RESOLVED_QUERY_INVALID');
+    expect(result.details.error.reason).toBe('invalid_time_field_location');
+    expect(result.details.resolvedQuerySummary.hasNestedTimeRangeStart).toBe(true);
+    expect(result.details.resolvedQuerySummary.start).toBeNull();
+  });
+});

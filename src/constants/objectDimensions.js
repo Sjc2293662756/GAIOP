@@ -136,7 +136,23 @@ const OBJECT_DIMENSIONS = [
     aliases: ['客户端业务组', '发起组', '用户组', 'clientbusinessgroup']
   },
   {
-    id: 17,
+    id: 29,
+    key: 'BuiltinApplication',
+    label: 'Builtin Application',
+    hasArgument: true,
+    supportedByCurrentSkill: true,
+    aliases: ['内置应用', '内置端口应用', '系统内置应用', 'builtin application', 'builtinapplication']
+  },
+  {
+    id: 30,
+    key: 'CompositeApplication',
+    label: 'Composite Application',
+    hasArgument: true,
+    supportedByCurrentSkill: true,
+    aliases: ['自动识别应用', '特征识别应用', '复合协议', '复合应用', '多协议应用', '组合应用', 'composite application', 'compositeapplication']
+  },
+  {
+    id: 18,
     key: 'Application',
     label: 'Application',
     hasArgument: true,

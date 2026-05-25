@@ -59,9 +59,9 @@ describe('execution kernel stability', () => {
     expect(result.error.message).toContain('Metrics array is required');
   });
 
-  test('should classify unresolved groupArguments argumentType as metadata contract error', async () => {
+  test('should keep PageFamily groupArguments argumentType errors as metadata contract errors', async () => {
     jest.spyOn(NapmMetadataService, 'getGroupDefinition').mockResolvedValue({
-      key: 'WebApplication',
+      key: 'PageFamily',
       hasArgument: true
     });
 
@@ -69,15 +69,15 @@ describe('execution kernel stability', () => {
       service: 'groups',
       start: 1779413040,
       end: 1779499440,
-      groups: [{ type: 'WebApplication' }]
+      groups: [{ type: 'PageFamily' }]
     });
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({
       code: 'METADATA_ARGUMENT_TYPE_UNRESOLVED',
       details: {
-        requestedObjectType: 'WebApplication',
-        effectiveObjectType: 'WebApplication',
+        requestedObjectType: 'PageFamily',
+        effectiveObjectType: 'PageFamily',
         providerType: 'groupArguments'
       }
     });

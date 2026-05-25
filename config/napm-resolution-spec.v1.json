@@ -20,8 +20,16 @@
     ],
     "declarativeTimeFields": [
       "timeRangeKey",
+      "timeRange.key",
+      "timeRange.displayText",
       "resolutionHints.time",
       "candidateSpec.hints.time_range"
+    ],
+    "constructionRules": [
+      "All executable data and analysis resolvedQuery objects must put effective execution timestamps at root-level start/end.",
+      "start/end must be Unix timestamps in seconds and aligned to 60-second minute boundaries before calling napm-skill-query.",
+      "timeRange is declarative metadata for key/display text only and must not be used as the executable timestamp carrier.",
+      "timeRange.start/timeRange.end are not accepted as substitutes for root-level start/end."
     ],
     "defaultFormat": "json"
   },
@@ -46,12 +54,14 @@
         "queryModeKey",
         "metrics",
         "topMetric",
-        "timeRange"
+        "start",
+        "end"
       ],
       "optional": [
         "groups",
         "filters",
         "topCount",
+        "timeRange",
         "format",
         "semanticConstraints",
         "pathPlanning",
@@ -73,10 +83,12 @@
         "service",
         "queryModeKey",
         "metrics",
-        "timeRange"
+        "start",
+        "end"
       ],
       "optional": [
         "groups",
+        "timeRange",
         "filters",
         "format",
         "semanticConstraints",
@@ -100,11 +112,13 @@
         "service",
         "queryModeKey",
         "metrics",
-        "timeRange",
+        "start",
+        "end",
         "granularity"
       ],
       "optional": [
         "groups",
+        "timeRange",
         "filters",
         "format",
         "semanticConstraints",
@@ -132,10 +146,12 @@
         "service",
         "queryModeKey",
         "overviewScene",
-        "timeRange"
+        "start",
+        "end"
       ],
       "optional": [
         "groups",
+        "timeRange",
         "analysisPipeline",
         "overviewDepth",
         "format",
@@ -225,9 +241,11 @@
         "service",
         "queryModeKey",
         "protocolQueries",
-        "timeRange"
+        "start",
+        "end"
       ],
       "optional": [
+        "timeRange",
         "format",
         "semanticConstraints"
       ],
@@ -449,6 +467,17 @@
         "application",
         "defined app"
       ],
+      "CompositeApplication": [
+        "CompositeApplication",
+        "自动识别应用",
+        "特征识别应用",
+        "复合协议",
+        "复合应用",
+        "多协议应用",
+        "组合应用",
+        "composite application",
+        "compositeapplication"
+      ],
       "ClientIPs": [
         "ClientIPs",
         "客户端",
@@ -622,6 +651,7 @@
       "Prefix24",
       "WebApplication",
       "DefinedApp",
+      "CompositeApplication",
       "OtherApp",
       "BusinessGroupLink",
       "IPConversation",
@@ -978,6 +1008,49 @@
           "app",
           "application",
           "defined app"
+        ],
+        "ownershipClass": "non_business",
+        "canOwnMetrics": true,
+        "defaultMetricCandidates": [
+          "TPIO",
+          "BYTIO",
+          "CONI",
+          "CCNI",
+          "RFCI",
+          "TRTI",
+          "TRNI",
+          "RSTSI",
+          "UEII",
+          "CSTI"
+        ],
+        "metricCategories": [
+          "数据包",
+          "网络流量",
+          "传输效率",
+          "网络性能",
+          "网络连接",
+          "应用访问",
+          "应用性能",
+          "用户体验",
+          "安全分析"
+        ],
+        "runtimeKey": "DefinedApp"
+      },
+      "CompositeApplication": {
+        "id": 30,
+        "label": "Composite Application",
+        "hasArgument": true,
+        "supportedByCurrentSkill": true,
+        "aliases": [
+          "CompositeApplication",
+          "自动识别应用",
+          "特征识别应用",
+          "复合协议",
+          "复合应用",
+          "多协议应用",
+          "组合应用",
+          "composite application",
+          "compositeapplication"
         ],
         "ownershipClass": "non_business",
         "canOwnMetrics": true,
@@ -1533,6 +1606,14 @@
         "服务应用": "DefinedApp",
         "app": "DefinedApp",
         "defined app": "DefinedApp",
+        "compositeapplication": "CompositeApplication",
+        "自动识别应用": "CompositeApplication",
+        "特征识别应用": "CompositeApplication",
+        "复合协议": "CompositeApplication",
+        "复合应用": "CompositeApplication",
+        "多协议应用": "CompositeApplication",
+        "组合应用": "CompositeApplication",
+        "composite application": "CompositeApplication",
         "clientips": "ClientIPs",
         "客户端": "ClientIPs",
         "客户端ip": "ClientIPs",

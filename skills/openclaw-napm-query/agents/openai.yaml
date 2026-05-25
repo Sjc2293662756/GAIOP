@@ -24,7 +24,12 @@ interface:
     Object guardrails:
     - business group / workgroup / grouped business => BusinessGroup
     - web application / website / site / plain business system => WebApplication unless the user explicitly says business group
-    - application / known application / protocol application => DefinedApp or Application according to runtime support
+    - plain application / 应用 is ambiguous and must not be answered from groups-tree Application or raw type=applications full catalog.
+    - known application / defined application / 已定义应用 / 服务器应用 / 协议应用 => DefinedApp catalog from applications Type=2.
+    - auto-recognized application / 自动识别应用 / 特征识别应用 / composite protocol/application => CompositeApplication catalog from applications Type=4.
+    - builtin port application / 内置端口应用 / 系统内置应用 => BuiltinApplication catalog from applications Type=1.
+    - business / business system / Web application => WebApplication catalog from applications Type=3.
+    - unknown application / unknown port traffic => OtherApp runtime namespace, not applications catalog.
     - Other Web Application is an explicit WebApplication argument
 
     Metric guardrails:
@@ -47,9 +52,13 @@ interface:
     - Preserve the same time range across discovery and focused overview unless the user explicitly changes time.
 
     Inventory and business guardrails:
+    - Do not use groups-tree.static.json Application nodes to answer "系统中有哪些应用/已定义应用/业务"; groups-tree describes drilldown hierarchy, not the application catalog truth source.
+    - For application inventory, the truth source is the southbound applications API plus Type filtering. Do not describe applications as "recent active traffic" and do not filter by Chinese names.
+    - Plain "系统中有哪些应用" is ambiguous. Clarify or construct an ambiguity result covering WebApplication(Type=3), DefinedApp(Type=2), BuiltinApplication(Type=1), CompositeApplication(Type=4), and OtherApp runtime namespace.
     - For plain business metric-list questions, answer strictly from the WebApplication view and keep the user-facing metric list centered on PG* web/page metrics plus page optimization metrics.
     - Do not advertise PLI/PLO/RTTI/RTTO/RDTI/RDTO/RTXI/RTXO/CONI/CCNI/RFCI/TPIO/BYTIO there unless the user explicitly asked for BusinessGroup / workgroup scope or changed scope away from WebApplication.
-    - For questions asking which web applications exist in the system, query the WebApplication object list rather than the broad protocol applications endpoint.
+    - For questions asking which web applications or business systems exist in the system, list the WebApplication catalog from applications Type=3; runtime metric queries still use groupType=WebApplication.
+    - For defined applications, list applications Type=2. For auto-recognized/composite applications/protocols, list applications Type=4. For builtin port applications, list applications Type=1.
     - For questions asking which client visits Other Web Application the most, prefer topValues with metric PGNPGE, groups WebApplication("Other Web Application") -> ClientIPs, and topCount=1.
 
     Narration guardrails:

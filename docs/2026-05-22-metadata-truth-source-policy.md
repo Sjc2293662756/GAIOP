@@ -35,8 +35,11 @@
 
 当前 provider 规则：
 
-- `WebApplication` / `PageFamily` / `User` / `ClientBusinessGroup`：走 `groupArguments`，必须解析到明确 `argumentType`。
-- `DefinedApp` / `Application`：走 `applications`，统一视为协议/已定义应用实例。
+- `WebApplication`：按应用/业务对象说明，走 `applications` 并过滤 `Type=3`；执行指标查询时仍使用 `groupType=WebApplication`。
+- `DefinedApp` / `Application`：走 `applications` 并过滤 `Type=2`，只表示已定义/服务器应用实例。
+- `CompositeApplication`：走 `applications` 并过滤 `Type=4`，单独表示复合协议/复合应用实例，不再混入 `DefinedApp`。
+- `BuiltinApplication`：走 `applications` 并过滤 `Type=1`，用于内置端口/系统内置应用清单。
+- `PageFamily` / `User` / `ClientBusinessGroup` / `OtherApp`：走 `groupArguments`，必须解析到明确 `argumentType`。
 - `BusinessGroup`：走 `businessGroups`。
 
 返回行统一携带审计字段：
@@ -66,8 +69,10 @@
 
 新增 `test/metadata-truth-source-policy.test.js`：
 
-- `WebApplication` 清单必须走 `groupArguments`，不能走 `applications`。
-- `DefinedApp` 清单必须走 `applications`，不能走 `groupArguments`。
+- `WebApplication` 清单必须走 `applications Type=3`，不能走 `groupArguments`。
+- `DefinedApp` 清单必须走 `applications Type=2`，不能走 `groupArguments`。
+- `CompositeApplication` 清单必须走 `applications Type=4`，不能混入 `DefinedApp`。
+- `BuiltinApplication` 清单必须走 `applications Type=1`。
 - `groupArguments` 缺少 `argumentType` 时必须失败，不能静默兜底。
 - 单对象元数据清单必须经统一 `listObjectInstances()` 入口执行。
 - `WebApplication` 参数不能被 `DefinedApp` 实例列表误匹配。

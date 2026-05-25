@@ -1,6 +1,6 @@
----
+﻿---
 name: openclaw-napm-query
-description: Direct OpenClaw NAPM query skill. Use for NAPM or NetInside concept explanations, metadata inventory, metric-ownership and scope questions such as “业务都可以查哪些指标 / 业务组都可以查哪些指标 / WebApplication 和 BusinessGroup 区别”, structured semantic query execution, ranking/average/trend/overview analysis, multi-turn refinements, and result narration. The skill owns structured query execution, metadata resolution, API construction, execution, and Chinese narration contract without relying on the removed gateway layer.
+description: Direct OpenClaw NAPM query skill. Use for NAPM or NetInside concept explanations, metadata inventory, metric-ownership and scope questions such as “业务都可以查哪些指�?/ 业务组都可以查哪些指�?/ WebApplication �?BusinessGroup 区别�? structured semantic query execution, ranking/average/trend/overview analysis, multi-turn refinements, and result narration. The skill owns structured query execution, metadata resolution, API construction, execution, and Chinese narration contract without relying on the removed gateway layer.
 ---
 
 # OpenClaw NAPM Direct Query Skill
@@ -17,7 +17,7 @@ Do not route NAPM requests through the removed project gateway layer. Do not dep
 - Ask a clarification question only when multiple plausible NAPM queries would produce materially different answers.
 - Do not answer with "upstream decision failed", "policy blocked", or similar gateway-era wording.
 - Do not reuse stale historical data as the current answer when a fresh query fails.
-- Every data answer must include the data time range, for example `数据时间：2026-04-29 00:00:00 至 2026-04-30 00:00:00`.
+- Every data answer must include the data time range, for example `数据时间�?026-04-29 00:00:00 �?2026-04-30 00:00:00`.
 - If `resolvedQuery` is missing, return a Chinese decision-style fallback that asks OpenClaw to finish intent resolution or scope clarification first. Do not silently invent a new query from raw prompt text.
 
 ## Direct Architecture
@@ -68,7 +68,7 @@ Construction rules:
 
 - Use outer `service=overview` for the final task.
 - Put the discovery step into `analysisPipeline.discoveryQuery`.
-- Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最多 / 最高 / 最差”.
+- Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最�?/ 最�?/ 最差�?
 - Keep the discovery metric aligned with the selection condition.
 - If the object is already explicit, skip discovery and go directly to focused `overview`.
 - Keep discovery and focused overview on the same time range unless the user explicitly changes time.
@@ -124,7 +124,7 @@ Important rules:
 
 ## Metric Ownership
 
-When the task is really asking "这个维度下该用什么指标", treat it as a metric-ownership question rather than a plain alias-mapping question.
+When the task is really asking "这个维度下该用什么指�?, treat it as a metric-ownership question rather than a plain alias-mapping question.
 
 Important rules:
 
@@ -156,7 +156,7 @@ Primary services:
 
 ## Semantic Mapping Guardrails
 
-These are known NAPM semantics, not a gateway rule layer. Use them to avoid common wrong API construction.
+These are known NAPM semantics, not a gateway rule layer. Use them to avoid common wrong API construction. For application inventory, `applications` plus `Type` filtering is the truth source; `groups-tree.static.json` only describes hierarchy and must not be used as the application catalog.
 
 ### Object / Dimension
 
@@ -164,12 +164,17 @@ These are known NAPM semantics, not a gateway rule layer. Use them to avoid comm
 - `Web应用`, `web应用`, `网站`, `站点`, `业务系统` -> `WebApplication`
 - Plain `业务` usually means `WebApplication` unless the user explicitly says `业务组`
 - `业务都可以查哪些指标` should be answered from the `WebApplication` view, not the `BusinessGroup` view
-- `应用`, `已知应用`, `协议应用` -> `DefinedApp` / `Application` according to runtime support
+- Plain `应用` / `系统中有哪些应用` is ambiguous; do not answer it from groups-tree `Application` nodes or raw full `applications` catalog. Clarify into WebApplication(Type=3), DefinedApp(Type=2), BuiltinApplication(Type=1), CompositeApplication(Type=4), or OtherApp.
+- `已定义应用`, `服务器应用`, `协议应用` -> `DefinedApp` from `applications Type=2`
+- `自动识别应用`, `特征识别应用`, `复合协议`, `复合应用`, `多协议应用` -> `CompositeApplication` from `applications Type=4`
 - `客户端`, `客户端IP` -> `ClientIPs`
 - `服务端`, `服务端IP`, explicit IP address -> `IPAddress` or server-side IP dimension according to query path
 - `其他web应用`, `其它web应用`, `未注册web应用`, `Other Web Application` -> explicit `WebApplication` argument, not a vague pronoun
 
-Inventory wording such as `系统中有哪些web应用` should query the `WebApplication` object list / arguments. Do not answer it by calling the protocol-style `applications` list when the user asked for Web applications.
+<!-- superseded: WebApplication inventory now uses applications Type=3 catalog, not groupArguments. -->
+
+Inventory wording such as `系统中有哪些web应用` / `系统中有哪些业务` should list the `WebApplication` catalog from the southbound `applications` API filtered by `Type=3`. Runtime metric execution still uses `groupType=WebApplication`.
+Inventory wording such as `系统中有哪些已定义应用` should list `DefinedApp` from `applications Type=2`. `系统中有哪些自动识别应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` should list `CompositeApplication` from `applications Type=4`. `系统中有哪些内置应用` should list `BuiltinApplication` from `applications Type=1`.
 
 ### Metrics
 
@@ -209,7 +214,7 @@ Inventory wording such as `系统中有哪些web应用` should query the `WebApp
 - Groups: `WebApplication("Other Web Application") -> ClientIPs`
 - Prefer `topCount=1`
 
-`数据包数量最多的前5个应用分别是谁`
+`数据包数量最多的�?个应用分别是谁`
 
 - Service mode: ranking
 - Metric: `PKIO`

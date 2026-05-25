@@ -311,6 +311,56 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.narrationStructure.modules).toHaveLength(5);
   });
 
+  test('should make WebApplication catalog narration factual and unfiltered', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }],
+        semanticConstraints: {
+          operation: 'metadata_list'
+        }
+      },
+      metadata: {
+        requestedObjectType: 'WebApplication',
+        effectiveObjectType: 'WebApplication',
+        providerType: 'applications',
+        apiType: 'applications',
+        applicationTypeFilter: [3],
+        applicationCatalogRole: 'web_business'
+      },
+      summary: {
+        title: '对象列表',
+        rowCount: 3,
+        empty: false
+      },
+      rows: [
+        { label: '交通可观测性分析平台', value: '交通可观测性分析平台', type: 'WebApplication', applicationType: 3 },
+        { label: 'Esxi-Web', value: 'Esxi-Web', type: 'WebApplication', applicationType: 3 },
+        { label: 'Zabbix-web', value: 'Zabbix-web', type: 'WebApplication', applicationType: 3 }
+      ]
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.responseType).toBe('group_list');
+    expect(payload.narrationStructure.itemCount).toBe(3);
+    expect(payload.narrationStructure.items.map(item => item.value)).toEqual([
+      '交通可观测性分析平台',
+      'Esxi-Web',
+      'Zabbix-web'
+    ]);
+    expect(payload.narrationStructure.explanation).toContain('applications');
+    expect(payload.narrationStructure.explanation).toContain('Type=3');
+    expect(payload.narrationStructure.explanation).toContain('不要按中文名称');
+    expect(payload.narrationStructure.explanation).toContain('活跃流量');
+    expect(payload.summary.displayText).toContain('Esxi-Web');
+    expect(payload.summary.displayText).toContain('Zabbix-web');
+    expect(payload.summary.displayText).toContain('不是按流量活跃度过滤');
+    expect(payload.summary.displayText).toContain('不是中文名称过滤');
+  });
+
   test('should constrain WebApplication metric-list narration to returned web metrics only', () => {
     const payload = buildOpenClawReplyContract({
       service: 'metrics',

@@ -17,7 +17,18 @@ describe('ResolutionSpecService extended getters', () => {
     const queryPolicy = ResolutionSpecService.getQueryConstructionPolicy();
 
     expect(serviceProfiles.topValues.requiredExecutionFields).toContain('start');
+    const topValuesServiceSpec = ResolutionSpecService.getServiceSpec('topValues');
+    const averageValuesServiceSpec = ResolutionSpecService.getServiceSpec('averageValues');
+    const timeValuesServiceSpec = ResolutionSpecService.getServiceSpec('timeValues');
+    expect(topValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
+    expect(topValuesServiceSpec.required).not.toContain('timeRange');
+    expect(averageValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
+    expect(averageValuesServiceSpec.required).not.toContain('timeRange');
+    expect(timeValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
+    expect(timeValuesServiceSpec.required).not.toContain('timeRange');
     expect(objectCatalog.WebApplication.hasArgument).toBe(true);
+    expect(objectCatalog.CompositeApplication.runtimeKey).toBe('DefinedApp');
+    expect(ResolutionSpecService.getObjectAliases().CompositeApplication).toEqual(expect.arrayContaining(['复合协议', '自动识别应用']));
     expect(groupSpec.pathTemplates.defaultBranches.BusinessGroup).toBeTruthy();
     expect(metricSpec.catalog.TPIO.domain).toBe('network_usage');
     expect(Array.isArray(templateSpec.stableQueryTemplates)).toBe(true);

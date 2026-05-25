@@ -25,16 +25,21 @@ describe('metadata truth source policy', () => {
     NapmMetadataService.clearCache();
   });
 
-  test('should list WebApplication instances through groupArguments, not protocol applications', async () => {
+  test('should list WebApplication instances through applications Type=3 catalog', async () => {
     const applicationsSpy = jest.spyOn(NapmMetadataService, 'getApplications')
-      .mockResolvedValue([{ value: 'HTTP', label: 'HTTP' }]);
+      .mockResolvedValue([
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 },
+        { value: 'server-app', label: 'server-app', applicationType: 2 },
+        { value: 'web-portal', label: 'web-portal', applicationType: 3 },
+        { value: 'auto-app', label: 'auto-app', applicationType: 4 }
+      ]);
     const groupArgumentsSpy = jest.spyOn(NapmMetadataService, 'getGroupArguments')
       .mockResolvedValue([{ value: 'web-portal', label: 'web-portal' }]);
 
     const result = await NapmMetadataService.listObjectInstances('WebApplication');
 
-    expect(groupArgumentsSpy).toHaveBeenCalledWith('WebApplication', '');
-    expect(applicationsSpy).not.toHaveBeenCalled();
+    expect(applicationsSpy).toHaveBeenCalledWith('');
+    expect(groupArgumentsSpy).not.toHaveBeenCalled();
     expect(result).toEqual([
       expect.objectContaining({
         value: 'web-portal',
@@ -43,8 +48,12 @@ describe('metadata truth source policy', () => {
         requestedObjectType: 'WebApplication',
         effectiveObjectType: 'WebApplication',
         metadataTruthDomain: 'object_instances',
-        providerType: 'groupArguments',
-        source: 'southbound_live_api'
+        providerType: 'applications',
+        source: 'southbound_live_api',
+        applicationType: 3,
+        applicationTypeFilter: [3],
+        applicationCatalogRole: 'web_business',
+        executionGroupType: 'WebApplication'
       })
     ]);
   });
@@ -61,22 +70,38 @@ describe('metadata truth source policy', () => {
     expect(ObjectMetadataRegistry.resolveObjectInstanceProvider('WebApplication')).toMatchObject({
       requestedObjectType: 'WebApplication',
       effectiveObjectType: 'WebApplication',
+      executionGroupType: 'WebApplication',
       metadataTruthDomain: 'object_instances',
-      providerType: 'groupArguments',
-      apiType: 'groupArguments',
+      providerType: 'applications',
+      apiType: 'applications',
+      applicationTypeFilter: [3],
       source: 'southbound_live_api'
     });
     expect(ObjectMetadataRegistry.resolveObjectInstanceProvider('DefinedApp')).toMatchObject({
       requestedObjectType: 'DefinedApp',
       effectiveObjectType: 'DefinedApp',
       providerType: 'applications',
-      apiType: 'applications'
+      apiType: 'applications',
+      applicationTypeFilter: [2]
+    });
+    expect(ObjectMetadataRegistry.resolveObjectInstanceProvider('CompositeApplication')).toMatchObject({
+      requestedObjectType: 'CompositeApplication',
+      effectiveObjectType: 'CompositeApplication',
+      executionGroupType: 'DefinedApp',
+      providerType: 'applications',
+      apiType: 'applications',
+      applicationTypeFilter: [4]
     });
   });
 
-  test('should list DefinedApp instances through applications, not WebApplication groupArguments', async () => {
+  test('should list DefinedApp instances through applications Type=2 only', async () => {
     const applicationsSpy = jest.spyOn(NapmMetadataService, 'getApplications')
-      .mockResolvedValue([{ value: 'HTTPS', label: 'HTTPS' }]);
+      .mockResolvedValue([
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 },
+        { value: 'server-app', label: 'server-app', applicationType: 2 },
+        { value: 'web-portal', label: 'web-portal', applicationType: 3 },
+        { value: 'auto-app', label: 'auto-app', applicationType: 4 }
+      ]);
     const groupArgumentsSpy = jest.spyOn(NapmMetadataService, 'getGroupArguments')
       .mockResolvedValue([{ value: 'web-portal', label: 'web-portal' }]);
 
@@ -84,16 +109,77 @@ describe('metadata truth source policy', () => {
 
     expect(applicationsSpy).toHaveBeenCalledWith('');
     expect(groupArgumentsSpy).not.toHaveBeenCalled();
-    expect(result).toEqual([
+    expect(result).toHaveLength(1);
+    expect(result.map(item => item.value)).toEqual(['server-app']);
+    expect(result).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        value: 'HTTPS',
+        value: 'server-app',
         type: 'DefinedApp',
         objectType: 'DefinedApp',
         requestedObjectType: 'DefinedApp',
         effectiveObjectType: 'DefinedApp',
         metadataTruthDomain: 'object_instances',
         providerType: 'applications',
-        source: 'southbound_live_api'
+        source: 'southbound_live_api',
+        applicationType: 2,
+        applicationTypeFilter: [2],
+        applicationCatalogRole: 'defined_application'
+      })
+    ]));
+  });
+
+  test('should list CompositeApplication instances through applications Type=4 only', async () => {
+    const applicationsSpy = jest.spyOn(NapmMetadataService, 'getApplications')
+      .mockResolvedValue([
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 },
+        { value: 'server-app', label: 'server-app', applicationType: 2 },
+        { value: 'web-portal', label: 'web-portal', applicationType: 3 },
+        { value: 'composite-app', label: 'composite-app', applicationType: 4 }
+      ]);
+    const groupArgumentsSpy = jest.spyOn(NapmMetadataService, 'getGroupArguments')
+      .mockResolvedValue([{ value: 'legacy-composite', label: 'legacy-composite' }]);
+
+    const result = await NapmMetadataService.listObjectInstances('CompositeApplication');
+
+    expect(applicationsSpy).toHaveBeenCalledWith('');
+    expect(groupArgumentsSpy).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      expect.objectContaining({
+        value: 'composite-app',
+        type: 'CompositeApplication',
+        objectType: 'CompositeApplication',
+        requestedObjectType: 'CompositeApplication',
+        effectiveObjectType: 'CompositeApplication',
+        executionGroupType: 'DefinedApp',
+        providerType: 'applications',
+        source: 'southbound_live_api',
+        applicationType: 4,
+        applicationTypeFilter: [4],
+        applicationCatalogRole: 'composite_application'
+      })
+    ]);
+  });
+
+  test('should list builtin port applications through applications Type=1 catalog', async () => {
+    jest.spyOn(NapmMetadataService, 'getApplications')
+      .mockResolvedValue([
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 },
+        { value: 'server-app', label: 'server-app', applicationType: 2 },
+        { value: 'web-portal', label: 'web-portal', applicationType: 3 }
+      ]);
+
+    const result = await NapmMetadataService.listObjectInstances('BuiltinApplication');
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        value: 'HTTP',
+        requestedObjectType: 'BuiltinApplication',
+        effectiveObjectType: 'BuiltinApplication',
+        executionGroupType: 'DefinedApp',
+        providerType: 'applications',
+        applicationType: 1,
+        applicationTypeFilter: [1],
+        applicationCatalogRole: 'builtin_port_application'
       })
     ]);
   });
@@ -118,9 +204,10 @@ describe('metadata truth source policy', () => {
           requestedObjectType: 'WebApplication',
           effectiveObjectType: 'WebApplication',
           metadataTruthDomain: 'object_instances',
-          providerType: 'groupArguments',
+          providerType: 'applications',
           source: 'southbound_live_api',
-          argumentType: 18,
+          applicationType: 3,
+          applicationTypeFilter: [3],
           fallbackUsed: false
         }
       ]);
@@ -137,17 +224,61 @@ describe('metadata truth source policy', () => {
     expect(listSpy).toHaveBeenCalledWith('WebApplication', '');
     expect(response.ok).toBe(true);
     expect(response.requestParams).toMatchObject({
-      type: 'groupArguments',
+      type: 'applications',
       json: 'true'
     });
-    expect(response.requestParams.argumentType).toEqual(expect.any(Number));
     expect(response.metadata).toMatchObject({
       requestedObjectType: 'WebApplication',
       effectiveObjectType: 'WebApplication',
       metadataTruthDomain: 'object_instances',
-      providerType: 'groupArguments',
-      source: 'southbound_live_api'
+      providerType: 'applications',
+      source: 'southbound_live_api',
+      applicationTypeFilter: [3]
     });
+  });
+
+  test('should execute business inventory resolvedQuery through applications Type=3 instead of groupArguments argumentType=4', async () => {
+    const applicationsSpy = jest.spyOn(NapmMetadataService, 'getApplications')
+      .mockResolvedValue([
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 },
+        { value: 'traffic-observe', label: '交通可观测性分析平台', applicationType: 3 },
+        { value: 'defined-app', label: 'defined-app', applicationType: 2 }
+      ]);
+    const groupArgumentsSpy = jest.spyOn(NapmMetadataService, 'getGroupArguments')
+      .mockResolvedValue([
+        { value: 'legacy-webapplication', label: 'legacy-webapplication' }
+      ]);
+
+    const response = await RequirementParserService.executeGatewayRequest({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      format: 'json',
+      userRequirement: '现在系统中有哪些业务？',
+      groups: [{ type: 'WebApplication' }],
+      semanticConstraints: {
+        operation: 'metadata_list',
+        targetObjectType: 'WebApplication'
+      }
+    });
+
+    expect(applicationsSpy).toHaveBeenCalledWith('');
+    expect(groupArgumentsSpy).not.toHaveBeenCalled();
+    expect(response.ok).toBe(true);
+    expect(response.requestParams).toEqual({
+      type: 'applications',
+      json: 'true'
+    });
+    expect(response.requestParams).not.toHaveProperty('argumentType');
+    expect(response.data).toEqual([
+      expect.objectContaining({
+        value: 'traffic-observe',
+        label: '交通可观测性分析平台',
+        type: 'WebApplication',
+        providerType: 'applications',
+        applicationType: 3,
+        applicationTypeFilter: [3]
+      })
+    ]);
   });
 
   test('should not validate WebApplication arguments against DefinedApp instances', async () => {
