@@ -24,6 +24,9 @@ const NapmMetadataService = require('./NapmMetadataService');
 const GroupPathPlannerService = require('./GroupPathPlannerService');
 const QueryMetadataConstraintService = require('./QueryMetadataConstraintService');
 const ResolutionSpecService = require('./ResolutionSpecService');
+const MetadataExecutionKernel = require('./MetadataExecutionKernel');
+const MetricExecutionKernel = require('./MetricExecutionKernel');
+const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
 const CsvParser = require('../../../src/utils/CsvParser');
 const TimeUtils = require('../../../src/utils/TimeUtils');
@@ -53,6 +56,22 @@ class RequirementParserService {
     this.napmMetadataService = NapmMetadataService;
     this.groupPathPlannerService = GroupPathPlannerService;
     this.queryMetadataConstraintService = QueryMetadataConstraintService;
+    this.metadataExecutionKernel = new MetadataExecutionKernel({
+      napmClient: this.napmClient,
+      groupBuilder: this.groupBuilder,
+      queryValidator: this.queryValidator,
+      napmMetadataService: this.napmMetadataService,
+      filterMetricInventoryForOwnership: this.filterMetricInventoryForOwnership.bind(this),
+      assertMetadataInventoryArgumentContract: this.assertMetadataInventoryArgumentContract.bind(this),
+      parseNapmPayload: this.parseNapmPayload.bind(this)
+    });
+    this.metricExecutionKernel = new MetricExecutionKernel({
+      napmClient: this.napmClient,
+      groupBuilder: this.groupBuilder,
+      queryValidator: this.queryValidator,
+      buildMetricCsv: this.buildMetricCsv.bind(this),
+      parseNapmPayload: this.parseNapmPayload.bind(this)
+    });
     this.assertDependencyContracts();
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
     this.stableQueryTemplates = this.loadStableQueryTemplates();
@@ -938,7 +957,8 @@ class RequirementParserService {
       'QUERY_SHAPE_INVALID',
       'DEPENDENCY_CONTRACT_MISMATCH',
       'METADATA_ARGUMENT_TYPE_UNRESOLVED',
-      'INVALID_METADATA_INVENTORY_ARGUMENT'
+      'INVALID_METADATA_INVENTORY_ARGUMENT',
+      'WORKFLOW_SERVICE_CONTRACT_MISMATCH'
     ]);
     const code = localCodes.has(error?.code) ? error.code : 'NAPM_UPSTREAM_ERROR';
     return {
@@ -987,6 +1007,9 @@ class RequirementParserService {
         granularity: passthroughGatewayRequest.granularity,
         format: passthroughGatewayRequest.format,
         userRequirement: passthroughGatewayRequest.userRequirement,
+        queryModeKey: passthroughGatewayRequest.queryModeKey,
+        semanticConstraints: passthroughGatewayRequest.semanticConstraints,
+        workflowType: passthroughGatewayRequest.workflowType,
         groups: passthroughGatewayRequest.groups ? passthroughGatewayRequest.groups.map(g => ({
           type: g.type,
           argument: g.argument
@@ -1004,158 +1027,34 @@ class RequirementParserService {
         response.requestUrl = buildSafeUrl(this.napmClient.baseUrl, fullParams);
       };
 
-      const metadataGroups = queryRequest.groups.map((group) => ({
-        ...group,
-        type: this.groupBuilder.parseGroupType(group?.type) || group?.type || null
-      }));
+      ExecutionKernelPolicy.assertWorkflowServiceContract(queryRequest);
+      const kernelType = ExecutionKernelPolicy.resolveExecutionKernel(queryRequest);
+      const kernelHelpers = {
+        response,
+        attachDebugRequestInfo,
+        buildGatewayRequestSummary: this.buildGatewayRequestSummary.bind(this),
+        buildExecutionDataSummary: this.buildExecutionDataSummary.bind(this)
+      };
 
-      if (queryRequest.service === 'metrics' && metadataGroups.length > 0) {
-        const metadataParams = {
-          type: 'metricsForGroup',
-          start: queryRequest.start,
-          end: queryRequest.end,
-          json: 'true',
-          ...this.groupBuilder.buildGroupParams(metadataGroups)
+      const kernelResult = kernelType === 'metadata'
+        ? await this.metadataExecutionKernel.execute(queryRequest, kernelHelpers, requestContext)
+        : kernelType === 'metric'
+          ? await this.metricExecutionKernel.execute(queryRequest, kernelHelpers, requestContext)
+          : null;
+
+      if (!kernelResult) {
+        const error = new Error(`No execution kernel accepted service: ${queryRequest.service || 'unknown'}`);
+        error.code = 'QUERY_SHAPE_INVALID';
+        error.details = {
+          service: queryRequest.service || null,
+          kernelType
         };
-        attachDebugRequestInfo(metadataParams);
-        const metadataMetrics = await this.napmMetadataService.getMetricsForGroupPath(metadataGroups);
-        const ownedMetrics = this.filterMetricInventoryForOwnership(metadataGroups, metadataMetrics);
-        response.ok = true;
-        response.service = queryRequest.service;
-        response.data = ownedMetrics;
-        logAudit('napm_metadata_metrics_for_group_completed', {
-          gatewayRequest: this.buildGatewayRequestSummary({ ...queryRequest, groups: metadataGroups }),
-          execution: this.buildExecutionDataSummary(ownedMetrics),
-          params: response.requestParamsMasked,
-          url: response.requestUrl
-        }, requestContext);
-        return response;
+        throw error;
       }
 
-      if (queryRequest.service === 'groups' && metadataGroups.length === 1) {
-        const firstGroup = metadataGroups[0] || {};
-        const firstType = String(firstGroup.type || '').trim();
-        const firstArgument = String(firstGroup.argument || '').trim();
-        let namedList = null;
-        let metadataTypeForDebug = 'groups';
-        let metadataParams = null;
-        let instanceProviderMetadata = null;
-
-        instanceProviderMetadata = await this.napmMetadataService.resolveObjectInstanceProviderMetadata(firstType);
-        if (instanceProviderMetadata) {
-          this.assertMetadataInventoryArgumentContract(firstType, firstArgument, instanceProviderMetadata);
-          namedList = await this.napmMetadataService.listObjectInstances(firstType, firstArgument);
-          metadataTypeForDebug = instanceProviderMetadata.apiType;
-        }
-
-        if (Array.isArray(namedList)) {
-          if (metadataTypeForDebug === 'groups') {
-            metadataParams = {
-              type: 'groups',
-              start: queryRequest.start,
-              end: queryRequest.end,
-              json: 'true',
-              ...this.groupBuilder.buildGroupParams(metadataGroups)
-            };
-          } else if (metadataTypeForDebug === 'groupArguments') {
-            metadataParams = {
-              type: 'groupArguments',
-              argumentType: instanceProviderMetadata.argumentType,
-              json: 'true'
-            };
-          } else {
-            metadataParams = {
-              type: metadataTypeForDebug,
-              json: 'true'
-            };
-          }
-          attachDebugRequestInfo(metadataParams);
-          response.ok = true;
-          response.service = queryRequest.service;
-          response.data = namedList;
-          response.metadata = instanceProviderMetadata;
-          logAudit('napm_metadata_named_groups_completed', {
-            gatewayRequest: this.buildGatewayRequestSummary({ ...queryRequest, groups: metadataGroups }),
-            execution: this.buildExecutionDataSummary(namedList),
-            metadata: instanceProviderMetadata,
-            params: response.requestParamsMasked,
-            url: response.requestUrl
-          }, requestContext);
-          return response;
-        }
-      }
-
-      logger.info('正在验证请求参数...');
-      this.queryValidator.validateGatewayRequest(passthroughGatewayRequest);
-
-      const params = {
-        type: queryRequest.service,
-        start: queryRequest.start,
-        end: queryRequest.end,
-        json: 'true'
-      };
-
-      if (queryRequest.service === 'topValues') {
-        params.topMetric = queryRequest.topMetric || queryRequest.metric;
-        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
-        params.topCount = queryRequest.topCount || 20;
-      } else if (queryRequest.service === 'averageValues') {
-        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
-      } else if (queryRequest.service === 'timeValues') {
-        params.metrics = this.buildMetricCsv(queryRequest, queryRequest.service);
-        params.granularity = queryRequest.granularity;
-      }
-
-      if (queryRequest.groups && queryRequest.groups.length > 0) {
-        Object.assign(params, this.groupBuilder.buildGroupParams(queryRequest.groups));
-      }
-
-      logger.info('正在构建 URL...');
-      const fullParams = {
-        UserName: this.napmClient.username,
-        Password: this.napmClient.password,
-        ...params
-      };
-      response.requestParams = { ...params };
-      response.requestParamsMasked = maskSensitiveParams(fullParams);
-      const url = buildSafeUrl(this.napmClient.baseUrl, fullParams);
-      response.requestUrl = url;
-      logger.info('拼接好的 URL:');
-      logger.info(url);
-      logger.info('========================================');
-
-      logAudit('napm_api_request_built', {
-        gatewayRequest: this.buildGatewayRequestSummary(queryRequest),
-        params: maskSensitiveParams(fullParams),
-        url
-      }, requestContext);
-
-      logger.info('正在请求 URL...');
-      const rawPayload = await this.napmClient.get(params);
-      const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
-      logger.info('请求到的数据:');
-      logger.info(typeof rawPayload === 'string' ? rawPayload.substring(0, 200) + (rawPayload.length > 200 ? '...' : '') : JSON.stringify(rawPayload).substring(0, 200));
-      logger.info('数据长度:', csvText.length);
-
-      logger.info('正在解析数据...');
-      const data = this.parseNapmPayload(rawPayload);
-      logger.info('解析到数据行数:', data.length);
-      logger.info('解析后的数据:');
-      logger.info(JSON.stringify(data.slice(0, 3), null, 2));
-
-      response.ok = true;
-      response.service = queryRequest.service;
-      response.data = data;
-
-      logAudit('napm_execution_completed', {
-        gatewayRequest: this.buildGatewayRequestSummary(queryRequest),
-        execution: this.buildExecutionDataSummary(data)
-      }, requestContext);
-
-      logger.info('网关请求执行成功。');
+      logger.info('Gateway request executed through split execution kernel.');
       logger.info('========================================\n');
-
-      return response;
+      return kernelResult;
     } catch (error) {
       logger.error('网关请求执行失败:', error.message);
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
