@@ -334,6 +334,20 @@ function looksLikeUnsupportedBusinessInventoryExplanation(text = '') {
   return mentionsBusinessInventory && unsupportedExplanation;
 }
 
+function looksLikeInvalidBusinessInventoryAnswer(text = '') {
+  const content = String(text || '').trim();
+  if (!content) {
+    return false;
+  }
+
+  const mentionsBusinessInventory = /(?:系统中|系统里|当前|现在|业务|业务系统|WebApplication)/i.test(content);
+  if (!mentionsBusinessInventory) {
+    return false;
+  }
+
+  return /(?:自定义业务应用|type\s*=\s*2|type=2|Type=2|DefinedApp|已定义应用|Web业务应用[\s\S]{0,120}自定义业务应用|业务相关[^，。！？\n]{0,20}(?:14|十四)\s*个|python\s*(?:按|过滤|筛选|处理|解析|输出)|exec\s*(?:工具|执行|命令)|直接调用后端|直接调(?:用)?后端|直接从API|未经过.*(?:中间管道|napm-skill-query)|没有经过.*(?:中间管道|napm-skill-query))/i.test(content);
+}
+
 function isMeaningfulText(value = '') {
   const text = String(value || '').trim();
   if (!text) {
@@ -2186,6 +2200,23 @@ function buildSkillRequiredReplyForPrompt(prompt = '') {
     : buildSkillRequiredReply();
 }
 
+function shouldForceSkillRecordForPrompt(prompt = '', guardState = null) {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  return Boolean(
+    isBusinessObjectInventoryPrompt(text)
+    || isBusinessGroupInventoryPrompt(text)
+    || isCompositeApplicationInventoryPrompt(text)
+    || isMetricInventoryPrompt(text)
+    || isMetricInventoryDetailPrompt(text)
+    || isHierarchyCatalogPrompt(text)
+    || isNapmMetaFollowUpPrompt(text, guardState)
+  );
+}
+
 function hasVerifiableSkillRecord(record = null) {
   return Boolean(
     record
@@ -2731,6 +2762,8 @@ function buildNapmRoutingSystemContext() {
     `Interpret explicit ${businessGroupAliases} wording as BusinessGroup scope.`,
     'For inventory wording such as "现在系统中有哪些业务？" or "系统中有哪些业务？", construct groups=[{type:"WebApplication"}]. Do not switch to BusinessGroup because WebApplication has many entries or appears ambiguous.',
     'For WebApplication/business inventory, the skill will list applications Type=3. For BusinessGroup/workgroup inventory, the user must explicitly say 业务组, 工作组, or BusinessGroup.',
+    'Never answer "系统中有哪些业务" by merging applications Type=2 and Type=3. Type=2 is DefinedApp/已定义应用, not WebApplication/业务系统.',
+    'Never claim that business inventory was queried by direct curl/API, exec, python filtering, raw backend probing, or by bypassing napm-skill-query. If a valid current skill result is unavailable, say the question must be executed through napm-skill-query with resolvedQuery first.',
     `For inventory questions, use ${groupInventoryRule} Example: "系统中有哪些工作组？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For business-system inventory questions, Example: "系统中有哪些业务系统？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}].`,
     'For CompositeApplication inventory questions such as "系统中有哪些自动识别的应用？", construct service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"CompositeApplication"}]. Do not add argument:"all"; full inventory is represented by omitting argument.',
@@ -3085,6 +3118,12 @@ const plugin = {
               content: buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
             };
           }
+          if (looksLikeInvalidBusinessInventoryAnswer(leakedReasoningText)) {
+            const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
+            return {
+              content: rememberedReplyText || buildSkillRequiredReplyForPrompt(activePrompt)
+            };
+          }
           if (looksLikeUnsupportedBusinessInventoryExplanation(leakedReasoningText)) {
             return {
               content: buildBusinessInventoryCorrectedReply(rememberedRecord)
@@ -3127,6 +3166,11 @@ const plugin = {
                 cancel: true
               };
             }
+            return {
+              content: buildSkillRequiredReplyForPrompt(activePrompt)
+            };
+          }
+          if (shouldForceSkillRecordForPrompt(activePrompt, guardState) && !rememberedRecord) {
             return {
               content: buildSkillRequiredReplyForPrompt(activePrompt)
             };
@@ -3182,6 +3226,12 @@ const plugin = {
             message: buildAssistantTextMessage(buildExecutionTraceReplyFromRememberedRecord(rememberedRecord), message)
           };
         }
+        if (looksLikeInvalidBusinessInventoryAnswer(existingText)) {
+          const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReplyForPrompt(activePrompt);
+          return {
+            message: buildAssistantTextMessage(rememberedReplyText, message)
+          };
+        }
         if (looksLikeUnsupportedBusinessInventoryExplanation(existingText)) {
           return {
             message: buildAssistantTextMessage(buildBusinessInventoryCorrectedReply(rememberedRecord), message)
@@ -3208,6 +3258,11 @@ const plugin = {
           };
         }
         if (requiresSkillBackedReply && !rememberedRecord) {
+          return {
+            message: buildAssistantTextMessage(buildSkillRequiredReplyForPrompt(activePrompt), message)
+          };
+        }
+        if (shouldForceSkillRecordForPrompt(activePrompt, guardState) && !rememberedRecord) {
           return {
             message: buildAssistantTextMessage(buildSkillRequiredReplyForPrompt(activePrompt), message)
           };

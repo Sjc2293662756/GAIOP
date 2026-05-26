@@ -179,7 +179,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     const testApi = plugin.__test__;
 
     const ctx = createWeComCtx('business-inventory-python-bypass-trace');
-    const prompt = '系统中有哪些业务？';
+    const prompt = '当前系统里有哪些业务系统？';
 
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
@@ -265,5 +265,35 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(result.content).toContain('不是按流量活跃度过滤');
     expect(result.content).toContain('不是中文名称过滤');
     expect(result.content).not.toContain('近期有活跃流量');
+  });
+
+  test('should block first-answer business inventory bypass without skill record', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+
+    const ctx = createWeComCtx('business-inventory-first-answer-bypass');
+    const prompt = '系统中有哪些业务？';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+
+    const result = await messageSending({
+      content: [
+        '系统中"业务"相关共 14个：',
+        'Web业务应用（9个）：Esxi-Web、Zabbix-web、交通可观测性分析平台',
+        '自定义业务应用（5个）：Esxi-local、HIS系统1、Zabbix、可观测239、回溯238',
+        '查询方式：直接调用后端 type=applications API -> python按type字段过滤 -> 返回结果，未经过中间管道过滤。'
+      ].join('\n')
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('NAPM skill');
+    expect(result.content).toContain('未拿到有效 skill 结果');
+    expect(result.content).not.toContain('14个');
+    expect(result.content).not.toContain('自定义业务应用');
+    expect(result.content).not.toContain('python按type字段过滤');
+    expect(result.content).not.toContain('未经过中间管道');
   });
 });
