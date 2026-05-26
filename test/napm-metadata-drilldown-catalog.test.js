@@ -68,6 +68,34 @@ describe('NapmMetadataService drilldown catalog', () => {
     );
   });
 
+  test('should prefer top-level definitions when a group type appears in multiple tree locations', async () => {
+    const topLevelGroups = await NapmMetadataService.getTopLevelGroups();
+    const topLevelKeys = topLevelGroups.map((item) => item.key);
+    const duplicatedTopLevelKeys = [];
+
+    for (const groupType of topLevelKeys) {
+      const nodes = await NapmMetadataService.findGroupNodesByType(groupType);
+      if (nodes.length > 1 && nodes.some((node) => Array.isArray(node.path) && node.path.length === 1)) {
+        duplicatedTopLevelKeys.push(groupType);
+      }
+    }
+
+    expect(duplicatedTopLevelKeys).toEqual(
+      expect.arrayContaining(['IPAddress', 'BusinessGroup', 'DefinedApp', 'WebApplication'])
+    );
+
+    for (const groupType of duplicatedTopLevelKeys) {
+      const result = await NapmMetadataService.getDrilldownPathsForGroupType(groupType, {
+        maxDepth: 2
+      });
+
+      expect(result).toBeTruthy();
+      expect(result.sourcePath).toEqual([result.groupType]);
+      expect(result.sourcePathText).toBe(result.groupType);
+      expect(result.isTopLevel).toBe(true);
+    }
+  });
+
   test('should enumerate common WebApplication drilldown paths from static tree', async () => {
     const result = await NapmMetadataService.getDrilldownPathsForGroupType('WebApplication', {
       maxDepth: 2

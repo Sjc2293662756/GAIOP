@@ -26,7 +26,7 @@ interface:
     - web application / website / site / plain business system => WebApplication unless the user explicitly says business group
     - plain application / 应用 is ambiguous and must not be answered from groups-tree Application or raw type=applications full catalog.
     - known application / defined application / 已定义应用 / 服务器应用 / 协议应用 => DefinedApp catalog from applications Type=2.
-    - auto-recognized application / 自动识别应用 / 特征识别应用 / composite protocol/application => CompositeApplication catalog from applications Type=4.
+    - auto-recognized application / 自动识别应用 / 自动识别的应用 / 自动识别出来的应用 / 系统自动识别的应用 / 特征识别应用 / composite protocol/application => CompositeApplication catalog from applications Type=4.
     - builtin port application / 内置端口应用 / 系统内置应用 => BuiltinApplication catalog from applications Type=1.
     - business / business system / Web application => WebApplication catalog from applications Type=3.
     - unknown application / unknown port traffic => OtherApp runtime namespace, not applications catalog.

@@ -45,7 +45,7 @@
 - `指标使用介绍.md`：提供指标的模块分类、指标分类、适合场景与概览模块归属。
 - `指标使用介绍2.md`：提供不同 `group` 维度下的指标归属、静态候选与 `metricsForGroup` 最终校验原则。
 - `api参数.pdf`：提供主要 `groupType` 与 metric code 的官方名称。
-- 项目当前实现：`src/constants/metricDomains.js`、`config/metric-semantic-disambiguation.v1.json`、`NapmMetadataService.getMetricsForGroupPath()`。
+- 项目当前实现：`src/constants/metricDomains.js`、`NapmMetadataService.getMetricsForGroupPath()`。
 
 ### 2.5 top-level-metric-ownership.md
 主要来源：

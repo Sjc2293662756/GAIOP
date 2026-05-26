@@ -138,7 +138,7 @@ class NapmMetadataService {
    */
   async getDrilldownPathsForGroupType(groupType, options = {}) {
     const candidates = await this.findGroupNodesByType(groupType);
-    const targetNode = candidates[0] || null;
+    const targetNode = this.selectPreferredGroupNode(candidates);
     if (!targetNode) {
       return null;
     }
@@ -815,7 +815,7 @@ class NapmMetadataService {
     const tree = await this.getGroupsTree();
     const matches = [];
     this.collectGroupNodesByType(tree, target, matches);
-    return matches.sort((left, right) => this.scoreGroupNode(right) - this.scoreGroupNode(left));
+    return matches.sort((left, right) => this.compareGroupNodesForCanonicalSelection(left, right));
   }
 
   collectGroupNodesByType(nodes = [], target = '', acc = []) {
@@ -849,6 +849,36 @@ class NapmMetadataService {
       score += 5;
     }
     return score;
+  }
+
+  selectPreferredGroupNode(nodes = []) {
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      return null;
+    }
+
+    return nodes
+      .slice()
+      .sort((left, right) => this.compareGroupNodesForCanonicalSelection(left, right))[0] || null;
+  }
+
+  isTopLevelGroupNode(node) {
+    return Array.isArray(node?.path) && node.path.length === 1;
+  }
+
+  compareGroupNodesForCanonicalSelection(left, right) {
+    const leftTopLevel = this.isTopLevelGroupNode(left);
+    const rightTopLevel = this.isTopLevelGroupNode(right);
+
+    if (leftTopLevel !== rightTopLevel) {
+      return leftTopLevel ? -1 : 1;
+    }
+
+    const scoreDiff = this.scoreGroupNode(right) - this.scoreGroupNode(left);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+
+    return String(left?.pathText || '').localeCompare(String(right?.pathText || ''));
   }
 
   /**

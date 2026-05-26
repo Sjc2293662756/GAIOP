@@ -470,7 +470,11 @@
       "CompositeApplication": [
         "CompositeApplication",
         "自动识别应用",
+        "自动识别的应用",
+        "自动识别出来的应用",
+        "系统自动识别的应用",
         "特征识别应用",
+        "特征识别的应用",
         "复合协议",
         "复合应用",
         "多协议应用",
@@ -1044,7 +1048,11 @@
         "aliases": [
           "CompositeApplication",
           "自动识别应用",
+          "自动识别的应用",
+          "自动识别出来的应用",
+          "系统自动识别的应用",
           "特征识别应用",
+          "特征识别的应用",
           "复合协议",
           "复合应用",
           "多协议应用",
@@ -1608,7 +1616,11 @@
         "defined app": "DefinedApp",
         "compositeapplication": "CompositeApplication",
         "自动识别应用": "CompositeApplication",
+        "自动识别的应用": "CompositeApplication",
+        "自动识别出来的应用": "CompositeApplication",
+        "系统自动识别的应用": "CompositeApplication",
         "特征识别应用": "CompositeApplication",
+        "特征识别的应用": "CompositeApplication",
         "复合协议": "CompositeApplication",
         "复合应用": "CompositeApplication",
         "多协议应用": "CompositeApplication",
@@ -8015,7 +8027,6 @@
   },
   "templates": {
     "stableQueryTemplatesEnabledInSkillRuntime": false,
-    "stableQueryTemplatesSource": "config/stable-query-templates.v1.json",
     "stableQueryTemplates": [
       {
         "id": "ip-traffic-topn-v1",

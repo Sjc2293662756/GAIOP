@@ -151,7 +151,65 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
 
     expect(result).toBeTruthy();
     expect(typeof result.content).toBe('string');
-    expect(result.content).toContain('必须经 NAPM skill 执行后才能回答');
-    expect(result.content).toContain('本轮未拿到有效 skill 结果');
+    expect(result.content).toContain('service=drilldownCatalog');
+    expect(result.content).toContain('napm-skill-query');
+    expect(result.content).toContain('本轮没有拿到有效的 drilldownCatalog skill 结果');
+  }, 30000);
+
+  test('should block manual children-empty hierarchy inference for drilldown prompts', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(def) {
+        tools.set(def.name, def);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-hierarchy-manual',
+      conversationId: 'conv-hierarchy-manual',
+      sessionKey: 'session-hierarchy-manual',
+      sessionId: 'session-hierarchy-manual',
+      runId: 'run-hierarchy-manual'
+    };
+
+    const prompt = '现在业务组有哪些下钻路径？';
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+
+    const result = await messageSending({
+      content: [
+        '读取本地静态文件 groups-tree.static.json，找到 key: "BusinessGroup" 节点。',
+        '该节点 children: []，所以系统中 BusinessGroup 在维度树中没有子节点。',
+        'BusinessGroup -> IPAddress 等组合路径是基于 NAPM 维度体系的理解推测。'
+      ].join('\n')
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('service=drilldownCatalog');
+    expect(result.content).toContain('napm-skill-query');
+    expect(result.content).not.toContain('该节点 children: []');
+    expect(result.content).not.toContain('BusinessGroup -> IPAddress');
   }, 30000);
 });

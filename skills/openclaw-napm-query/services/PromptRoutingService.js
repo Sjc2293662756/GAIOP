@@ -1,3 +1,7 @@
+const {
+  classifyApplicationCatalogPrompt
+} = require('./ApplicationCatalogSemanticRules');
+
 /**
  * PromptRoutingService.js
  *
@@ -89,7 +93,10 @@ function inferMetricInventoryGroup(prompt = '') {
   if (/(BusinessGroup|业务组|工作组|业务分组)/i.test(text)) return 'BusinessGroup';
   if (/(PageFamily|页面族|页面分类)/i.test(text)) return 'PageFamily';
   if (/(^|[^A-Za-z])User([^A-Za-z]|$)|用户/.test(text)) return 'User';
-  if (/(CompositeApplication|自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|组合应用)/i.test(text)) return 'CompositeApplication';
+  const classification = classifyApplicationCatalogPrompt(text);
+  if (classification.objectType && classification.objectType !== 'BusinessGroup') {
+    return classification.objectType;
+  }
   if (/(DefinedApp|Application|已知应用|协议应用)/i.test(text)) return 'DefinedApp';
   if (/(WebApplication|Web应用|web应用|网站|站点|业务系统)/i.test(text)) return 'WebApplication';
   if (/业务/.test(text)) return 'WebApplication';
@@ -128,7 +135,7 @@ function isPlainApplicationInventoryPrompt(prompt = '') {
   if (!hasInventoryIntent) {
     return false;
   }
-  return !/(业务|业务系统|Web应用|web应用|网站|站点|已定义应用|服务器应用|协议应用|自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|内置应用|内置端口应用|未知应用|未知端口|其他应用|其它应用|WebApplication|DefinedApp|BuiltinApplication|CompositeApplication|OtherApp)/i.test(text);
+  return classifyApplicationCatalogPrompt(text).ambiguous === true;
 }
 
 // 推断概览类问句更偏向哪个业务场景。

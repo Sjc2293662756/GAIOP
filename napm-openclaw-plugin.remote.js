@@ -308,6 +308,19 @@ function looksLikeNapmBypassProcessText(text = '') {
   return /(?:Node\.js\s*脚本|python3|Python\s*解析|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|绕过|跨过|没走\s*skill|没有走\s*skill|没走任何中间层|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
 }
 
+function looksLikeManualHierarchyInferenceText(text = '') {
+  const content = String(text || '').trim();
+  if (!content) {
+    return false;
+  }
+
+  const mentionsHierarchySource = /(?:groups-tree\.static\.json|维度树|group\s*树|group\s*tree|children\s*:\s*\[\s*\]|children\s+为空|叶子节点|leaf\s*node|key\s*:\s*["']?[A-Za-z]+["']?)/i.test(content);
+  const manualInference = /(?:手动|直接读|读取.*JSON|递归搜索|找到.*节点|自己.*判断|推测|猜测|组合路径|类似下钻|不依赖.*子树|无法沿树结构下钻|没有子节点|没有下层|children\s*为空)/i.test(content);
+  const bypassSource = /(?:没有走\s*skill|没走\s*skill|没有走\s*napm-skill-query|没走\s*napm-skill-query|没有调用\s*napm-skill-query|没调用\s*napm-skill-query|直接调用.*NapmMetadataService|直接查.*groups-tree)/i.test(content);
+
+  return (mentionsHierarchySource && manualInference) || bypassSource;
+}
+
 function looksLikeUnsupportedBusinessInventoryExplanation(text = '') {
   const content = String(text || '').trim();
   if (!content) {
@@ -2042,6 +2055,20 @@ function buildSkillRequiredReply() {
   ].join('\n');
 }
 
+function buildHierarchySkillRequiredReply() {
+  return [
+    '当前问题属于 NAPM 下钻/层级目录查询，不能手动读取 groups-tree.static.json、不能只看某个 children=[] 节点，也不能用组合路径推测回答。',
+    '必须先由 OpenClaw 构造 resolvedQuery：service=drilldownCatalog，groups=[{type:"目标对象"}]，再调用 napm-skill-query。',
+    '本轮没有拿到有效的 drilldownCatalog skill 结果，因此不输出推测性下钻路径。'
+  ].join('\n');
+}
+
+function buildSkillRequiredReplyForPrompt(prompt = '') {
+  return isHierarchyCatalogPrompt(prompt)
+    ? buildHierarchySkillRequiredReply()
+    : buildSkillRequiredReply();
+}
+
 function hasVerifiableSkillRecord(record = null) {
   return Boolean(
     record
@@ -2592,6 +2619,8 @@ function buildNapmRoutingSystemContext() {
     `For metric-inventory questions, use ${metricInventoryRule} Example: "业务都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}]. Example: "工作组都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For hierarchy questions, use ${hierarchyRule} Example: "BusinessGroup 可以往下钻到哪里？" -> service=drilldownCatalog, groups=[{type:"BusinessGroup"}].`,
     'Questions about hierarchy or drilldown structure, such as which drilldown paths a BusinessGroup or IPAddress supports, must also go through `napm-skill-query` as structured resolvedQuery instead of being answered from general knowledge.',
+    'For hierarchy or drilldown questions, never manually inspect groups-tree.static.json, never decide from a single `children: []` node, and never invent "combination paths"; answer only from the current `drilldownCatalog` skill result.',
+    'If no current `drilldownCatalog` skill result exists, stop and say the question must be executed through `napm-skill-query` with service=drilldownCatalog instead of giving guessed hierarchy.',
     'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first production entry.',
     'This rule also applies to boundary-check requests such as restart, deploy, modify config, inspect SQL, code debugging, or DB-internal asks when they mention NAPM-monitored objects.',
     'If `napm-skill-query` returns decision.next_action=`REJECT_AND_REDIRECT`, do not call exec, shell, restart, deployment, or configuration tools. Explain that the request is outside the NAPM skill boundary and invite the user to ask a NAPM query, analysis, explanation, or result-interpretation question instead.',
@@ -2899,6 +2928,12 @@ const plugin = {
               content: buildBusinessInventoryCorrectedReply(rememberedRecord)
             };
           }
+          if (isHierarchyCatalogPrompt(activePrompt) && looksLikeManualHierarchyInferenceText(leakedReasoningText)) {
+            const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
+            return {
+              content: rememberedReplyText || buildHierarchySkillRequiredReply()
+            };
+          }
           const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(leakedReasoningText)
             ? buildRememberedSkillReplyText(rememberedRecord)
             : '';
@@ -2915,7 +2950,7 @@ const plugin = {
               };
             }
             return {
-              content: buildSkillRequiredReply()
+              content: buildSkillRequiredReplyForPrompt(activePrompt)
             };
           }
           if (shouldCancelNapmPreviewMessage(event, ctx, activePrompt, guardState, rememberedRecord)) {
@@ -2931,7 +2966,7 @@ const plugin = {
               };
             }
             return {
-              content: buildSkillRequiredReply()
+              content: buildSkillRequiredReplyForPrompt(activePrompt)
             };
           }
 
@@ -2990,8 +3025,14 @@ const plugin = {
             message: buildAssistantTextMessage(buildBusinessInventoryCorrectedReply(rememberedRecord), message)
           };
         }
+        if (isHierarchyCatalogPrompt(activePrompt) && looksLikeManualHierarchyInferenceText(existingText)) {
+          const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
+          return {
+            message: buildAssistantTextMessage(rememberedReplyText || buildHierarchySkillRequiredReply(), message)
+          };
+        }
         if (looksLikeNapmBypassProcessText(existingText)) {
-          const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReply();
+          const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReplyForPrompt(activePrompt);
           return {
             message: buildAssistantTextMessage(rememberedReplyText, message)
           };
@@ -3006,7 +3047,7 @@ const plugin = {
         }
         if (requiresSkillBackedReply && !rememberedRecord) {
           return {
-            message: buildAssistantTextMessage(buildSkillRequiredReply(), message)
+            message: buildAssistantTextMessage(buildSkillRequiredReplyForPrompt(activePrompt), message)
           };
         }
         return undefined;
@@ -3055,6 +3096,7 @@ module.exports.__test__ = {
   buildRememberedSkillReplyText,
   buildExecutionTraceReplyFromRememberedRecord,
   buildSkillRequiredReply,
+  buildHierarchySkillRequiredReply,
   getRememberedRecordForPrompt,
   buildOverviewResolvedQuery,
   buildMetricInventoryResolvedQuery,
@@ -3073,6 +3115,7 @@ module.exports.__test__ = {
   isNapmMetaFollowUpPrompt,
   isPacketLossClientTopPrompt,
   looksLikeNapmBypassProcessText,
+  looksLikeManualHierarchyInferenceText,
   looksLikeUnsupportedBusinessInventoryExplanation,
   shouldRequireSkillBackedReply,
   normalizeHierarchyQuestionTarget,

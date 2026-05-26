@@ -11,6 +11,9 @@ const {
   loadResolutionSpec
 } = require('./ResolutionSpecService');
 const TimeRangeService = require('./ResolvedQueryTimeRangeService');
+const {
+  classifyApplicationCatalogPrompt
+} = require('./ApplicationCatalogSemanticRules');
 
 // 深拷贝 spec 等 JSON 兼容对象，避免解析阶段修改共享配置。
 function cloneJson(value) {
@@ -331,34 +334,15 @@ function isPlainApplicationCatalogPrompt(prompt = '') {
   if (!isMetadataListPrompt(text)) {
     return false;
   }
-  if (!/应用|Application/i.test(text)) {
-    return false;
-  }
-  return !/已定义应用|服务器应用|服务应用|协议应用|自动识别应用|特征识别应用|内置应用|内置端口应用|系统内置应用|复合协议|复合应用|多协议应用|组合应用|Web应用|web应用|业务系统|业务|网站|站点|未知应用|未知端口|其他应用|其它应用|WebApplication|DefinedApp|BuiltinApplication|CompositeApplication|OtherApp/i.test(text);
+  return classifyApplicationCatalogPrompt(text).ambiguous === true;
 }
 
 function inferApplicationCatalogGroup(prompt = '', fallbackGroup = 'WebApplication') {
   const text = normalizeText(prompt);
-
-  if (/工作组|业务组|业务分组|BusinessGroup/i.test(text)) {
-    return 'BusinessGroup';
+  const classification = classifyApplicationCatalogPrompt(text);
+  if (classification.objectType) {
+    return classification.objectType;
   }
-  if (/内置应用|内置端口应用|系统内置应用|BuiltinApplication/i.test(text)) {
-    return 'BuiltinApplication';
-  }
-  if (/自动识别应用|特征识别应用|复合协议|复合应用|多协议应用|组合应用|CompositeApplication|composite\s*application/i.test(text)) {
-    return 'CompositeApplication';
-  }
-  if (/未知应用|未知端口|OtherApp/i.test(text)) {
-    return 'OtherApp';
-  }
-  if (/已定义应用|服务器应用|协议应用|DefinedApp/i.test(text)) {
-    return 'DefinedApp';
-  }
-  if (/业务系统|Web应用|web应用|网站|站点|业务|WebApplication/i.test(text)) {
-    return 'WebApplication';
-  }
-
   return fallbackGroup || 'WebApplication';
 }
 

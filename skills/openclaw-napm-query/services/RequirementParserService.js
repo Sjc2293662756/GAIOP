@@ -145,7 +145,7 @@ class RequirementParserService {
 
   /**
    * 加载稳定查询模板。
-   * 优先读取 resolution spec 中的运行时模板定义，其次回退到本地 JSON 配置。
+   * 只读取 resolution spec 中的模板定义；旧版独立 JSON 配置已下线。
    */
   loadStableQueryTemplates() {
     if (this.areGatewayTemplatesDisabled()) {
@@ -171,18 +171,7 @@ class RequirementParserService {
           .filter(Boolean);
       }
 
-      const configPath = path.join(__dirname, '../../../config/stable-query-templates.v1.json');
-      const raw = fs.readFileSync(configPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.enabled === false) {
-        logger.warn('Gateway stable templates are disabled by config switch.');
-        return [];
-      }
-      return Array.isArray(parsed?.templates)
-        ? parsed.templates
-          .map((template) => this.normalizeStableTemplateDefinition(template))
-          .filter(Boolean)
-        : [];
+      return [];
     } catch (error) {
       logger.warn('Failed to load stable query templates:', error.message);
       return [];

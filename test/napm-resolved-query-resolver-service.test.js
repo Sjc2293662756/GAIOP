@@ -229,16 +229,23 @@ describe('NapmResolvedQueryResolverService', () => {
   });
 
   test('should resolve auto-recognized application inventory prompt into CompositeApplication metadata_list', () => {
-    const result = ResolverService.resolvePrompt('系统中有哪些自动识别应用？');
+    [
+      '系统中有哪些自动识别应用？',
+      '系统中有哪些自动识别的应用？',
+      '系统中有哪些自动识别出来的应用？',
+      '系统中有哪些系统自动识别的应用？'
+    ].forEach((prompt) => {
+      const result = ResolverService.resolvePrompt(prompt);
 
-    expect(result.ok).toBe(true);
-    expect(result.resolvedQuery).toMatchObject({
-      service: 'groups',
-      queryModeKey: 'metadata',
-      groups: [{ type: 'CompositeApplication' }],
-      semanticConstraints: {
-        operation: 'metadata_list'
-      }
+      expect(result.ok).toBe(true);
+      expect(result.resolvedQuery).toMatchObject({
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'CompositeApplication' }],
+        semanticConstraints: {
+          operation: 'metadata_list'
+        }
+      });
     });
   });
 
@@ -263,6 +270,7 @@ describe('NapmResolvedQueryResolverService', () => {
 
   test('should keep composite application wording out of DefinedApp prompt routing', () => {
     expect(PromptRoutingService.inferMetricInventoryGroup('复合协议都可以查哪些指标？')).toBe('CompositeApplication');
+    expect(PromptRoutingService.inferMetricInventoryGroup('自动识别的应用都可以查哪些指标？')).toBe('CompositeApplication');
     expect(PromptRoutingService.normalizeHierarchyQuestionTarget('CompositeApplication 可以往下钻到哪里？')).toBe('CompositeApplication');
     expect(PromptRoutingService.resolvePromptRoute('系统中有哪些应用？')).toMatchObject({
       routeType: 'ambiguous_application_inventory'

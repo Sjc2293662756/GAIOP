@@ -166,7 +166,7 @@ These are known NAPM semantics, not a gateway rule layer. Use them to avoid comm
 - `业务都可以查哪些指标` should be answered from the `WebApplication` view, not the `BusinessGroup` view
 - Plain `应用` / `系统中有哪些应用` is ambiguous; do not answer it from groups-tree `Application` nodes or raw full `applications` catalog. Clarify into WebApplication(Type=3), DefinedApp(Type=2), BuiltinApplication(Type=1), CompositeApplication(Type=4), or OtherApp.
 - `已定义应用`, `服务器应用`, `协议应用` -> `DefinedApp` from `applications Type=2`
-- `自动识别应用`, `特征识别应用`, `复合协议`, `复合应用`, `多协议应用` -> `CompositeApplication` from `applications Type=4`
+- `自动识别应用`, `自动识别的应用`, `自动识别出来的应用`, `系统自动识别的应用`, `特征识别应用`, `复合协议`, `复合应用`, `多协议应用` -> `CompositeApplication` from `applications Type=4`
 - `客户端`, `客户端IP` -> `ClientIPs`
 - `服务端`, `服务端IP`, explicit IP address -> `IPAddress` or server-side IP dimension according to query path
 - `其他web应用`, `其它web应用`, `未注册web应用`, `Other Web Application` -> explicit `WebApplication` argument, not a vague pronoun
@@ -174,7 +174,7 @@ These are known NAPM semantics, not a gateway rule layer. Use them to avoid comm
 <!-- superseded: WebApplication inventory now uses applications Type=3 catalog, not groupArguments. -->
 
 Inventory wording such as `系统中有哪些web应用` / `系统中有哪些业务` should list the `WebApplication` catalog from the southbound `applications` API filtered by `Type=3`. Runtime metric execution still uses `groupType=WebApplication`.
-Inventory wording such as `系统中有哪些已定义应用` should list `DefinedApp` from `applications Type=2`. `系统中有哪些自动识别应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` should list `CompositeApplication` from `applications Type=4`. `系统中有哪些内置应用` should list `BuiltinApplication` from `applications Type=1`.
+Inventory wording such as `系统中有哪些已定义应用` should list `DefinedApp` from `applications Type=2`. `系统中有哪些自动识别应用` / `系统中有哪些自动识别的应用` / `系统中有哪些自动识别出来的应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` should list `CompositeApplication` from `applications Type=4`. `系统中有哪些内置应用` should list `BuiltinApplication` from `applications Type=1`.
 
 ### Metrics
 

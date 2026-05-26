@@ -149,7 +149,7 @@ const OBJECT_DIMENSIONS = [
     label: 'Composite Application',
     hasArgument: true,
     supportedByCurrentSkill: true,
-    aliases: ['自动识别应用', '特征识别应用', '复合协议', '复合应用', '多协议应用', '组合应用', 'composite application', 'compositeapplication']
+    aliases: ['自动识别应用', '自动识别的应用', '自动识别出来的应用', '系统自动识别的应用', '特征识别应用', '特征识别的应用', '复合协议', '复合应用', '多协议应用', '组合应用', 'composite application', 'compositeapplication']
   },
   {
     id: 18,
