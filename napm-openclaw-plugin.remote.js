@@ -1173,6 +1173,52 @@ function isBusinessGroupInventoryPrompt(prompt = '') {
     && !isOverviewPrompt(text);
 }
 
+function isCompositeApplicationInventoryPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasInventoryIntent = /(?:有哪些|有什么|有哪几个|都有哪些|包含哪些|列表|清单|列出|查看|查询)/.test(text)
+    || /(?:鏈夊摢浜|鏈変粈涔|鏈夊摢鍑犱釜|閮芥湁鍝簺|鍖呭惈鍝簺|鍒楄〃|娓呭崟|鍒楀嚭|鏌ョ湅|鏌ヨ)/i.test(text);
+  const hasCompositeApplicationScope = /(?:系统)?自动识别(?:出来)?(?:的)?应用|特征识别(?:的)?应用|复合协议|复合应用|多协议应用|组合应用|CompositeApplication|composite\s*application/i.test(text)
+    || /(?:绯荤粺)?鑷姩璇嗗埆(?:鍑烘潵)?(?:鐨)?搴旂敤|鐗瑰緛璇嗗埆(?:鐨)?搴旂敤|澶嶅悎鍗忚|澶嶅悎搴旂敤|澶氬崗璁簲鐢|缁勫悎搴旂敤/i.test(text);
+
+  return hasInventoryIntent
+    && hasCompositeApplicationScope
+    && !isMetricInventoryPrompt(text)
+    && !isHierarchyCatalogPrompt(text);
+}
+
+function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
+  if (!isCompositeApplicationInventoryPrompt(prompt)) {
+    return {
+      ok: true
+    };
+  }
+
+  const service = String(resolvedQuery?.service || '').trim();
+  const queryModeKey = String(resolvedQuery?.queryModeKey || '').trim();
+  const operation = String(resolvedQuery?.semanticConstraints?.operation || '').trim();
+  const groupType = String(resolvedQuery?.groups?.[0]?.type || '').trim();
+  const ok = service === 'groups'
+    && (!queryModeKey || queryModeKey === 'metadata')
+    && (!operation || operation === 'metadata_list')
+    && groupType === 'CompositeApplication';
+
+  if (ok) {
+    return {
+      ok: true
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'composite_application_inventory_contract_mismatch',
+    message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps。'
+  };
+}
+
 function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
   return null;
 }
@@ -2825,6 +2871,28 @@ const plugin = {
               blockReason: `${resolvedQueryValidation.message} OpenClaw must construct resolvedQuery first.`
             };
           }
+          const compositeApplicationInventoryValidation = validateCompositeApplicationInventoryResolvedQuery(
+            activePrompt,
+            canonicalSkillParams?.resolvedQuery
+          );
+          if (!compositeApplicationInventoryValidation.ok) {
+            api.logger.warn(`[napm-openclaw-plugin] blocked CompositeApplication inventory semantic mismatch: reason=${compositeApplicationInventoryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
+              traceId,
+              toolName,
+              prompt: activePrompt,
+              boundaryMode,
+              reason: compositeApplicationInventoryValidation.reason,
+              message: compositeApplicationInventoryValidation.message,
+              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: `${compositeApplicationInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
+            };
+          }
           const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
@@ -3093,6 +3161,8 @@ module.exports.__test__ = {
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,
+  isCompositeApplicationInventoryPrompt,
+  validateCompositeApplicationInventoryResolvedQuery,
   buildRememberedSkillReplyText,
   buildExecutionTraceReplyFromRememberedRecord,
   buildSkillRequiredReply,
