@@ -160,6 +160,62 @@ describe('metadata truth source policy', () => {
     ]);
   });
 
+  test('should reject metadata inventory argument all instead of filtering application names', async () => {
+    const applicationsSpy = jest.spyOn(NapmMetadataService, 'getApplications')
+      .mockResolvedValue([
+        { value: 'RTSP-CALL_SETUP', label: 'RTSP-CALL_SETUP', applicationType: 4 },
+        { value: 'SAP-R3', label: 'SAP-R3', applicationType: 4 }
+      ]);
+
+    const response = await RequirementParserService.executeDirectGatewayRequest({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'CompositeApplication', argument: 'all' }],
+      format: 'json'
+    });
+
+    expect(applicationsSpy).not.toHaveBeenCalled();
+    expect(response.ok).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'INVALID_METADATA_INVENTORY_ARGUMENT',
+      details: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        objectType: 'CompositeApplication',
+        argument: 'all',
+        providerType: 'applications',
+        apiType: 'applications'
+      }
+    });
+  });
+
+  test('should execute CompositeApplication inventory without keyword filtering', async () => {
+    jest.spyOn(NapmMetadataService, 'getApplications')
+      .mockResolvedValue([
+        { value: 'RTSP-CALL_SETUP', label: 'RTSP-CALL_SETUP', applicationType: 4 },
+        { value: 'SAP-R3', label: 'SAP-R3', applicationType: 4 },
+        { value: 'HTTP', label: 'HTTP', applicationType: 1 }
+      ]);
+
+    const response = await RequirementParserService.executeDirectGatewayRequest({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'CompositeApplication' }],
+      format: 'json'
+    });
+
+    expect(response.ok).toBe(true);
+    expect(response.data.map(item => item.value)).toEqual([
+      'RTSP-CALL_SETUP',
+      'SAP-R3'
+    ]);
+    expect(response.metadata).toMatchObject({
+      requestedObjectType: 'CompositeApplication',
+      providerType: 'applications',
+      applicationTypeFilter: [4]
+    });
+  });
+
   test('should list builtin port applications through applications Type=1 catalog', async () => {
     jest.spyOn(NapmMetadataService, 'getApplications')
       .mockResolvedValue([

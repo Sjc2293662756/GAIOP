@@ -127,4 +127,34 @@ describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
       }
     });
   });
+
+  test('should reject CompositeApplication inventory resolvedQuery with argument all', async () => {
+    const { hooks, ctx } = createHarness('composite-app-all-argument');
+    const prompt = '系统中有哪些自动识别的应用';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'groups',
+          queryModeKey: 'metadata',
+          semanticConstraints: {
+            operation: 'metadata_list'
+          },
+          groups: [{ type: 'CompositeApplication', argument: 'all' }],
+          format: 'json'
+        }
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('CompositeApplication');
+    expect(result.blockReason).toContain('argument:"all"');
+  });
 });

@@ -937,7 +937,8 @@ class RequirementParserService {
     const localCodes = new Set([
       'QUERY_SHAPE_INVALID',
       'DEPENDENCY_CONTRACT_MISMATCH',
-      'METADATA_ARGUMENT_TYPE_UNRESOLVED'
+      'METADATA_ARGUMENT_TYPE_UNRESOLVED',
+      'INVALID_METADATA_INVENTORY_ARGUMENT'
     ]);
     const code = localCodes.has(error?.code) ? error.code : 'NAPM_UPSTREAM_ERROR';
     return {
@@ -1042,6 +1043,7 @@ class RequirementParserService {
 
         instanceProviderMetadata = await this.napmMetadataService.resolveObjectInstanceProviderMetadata(firstType);
         if (instanceProviderMetadata) {
+          this.assertMetadataInventoryArgumentContract(firstType, firstArgument, instanceProviderMetadata);
           namedList = await this.napmMetadataService.listObjectInstances(firstType, firstArgument);
           metadataTypeForDebug = instanceProviderMetadata.apiType;
         }
@@ -1175,6 +1177,38 @@ class RequirementParserService {
       logger.info('========================================\n');
       return response;
     }
+  }
+
+  assertMetadataInventoryArgumentContract(objectType = '', argument = '', provider = {}) {
+    const normalizedArgument = String(argument || '').trim();
+    if (!normalizedArgument) {
+      return;
+    }
+
+    if (!this.isAllInventorySentinel(normalizedArgument)) {
+      return;
+    }
+
+    const error = new Error('Metadata inventory list-all queries must omit group.argument; argument:"all" is not a valid object keyword.');
+    error.code = 'INVALID_METADATA_INVENTORY_ARGUMENT';
+    error.details = {
+      service: 'groups',
+      queryModeKey: 'metadata',
+      objectType: objectType || null,
+      argument: normalizedArgument,
+      providerType: provider?.providerType || null,
+      apiType: provider?.apiType || null,
+      expectedShape: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: objectType || provider?.effectiveObjectType || null }]
+      }
+    };
+    throw error;
+  }
+
+  isAllInventorySentinel(value = '') {
+    return /^(all|\*|__all__)$/i.test(String(value || '').trim());
   }
 
   /**

@@ -1201,10 +1201,12 @@ function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolve
   const queryModeKey = String(resolvedQuery?.queryModeKey || '').trim();
   const operation = String(resolvedQuery?.semanticConstraints?.operation || '').trim();
   const groupType = String(resolvedQuery?.groups?.[0]?.type || '').trim();
+  const groupArgument = String(resolvedQuery?.groups?.[0]?.argument || '').trim();
   const ok = service === 'groups'
     && (!queryModeKey || queryModeKey === 'metadata')
     && (!operation || operation === 'metadata_list')
-    && groupType === 'CompositeApplication';
+    && groupType === 'CompositeApplication'
+    && !groupArgument;
 
   if (ok) {
     return {
@@ -1215,7 +1217,7 @@ function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolve
   return {
     ok: false,
     reason: 'composite_application_inventory_contract_mismatch',
-    message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps。'
+    message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps，也不能携带 argument:"all"。'
   };
 }
 
@@ -2662,6 +2664,7 @@ function buildNapmRoutingSystemContext() {
     'For WebApplication/business inventory, the skill will list applications Type=3. For BusinessGroup/workgroup inventory, the user must explicitly say 业务组, 工作组, or BusinessGroup.',
     `For inventory questions, use ${groupInventoryRule} Example: "系统中有哪些工作组？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For business-system inventory questions, Example: "系统中有哪些业务系统？" -> service=${businessInventoryService}, queryModeKey=${businessInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}].`,
+    'For CompositeApplication inventory questions such as "系统中有哪些自动识别的应用？", construct service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"CompositeApplication"}]. Do not add argument:"all"; full inventory is represented by omitting argument.',
     `For metric-inventory questions, use ${metricInventoryRule} Example: "业务都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"WebApplication"}]. Example: "工作组都可以查哪些指标？" -> service=${metricInventoryService}, queryModeKey=${metricInventoryMode}, semanticConstraints.operation=metadata_list, groups=[{type:"BusinessGroup"}].`,
     `For hierarchy questions, use ${hierarchyRule} Example: "BusinessGroup 可以往下钻到哪里？" -> service=drilldownCatalog, groups=[{type:"BusinessGroup"}].`,
     'Questions about hierarchy or drilldown structure, such as which drilldown paths a BusinessGroup or IPAddress supports, must also go through `napm-skill-query` as structured resolvedQuery instead of being answered from general knowledge.',
