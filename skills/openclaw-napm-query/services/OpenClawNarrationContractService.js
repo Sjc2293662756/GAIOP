@@ -9,6 +9,8 @@ const {
   isBusinessObjectType,
   getMetricCategoriesForObjectType
 } = require('../../../src/constants/objectMetricOwnership');
+const AnswerModeRouter = require('./AnswerModeRouter');
+const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 
 // 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
 function toFiniteNumber(value) {
@@ -725,14 +727,17 @@ function buildGenericStructure(payload, rows, followUpPrompts) {
 // 构造决策结果 narration 结构，适用于没有结果集、只有处理结论的场景。
 function buildDecisionStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
+  const failure = payload?.error?.failureClassification || payload?.failureClassification || null;
   return {
     responseType: 'decision_result',
-    title: payload?.summary?.title || '处理结果',
-    explanation: payload?.displayText || payload?.replyText || payload?.summary?.displayText || null,
+    title: payload?.summary?.title || '????',
+    explanation: failure?.userMessage || payload?.displayText || payload?.replyText || payload?.summary?.displayText || null,
+    failureClassification: failure,
     timeRange,
     nextActions: followUpPrompts
   };
 }
+
 
 /**
  * 根据结果类型分派到不同 narration builder，生成统一 narrationStructure。
@@ -769,30 +774,10 @@ function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], s
 }
 
 // 生成供 OpenClaw 渲染阶段使用的 render policy。
-function buildRenderPolicy(payload = {}) {
+function buildRenderPolicy(payload = {}, options = {}) {
   return {
-    language: 'zh-CN',
-    narrationRequired: true,
-    target: 'final_user_reply',
-    responseType: resolveResponseType(payload, true),
-    preferSources: [
-      'result.narrationStructure',
-      'summary',
-      'result.structuredRows',
-      'result.rows',
-      'result.structuredSeries',
-      'result.overview'
-    ],
-    fallbackSources: [
-      'displayText',
-      'replyText'
-    ],
-    rules: [
-      'Prefer narrationStructure for final wording.',
-      'Always include result timeRange/displayText when present.',
-      'Use summary and structured result data before raw rows.',
-      'Only fall back to displayText when verbatim forwarding is requested.'
-    ]
+    ...AnswerModeRouter.buildRenderPolicy(payload, options),
+    responseType: resolveResponseType(payload, true)
   };
 }
 
@@ -805,9 +790,30 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     return data;
   }
 
+  const service = data.service || data?.resolvedQuery?.service || null;
+  const answerMode = AnswerModeRouter.resolveAnswerMode(data, options);
+  const failureClassification = data?.error
+    ? ExecutionFailureClassifier.classify(data.error, {
+        resolvedQuery: data.resolvedQuery || null,
+        service,
+        semanticConstraints: data?.resolvedQuery?.semanticConstraints || data?.semanticConstraints || null,
+        workflowType: data?.resolvedQuery?.workflowType || data?.semanticConstraints?.workflowType || null
+      })
+    : null;
+  const normalizedError = data?.error
+    ? {
+        ...data.error,
+        failureClassification,
+        userMessage: data.error.userMessage || failureClassification?.userMessage || null
+      }
+    : null;
+
   let summary = data.summary && typeof data.summary === 'object'
     ? { ...data.summary }
     : {};
+  if (failureClassification && !summary.displayText) {
+    summary.displayText = failureClassification.userMessage;
+  }
   const timeRange = normalizeTimeRange(data, summary);
   summary = ensureSummaryTimeRange(summary, timeRange);
   const requestUrl = String(
@@ -830,7 +836,11 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     rawDisplayText || fallbackDisplayText,
     timeRange
   );
-  const forwardDisplayText = Boolean(options.forwardDisplayText);
+  const forwardDisplayText = AnswerModeRouter.shouldForwardDisplayText({
+    ...data,
+    error: normalizedError,
+    answerMode
+  }, options);
   const displayText = forwardDisplayText
     ? (
         typeof options.appendRequestUrlToDisplayText === 'function'
@@ -841,7 +851,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
 
   if (displayText) {
     summary.displayText = displayText;
-  } else if (Object.prototype.hasOwnProperty.call(summary, 'displayText')) {
+  } else if (Object.prototype.hasOwnProperty.call(summary, 'displayText') && !failureClassification) {
     delete summary.displayText;
   }
   if (includeRequestUrl && requestUrl) {
@@ -850,7 +860,6 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     delete summary.requestUrl;
   }
 
-  const service = data.service || data?.resolvedQuery?.service || null;
   const rawRows = Array.isArray(data.rows)
     ? data.rows
     : (Array.isArray(data.data) ? data.data : []);
@@ -862,9 +871,16 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     : null;
   const enrichedRows = Array.isArray(data.enrichedRows) ? data.enrichedRows : [];
   const hasResultData = rows.length > 0 || structuredRows.length > 0 || Boolean(structuredSeries) || Boolean(data.overview);
+  const narrationPayload = {
+    ...data,
+    answerMode,
+    error: normalizedError,
+    failureClassification,
+    summary
+  };
   const narrationStructure = data.narrationStructure && typeof data.narrationStructure === 'object'
     ? data.narrationStructure
-    : buildNarrationStructure(data, rows, structuredRows, structuredSeries);
+    : buildNarrationStructure(narrationPayload, rows, structuredRows, structuredSeries);
   if (!summary.displayText && narrationStructure?.responseType === 'topn' && narrationStructure?.displayText) {
     summary.displayText = narrationStructure.displayText;
   }
@@ -875,6 +891,9 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
 
   return {
     ...data,
+    answerMode,
+    error: normalizedError,
+    failureClassification,
     summary,
     displayText,
     replyText: displayText,
@@ -885,9 +904,11 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       schema: 'openclaw_napm_narration.v1',
       narrationBy: 'openclaw',
       narrationRequired: true,
+      answerMode,
       type: hasResultData ? 'query_result' : 'decision_result',
       service,
       responseType: data.responseType || narrationStructure?.responseType || null,
+      failureClassification,
       decision: data.assistantDecision || data.decision || null,
       intent: data.intentResult || data.intent || null,
       resolvedQuery: data.resolvedQuery || null,
@@ -913,8 +934,10 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       },
       renderPolicy: buildRenderPolicy({
         ...data,
+        error: normalizedError,
+        answerMode,
         responseType: data.responseType || narrationStructure?.responseType || null
-      })
+      }, { answerMode })
     }
   };
 }

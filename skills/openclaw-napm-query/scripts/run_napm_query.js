@@ -31,6 +31,7 @@ const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/opencla
 const PromptRoutingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/PromptRoutingService'));
 const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolutionSpecService'));
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
+const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
 const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
@@ -2056,7 +2057,8 @@ if (require.main === module) {
       }
     }, null);
 
-    const summary = buildDecisionSummary('Skill execution failed', error.message, 'FAILED');
+    const failureClassification = ExecutionFailureClassifier.classify(error, {});
+    const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
     const output = buildOpenClawReplyContract({
       ok: false,
       service: null,
@@ -2066,12 +2068,14 @@ if (require.main === module) {
       summary,
       error: {
         code: error.code || 'SKILL_EXECUTION_ERROR',
-        message: error.message
+        message: error.message,
+        failureClassification,
+        userMessage: failureClassification.userMessage
       },
       responseType: 'decision_result',
-      displayText: error.message
+      displayText: failureClassification.userMessage
     }, {
-      forwardDisplayText: true,
+      forwardDisplayText: false,
       appendRequestUrlToDisplayText,
       includeRequestUrl: false
     });

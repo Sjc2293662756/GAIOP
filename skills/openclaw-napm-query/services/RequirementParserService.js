@@ -27,6 +27,7 @@ const ResolutionSpecService = require('./ResolutionSpecService');
 const MetadataExecutionKernel = require('./MetadataExecutionKernel');
 const MetricExecutionKernel = require('./MetricExecutionKernel');
 const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
+const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
 const CsvParser = require('../../../src/utils/CsvParser');
 const TimeUtils = require('../../../src/utils/TimeUtils');
@@ -952,20 +953,13 @@ class RequirementParserService {
     throw error;
   }
 
-  buildExecutionFailureError(error) {
-    const localCodes = new Set([
-      'QUERY_SHAPE_INVALID',
-      'DEPENDENCY_CONTRACT_MISMATCH',
-      'METADATA_ARGUMENT_TYPE_UNRESOLVED',
-      'INVALID_METADATA_INVENTORY_ARGUMENT',
-      'WORKFLOW_SERVICE_CONTRACT_MISMATCH'
-    ]);
-    const code = localCodes.has(error?.code) ? error.code : 'NAPM_UPSTREAM_ERROR';
-    return {
-      code,
-      message: error?.message || String(error),
-      ...(error?.details ? { details: error.details } : {})
-    };
+  buildExecutionFailureError(error, gatewayRequest = {}) {
+    return ExecutionFailureClassifier.normalizeError(error, {
+      gatewayRequest,
+      service: gatewayRequest?.service || null,
+      semanticConstraints: gatewayRequest?.semanticConstraints || null,
+      workflowType: gatewayRequest?.workflowType || null
+    });
   }
 
   /**
@@ -1068,7 +1062,7 @@ class RequirementParserService {
         return response;
       }
 
-      response.error = this.buildExecutionFailureError(error);
+      response.error = this.buildExecutionFailureError(error, gatewayRequest);
       logAudit('napm_execution_failed', {
         gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest),
         error: response.error
