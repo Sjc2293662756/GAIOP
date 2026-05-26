@@ -291,7 +291,7 @@ function isNapmMetaFollowUpPrompt(prompt = '', previousState = null) {
   }
 
   const hasReference = /(?:这次|刚才|上一条|上一次|这个|该查询|这个查询|上面|前面|刚刚)/i.test(text);
-  const hasMetaIntent = /(?:思路|构成|构造|怎么查(?:询)?|如何查(?:询)?|查询流程|查询过程|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源|耗时|多长时间|时间都消耗在哪里|耗在哪里)/i.test(text);
+  const hasMetaIntent = /(?:思路|构成|构造|怎么查(?:询)?|如何查(?:询)?|查询流程|查询过程|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源|耗时|多长时间|时间都消耗在哪里|耗在哪里|谁在做|谁做的|谁执行|工具|python\s*过滤|过滤输出|exec|有没有走\s*skill|是否走\s*skill|走没走\s*skill|napm-skill-query|中间管道|中间层)/i.test(text);
   const previousNapmRelated = Boolean(previousState?.napmRelated || previousState?.domainRelated);
 
   if (hasMetaIntent && previousNapmRelated) {
@@ -307,7 +307,7 @@ function looksLikeNapmBypassProcessText(text = '') {
     return false;
   }
 
-  return /(?:Node\.js\s*脚本|python3|Python\s*解析|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|绕过|跨过|没走\s*skill|没有走\s*skill|没走任何中间层|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
+  return /(?:Node\.js\s*脚本|python3|python\s*(?:过滤|筛选|处理|解析|输出|代码|命令|脚本|完成)|Python\s*(?:过滤|筛选|处理|解析|输出|代码|命令|脚本|完成)|exec\s*(?:工具|执行|命令)|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|直接查|直接去后端|直接从API|后端探查|本地\s*python|绕过|跨过|没走\s*skill|没有走\s*skill|没走\s*napm-skill-query|没有走\s*napm-skill-query|未经过\s*napm-skill-query|没有经过\s*napm-skill-query|没走任何中间层|没有经过.*中间(?:层|管道)|未经过.*中间(?:层|管道)|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
 }
 
 function looksLikeManualHierarchyInferenceText(text = '') {

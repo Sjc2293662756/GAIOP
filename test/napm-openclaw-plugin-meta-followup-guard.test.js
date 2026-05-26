@@ -64,6 +64,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(testApi.isNapmMetaFollowUpPrompt('你这次用了多长时间？时间都消耗在哪里了？', { napmRelated: true })).toBe(true);
     expect(testApi.isNapmMetaFollowUpPrompt('你构成api的思路是什么和方法来源是哪里？', { napmRelated: true })).toBe(true);
     expect(testApi.isNapmMetaFollowUpPrompt('这个你是怎么查询的？', { napmRelated: true })).toBe(true);
+    expect(testApi.isNapmMetaFollowUpPrompt('python过滤输出是什么？谁在做？', { napmRelated: true })).toBe(true);
     expect(testApi.isNapmMetaFollowUpPrompt('今天星期几？', { napmRelated: true })).toBe(false);
   });
 
@@ -168,6 +169,62 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(result.content).toContain('也不是中文名称过滤');
     expect(result.content).not.toContain('近期有流量数据的活跃应用');
     expect(result.content).not.toContain('近期有流量了');
+  });
+
+  test('should replace exec/python bypass trace for business inventory with skill trace', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const testApi = plugin.__test__;
+
+    const ctx = createWeComCtx('business-inventory-python-bypass-trace');
+    const prompt = '系统中有哪些业务？';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+    testApi.rememberSkillResult(prompt, {
+      ok: true,
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }],
+        semanticConstraints: {
+          workflowType: 'object_inventory',
+          operation: 'metadata_list',
+          targetObjectType: 'WebApplication'
+        }
+      },
+      requestParamsJson: {
+        type: 'applications',
+        json: 'true'
+      },
+      metadata: {
+        providerType: 'applications',
+        apiType: 'applications',
+        applicationTypeFilter: [3]
+      },
+      summary: {
+        displayText: '系统中目前有 9 个业务系统（WebApplication，applications Type=3）。'
+      }
+    }, '');
+
+    messageReceived({ content: 'python过滤输出是什么？谁在做？' }, ctx);
+    await beforePromptBuild({ prompt: 'python过滤输出是什么？谁在做？' }, ctx);
+
+    const result = await messageSending({
+      content: 'python过滤输出是我通过 exec 工具执行 python 命令，直接从API返回的119条原始数据里筛选，没有经过 napm-skill-query 的中间管道。'
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('napm-skill-query');
+    expect(result.content).toContain('service');
+    expect(result.content).toContain('providerType=applications');
+    expect(result.content).toContain('applicationTypeFilter=[3]');
+    expect(result.content).not.toContain('exec 工具');
+    expect(result.content).not.toContain('python 命令');
+    expect(result.content).not.toContain('没有经过 napm-skill-query');
   });
 
   test('should replace unsupported active-traffic explanation in business inventory answer', async () => {
