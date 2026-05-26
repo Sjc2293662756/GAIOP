@@ -1,6 +1,7 @@
 {
   "id": "napm-openclaw-plugin",
   "activation": {
+    "onStartup": true,
     "onCapabilities": [
       "tool",
       "hook"

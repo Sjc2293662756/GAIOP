@@ -2793,13 +2793,24 @@ const plugin = {
   name: 'NAPM OpenClaw Plugin',
   description: 'Bridge NAPM skill and query requests from OpenClaw into the deployed NAPM semantic gateway.',
   register(api) {
+    const registerNapmHook = (events, handler, opts = {}) => {
+      if (api.hooks && typeof api.hooks.on === 'function') {
+        const normalizedEvents = Array.isArray(events) ? events : [events];
+        for (const eventName of normalizedEvents) {
+          api.hooks.on(eventName, handler, opts);
+        }
+        return;
+      }
+      api.registerHook(events, handler, opts);
+    };
+
     if (shouldEnableDevResolverTools()) {
       api.registerTool(resolverTool);
       api.registerTool(mainflowTool);
     }
     api.registerTool(skillTool);
 
-    api.registerHook(
+    registerNapmHook(
       'message_received',
       (event, ctx) => {
         const conversationKey = getConversationKey(ctx);
@@ -2822,7 +2833,7 @@ const plugin = {
       }
     );
 
-    api.registerHook(
+    registerNapmHook(
       ['before_prompt_build', 'before_agent_start'],
       (event, ctx) => {
         const prompt = typeof event?.prompt === 'string' ? event.prompt.trim() : '';
@@ -2875,7 +2886,7 @@ const plugin = {
       }
     );
 
-    api.registerHook(
+    registerNapmHook(
       'before_tool_call',
       (event, ctx) => {
         const guardKeys = getGuardKeys(ctx);
@@ -3084,7 +3095,7 @@ const plugin = {
       }
     );
 
-    api.registerHook(
+    registerNapmHook(
       'message_sending',
       async (event, ctx) => {
         const conversationKey = getConversationKey(ctx);
@@ -3189,7 +3200,7 @@ const plugin = {
       }
     );
 
-    api.registerHook(
+    registerNapmHook(
       'before_message_write',
       (event, ctx) => {
         const message = event?.message;
