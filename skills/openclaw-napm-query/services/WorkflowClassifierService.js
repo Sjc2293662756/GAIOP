@@ -1,6 +1,7 @@
 const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
+const ObjectOntologyService = require('./ObjectOntologyService');
 
 function normalizePromptText(prompt = '') {
   return String(prompt || '').trim();
@@ -38,20 +39,13 @@ function hasAverageIntent(text = '') {
 }
 
 function inferInventoryObjectType(text = '') {
-  if (/工作组|业务组|业务分组|BusinessGroup/i.test(text)) {
-    return 'BusinessGroup';
+  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
+  if (ontologyMatch.objectType) {
+    return ontologyMatch.objectType;
   }
 
   const applicationCatalog = classifyApplicationCatalogPrompt(text);
-  if (applicationCatalog.objectType) {
-    return applicationCatalog.objectType;
-  }
-
-  if (/业务系统|Web应用|web应用|网站|站点|业务|WebApplication/i.test(text)) {
-    return 'WebApplication';
-  }
-
-  return null;
+  return applicationCatalog.objectType || null;
 }
 
 function classifyWorkflow(prompt = '') {

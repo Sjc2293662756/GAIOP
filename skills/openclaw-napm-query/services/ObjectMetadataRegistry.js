@@ -1,4 +1,5 @@
 const MetadataTruthSourcePolicy = require('./MetadataTruthSourcePolicy');
+const ObjectOntologyService = require('./ObjectOntologyService');
 
 const GROUP_ARGUMENT_INSTANCE_OBJECT_TYPES = new Set([
   'PageFamily',
@@ -8,52 +9,12 @@ const GROUP_ARGUMENT_INSTANCE_OBJECT_TYPES = new Set([
 ]);
 
 const EXPLICIT_PROVIDER_BY_OBJECT_TYPE = Object.freeze({
-  WebApplication: Object.freeze({
-    effectiveObjectType: 'WebApplication',
-    executionGroupType: 'WebApplication',
-    providerType: 'applications',
-    apiType: 'applications',
-    applicationTypeFilter: Object.freeze([3]),
-    applicationCatalogRole: 'web_business'
-  }),
-  Application: Object.freeze({
-    effectiveObjectType: 'DefinedApp',
-    executionGroupType: 'DefinedApp',
-    providerType: 'applications',
-    apiType: 'applications',
-    applicationTypeFilter: Object.freeze([2]),
-    applicationCatalogRole: 'defined_application'
-  }),
-  DefinedApp: Object.freeze({
-    effectiveObjectType: 'DefinedApp',
-    executionGroupType: 'DefinedApp',
-    providerType: 'applications',
-    apiType: 'applications',
-    applicationTypeFilter: Object.freeze([2]),
-    applicationCatalogRole: 'defined_application'
-  }),
-  CompositeApplication: Object.freeze({
-    effectiveObjectType: 'CompositeApplication',
-    executionGroupType: 'DefinedApp',
-    providerType: 'applications',
-    apiType: 'applications',
-    applicationTypeFilter: Object.freeze([4]),
-    applicationCatalogRole: 'composite_application'
-  }),
-  BuiltinApplication: Object.freeze({
-    effectiveObjectType: 'BuiltinApplication',
-    executionGroupType: 'DefinedApp',
-    providerType: 'applications',
-    apiType: 'applications',
-    applicationTypeFilter: Object.freeze([1]),
-    applicationCatalogRole: 'builtin_port_application'
-  }),
-  BusinessGroup: Object.freeze({
-    effectiveObjectType: 'BusinessGroup',
-    executionGroupType: 'BusinessGroup',
-    providerType: 'businessGroups',
-    apiType: 'businessGroups'
-  })
+  WebApplication: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('WebApplication')),
+  Application: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('DefinedApp')),
+  DefinedApp: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('DefinedApp')),
+  CompositeApplication: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('CompositeApplication')),
+  BuiltinApplication: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('BuiltinApplication')),
+  BusinessGroup: Object.freeze(ObjectOntologyService.resolveObjectInstanceProvider('BusinessGroup'))
 });
 
 function resolveObjectInstanceProvider(objectType = '') {
@@ -62,7 +23,11 @@ function resolveObjectInstanceProvider(objectType = '') {
     return null;
   }
 
-  const baseProvider = EXPLICIT_PROVIDER_BY_OBJECT_TYPE[requestedObjectType]
+  const ontologyProvider = requestedObjectType === 'Application'
+    ? ObjectOntologyService.resolveObjectInstanceProvider('DefinedApp')
+    : ObjectOntologyService.resolveObjectInstanceProvider(requestedObjectType);
+  const baseProvider = ontologyProvider
+    || EXPLICIT_PROVIDER_BY_OBJECT_TYPE[requestedObjectType]
     || (GROUP_ARGUMENT_INSTANCE_OBJECT_TYPES.has(requestedObjectType)
       ? {
         effectiveObjectType: requestedObjectType,

@@ -1,0 +1,101 @@
+{
+  "version": "1.0",
+  "objects": [
+    {
+      "objectType": "BusinessGroup",
+      "inventoryProvider": "businessGroups",
+      "apiType": "businessGroups",
+      "executionGroupType": "BusinessGroup",
+      "cnAliases": ["工作组", "业务组", "业务分组"],
+      "enAliases": ["BusinessGroup", "business group"],
+      "description": "NAPM 中的业务组/工作组对象。"
+    },
+    {
+      "objectType": "WebApplication",
+      "inventoryProvider": "applications",
+      "apiType": "applications",
+      "executionGroupType": "WebApplication",
+      "applicationTypeFilter": [3],
+      "applicationCatalogRole": "web_business",
+      "cnAliases": ["业务", "业务系统", "Web应用", "web应用", "网站", "站点"],
+      "enAliases": ["WebApplication", "web application", "webapp", "website"],
+      "description": "NAPM 中的业务系统/WebApplication，对应 applications Type=3。"
+    },
+    {
+      "objectType": "DefinedApp",
+      "inventoryProvider": "applications",
+      "apiType": "applications",
+      "executionGroupType": "DefinedApp",
+      "applicationTypeFilter": [2],
+      "applicationCatalogRole": "defined_application",
+      "cnAliases": ["已定义应用", "服务器应用", "服务应用", "协议应用", "已知应用"],
+      "enAliases": ["DefinedApp", "Application", "defined application"],
+      "description": "NAPM 中的已定义应用/协议应用，对应 applications Type=2。"
+    },
+    {
+      "objectType": "CompositeApplication",
+      "inventoryProvider": "applications",
+      "apiType": "applications",
+      "executionGroupType": "DefinedApp",
+      "applicationTypeFilter": [4],
+      "applicationCatalogRole": "composite_application",
+      "cnAliases": ["自动识别应用", "自动识别的应用", "自动识别出来的应用", "系统自动识别的应用", "特征识别应用", "特征识别的应用", "复合协议", "复合应用", "多协议应用", "组合应用"],
+      "enAliases": ["CompositeApplication", "composite application"],
+      "description": "系统根据流量特征自动识别的复合应用，对应 applications Type=4。"
+    },
+    {
+      "objectType": "BuiltinApplication",
+      "inventoryProvider": "applications",
+      "apiType": "applications",
+      "executionGroupType": "DefinedApp",
+      "applicationTypeFilter": [1],
+      "applicationCatalogRole": "builtin_port_application",
+      "cnAliases": ["内置应用", "内置端口应用", "系统内置应用"],
+      "enAliases": ["BuiltinApplication", "builtin application"],
+      "description": "NAPM 内置端口/协议应用，对应 applications Type=1。"
+    },
+    {
+      "objectType": "OtherApp",
+      "inventoryProvider": "groupArguments",
+      "apiType": "groupArguments",
+      "executionGroupType": "OtherApp",
+      "cnAliases": ["未知应用", "未知端口", "其他应用", "其它应用"],
+      "enAliases": ["OtherApp", "other app"],
+      "description": "NAPM 未知应用/未知端口对象。"
+    },
+    {
+      "objectType": "PageFamily",
+      "inventoryProvider": "groupArguments",
+      "apiType": "groupArguments",
+      "executionGroupType": "PageFamily",
+      "cnAliases": ["页面族", "页面分类"],
+      "enAliases": ["PageFamily"],
+      "description": "页面分类对象。"
+    },
+    {
+      "objectType": "User",
+      "inventoryProvider": "groupArguments",
+      "apiType": "groupArguments",
+      "executionGroupType": "User",
+      "cnAliases": ["用户"],
+      "enAliases": ["User"],
+      "description": "用户对象。"
+    },
+    {
+      "objectType": "ClientBusinessGroup",
+      "inventoryProvider": "groupArguments",
+      "apiType": "groupArguments",
+      "executionGroupType": "ClientBusinessGroup",
+      "cnAliases": ["客户端业务组", "初始组"],
+      "enAliases": ["ClientBusinessGroup"],
+      "description": "客户端业务组对象。"
+    }
+  ],
+  "plainApplicationCandidates": [
+    "WebApplication",
+    "DefinedApp",
+    "BuiltinApplication",
+    "CompositeApplication",
+    "OtherApp"
+  ]
+}
