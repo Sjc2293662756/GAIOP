@@ -185,4 +185,66 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     });
     expect(result.params.traceId).toContain('napm-run-business-group-allow');
   }, 30000);
+
+  test('should reject business-group inventory when resolvedQuery drifts to topValues', async () => {
+    const hooks = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-business-group-topvalues-block',
+      conversationId: 'conv-business-group-topvalues-block',
+      sessionKey: 'session-business-group-topvalues-block',
+      sessionId: 'session-business-group-topvalues-block',
+      runId: 'run-business-group-topvalues-block'
+    };
+
+    const prompt = '系统都有哪些工作组';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'topValues',
+          queryModeKey: 'topn',
+          metric: 'TPIO',
+          metrics: ['TPIO'],
+          topMetric: 'TPIO',
+          groups: [{ type: 'BusinessGroup', argument: 'all' }],
+          topCount: 100,
+          start: 1779767700,
+          end: 1779771300,
+          format: 'json'
+        }
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('object_inventory');
+    expect(result.blockReason).toContain('BusinessGroup');
+    expect(result.blockReason).toContain('service=groups');
+  }, 30000);
 });

@@ -181,7 +181,9 @@ describe('NapmResolvedQueryResolverService', () => {
       queryModeKey: 'metadata',
       groups: [{ type: 'BusinessGroup' }],
       semanticConstraints: {
-        operation: 'metadata_list'
+        operation: 'metadata_list',
+        workflowType: 'object_inventory',
+        targetObjectType: 'BusinessGroup'
       }
     });
   });

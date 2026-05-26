@@ -17,6 +17,8 @@ let cachedGroupPathPlannerService = null;
 let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
 let promptRoutingLookupComplete = false;
+let cachedWorkflowClassifierService = null;
+let workflowClassifierLookupComplete = false;
 let cachedResolutionSpecService = null;
 let resolutionSpecLookupComplete = false;
 let cachedNapmResolvedQueryResolverService = null;
@@ -1127,6 +1129,33 @@ function isOverviewPrompt(prompt = '') {
   return getPromptRoutingService().isOverviewPrompt(prompt);
 }
 
+function getWorkflowClassifierService() {
+  if (!workflowClassifierLookupComplete) {
+    workflowClassifierLookupComplete = true;
+    try {
+      cachedWorkflowClassifierService = require(path.join(
+        path.dirname(NAPM_SKILL_EXECUTOR),
+        '../services/WorkflowClassifierService'
+      ));
+    } catch (_error) {
+      cachedWorkflowClassifierService = null;
+    }
+  }
+  return cachedWorkflowClassifierService;
+}
+
+function classifyNapmWorkflow(prompt = '') {
+  const classifier = getWorkflowClassifierService();
+  if (classifier && typeof classifier.classifyWorkflow === 'function') {
+    return classifier.classifyWorkflow(prompt);
+  }
+  return {
+    workflowType: null,
+    confidence: 0,
+    reason: 'workflow_classifier_unavailable'
+  };
+}
+
 function normalizeHierarchyQuestionTarget(prompt = '') {
   return getPromptRoutingService().normalizeHierarchyQuestionTarget(prompt) || '';
 }
@@ -1156,6 +1185,11 @@ function isBusinessGroupInventoryPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
     return false;
+  }
+
+  const workflow = classifyNapmWorkflow(text);
+  if (workflow.workflowType === 'object_inventory' && workflow.targetObjectType === 'BusinessGroup') {
+    return true;
   }
 
   const hasGroupScope = /(BusinessGroup|业务组|工作组|业务分组)/i.test(text);
@@ -1218,6 +1252,41 @@ function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolve
     ok: false,
     reason: 'composite_application_inventory_contract_mismatch',
     message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps，也不能携带 argument:"all"。'
+  };
+}
+
+function validateObjectInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
+  const workflow = classifyNapmWorkflow(prompt);
+  if (workflow.workflowType !== 'object_inventory' || !workflow.targetObjectType) {
+    return {
+      ok: true
+    };
+  }
+
+  const expectedType = workflow.targetObjectType;
+  const service = String(resolvedQuery?.service || '').trim();
+  const queryModeKey = String(resolvedQuery?.queryModeKey || '').trim();
+  const operation = String(resolvedQuery?.semanticConstraints?.operation || '').trim();
+  const workflowType = String(resolvedQuery?.semanticConstraints?.workflowType || '').trim();
+  const groupType = String(resolvedQuery?.groups?.[0]?.type || '').trim();
+  const groupArgument = String(resolvedQuery?.groups?.[0]?.argument || '').trim();
+  const ok = service === 'groups'
+    && (!queryModeKey || queryModeKey === 'metadata')
+    && (!operation || operation === 'metadata_list')
+    && (!workflowType || workflowType === 'object_inventory')
+    && groupType === expectedType
+    && !groupArgument;
+
+  if (ok) {
+    return {
+      ok: true
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'object_inventory_contract_mismatch',
+    message: `This is an NAPM object_inventory query for ${expectedType}. resolvedQuery must use service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"${expectedType}"}], and must not use overview/topValues or argument:"all".`
   };
 }
 
@@ -2896,6 +2965,28 @@ const plugin = {
               blockReason: `${compositeApplicationInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
             };
           }
+          const objectInventoryValidation = validateObjectInventoryResolvedQuery(
+            activePrompt,
+            canonicalSkillParams?.resolvedQuery
+          );
+          if (!objectInventoryValidation.ok) {
+            api.logger.warn(`[napm-openclaw-plugin] blocked object_inventory semantic mismatch: reason=${objectInventoryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
+              traceId,
+              toolName,
+              prompt: activePrompt,
+              boundaryMode,
+              reason: objectInventoryValidation.reason,
+              message: objectInventoryValidation.message,
+              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: `${objectInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
+            };
+          }
           const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
@@ -3166,6 +3257,8 @@ module.exports.__test__ = {
   buildBusinessObjectInventoryResolvedQuery,
   isCompositeApplicationInventoryPrompt,
   validateCompositeApplicationInventoryResolvedQuery,
+  classifyNapmWorkflow,
+  validateObjectInventoryResolvedQuery,
   buildRememberedSkillReplyText,
   buildExecutionTraceReplyFromRememberedRecord,
   buildSkillRequiredReply,

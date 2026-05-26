@@ -14,6 +14,7 @@ const TimeRangeService = require('./ResolvedQueryTimeRangeService');
 const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
+const WorkflowClassifierService = require('./WorkflowClassifierService');
 
 // 深拷贝 spec 等 JSON 兼容对象，避免解析阶段修改共享配置。
 function cloneJson(value) {
@@ -437,6 +438,9 @@ function failure(prompt, reason, message, diagnostics = {}) {
 
 // 构造 metadata 类问句通用 resolvedQuery 结构。
 function buildMetadataResolvedQuery(prompt, service, groupType, operation) {
+  const workflowType = service === 'groups'
+    ? 'object_inventory'
+    : (service === 'metrics' ? 'metric_inventory' : null);
   return {
     service,
     queryModeKey: 'metadata',
@@ -444,7 +448,9 @@ function buildMetadataResolvedQuery(prompt, service, groupType, operation) {
     format: 'json',
     userRequirement: normalizeText(prompt),
     semanticConstraints: {
-      operation
+      operation,
+      ...(workflowType ? { workflowType } : {}),
+      targetObjectType: groupType
     },
     resolutionHints: {
       constructedBy: 'openclaw_mainflow_resolver'
@@ -457,14 +463,16 @@ function buildMetadataResolvedQuery(prompt, service, groupType, operation) {
  * 当前覆盖对象清单、指标清单和下钻目录三种元数据场景。
  */
 function resolveMetadataPrompt(prompt = '', spec = {}) {
+  const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
   const groupMatch = inferGroup(prompt, spec, { defaultGroup: 'WebApplication' });
   const groupType = groupMatch?.group || 'WebApplication';
 
-  if (isDrilldownCatalogPrompt(prompt)) {
+  if (workflow.workflowType === 'drilldown_catalog' || isDrilldownCatalogPrompt(prompt)) {
     return success(
       prompt,
       {
         category: 'metadata_query',
+        workflowType: 'drilldown_catalog',
         service: 'drilldownCatalog',
         operation: 'metadata_list',
         groupType
@@ -476,7 +484,9 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
         format: 'json',
         userRequirement: normalizeText(prompt),
         semanticConstraints: {
-          operation: 'drilldown_catalog'
+          operation: 'drilldown_catalog',
+          workflowType: 'drilldown_catalog',
+          targetObjectType: groupType
         },
         resolutionHints: {
           constructedBy: 'openclaw_mainflow_resolver',
@@ -489,11 +499,12 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
     );
   }
 
-  if (isMetricInventoryPrompt(prompt)) {
+  if (workflow.workflowType === 'metric_inventory' || isMetricInventoryPrompt(prompt)) {
     return success(
       prompt,
       {
         category: 'metadata_query',
+        workflowType: 'metric_inventory',
         service: 'metrics',
         operation: 'metadata_list',
         groupType
@@ -505,7 +516,7 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
     );
   }
 
-  if (isMetadataListPrompt(prompt)) {
+  if (workflow.workflowType === 'object_inventory' || isMetadataListPrompt(prompt)) {
     if (isPlainApplicationCatalogPrompt(prompt)) {
       return failure(
         prompt,
@@ -533,6 +544,7 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
       prompt,
       {
         category: 'metadata_query',
+        workflowType: 'object_inventory',
         service: 'groups',
         operation: 'metadata_list',
         groupType: resolvedGroupType
