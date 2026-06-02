@@ -1,7 +1,6 @@
 {
   "id": "napm-openclaw-plugin",
   "activation": {
-    "onStartup": true,
     "onCapabilities": [
       "tool",
       "hook"
@@ -19,7 +18,8 @@
   },
   "contracts": {
     "tools": [
-      "napm-skill-query"
+      "napm-skill-query",
+      "napm-report-export"
     ]
   }
 }

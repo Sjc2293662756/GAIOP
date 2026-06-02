@@ -215,7 +215,7 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
-  test('should minute-align discovery pipeline timestamps', async () => {
+  test('should keep discovery pipeline query free of execution timestamps', async () => {
     const input = await __test__.resolveInput({
       prompt: 'discover then overview'
     }, {
@@ -241,11 +241,11 @@ describe('run_napm_query input contract', () => {
 
     expect(input.resolvedQuery.start).toBe(1779413040);
     expect(input.resolvedQuery.end).toBe(1779499440);
-    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.start).toBe(1779413040);
-    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.end).toBe(1779499440);
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.start).toBeUndefined();
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.end).toBeUndefined();
   });
 
-  test('should reject non-minute-aligned gateway requests at validation boundary', () => {
+  test('should reject non-minute-aligned structured queries at validation boundary', () => {
     expect(() => QueryValidator.validateGatewayRequest({
       service: 'topValues',
       metric: 'PLI',
@@ -414,12 +414,81 @@ describe('run_napm_query input contract', () => {
       );
 
       expect(result.ok).toBe(true);
+      expect(result.responseType).toBe('comprehensive_analysis_with_discovery');
+      expect(result.legacyResponseType).toBe('overview_with_discovery');
+      expect(result.analysisType).toBe('comprehensive_analysis');
+      expect(result.analysisMode).toBe('discover_then_analyze');
+      expect(result.resolvedQuery.analysisScene).toBe('network');
       expect(result.discovery.selectedObject).toBe('101.254.114.237');
       expect(result.overview.discovery.selectedObject).toBe('101.254.114.237');
       expect(overviewModule.executeOverviewModule).toHaveBeenCalledTimes(1);
+      expect(RequirementParserService.executeGatewayRequest.mock.calls[0][0]).toEqual(expect.objectContaining({
+        service: 'topValues',
+        start: 1777982400,
+        end: 1777986000
+      }));
+      expect(RequirementParserService.executeGatewayRequest.mock.calls[0][0].timeRange?.start).toBeUndefined();
     } finally {
       RequirementParserService.executeGatewayRequest = originalExecute;
     }
+  });
+
+  test('should reject analysis pipeline when target type mismatches discovery group type', async () => {
+    const result = await __test__.executeResolvedQuery(
+      '哪个业务 HTTP 500 最严重，并分析原因？',
+      {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'business',
+        analysisPipeline: {
+          targetObjectType: 'WebApplication',
+          discoveryQuery: {
+            service: 'topValues',
+            groups: [{ type: 'BusinessGroup' }],
+            metrics: ['PGHTTP500'],
+            topMetric: 'PGHTTP500',
+            topCount: 1
+          }
+        },
+        start: 1777982400,
+        end: 1777986000
+      },
+      {},
+      { goal: 'overview' }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('DISCOVERY_TARGET_TYPE_MISMATCH');
+    expect(result.error.failureStage).toBe('analysisPipeline');
+    expect(overviewModule.executeOverviewModule).not.toHaveBeenCalled();
+  });
+
+  test('should reject analysis pipeline without top-level time range', async () => {
+    const result = await __test__.executeResolvedQuery(
+      '找到连接失败最多的地址，然后分析它',
+      {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'network',
+        analysisPipeline: {
+          targetObjectType: 'IPAddress',
+          discoveryQuery: {
+            service: 'topValues',
+            groups: [{ type: 'IPAddress' }],
+            metrics: ['RFCI'],
+            topMetric: 'RFCI',
+            topCount: 1
+          }
+        }
+      },
+      {},
+      { goal: 'overview' }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('ANALYSIS_PIPELINE_TIME_RANGE_MISSING');
+    expect(result.error.userMessage).toContain('失败阶段：analysisPipeline');
+    expect(overviewModule.executeOverviewModule).not.toHaveBeenCalled();
   });
 
   test('should execute unknown port traffic asks as separate TCP and UDP direct queries', async () => {

@@ -171,4 +171,82 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     expect(result.details.resolvedQuerySummary.hasNestedTimeRangeStart).toBe(true);
     expect(result.details.resolvedQuerySummary.start).toBeNull();
   });
+  test('should expose deterministic time range resolver tool for OpenClaw construction', async () => {
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook() {}
+    };
+    plugin.register(api);
+
+    const result = await tools.get('napm-resolve-time-range').execute('tool-time-resolver', {
+      timeRangeKey: 'last1hour',
+      nowSeconds: 1779952020
+    });
+
+    expect(result.details).toMatchObject({
+      ok: true,
+      source: 'time_range_resolver',
+      key: 'last1hour',
+      start: 1779948420,
+      end: 1779952020,
+      resolvedQueryPatch: {
+        start: 1779948420,
+        end: 1779952020,
+        timeRange: {
+          key: 'last1hour'
+        },
+        resolutionHints: {
+          time: {
+            source: 'time_range_resolver',
+            key: 'last1hour'
+          }
+        }
+      }
+    });
+  });
+
+  test('should reject relative time timestamps that drift far from current server time', () => {
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec({
+      service: 'topValues',
+      queryModeKey: 'data',
+      groups: [{ type: 'IPAddress' }],
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
+      topCount: 10,
+      start: 1811120820,
+      end: 1811124420,
+      timeRange: {
+        key: 'last1hour',
+        displayText: '最近一小时'
+      },
+      resolutionHints: {
+        time: {
+          source: 'message_timestamp',
+          originalTime: '2026-05-28 15:07',
+          alignment: 'minute_floor'
+        }
+      }
+    }, {
+      nowSeconds: 1779952020
+    });
+
+    expect(validation.ok).toBe(false);
+    expect(validation.reason).toBe('relative_time_range_stale_or_miscalculated');
+    expect(validation.message).toContain('napm-resolve-time-range');
+    expect(validation.details).toMatchObject({
+      timeRangeKey: 'last1hour',
+      expectedStart: 1779948420,
+      expectedEnd: 1779952020
+    });
+  });
 });

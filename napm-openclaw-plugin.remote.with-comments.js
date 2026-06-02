@@ -1,40 +1,144 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
+/**
+ * NAPM OpenClaw 远端插件
+ * ======================================================
+ * 这个文件是 NAPM（网络应用性能管理）项目在 OpenClaw 平台上的远端插件
+ * 主要职责：
+ * 1. 在 OpenClaw 平台上注册 NAPM 相关工具
+ * 2. 作为 OpenClaw 和 NAPM Skill 运行时之间的桥梁
+ * 3. 实现全方位的护栏逻辑，防止 LLM 绕过 Skill 直接调用底层 API
+ * 4. 实现审计日志和结果缓存功能
+ * 5. 提供用户友好的中文文本输出
+ *
+ * 架构位置：
+ * 用户输入 → OpenClaw 平台 → 本插件 → Skill 执行器 → NAPM/NetInside API
+ */
 
+// ======================================================
+// 模块导入
+// ======================================================
+const fs = require('node:fs');           // Node.js 文件系统模块
+const path = require('node:path');       // Node.js 路径处理模块
+const { execFile } = require('node:child_process'); // Node.js 子进程模块 - 执行外部文件
+const { promisify } = require('node:util'); // Node.js 工具模块 - 将回调函数转为 Promise
+
+// 将 execFile 转为 Promise 版本
 const execFileAsync = promisify(execFile);
+
+/**
+ * NAPM 直接 Skill 模式开关
+ * true 表示直接使用 Skill 执行器，不通过旧网关层
+ */
 const NAPM_DIRECT_SKILL_MODE = true;
+
+/**
+ * Skill 执行器脚本路径
+ * 优先使用环境变量 NAPM_SKILL_EXECUTOR，否则使用默认路径
+ */
 const NAPM_SKILL_EXECUTOR = process.env.NAPM_SKILL_EXECUTOR
   || path.join(process.env.HOME || '/home/netinside', '.openclaw/skills/openclaw-napm-query/scripts/run_napm_query.js');
-const NAPM_REPORT_EXECUTOR = process.env.NAPM_REPORT_EXECUTOR
-  || path.join(process.env.HOME || '/home/netinside', '.openclaw/skills/openclaw-napm-report/scripts/generate_napm_report.js');
+
+// ======================================================
+// 全局状态 Map - 存储各种运行时状态
+// ======================================================
+
+/**
+ * 护栏状态 Map
+ * key: 会话 ID / trace ID
+ * value: 护栏状态信息
+ */
 const napmGuardState = new Map();
+
+/**
+ * 对话状态 Map
+ * key: 会话 ID
+ * value: 对话上下文信息
+ */
 const napmConversationState = new Map();
+
+/**
+ * Debug API URL 缓存
+ * key: 用户问题
+ * value: 对应的 Debug API URL
+ */
 const napmDebugApiByPrompt = new Map();
+
+/**
+ * Skill 执行结果缓存
+ * key: 用户问题
+ * value: { result, timestamp, ... }
+ */
 const napmResultByPrompt = new Map();
-const napmSentMediaByConversation = new Map();
+
+/**
+ * 最近一次的 Debug API URL
+ */
 let latestNapmDebugApi = null;
+
+/**
+ * 最近一次的 Skill 执行结果
+ */
 let latestNapmResult = null;
-let cachedGroupPathPlannerService = null;
-let groupPathPlannerLookupComplete = false;
-let cachedPromptRoutingService = null;
-let promptRoutingLookupComplete = false;
-let cachedWorkflowClassifierService = null;
-let workflowClassifierLookupComplete = false;
-let cachedResolutionSpecService = null;
-let resolutionSpecLookupComplete = false;
-let cachedNapmResolvedQueryResolverService = null;
-let napmResolvedQueryResolverLookupComplete = false;
-let skillDotenvLoaded = false;
+
+// ======================================================
+// 服务缓存 - 用于动态模块加载的缓存
+// ======================================================
+
+let cachedGroupPathPlannerService = null;         // 分组路径规划服务缓存
+let groupPathPlannerLookupComplete = false;       // 分组路径规划服务查找完成标记
+
+let cachedPromptRoutingService = null;            // Prompt 路由服务缓存
+let promptRoutingLookupComplete = false;          // Prompt 路由服务查找完成标记
+
+let cachedWorkflowClassifierService = null;       // 工作流分类服务缓存
+let workflowClassifierLookupComplete = false;     // 工作流分类服务查找完成标记
+
+let cachedResolutionSpecService = null;           // 解析规范服务缓存
+let resolutionSpecLookupComplete = false;        // 解析规范服务查找完成标记
+
+let cachedNapmResolvedQueryResolverService = null; // NAPM resolvedQuery 解析服务缓存
+let napmResolvedQueryResolverLookupComplete = false; // NAPM resolvedQuery 解析服务查找完成标记
+
+let skillDotenvLoaded = false;                    // Skill 环境变量加载标记
+
+// ======================================================
+// 配置常量
+// ======================================================
+
+/**
+ * 结果缓存最大有效期（毫秒）
+ * 90 秒内的相同问题会直接返回缓存结果
+ */
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
-const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+
+/**
+ * 审计日志文件路径
+ * 优先使用环境变量 NAPM_AUDIT_LOG_PATH
+ */
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
-const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export']);
+
+/**
+ * 安全工具白名单
+ * 只有这些工具被允许在 NAPM 上下文中调用
+ */
+const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query']);
+
+/**
+ * 开发模式解析工具
+ * 这些工具在开发过程中可以使用
+ */
 const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
   'napm-mainflow-query'
 ]);
+
+// ======================================================
+// NAPM 识别模式 - 用于识别 NAPM 相关的用户问题
+// ======================================================
+
+/**
+ * NAPM 对象关键词模式
+ * 直接匹配 NAPM 相关的对象名称
+ */
 const NAPM_OBJECT_PATTERNS = [
   /napm/i,
   /netinside/i,
@@ -43,6 +147,11 @@ const NAPM_OBJECT_PATTERNS = [
   /观枢/,
   /智维/
 ];
+
+/**
+ * NAPM 领域关键词模式
+ * 匹配 NAPM 领域相关的词汇
+ */
 const NAPM_DOMAIN_PATTERNS = [
   /系统/,
   /网络/,
@@ -66,6 +175,11 @@ const NAPM_DOMAIN_PATTERNS = [
   /http/i,
   /[45]xx/i
 ];
+
+/**
+ * 系统领域提示词模式
+ * 这些词汇提示用户可能在问系统相关问题
+ */
 const SYSTEM_DOMAIN_HINT_PATTERNS = [
   /服务/,
   /结果/,
@@ -78,6 +192,16 @@ const SYSTEM_DOMAIN_HINT_PATTERNS = [
   /状态/
 ];
 
+// ======================================================
+// 工具函数
+// ======================================================
+
+/**
+ * fetch 实现的包装
+ * 支持浏览器环境和 Node.js 环境
+ * @param  {...any} args - fetch 调用参数
+ * @returns {Promise<Response>} fetch 响应
+ */
 const fetchImpl = (...args) => {
   if (typeof fetch === 'function') {
     return fetch(...args);
@@ -85,6 +209,12 @@ const fetchImpl = (...args) => {
   return import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
 };
 
+/**
+ * 获取 NAPM 网关基础 URL
+ * 优先级：api.config.gatewayBaseUrl > 环境变量 > 默认值
+ * @param {Object} api - API 上下文对象
+ * @returns {string} 基础 URL
+ */
 function getBaseUrl(api) {
   const baseUrl =
     api?.config?.gatewayBaseUrl ||
@@ -93,6 +223,12 @@ function getBaseUrl(api) {
   return String(baseUrl).replace(/\/+$/, '');
 }
 
+/**
+ * 发送 JSON POST 请求
+ * @param {string} url - 请求 URL
+ * @param {Object} body - 请求体
+ * @returns {Promise<Object>} 响应结果
+ */
 async function postJson(url, body) {
   const response = await fetchImpl(url, {
     method: 'POST',
@@ -114,15 +250,32 @@ async function postJson(url, body) {
   }
 }
 
+/**
+ * 判断是否为纯对象
+ * @param {any} value - 要判断的值
+ * @returns {boolean}
+ */
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * 标准化 Prompt 参数
+ * 从多种参数格式中提取 Prompt
+ * @param {Object} args - 参数对象
+ * @returns {string} 标准化后的 Prompt
+ */
 function normalizePrompt(args = {}) {
   const prompt = args.prompt || args.userQuery || args.query || '';
   return typeof prompt === 'string' ? prompt.trim() : '';
 }
 
+/**
+ * 从复杂结构中递归提取文本内容
+ * 支持字符串、数组、对象等多种格式
+ * @param {any} value - 要提取的内容
+ * @returns {string} 提取后的文本
+ */
 function extractTextContent(value) {
   if (typeof value === 'string') {
     return value.trim();
@@ -161,6 +314,12 @@ function extractTextContent(value) {
   return '';
 }
 
+/**
+ * 转换为布尔值标志
+ * 支持 true/false 字符串和布尔值
+ * @param {any} value - 要转换的值
+ * @returns {boolean|null}
+ */
 function toBooleanFlag(value) {
   if (typeof value === 'boolean') {
     return value;
@@ -177,10 +336,21 @@ function toBooleanFlag(value) {
   return null;
 }
 
+/**
+ * 获取事件元数据
+ * @param {Object} event - 事件对象
+ * @returns {Object} 元数据对象
+ */
 function getEventMetadata(event = {}) {
   return isPlainObject(event?.metadata) ? event.metadata : {};
 }
 
+/**
+ * 判断是否为流式预览消息事件
+ * 这些是 LLM 在生成过程中的中间消息，不应暴露给终端用户
+ * @param {Object} event - 消息事件
+ * @returns {boolean}
+ */
 function isStreamingPreviewMessageEvent(event = {}) {
   if (!isPlainObject(event)) {
     return false;
@@ -198,9 +368,11 @@ function isStreamingPreviewMessageEvent(event = {}) {
     toBooleanFlag(metadata?.done)
   ].filter((value) => value !== null);
 
+  // 如果明确标记为最终消息，返回 false
   if (explicitFinalFlags.includes(true)) {
     return false;
   }
+  // 如果明确标记为非最终消息，返回 true
   if (explicitFinalFlags.includes(false)) {
     return true;
   }
@@ -214,6 +386,7 @@ function isStreamingPreviewMessageEvent(event = {}) {
     ?? toBooleanFlag(event?.stream)
     ?? toBooleanFlag(metadata?.stream);
 
+  // 检查各种流式/预览标志
   if (previewFlag === true) {
     return true;
   }
@@ -227,6 +400,7 @@ function isStreamingPreviewMessageEvent(event = {}) {
     return true;
   }
 
+  // 检查 phase/kind/status 字段是否包含流式相关词汇
   if (/(stream|delta|partial|preview|draft|typing)/.test(phase)) {
     return true;
   }
@@ -244,26 +418,35 @@ function isStreamingPreviewMessageEvent(event = {}) {
   return false;
 }
 
+/**
+ * 判断是否看起来像内部推理文本
+ * 检测 LLM 是否在输出内部思考过程，这些内容不应该暴露给终端用户
+ * @param {string} text - 文本
+ * @returns {boolean}
+ */
 function looksLikeInternalReasoningPreview(text = '') {
   const content = String(text || '').trim();
+  // 太短的文本不可能是推理过程
   if (!content || content.length < 80) {
     return false;
   }
 
+  // 强模式匹配 - 检测常见的推理标记
   const strongPatterns = [
-    /根据\s*skill\s*文档/ig,
-    /用户问的是/ig,
+    /根据\s*skill\s*文档/ig,       // 根据Skill文档
+    /用户问的是/ig,                 // 用户问的是
     /脚本路径在当前激活的版本下可能不同/ig,
-    /查询返回的结果中/ig,
-    /让我(?:用|查找|筛选|先|直接)/ig,
-    /\bit\s+only\s+returned\b/ig,
-    /\blet\s+me\s+try\b/ig,
-    /\bactually,\s*wait\b/ig,
-    /\bnow\s+i\s+see\b/ig,
+    /查询返回的结果中/ig,           // 查询返回的结果中
+    /让我(?:用|查找|筛选|先|直接)/ig, // 让我...
+    /\bit\s+only\s+returned\b/ig,   // it only returned
+    /\blet\s+me\s+try\b/ig,         // let me try
+    /\bactually,\s*wait\b/ig,       // actually, wait
+    /\bnow\s+i\s+see\b/ig,          // now I see
     /\blet\s+me\s+take\s+a\s+(?:different|step\s+back)\s+approach\b/ig,
-    /\bthat'?s\s+suspicious\b/ig
+    /\bthat'?s\s+suspicious\b/ig    // that's suspicious
   ];
 
+  // 统计匹配次数
   const matches = strongPatterns
     .map((pattern) => {
       const found = content.match(pattern);
@@ -271,10 +454,12 @@ function looksLikeInternalReasoningPreview(text = '') {
     })
     .reduce((sum, count) => sum + count, 0);
 
+  // 如果匹配次数 >= 2，认为是推理过程
   if (matches >= 2) {
     return true;
   }
 
+  // 检查是否有重复的推理片段
   const repeatedSegments = [
     '根据Skill文档',
     '查询返回的结果中',
@@ -288,70 +473,126 @@ function looksLikeInternalReasoningPreview(text = '') {
   return repeatedSegments.length > 0;
 }
 
+/**
+ * 判断是否为 NAPM 元追问问题
+ * 用户询问关于查询过程、来源、耗时等元信息的问题
+ * @param {string} prompt - 用户问题
+ * @param {Object} previousState - 前一个对话状态
+ * @returns {boolean}
+ */
 function isNapmMetaFollowUpPrompt(prompt = '', previousState = null) {
   const text = String(prompt || '').trim();
   if (!text) {
     return false;
   }
 
+  // 检查是否有指向前一个查询的引用词
   const hasReference = /(?:这次|刚才|上一条|上一次|这个|该查询|这个查询|上面|前面|刚刚)/i.test(text);
+  
+  // 检查是否有元信息意图（询问查询过程、来源、耗时等）
   const hasMetaIntent = /(?:思路|构成|构造|怎么查(?:询)?|如何查(?:询)?|查询流程|查询过程|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源|耗时|多长时间|时间都消耗在哪里|耗在哪里|谁在做|谁做的|谁执行|工具|python\s*过滤|过滤输出|exec|有没有走\s*skill|是否走\s*skill|走没走\s*skill|napm-skill-query|中间管道|中间层)/i.test(text);
+  
+  // 检查前一个对话是否与 NAPM 相关
   const previousNapmRelated = Boolean(previousState?.napmRelated || previousState?.domainRelated);
 
+  // 如果有元意图且前一个对话是 NAPM 相关，返回 true
   if (hasMetaIntent && previousNapmRelated) {
     return true;
   }
 
+  // 如果有引用词且有元意图，也返回 true
   return hasReference && hasMetaIntent;
 }
 
+/**
+ * 判断是否看起来像 NAPM 绕过处理文本
+ * 检测 LLM 是否绕过了 Skill 直接调用底层 API 或执行系统命令
+ * @param {string} text - 文本
+ * @returns {boolean}
+ */
 function looksLikeNapmBypassProcessText(text = '') {
   const content = String(text || '').trim();
   if (!content) {
     return false;
   }
 
+  // 检测各种绕过模式：脚本执行、底层API调用、绕过Skill等
   return /(?:Node\.js\s*脚本|python3|python\s*(?:过滤|筛选|处理|解析|输出|代码|命令|脚本|完成)|Python\s*(?:过滤|筛选|处理|解析|输出|代码|命令|脚本|完成)|exec\s*(?:工具|执行|命令)|grep|bash|curl|cURL|NetInside\s*底层|底层\s*API|原始\s*API|直接调(?:用)?|直接查|直接去后端|直接从API|后端探查|本地\s*python|绕过|跨过|没走\s*skill|没有走\s*skill|没走\s*napm-skill-query|没有走\s*napm-skill-query|未经过\s*napm-skill-query|没有经过\s*napm-skill-query|没走任何中间层|没有经过.*中间(?:层|管道)|未经过.*中间(?:层|管道)|napm-skill-query\s*.*拒绝|resolvedQuery\s*.*(?:没|未|没有)构造|NapmMetadataService|单例导出|重试|写好.*脚本写入文件|调了\s+NapmMetadataService|直接调用.*getDrilldownPathsForGroupType|解析\s*JSON\s*失败)/i.test(content);
 }
 
+/**
+ * 判断是否看起来像手动层级推理文本
+ * 检测 LLM 是否手动推断分组层级而不是通过 Skill 查询
+ * @param {string} text - 文本
+ * @returns {boolean}
+ */
 function looksLikeManualHierarchyInferenceText(text = '') {
   const content = String(text || '').trim();
   if (!content) {
     return false;
   }
 
+  // 检查是否提到了层级数据源
   const mentionsHierarchySource = /(?:groups-tree\.static\.json|维度树|group\s*树|group\s*tree|children\s*:\s*\[\s*\]|children\s+为空|叶子节点|leaf\s*node|key\s*:\s*["']?[A-Za-z]+["']?)/i.test(content);
+  
+  // 检查是否有手动推断的迹象
   const manualInference = /(?:手动|直接读|读取.*JSON|递归搜索|找到.*节点|自己.*判断|推测|猜测|组合路径|类似下钻|不依赖.*子树|无法沿树结构下钻|没有子节点|没有下层|children\s*为空)/i.test(content);
+  
+  // 检查是否绕过了 Skill
   const bypassSource = /(?:没有走\s*skill|没走\s*skill|没有走\s*napm-skill-query|没走\s*napm-skill-query|没有调用\s*napm-skill-query|没调用\s*napm-skill-query|直接调用.*NapmMetadataService|直接查.*groups-tree)/i.test(content);
 
   return (mentionsHierarchySource && manualInference) || bypassSource;
 }
 
+/**
+ * 判断是否看起来像不支持的业务清单解释文本
+ * 检测 LLM 是否在解释为什么业务清单查询失败或不完整
+ * @param {string} text - 文本
+ * @returns {boolean}
+ */
 function looksLikeUnsupportedBusinessInventoryExplanation(text = '') {
   const content = String(text || '').trim();
   if (!content) {
     return false;
   }
 
+  // 检查是否提到业务清单
   const mentionsBusinessInventory = /(?:业务系统|WebApplication|type=applications|applications\s+接口|南向\s*applications|业务应用)/i.test(content);
+  
+  // 检查是否有不支持的解释（如流量问题、名称变化等）
   const unsupportedExplanation = /(?:近期有(?:活跃)?流量|有流量数据|活跃(?:流量|应用|业务)|没有活跃流量|无流量|刚好没有活跃|现在有了|重新出现|被移除|名称有变化|中文(?:字符|名称).*过滤|全是中文)/i.test(content);
+  
   return mentionsBusinessInventory && unsupportedExplanation;
 }
 
+/**
+ * 判断是否看起来像无效的业务清单回答
+ * 检测 LLM 是否返回了无效的业务清单信息（如自定义业务应用、绕过Skill等）
+ * @param {string} text - 文本
+ * @returns {boolean}
+ */
 function looksLikeInvalidBusinessInventoryAnswer(text = '') {
   const content = String(text || '').trim();
   if (!content) {
     return false;
   }
 
+  // 首先检查是否提到业务清单
   const mentionsBusinessInventory = /(?:系统中|系统里|当前|现在|业务|业务系统|WebApplication)/i.test(content);
   if (!mentionsBusinessInventory) {
     return false;
   }
 
+  // 检查是否包含无效内容模式
   return /(?:自定义业务应用|type\s*=\s*2|type=2|Type=2|DefinedApp|已定义应用|Web业务应用[\s\S]{0,120}自定义业务应用|业务相关[^，。！？\n]{0,20}(?:14|十四)\s*个|python\s*(?:按|过滤|筛选|处理|解析|输出)|exec\s*(?:工具|执行|命令)|直接调用后端|直接调(?:用)?后端|直接从API|未经过.*(?:中间管道|napm-skill-query)|没有经过.*(?:中间管道|napm-skill-query))/i.test(content);
 }
 
+/**
+ * 判断文本是否有意义
+ * 排除无意义的文本如 "[object Object]"
+ * @param {string} value - 文本
+ * @returns {boolean}
+ */
 function isMeaningfulText(value = '') {
   const text = String(value || '').trim();
   if (!text) {
@@ -360,10 +601,21 @@ function isMeaningfulText(value = '') {
   return text !== '[object Object]' && text !== '[object Array]';
 }
 
+/**
+ * 标准化 Prompt 键（用于缓存查找）
+ * @param {string} prompt - 用户问题
+ * @returns {string} 标准化后的键
+ */
 function normalizePromptKey(prompt) {
   return String(prompt || '').trim().toLowerCase();
 }
 
+/**
+ * 构建 Prompt 范围键（用于缓存查找）
+ * @param {string} prompt - 用户问题
+ * @param {string} conversationKey - 会话键
+ * @returns {string} 范围键
+ */
 function buildPromptScopeKey(prompt = '', conversationKey = '') {
   const promptKey = normalizePromptKey(prompt);
   const scopeKey = String(conversationKey || '').trim();
@@ -373,10 +625,20 @@ function buildPromptScopeKey(prompt = '', conversationKey = '') {
   return scopeKey ? `${scopeKey}::${promptKey}` : promptKey;
 }
 
+/**
+ * 标准化对象（确保是纯对象）
+ * @param {any} value - 值
+ * @returns {Object|undefined}
+ */
 function normalizeObject(value) {
   return isPlainObject(value) ? value : undefined;
 }
 
+/**
+ * 深拷贝 JSON 对象
+ * @param {any} value - 要拷贝的值
+ * @returns {any} 拷贝后的对象
+ */
 function cloneJsonObject(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1520,53 +1782,6 @@ function getConversationKey(ctx = {}) {
   ].join(':');
 }
 
-function getMediaUrlsFromOutgoingEvent(event = {}) {
-  const urls = [];
-  const mediaUrl = String(event?.mediaUrl || event?.payload?.mediaUrl || '').trim();
-  if (mediaUrl) {
-    urls.push(mediaUrl);
-  }
-  const mediaUrls = Array.isArray(event?.mediaUrls)
-    ? event.mediaUrls
-    : (Array.isArray(event?.payload?.mediaUrls) ? event.payload.mediaUrls : []);
-  for (const item of mediaUrls) {
-    const value = String(item || '').trim();
-    if (value) {
-      urls.push(value);
-    }
-  }
-  return Array.from(new Set(urls));
-}
-
-function dedupeOutgoingMediaForConversation(event = {}, ctx = {}) {
-  const mediaUrls = getMediaUrlsFromOutgoingEvent(event);
-  if (mediaUrls.length === 0) {
-    return null;
-  }
-
-  const conversationKey = getConversationKey(ctx) || 'global';
-  const now = Date.now();
-  const existing = napmSentMediaByConversation.get(conversationKey) || new Map();
-  for (const [url, updatedAt] of existing.entries()) {
-    if ((now - Number(updatedAt || 0)) > SENT_MEDIA_DEDUPE_WINDOW_MS) {
-      existing.delete(url);
-    }
-  }
-
-  const duplicateUrls = mediaUrls.filter((url) => existing.has(url));
-  const freshUrls = mediaUrls.filter((url) => !existing.has(url));
-  for (const url of freshUrls) {
-    existing.set(url, now);
-  }
-  napmSentMediaByConversation.set(conversationKey, existing);
-
-  return {
-    original: mediaUrls,
-    fresh: freshUrls,
-    duplicates: duplicateUrls
-  };
-}
-
 function getRequestUrlFromResult(result) {
   const summary = isPlainObject(result?.summary) ? result.summary : {};
   return String(result?.requestUrl || summary?.requestUrl || '').trim();
@@ -1616,17 +1831,6 @@ function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
     && Number(record.updatedAt) > 0
     && (Date.now() - Number(record.updatedAt)) <= maxAgeMs
   );
-}
-
-function getLatestRememberedSkillRecord(maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
-  return isFreshRememberedRecord(latestNapmResult, maxAgeMs) ? latestNapmResult : null;
-}
-
-function getReportDataFromRecord(record = null) {
-  if (!record || !isPlainObject(record.result)) {
-    return null;
-  }
-  return isPlainObject(record.result.reportData) ? record.result.reportData : null;
 }
 
 function getRememberedDebugApi(prompt, conversationKey = '') {
@@ -2108,164 +2312,6 @@ async function runSkillExecutor(args = {}) {
     });
     throw error;
   }
-}
-
-function normalizeReportFormat(format = '') {
-  const raw = String(format || '').trim().toLowerCase();
-  if (raw === 'word') return 'docx';
-  if (raw === 'doc') return 'docx';
-  return raw || 'docx';
-}
-
-function buildReportTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-report-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildReportDataForExport(args = {}) {
-  const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
-  const rememberedRecord = getLatestRememberedSkillRecord();
-  const rememberedReportData = getReportDataFromRecord(rememberedRecord);
-  const sourceReportData = explicitReportData || rememberedReportData;
-  if (!sourceReportData) {
-    return {
-      ok: false,
-      errorCode: 'REPORT_DATA_NOT_FOUND',
-      message: '未找到可导出的 NAPM reportData。请先完成一次 NAPM 查询或分析，再说“将以上导出为 Word”。'
-    };
-  }
-
-  const format = normalizeReportFormat(args.format || args.reportPlan?.format || sourceReportData.format || sourceReportData.defaultFormat || 'docx');
-  return {
-    ok: true,
-    reportData: {
-      ...sourceReportData,
-      format,
-      title: String(args.title || args.reportPlan?.title || sourceReportData.title || '').trim() || sourceReportData.title,
-      sourceQuestion: String(args.sourceQuestion || args.prompt || sourceReportData.sourceQuestion || '').trim() || sourceReportData.sourceQuestion,
-      audit: {
-        ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
-        exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result',
-        sourcePromptKey: rememberedRecord?.promptKey || null
-      }
-    },
-    source: explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result'
-  };
-}
-
-async function runReportExecutor(args = {}) {
-  const traceId = buildReportTraceId(args);
-  const built = buildReportDataForExport(args);
-  if (!built.ok) {
-    appendPluginAuditEvent('napm_report_export_blocked', {
-      traceId,
-      prompt: normalizePrompt(args),
-      errorCode: built.errorCode,
-      message: built.message
-    });
-    return built;
-  }
-
-  const reportData = built.reportData;
-  appendPluginAuditEvent('napm_report_export_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    source: built.source,
-    reportType: String(reportData.reportType || '').trim() || null,
-    format: String(reportData.format || '').trim() || null,
-    title: String(reportData.title || '').trim() || null
-  });
-
-  if (String(reportData.format || '').trim().toLowerCase() === 'pdf') {
-    const result = {
-      ok: false,
-      errorCode: 'REPORT_PDF_EXPORT_UNAVAILABLE',
-      message: 'PDF 导出暂未启用。目前只支持 Word/docx，不能静默降级。'
-    };
-    appendPluginAuditEvent('napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  }
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-report-input-'));
-    const tempInputPath = path.join(tempInputDir, 'report.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(reportData), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_REPORT_EXECUTOR,
-      '--input',
-      tempInputPath,
-      '--downloadBaseUrl',
-      String(args.downloadBaseUrl || process.env.NAPM_REPORT_DOWNLOAD_BASE_URL || '/reports')
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_report_export_completed' : 'napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      reportId: result?.reportId || null,
-      format: result?.format || reportData.format || null,
-      filePath: result?.filePath || null,
-      downloadUrl: result?.downloadUrl || null,
-      errorCode: result?.errorCode || null,
-      message: result?.message || null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      errorCode: error?.code || 'REPORT_EXPORT_FAILED',
-      message: error?.message || String(error)
-    };
-    appendPluginAuditEvent('napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try {
-        fs.rmSync(tempInputDir, { recursive: true, force: true });
-      } catch (_cleanupError) {
-        // best-effort temp cleanup
-      }
-    }
-  }
-}
-
-function buildReportExportReply(result = {}) {
-  if (!result?.ok) {
-    return String(result?.message || '报告导出失败。').trim();
-  }
-  const lines = [
-    `报告已生成：${result.title || result.reportId || 'NAPM 报告'}`,
-    `格式：${result.format || 'docx'}`
-  ];
-  if (result.downloadUrl) {
-    lines.push(`下载链接：${result.downloadUrl}`);
-  }
-  if (result.filePath) {
-    lines.push(`文件路径：${result.filePath}`);
-  }
-  return lines.join('\n');
 }
 
 function buildResolvedQueryForPrompt(prompt = '', args = {}) {
@@ -2769,39 +2815,6 @@ function createSkillToolDefinition() {
   };
 }
 
-function createReportExportToolDefinition() {
-  return {
-    label: 'NAPM Report Export',
-    name: 'napm-report-export',
-    description: 'Export the latest NAPM skill result reportData, or an explicitly provided reportData object, into a report file. Use this only when the user explicitly asks to generate/export a report, Word, docx, or PDF from current/previous NAPM query results. This tool does not query NAPM and must not be used as a data-query fallback.',
-    parameters: {
-      type: 'object',
-      properties: {
-        prompt: { type: 'string', description: 'Original report export prompt, such as 将以上以 Word 形式导出.' },
-        format: { type: 'string', enum: ['docx', 'word', 'pdf'], description: 'Requested export format. word is normalized to docx. pdf currently returns REPORT_PDF_EXPORT_UNAVAILABLE.' },
-        title: { type: 'string', description: 'Optional report title override.' },
-        reportPlan: { type: 'object', description: 'Optional upstream report plan.', additionalProperties: true },
-        reportData: { type: 'object', description: 'Optional reportData from napm-skill-query. If omitted, the latest fresh NAPM skill result reportData is used.', additionalProperties: true },
-        downloadBaseUrl: { type: 'string', description: 'Optional download base URL, defaults to /reports.' },
-        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
-      },
-      additionalProperties: false
-    },
-    execute: async (_toolCallId, args = {}) => {
-      const result = await runReportExecutor(args || {});
-      return {
-        content: [
-          {
-            type: 'text',
-            text: buildReportExportReply(result)
-          }
-        ],
-        details: result
-      };
-    }
-  };
-}
-
 function resolvePromptWithAudit(args = {}, tracePrefix = 'napm-resolver') {
   const prompt = normalizePrompt(args);
   const traceId = normalizeTraceId(args?.traceId) || `${tracePrefix}-${Date.now()}`;
@@ -2969,11 +2982,6 @@ function registerCommand(api, definition) {
         return makeTextReplyFromSkillResult(result);
       }
 
-      if (definition.name === 'napm-report-export') {
-        const result = await runReportExecutor({ prompt, format: 'docx' });
-        return makeTextReply(buildReportExportReply(result));
-      }
-
       if (typeof definition.payloadBuilder !== 'function') {
         return makeTextReply(JSON.stringify({ ok: false, reason: 'unsupported_command', command: definition.name }, null, 2));
       }
@@ -3036,11 +3044,6 @@ function buildNapmRoutingSystemContext() {
     'If `napm-skill-query` returns `ASK_CLARIFYING_QUESTION`, ask that clarification and stop.',
     'If `napm-skill-query` returns `ANSWER_CONCEPTUALLY` or `INTERPRET_RESULT`, answer from that result and stop.',
     'If `napm-skill-query` returns `displayText` or `summary.displayText`, prefer using that text directly instead of paraphrasing it.',
-    'When the user explicitly asks to generate/export a report, Word, docx, or PDF for NAPM results, use `napm-report-export` after `napm-skill-query` has produced `reportData`.',
-    'For follow-up export wording such as "将以上以 Word 形式导出", "把刚才结果导出成 Word", or "生成报告", do not re-query NAPM unless the user changes the data scope. Call `napm-report-export` and let it consume the latest fresh NAPM skill `reportData`.',
-    'For new report requests that include a data question, first call `napm-skill-query` with a complete resolvedQuery, then call `napm-report-export` with the returned `reportData`.',
-    'Do not call `napm-report-export` for ordinary data questions unless the user explicitly asks for a report/export file.',
-    'PDF export is not enabled in this stage. If the user asks for PDF, call `napm-report-export` with format=pdf and report the tool error; do not silently generate Word instead.',
     'For any NAPM data question, including repeated or follow-up wording, never answer from stale conversation memory alone. You must base the reply on a fresh NAPM tool result from the current turn.',
     'If the tool result contains `requestUrl`, you must append `Debug API:` followed by that exact URL at the end of your final reply.',
     'If the request is clearly unrelated to system monitoring or NAPM, such as weather, casual chat, reminders, entertainment, or general knowledge, do not answer the request. Briefly redirect the user back to system monitoring, anomaly analysis, or result interpretation questions.'
@@ -3048,7 +3051,6 @@ function buildNapmRoutingSystemContext() {
 }
 
 const skillTool = createSkillToolDefinition();
-const reportExportTool = createReportExportToolDefinition();
 const resolverTool = createResolvedQueryResolverToolDefinition();
 const mainflowTool = createMainflowQueryToolDefinition();
 
@@ -3073,7 +3075,6 @@ const plugin = {
       api.registerTool(mainflowTool);
     }
     api.registerTool(skillTool);
-    api.registerTool(reportExportTool);
 
     registerNapmHook(
       'message_received',
@@ -3363,29 +3364,6 @@ const plugin = {
     registerNapmHook(
       'message_sending',
       async (event, ctx) => {
-        const mediaDedupe = dedupeOutgoingMediaForConversation(event, ctx);
-        if (mediaDedupe?.original?.length > 0 && mediaDedupe.fresh.length === 0) {
-          appendPluginAuditEvent('napm_plugin_duplicate_media_suppressed', {
-            conversationKey: getConversationKey(ctx) || null,
-            mediaUrls: mediaDedupe.original,
-            reason: 'duplicate_media_within_window'
-          });
-          return {
-            cancel: true
-          };
-        }
-        if (mediaDedupe?.fresh?.length > 0 && mediaDedupe.fresh.length < mediaDedupe.original.length) {
-          appendPluginAuditEvent('napm_plugin_duplicate_media_trimmed', {
-            conversationKey: getConversationKey(ctx) || null,
-            originalMediaUrls: mediaDedupe.original,
-            forwardedMediaUrls: mediaDedupe.fresh
-          });
-          return {
-            mediaUrls: mediaDedupe.fresh,
-            mediaUrl: mediaDedupe.fresh[0] || undefined
-          };
-        }
-
         const conversationKey = getConversationKey(ctx);
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const guardState = getGuardState(ctx);
@@ -3581,12 +3559,6 @@ const plugin = {
       payloadBuilder: buildSkillPayload
     });
 
-    registerCommand(api, {
-      name: 'napm-report-export',
-      description: 'Export the latest NAPM skill reportData as a Word report.',
-      endpoint: 'local://napm.report.export'
-    });
-
     if (shouldEnableDevResolverTools()) {
       registerCommand(api, {
         name: 'napm-resolve-query',
@@ -3629,11 +3601,6 @@ module.exports.__test__ = {
   buildPacketLossClientTopResolvedQuery,
   createResolvedQueryResolverToolDefinition,
   createMainflowQueryToolDefinition,
-  createReportExportToolDefinition,
-  runReportExecutor,
-  buildReportDataForExport,
-  buildReportExportReply,
-  dedupeOutgoingMediaForConversation,
   getNapmResolvedQueryResolverService,
   resolvePromptWithAudit,
   runMainflowQuery,
@@ -3653,8 +3620,6 @@ module.exports.__test__ = {
   normalizeOverviewSceneKey,
   shouldReplaceWithPromptOverview,
   rememberSkillResult,
-  getLatestRememberedSkillRecord,
-  getReportDataFromRecord,
   prepareSkillExecutionArgs,
   shouldAllowNapmReasoningPreview,
   extractOverviewSceneFromRememberedRecord

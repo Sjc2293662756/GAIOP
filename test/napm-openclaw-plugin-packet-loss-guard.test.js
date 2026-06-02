@@ -130,4 +130,94 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(reply).toContain('10.0.0.1');
     expect(reply).toContain('12.5%');
   });
+
+  test('should keep OpenClaw continuation skill result when tool prompt differs from user short prompt', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(def) {
+        tools.set(def.name, def);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const skillTool = tools.get('napm-skill-query');
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-loss-continuation',
+      conversationId: 'conv-loss-continuation',
+      sessionKey: 'session-loss-continuation',
+      sessionId: 'session-loss-continuation',
+      runId: 'run-loss-continuation'
+    };
+    const shortPrompt = '\u6700\u8fd1\u4e00\u5929\u5462\uff1f';
+    const expandedPrompt = '\u6700\u8fd1\u4e00\u5929\u4e22\u5305\u6700\u4e25\u91cd\u7684\u524d10\u4e2aIP';
+    const resolvedQuery = {
+      service: 'topValues',
+      queryModeKey: 'data',
+      groups: [{ type: 'IPAddress' }],
+      metrics: ['PLI', 'PLO'],
+      topMetric: 'PLI',
+      topCount: 10,
+      start: 1779840000,
+      end: 1779926400,
+      timeRange: { key: 'last24hours', displayText: '\u6700\u8fd1\u4e00\u5929' },
+      userRequirement: expandedPrompt,
+      format: 'json'
+    };
+
+    messageReceived({ content: shortPrompt }, ctx);
+    await beforePromptBuild({ prompt: shortPrompt }, ctx);
+    await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt: expandedPrompt,
+        userQuery: expandedPrompt,
+        traceId: 'trace-loss-continuation',
+        resolvedQuery
+      }
+    }, ctx);
+
+    plugin.__test__.rememberDebugApiForPromptAliases([
+      shortPrompt,
+      expandedPrompt
+    ], {
+      ok: true,
+      service: 'topValues',
+      resolvedQuery,
+      displayText: '\u6700\u8fd1\u4e00\u5929\u4e22\u5305\u6700\u4e25\u91cd\u7684IP\u662f 10.0.0.1\u3002'
+    }, 'conv-loss-continuation');
+
+    const result = beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: '\u6700\u8fd1\u4e00\u5929\u4e22\u5305\u6700\u4e25\u91cd\u7684IP\u662f 10.0.0.1\u3002'
+        }]
+      }
+    }, ctx);
+
+    expect(skillTool).toBeTruthy();
+    expect(result).toBeUndefined();
+  });
 });

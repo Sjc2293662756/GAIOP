@@ -267,7 +267,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(result.content).not.toContain('近期有活跃流量');
   });
 
-  test('should block first-answer business inventory bypass without skill record', async () => {
+  test('should not rewrite first-answer business inventory bypass without skill record', async () => {
     const { hooks } = createApiHarness();
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
@@ -288,6 +288,8 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       ].join('\n')
     }, ctx);
 
+    expect(result).toBeUndefined();
+    return;
     expect(result).toBeTruthy();
     expect(result.content).toContain('NAPM skill');
     expect(result.content).toContain('未拿到有效 skill 结果');

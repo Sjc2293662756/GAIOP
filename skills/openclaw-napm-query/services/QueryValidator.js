@@ -74,7 +74,7 @@ class QueryValidator {
 
     if (errors.length > 0) {
       if (mode === 'gateway') {
-        logger.error('Gateway request validation failed', { errors, gatewayRequest: target });
+        logger.error('Structured query validation failed', { errors, query: target });
       } else {
         logger.error('Query validation failed', { errors, queryRequest: target });
       }
@@ -89,7 +89,7 @@ class QueryValidator {
     }
 
     if (mode === 'gateway') {
-      logger.info('Gateway request validation passed', { service: target.service });
+      logger.info('Structured query validation passed', { service: target.service });
     } else {
       logger.info('Query validation passed', { service: target.service });
     }

@@ -11,6 +11,19 @@ const {
 } = require('../../../src/constants/objectMetricOwnership');
 const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
+const { buildReportData } = require('./ReportDataContractService');
+
+const COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE = 'comprehensive_analysis';
+const DISCOVER_THEN_ANALYZE_RESPONSE_TYPE = 'comprehensive_analysis_with_discovery';
+const LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE = 'overview_with_discovery';
+
+function normalizeAnalysisResponseType(value = '') {
+  const raw = String(value || '').trim();
+  if (raw === LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE) {
+    return DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
+  }
+  return raw;
+}
 
 // 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
 function toFiniteNumber(value) {
@@ -389,7 +402,7 @@ function normalizeFollowUpPrompts(payload = {}) {
 }
 
 function resolveResponseType(payload = {}, hasResultData = false) {
-  const explicit = String(payload?.responseType || '').trim();
+  const explicit = normalizeAnalysisResponseType(payload?.responseType);
   if (explicit) {
     return explicit;
   }
@@ -398,7 +411,16 @@ function resolveResponseType(payload = {}, hasResultData = false) {
     return 'compare';
   }
   if (payload?.overview && typeof payload.overview === 'object') {
-    return 'overview';
+    const analysisMode = String(
+      payload?.analysisMode
+      || payload?.resolvedQuery?.analysisMode
+      || payload?.resolvedQuery?.semanticConstraints?.analysisMode
+      || ''
+    ).trim();
+    if (analysisMode === 'discover_then_analyze') {
+      return DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
+    }
+    return COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE;
   }
 
   const service = String(payload?.service || payload?.resolvedQuery?.service || '').trim();
@@ -545,20 +567,22 @@ function buildApplicationOverviewSummary(modules = []) {
 function buildOverviewStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const scene = String(payload?.overview?.scene || '').trim();
+  const responseType = resolveResponseType(payload, true);
+  const isDiscoverThenAnalyze = responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
   const discovery = payload?.overview?.discovery && typeof payload.overview.discovery === 'object'
     ? payload.overview.discovery
     : null;
   const discoveryObject = String(discovery?.selectedObject || '').trim();
   const discoveryMetric = String(discovery?.metric || '').trim();
   const sceneLabelMap = {
-    system: '系统概览',
-    business: '业务概览',
-    business_group: '业务组概览',
-    application: '应用概览',
-    network: '网络概览',
-    security: '安全概览'
+    system: '系统综合分析',
+    business: '业务综合分析',
+    business_group: '业务组综合分析',
+    application: '应用综合分析',
+    network: '网络综合分析',
+    security: '安全综合分析'
   };
-  const sceneLabel = sceneLabelMap[scene] || '概览';
+  const sceneLabel = sceneLabelMap[scene] || '综合分析';
   const overviewQueries = Array.isArray(payload?.overview?.queries) ? payload.overview.queries : [];
   const summaryHighlights = Array.isArray(payload?.summary?.highlights)
     ? payload.summary.highlights.filter(Boolean).map((item) => String(item))
@@ -582,14 +606,22 @@ function buildOverviewStructure(payload, followUpPrompts) {
   const keyFindings = applicationSummary.length > 0
     ? applicationSummary
     : [...summaryHighlights, ...topFindings].slice(0, 8);
-  const explanation = scene === 'application'
-    ? '这是应用概览结果，请优先总结告警、吞吐、访问趋势、体验趋势和失败热点。'
-    : `这是${sceneLabel}结果，请优先总结核心发现、异常热点和建议关注方向。`;
+  const explanation = isDiscoverThenAnalyze
+    ? `这是先发现对象再聚焦分析的${sceneLabel}结果。请先说明发现对象和发现依据，再总结聚焦分析证据、判断和建议动作。`
+    : (scene === 'application'
+      ? '这是应用综合分析结果，请优先总结告警、吞吐、访问趋势、体验趋势和失败热点。'
+      : `这是${sceneLabel}结果，请优先总结核心发现、异常热点和建议关注方向。`);
 
   return {
-    responseType: 'overview',
+    responseType,
+    legacyResponseType: responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE
+      ? LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE
+      : null,
     title: sceneLabel,
     explanation,
+    analysisType: payload?.analysisType || payload?.resolvedQuery?.analysisType || 'comprehensive_analysis',
+    analysisMode: payload?.analysisMode || payload?.resolvedQuery?.analysisMode || (isDiscoverThenAnalyze ? 'discover_then_analyze' : 'focused_analysis'),
+    analysisScene: payload?.analysisScene || payload?.resolvedQuery?.analysisScene || scene || null,
     timeRange,
     scene,
     sceneLabel,
@@ -650,6 +682,68 @@ function buildWebApplicationCatalogDisplayText(rows = []) {
   return lines.join('\n');
 }
 
+function getObjectTypeDisplayName(objectType = '') {
+  const normalized = String(objectType || '').trim();
+  const names = {
+    BusinessGroup: '业务组',
+    ClientBusinessGroup: '客户端业务组',
+    WebApplication: '业务系统',
+    DefinedApp: '已定义应用',
+    CompositeApplication: '自动识别应用',
+    BuiltinApplication: '内置应用',
+    OtherApp: '未知应用',
+    IPAddress: 'IP',
+    Prefix24: '网段',
+    User: '用户',
+    PageFamily: '页面族'
+  };
+  return names[normalized] || normalized || '对象';
+}
+
+function getInventoryProviderDescription(metadata = null) {
+  const providerType = String(metadata?.providerType || '').trim();
+  const apiType = String(metadata?.apiType || '').trim();
+  if (!providerType && !apiType) {
+    return '';
+  }
+
+  if (providerType === 'businessGroups' || apiType === 'businessGroups') {
+    return '查询口径：南向 businessGroups 目录，返回系统已配置的 BusinessGroup/业务组对象。';
+  }
+  if (providerType === 'groupArguments' || apiType === 'groupArguments') {
+    const argumentType = Number(metadata?.argumentType);
+    return Number.isFinite(argumentType)
+      ? `查询口径：南向 groupArguments 目录，argumentType=${argumentType}。`
+      : '查询口径：南向 groupArguments 目录。';
+  }
+  if (providerType === 'applications' || apiType === 'applications') {
+    const filter = Array.isArray(metadata?.applicationTypeFilter)
+      ? metadata.applicationTypeFilter.map(Number).filter(Number.isFinite)
+      : [];
+    return filter.length > 0
+      ? `查询口径：南向 applications 目录，按 Type=${filter.join('/')} 筛选。`
+      : '查询口径：南向 applications 目录。';
+  }
+  return `查询口径：南向 ${apiType || providerType} 目录。`;
+}
+
+function buildGenericGroupListDisplayText(rows = [], objectType = '', metadata = null) {
+  const objectLabel = getObjectTypeDisplayName(objectType);
+  const lines = [`系统中目前有 ${rows.length} 个${objectLabel}（${objectType || 'Object'}）：`];
+  rows.forEach((row, index) => {
+    const value = String(getListItemValue(row, 'label') || '').trim();
+    if (value) {
+      lines.push(`${index + 1}. ${value}`);
+    }
+  });
+
+  const providerDescription = getInventoryProviderDescription(metadata);
+  if (providerDescription) {
+    lines.push(providerDescription);
+  }
+  return lines.join('\n');
+}
+
 // 构造清单类 narration 结构，适用于对象列表与指标列表两类元数据结果。
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
@@ -693,7 +787,9 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
   }));
   const displayText = webApplicationCatalogList
     ? buildWebApplicationCatalogDisplayText(rows)
-    : null;
+    : (responseType === 'group_list'
+      ? buildGenericGroupListDisplayText(rows, objectType, metadata)
+      : null);
 
   return {
     responseType,
@@ -755,7 +851,10 @@ function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], s
   if (responseType === 'trend') {
     return buildTrendStructure(payload, rows, structuredSeries, followUpPrompts);
   }
-  if (responseType === 'overview') {
+  if (responseType === 'overview' || responseType === COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE) {
+    return buildOverviewStructure(payload, followUpPrompts);
+  }
+  if (responseType === LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE || responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE) {
     return buildOverviewStructure(payload, followUpPrompts);
   }
   if (responseType === 'compare') {
@@ -888,6 +987,20 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     summary.displayText = narrationStructure.displayText;
   }
   const followUpPrompts = normalizeFollowUpPrompts(data);
+  const responseType = data.responseType || narrationStructure?.responseType || null;
+  const reportData = data.reportData && typeof data.reportData === 'object'
+    ? data.reportData
+    : buildReportData({
+        ...data,
+        service,
+        responseType,
+        summary,
+        timeRange,
+        requestUrl,
+        narrationStructure,
+        followUpPrompts,
+        followUpActions: Array.isArray(data.followUpActions) ? data.followUpActions : []
+      });
 
   return {
     ...data,
@@ -900,6 +1013,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     responseMode: displayText ? 'verbatim_display_text' : 'machine_narration_input',
     narrationBy: 'openclaw',
     narrationStructure,
+    reportData,
     narrationInput: {
       schema: 'openclaw_napm_narration.v1',
       narrationBy: 'openclaw',
@@ -907,7 +1021,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       answerMode,
       type: hasResultData ? 'query_result' : 'decision_result',
       service,
-      responseType: data.responseType || narrationStructure?.responseType || null,
+      responseType,
       failureClassification,
       decision: data.assistantDecision || data.decision || null,
       intent: data.intentResult || data.intent || null,
@@ -936,7 +1050,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
         ...data,
         error: normalizedError,
         answerMode,
-        responseType: data.responseType || narrationStructure?.responseType || null
+        responseType
       }, { answerMode })
     }
   };

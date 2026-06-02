@@ -169,7 +169,7 @@ class RequirementParserService {
    */
   loadStableQueryTemplates() {
     if (this.areGatewayTemplatesDisabled()) {
-      logger.warn('Gateway stable templates are disabled by environment flag.');
+      logger.warn('Runtime stable query templates are disabled by environment flag.');
       return [];
     }
 
@@ -181,7 +181,7 @@ class RequirementParserService {
         : [];
 
       if (specEnabled === false) {
-        logger.warn('Gateway stable templates are disabled by resolution spec switch.');
+        logger.warn('Runtime stable query templates are disabled by resolution spec switch.');
         return [];
       }
 
@@ -963,7 +963,7 @@ class RequirementParserService {
   }
 
   /**
-   * 直接执行网关请求。
+   * 直接执行结构化查询。
    * 这个阶段不再改写语义，只负责参数校验、请求组装、上游调用、审计记录和错误收口。
    *
    * @param {object} gatewayRequest - 已结构化的执行态查询对象
@@ -971,7 +971,7 @@ class RequirementParserService {
    * @returns {Promise<object>} - 上游执行结果、调试参数与错误信息
    */
   async executeDirectGatewayRequest(gatewayRequest, requestContext = null) {
-    // 网关仅负责按上游结构化参数执行查询，不在本地改写查询语义或执行策略。
+    // 当前运行时仅负责按上游结构化参数执行查询，不在本地改写查询语义或执行策略。
     const passthroughGatewayRequest = gatewayRequest && typeof gatewayRequest === 'object'
       ? JSON.parse(JSON.stringify(gatewayRequest))
       : {};
@@ -987,8 +987,8 @@ class RequirementParserService {
 
     try {
       logger.info('\n========================================');
-      logger.info('=== 语义网关调用 ===');
-      logger.info('正在解析网关请求 JSON...');
+      logger.info('=== NAPM skill 结构化查询执行 ===');
+      logger.info('正在解析执行态查询 JSON...');
 
       const queryRequest = {
         service: passthroughGatewayRequest.service,
@@ -1046,11 +1046,11 @@ class RequirementParserService {
         throw error;
       }
 
-      logger.info('Gateway request executed through split execution kernel.');
+      logger.info('Structured query executed through split execution kernel.');
       logger.info('========================================\n');
       return kernelResult;
     } catch (error) {
-      logger.error('网关请求执行失败:', error.message);
+      logger.error('结构化查询执行失败:', error.message);
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
       if (upstreamGuard) {
         response.error = upstreamGuard;
@@ -1105,7 +1105,7 @@ class RequirementParserService {
   }
 
   /**
-   * 执行完整网关请求主链。
+   * 执行完整结构化查询主链。
    * 先跑准备阶段，再尝试直接执行，必要时启用库存兜底或 service 级回退。
    */
   async executeGatewayRequest(gatewayRequest, requestContext = null) {
@@ -1978,7 +1978,7 @@ class RequirementParserService {
     };
   }
 
-  // 以下逻辑用于把 requestContext 中的对象提示注入语义候选，帮助收敛最终目标对象类型。
+  // 以下逻辑用于把 requestContext 中的对象提示注入执行候选，帮助收敛最终目标对象类型。
   resolveContextObjectTypeHint(requestContext = null) {
     if (!requestContext || typeof requestContext !== 'object') {
       return '';
@@ -2080,7 +2080,7 @@ class RequirementParserService {
   }
 
   /**
-   * 将请求上下文中的对象语义种子写回 mappingResult，提升对象判定稳定性。
+   * 将请求上下文中的对象种子写回 mappingResult，提升对象判定稳定性。
    */
   applyRequestContextSemanticSeed(mappingResult = null, requestContext = null) {
     if (!mappingResult || typeof mappingResult !== 'object') {
@@ -2235,7 +2235,7 @@ class RequirementParserService {
   }
 
   /**
-   * 当语义候选已经高度确定目标对象时，主动把 groups 末端类型对齐到该目标。
+   * 当执行候选已经高度确定目标对象时，主动把 groups 末端类型对齐到该目标。
    */
   alignGroupsWithSemanticTarget(query = null) {
     if (!query || typeof query !== 'object') {
@@ -2283,7 +2283,7 @@ class RequirementParserService {
   }
 
   /**
-   * 判断是否应该优先采用语义映射阶段产出的 resolvedQuery。
+   * 判断是否应该优先采用上游结构化阶段产出的 resolvedQuery。
    * 只有在置信度、元数据可执行性和澄清状态都满足时才会放行。
    */
   shouldPreferMappedQuery(mappingResult) {
@@ -2353,7 +2353,7 @@ class RequirementParserService {
   }
 
   /**
-   * 合并默认 gatewayRequest 与语义映射结果，得到更完整的执行态查询。
+   * 合并默认执行态查询与上游结构化结果，得到更完整的执行态查询。
    */
   mergeWithMappedQuery(gatewayRequest, mappedQuery, userRequirement) {
     const request = gatewayRequest || {};
@@ -2671,7 +2671,7 @@ class RequirementParserService {
     });
   }
 
-  // 生成一份最保守的默认查询，供缺少足够语义信息时兜底使用。
+  // 生成一份最保守的默认执行态查询，仅供显式允许的兼容路径使用。
   getDefaultGatewayRequest(userRequirement) {
     const start = this.roundToNearestMinute(TimeUtils.getYesterdayStart());
     const end = this.roundToNearestMinute(TimeUtils.getYesterdayEnd());

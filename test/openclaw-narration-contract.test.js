@@ -212,7 +212,7 @@ describe('OpenClawNarrationContractService', () => {
       forwardDisplayText: false
     });
 
-    expect(payload.narrationStructure.responseType).toBe('overview');
+    expect(payload.narrationStructure.responseType).toBe('comprehensive_analysis');
     expect(payload.narrationStructure.scene).toBe('network');
     expect(payload.narrationStructure.discovery).toEqual({
       object: '101.254.114.237',
@@ -225,6 +225,58 @@ describe('OpenClawNarrationContractService', () => {
     );
     expect(payload.narrationStructure.modules).toHaveLength(1);
     expect(payload.narrationStructure.modules[0].label).toBe('\u544a\u8b66\u6982\u51b5');
+  });
+
+  test('should preserve discover-then-overview response type in narration structure', () => {
+    const payload = buildOpenClawReplyContract({
+      ok: true,
+      service: 'overview',
+      responseType: 'comprehensive_analysis_with_discovery',
+      analysisType: 'comprehensive_analysis',
+      analysisMode: 'discover_then_analyze',
+      analysisScene: 'network',
+      resolvedQuery: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'network',
+        analysisType: 'comprehensive_analysis',
+        analysisMode: 'discover_then_analyze',
+        analysisScene: 'network',
+        groups: [{ type: 'IPAddress', argument: '101.254.114.237' }],
+        start: 1777982400,
+        end: 1777986000
+      },
+      overview: {
+        scene: 'network',
+        discovery: {
+          targetObjectType: 'IPAddress',
+          selectedObject: '101.254.114.237',
+          metric: 'RFCI',
+          rank: 1
+        },
+        queries: [],
+        modules: [],
+        topFindings: []
+      },
+      summary: {
+        title: '综合分析结果',
+        highlights: ['已锁定连接失败最多的 IP。']
+      }
+    }, {
+      forwardDisplayText: true
+    });
+
+    expect(payload.narrationStructure.responseType).toBe('comprehensive_analysis_with_discovery');
+    expect(payload.narrationStructure.legacyResponseType).toBe('overview_with_discovery');
+    expect(payload.narrationStructure.analysisType).toBe('comprehensive_analysis');
+    expect(payload.narrationStructure.analysisMode).toBe('discover_then_analyze');
+    expect(payload.narrationStructure.analysisScene).toBe('network');
+    expect(payload.narrationStructure.discovery).toEqual({
+      object: '101.254.114.237',
+      metric: 'RFCI',
+      rank: 1,
+      targetObjectType: 'IPAddress'
+    });
   });
 
   test('should build natural application overview summary', () => {
@@ -302,7 +354,7 @@ describe('OpenClawNarrationContractService', () => {
       forwardDisplayText: false
     });
 
-    expect(payload.narrationStructure.responseType).toBe('overview');
+    expect(payload.narrationStructure.responseType).toBe('comprehensive_analysis');
     expect(payload.narrationStructure.scene).toBe('application');
     expect(payload.narrationStructure.queryCount).toBe(5);
     expect(payload.narrationStructure.summary[0]).toContain('\u4eca\u5929\u5e94\u7528\u4fa7\u544a\u8b66\u8f83\u591a');
@@ -359,6 +411,49 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.summary.displayText).toContain('Zabbix-web');
     expect(payload.summary.displayText).toContain('不是按流量活跃度过滤');
     expect(payload.summary.displayText).toContain('不是中文名称过滤');
+  });
+
+  test('should render BusinessGroup catalog rows instead of title only', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'BusinessGroup' }],
+        semanticConstraints: {
+          operation: 'metadata_list',
+          workflowType: 'object_inventory',
+          targetObjectType: 'BusinessGroup'
+        }
+      },
+      metadata: {
+        requestedObjectType: 'BusinessGroup',
+        effectiveObjectType: 'BusinessGroup',
+        providerType: 'businessGroups',
+        apiType: 'businessGroups'
+      },
+      summary: {
+        title: '对象列表',
+        rowCount: 3,
+        empty: false
+      },
+      rows: [
+        { label: 'Default-Internet', value: 'Default-Internet', type: 'BusinessGroup' },
+        { label: '服务器网段', value: '服务器网段', type: 'BusinessGroup' },
+        { label: 'NOP可观察性', value: 'NOP可观察性', type: 'BusinessGroup' }
+      ]
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.responseType).toBe('group_list');
+    expect(payload.narrationStructure.itemCount).toBe(3);
+    expect(payload.summary.displayText).toContain('系统中目前有 3 个业务组');
+    expect(payload.summary.displayText).toContain('Default-Internet');
+    expect(payload.summary.displayText).toContain('服务器网段');
+    expect(payload.summary.displayText).toContain('NOP可观察性');
+    expect(payload.summary.displayText).toContain('businessGroups');
+    expect(payload.summary.displayText).not.toBe('对象列表');
   });
 
   test('should constrain WebApplication metric-list narration to returned web metrics only', () => {

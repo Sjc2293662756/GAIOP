@@ -136,8 +136,15 @@
         "总体",
         "概览",
         "总览",
+        "综合分析",
+        "聚焦分析",
+        "原因分析",
+        "为什么",
+        "原因",
         "overall",
         "overview",
+        "comprehensive analysis",
+        "focused analysis",
         "global",
         "情况怎么样",
         "状态"
@@ -153,6 +160,9 @@
         "groups",
         "timeRange",
         "analysisPipeline",
+        "analysisType",
+        "analysisMode",
+        "analysisScene",
         "overviewDepth",
         "format",
         "semanticConstraints",
@@ -347,6 +357,9 @@
       "optionalExecutionFields": [
         "groups",
         "analysisPipeline",
+        "analysisType",
+        "analysisMode",
+        "analysisScene",
         "overviewDepth",
         "format",
         "semanticConstraints",
@@ -21091,14 +21104,17 @@
   },
   "specialExecutionRules": {
     "overview": {
-      "entryCondition": "整体/概览/总览/分析类问题或 queryModeKey=overview",
+      "entryCondition": "整体/总览/综合分析/原因分析/分析类问题或 queryModeKey=overview",
       "notes": [
-        "对象明确时直接 focused overview",
+        "service=overview 是兼容执行名；语义命名使用 analysisType=comprehensive_analysis",
+        "对象明确时直接 focused comprehensive analysis",
         "对象不明确但要求找出最突出对象后再分析时，使用 analysisPipeline.discoveryQuery"
       ]
     },
     "discoverThenOverview": {
       "outerService": "overview",
+      "semanticAnalysisType": "comprehensive_analysis",
+      "semanticAnalysisMode": "discover_then_analyze",
       "discoveryPreferredService": "topValues",
       "selectionSignals": [
         "谁",

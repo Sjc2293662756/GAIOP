@@ -13,6 +13,22 @@ function normalizePromptText(prompt = '') {
   return typeof prompt === 'string' ? prompt.trim() : '';
 }
 
+function hasExplicitBusinessGroupScope(text = '') {
+  return /(业务组|工作组|业务分组|\bBusinessGroup\b|business\s*group)/i.test(text);
+}
+
+function hasPlainBusinessScope(text = '') {
+  return /业务/.test(text) && !hasExplicitBusinessGroupScope(text);
+}
+
+function hasHierarchyIntent(text = '') {
+  return /(下钻|钻取|层级|路径|往下钻到哪里|支持哪些|可达|目录|结构)/i.test(text);
+}
+
+function hasTopLevelCatalogIntent(text = '') {
+  return /(顶层|全部对象|所有对象|有哪些对象|哪些对象|各自支持哪些|全量)/i.test(text);
+}
+
 // 深拷贝简单 JSON 对象，避免路由物化时修改原始 route 定义。
 function cloneJson(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
@@ -34,6 +50,13 @@ function normalizeHierarchyQuestionTarget(prompt = '') {
   const text = normalizePromptText(prompt);
   if (!text) {
     return null;
+  }
+
+  if (hasExplicitBusinessGroupScope(text)) {
+    return 'BusinessGroup';
+  }
+  if (hasPlainBusinessScope(text)) {
+    return 'WebApplication';
   }
 
   const aliasMap = [

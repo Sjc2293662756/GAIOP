@@ -292,4 +292,33 @@ describe('NapmResolvedQueryResolverService', () => {
       }
     });
   });
+  test('should resolve plain business hierarchy prompt into WebApplication drilldown catalog', () => {
+    const result = ResolverService.resolvePrompt('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f');
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'drilldownCatalog',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'WebApplication' }],
+      semanticConstraints: {
+        operation: 'drilldown_catalog',
+        targetObjectType: 'WebApplication'
+      }
+    });
+  });
+
+  test('should keep explicit business group hierarchy prompt as BusinessGroup', () => {
+    const result = ResolverService.resolvePrompt('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f');
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'drilldownCatalog',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'BusinessGroup' }],
+      semanticConstraints: {
+        operation: 'drilldown_catalog',
+        targetObjectType: 'BusinessGroup'
+      }
+    });
+  });
 });

@@ -1,6 +1,6 @@
-﻿---
+---
 name: openclaw-napm-query
-description: Direct OpenClaw NAPM query skill. Use for NAPM or NetInside concept explanations, metadata inventory, metric-ownership and scope questions such as “业务都可以查哪些指�?/ 业务组都可以查哪些指�?/ WebApplication �?BusinessGroup 区别�? structured semantic query execution, ranking/average/trend/overview analysis, multi-turn refinements, and result narration. The skill owns structured query execution, metadata resolution, API construction, execution, and Chinese narration contract without relying on the removed gateway layer.
+description: Direct OpenClaw NAPM query skill. Use for NAPM or NetInside concept explanations, metadata inventory, metric-ownership and scope questions, structured semantic query execution, ranking/average/trend queries, comprehensive analysis, multi-turn refinements, and result narration. The skill owns structured query execution, metadata resolution, API construction, execution, and Chinese narration contract without relying on the removed gateway layer.
 ---
 
 # OpenClaw NAPM Direct Query Skill
@@ -38,7 +38,7 @@ Skill-owned layers:
 1. Structured query normalization
 2. Execution guard and validation
 3. NAPM API construction and execution
-4. Overview query expansion and aggregation
+4. Comprehensive analysis query expansion and aggregation
 5. Result interpretation and Chinese output
 
 ## Workflow
@@ -61,17 +61,17 @@ use this project-aligned chain:
 
 1. Discover the target object first.
 2. Lock the discovered object as the analysis focus.
-3. Convert the request into a focused `overview`.
+3. Convert the request into focused comprehensive analysis. The execution service remains `overview` for compatibility.
 4. Return Chinese narration with both the discovery result and the focused analysis result.
 
 Construction rules:
 
-- Use outer `service=overview` for the final task.
+- Use outer `service=overview` for the final task, but set semantic naming fields such as `analysisType="comprehensive_analysis"`, `analysisMode`, and `analysisScene`.
 - Put the discovery step into `analysisPipeline.discoveryQuery`.
 - Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最�?/ 最�?/ 最差�?
 - Keep the discovery metric aligned with the selection condition.
-- If the object is already explicit, skip discovery and go directly to focused `overview`.
-- Keep discovery and focused overview on the same time range unless the user explicitly changes time.
+- If the object is already explicit, skip discovery and go directly to focused comprehensive analysis.
+- Keep discovery and focused analysis on the same time range unless the user explicitly changes time.
 
 The skill is not the owner of:
 
@@ -195,9 +195,10 @@ Inventory wording such as `系统中有哪些已定义应用` should list `Defin
 - `有哪些`, `列表`, `清单`, `系统中有哪些...` -> inventory / metadata listing
 - `最多`, `最少`, `最高`, `最低`, `最慢`, `前N`, `TopN`, `是谁`, `哪个` -> ranking
 - Singular ranking questions such as `是谁` or `哪个` should prefer `topCount=1`
-- `是多少`, `平均`, `均值`, `整体`, `概览` -> average / overview
+- `是多少`, `平均`, `均值` -> average
+- `整体`, `总览`, `综合分析`, `为什么`, `原因`, `情况怎么样`, `状态` -> comprehensive analysis using execution `service=overview`
 - `趋势`, `走势`, `变化`, `曲线`, `按时间` -> time series
-- Broad performance questions with a known subject and missing metric should run overview-first rather than asking for every detail
+- Broad performance questions with a known subject and missing metric should run comprehensive-analysis-first rather than asking for every detail
 
 ## Important Query Examples
 
@@ -262,7 +263,7 @@ Narration priority:
 
 1. `narrationInput.result.narrationStructure`
 2. `narrationInput.result.timeRange` or `narrationInput.summary.timeRange`
-3. structured rows / series / overview data
+3. structured rows / series / comprehensive analysis data
 4. `narrationInput.summary`
 5. `displayText` or `replyText` only when narration input is missing
 
@@ -314,7 +315,7 @@ Use the `references/` directory progressively. Read only the minimum file needed
 - [references/metric-definitions.md](./references/metric-definitions.md): metric meanings and aliases
 - [references/group-hierarchy.md](./references/group-hierarchy.md): object scope and group hierarchy
 - [references/metric-dimension-ownership.md](./references/metric-dimension-ownership.md): which metric families belong to which group dimensions and how to validate them
-- [references/service-modes.md](./references/service-modes.md): ranking, average, trend, overview semantics
+- [references/service-modes.md](./references/service-modes.md): ranking, average, trend, comprehensive-analysis semantics
 - [references/query-construction.md](./references/query-construction.md): final query construction
 - [references/runtime-lookup-notes.md](./references/runtime-lookup-notes.md): runtime lookup constraints
 - [references/openclaw-integration.md](./references/openclaw-integration.md): OpenClaw invocation notes

@@ -247,4 +247,53 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(result.blockReason).toContain('BusinessGroup');
     expect(result.blockReason).toContain('service=groups');
   }, 30000);
+
+  test('should not execute resolver or rewrite from message_sending when business inventory has no remembered result', async () => {
+    const hooks = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-business-force-skill',
+      conversationId: 'conv-business-force-skill',
+      sessionKey: 'session-business-force-skill',
+      sessionId: 'session-business-force-skill',
+      runId: 'run-business-force-skill'
+    };
+    const prompt = '\u7cfb\u7edf\u4e2d\u6709\u54ea\u4e9b\u4e1a\u52a1\uff1f';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const result = await hooks.get('message_sending')({
+      content: '\u5f53\u524d NAPM \u67e5\u8be2\u94fe\u8def\u5bf9\u7eaf\u5217\u8868\u67e5\u8be2\u652f\u6301\u6709\u9650\u3002'
+    }, ctx);
+
+    expect(result).toBeUndefined();
+
+    const remembered = plugin.__test__.getRememberedRecordForPrompt(prompt, null, [
+      ctx.channelId,
+      ctx.accountId,
+      ctx.conversationId
+    ].join(':'), null);
+    expect(remembered).toBeNull();
+  }, 30000);
 });
