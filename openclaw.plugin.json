@@ -19,7 +19,8 @@
   "contracts": {
     "tools": [
       "napm-skill-query",
-      "napm-report-export"
+      "napm-report-export",
+      "napm-packet-analysis"
     ]
   }
 }

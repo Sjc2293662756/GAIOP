@@ -9,6 +9,42 @@ This skill is the runtime entry for NAPM / NetInside questions. OpenClaw should 
 
 Do not route NAPM requests through the removed project gateway layer. Do not depend on `src/routes`, project-level `src/services`, gateway policy, or upstream decision approval before querying.
 
+For detailed query construction, inventory, metric-ownership, drilldown, time, follow-up, and cross-skill boundary rules, load `references/query-workflow-contract.md` when the user request requires semantic construction or troubleshooting of the query flow.
+
+## Skill Boundary
+
+Use this skill for NAPM metric, metadata, inventory, hierarchy, and result-interpretation questions, including:
+
+- 吞吐、流量、丢包、重传、响应时间、连接数、失败数、告警等指标查询。
+- TopN 排行、均值、趋势、时间序列、综合分析。
+- 系统中有哪些业务、业务组、工作组、应用、已定义应用、自动识别应用。
+- 某对象支持哪些指标、某对象支持哪些下钻路径。
+- 对 NAPM 查询结果进行中文解释和诊断。
+
+Do not use this skill for packet-capture or report-export tasks:
+
+- 数据包、报文、抓包、原始包、pcap、cap、packetsPreview、packetsDown、DownServlet -> use `openclaw-napm-packet-analysis`.
+- 生成报告、导出 Word/docx/PDF、将以上整理成文档 -> use `openclaw-napm-report`.
+
+Do not reinterpret packet wording as `topValues`, `timeValues`, `averageValues`, `overview`, `BusinessGroup`, or `DefinedApp` metric queries. For example, `分析 101.254.114.238 最近一天的数据包 数据情况` is not a metric query; it belongs to `openclaw-napm-packet-analysis`.
+
+Object wording contract:
+
+- `业务` / `业务系统` / `Web应用` -> `WebApplication`.
+- `业务组` / `工作组` -> `BusinessGroup`.
+- `自动识别应用` -> `CompositeApplication`.
+- `已定义应用` -> `DefinedApp`.
+- Do not merge `DefinedApp` Type=2 and `WebApplication` Type=3 when the user asks plain `业务`.
+
+Core structured-query contract:
+
+- Production execution requires a complete `resolvedQuery`.
+- Executable data services must use root-level `start` and `end`.
+- `timeRange` is declarative metadata only; never rely on `timeRange.start` / `timeRange.end` as execution timestamps.
+- Object inventory uses `groups` with `queryModeKey="metadata"`.
+- Metric inventory uses `metrics` with `queryModeKey="metadata"`.
+- Drilldown hierarchy uses `drilldownCatalog`.
+
 ## Core Policy
 
 - OpenClaw is the required owner of natural-language understanding, domain boundary judgment, follow-up understanding, clarification policy, and `resolvedQuery` construction.
@@ -17,7 +53,7 @@ Do not route NAPM requests through the removed project gateway layer. Do not dep
 - Ask a clarification question only when multiple plausible NAPM queries would produce materially different answers.
 - Do not answer with "upstream decision failed", "policy blocked", or similar gateway-era wording.
 - Do not reuse stale historical data as the current answer when a fresh query fails.
-- Every data answer must include the data time range, for example `数据时间�?026-04-29 00:00:00 �?2026-04-30 00:00:00`.
+- Every data answer must include the data time range, for example `数据时间：2026-04-29 00:00:00 至 2026-04-30 00:00:00`.
 - If `resolvedQuery` is missing, return a Chinese decision-style fallback that asks OpenClaw to finish intent resolution or scope clarification first. Do not silently invent a new query from raw prompt text.
 
 ## Direct Architecture
@@ -68,7 +104,7 @@ Construction rules:
 
 - Use outer `service=overview` for the final task, but set semantic naming fields such as `analysisType="comprehensive_analysis"`, `analysisMode`, and `analysisScene`.
 - Put the discovery step into `analysisPipeline.discoveryQuery`.
-- Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最�?/ 最�?/ 最差�?
+- Prefer `topValues` for discovery when the user is selecting among multiple objects by “谁 / 哪个 / 最高 / 最多 / 最差”.
 - Keep the discovery metric aligned with the selection condition.
 - If the object is already explicit, skip discovery and go directly to focused comprehensive analysis.
 - Keep discovery and focused analysis on the same time range unless the user explicitly changes time.
@@ -124,20 +160,15 @@ Important rules:
 
 ## Metric Ownership
 
-When the task is really asking "这个维度下该用什么指�?, treat it as a metric-ownership question rather than a plain alias-mapping question.
+When the task is asking “这个维度下可以查哪些指标” or “这个指标属于哪个对象”, treat it as a metric-ownership question rather than a plain alias-mapping question.
 
-Important rules:
+Use `references/query-workflow-contract.md` as the workflow contract, then read the metric references only as needed:
 
-- `groups` decide the query subject; `metrics` decide the value being queried.
-- Semantic categories such as `业务数据`, `网络流量数据`, `连接数据`, `应用性能数据` are explanatory groupings, not legal `groupType`.
-- Use static ownership rules only to choose candidates. Final execution must still validate metric compatibility through `metricsForGroup` or `NapmMetadataService.getMetricsForGroupPath()`.
-- Distinguish throughput metrics such as `TPIO` from byte-volume metrics such as `BYTIO`.
-- Distinguish server-side metrics such as `CONI`, `CCNI`, `RFCI`, `TRTI` from client-side metrics such as `CONO`, `CCNO`, `RFCO`, `TRTO`.
-- Prefer `PG*` metrics for `WebApplication` / `PageFamily` / `User`, and prefer generic traffic / network / connection metrics for `TotalTraffic` / `IPAddress` / `IPConversation` / `BusinessGroup` unless runtime metadata says otherwise.
-- Treat plain `业务都可以查哪些指标` and similar metric-inventory wording as a strict `WebApplication` ownership answer. Do not advertise `PLI`, `PLO`, `RTTI`, `RTTO`, `RDTI`, `RDTO`, `RTXI`, `RTXO`, `CONI`, `CCNI`, `RFCI`, `TPIO`, or `BYTIO` under plain `业务` unless the user explicitly asked for `业务组` / `工作组` or clearly changed scope away from `WebApplication`.
-- For plain `业务` / `业务系统` / `WebApplication`, user-facing metric lists should stay centered on `PG*` page/business metrics plus page optimization metrics, even if runtime metadata also exposes broader cross-domain metrics.
-- If the user is asking `某个指标分类下有哪些指标` or `某个分类对应哪些 metric code`, read `references/metric-category-mapping.md` as the primary category-to-code table.
-- When ownership or compatibility is unclear, read `references/top-level-metric-ownership.md` first, then `references/metric-category-mapping.md`, then `references/metric-dimension-ownership.md` before constructing the final query.
+1. `references/top-level-metric-ownership.md`
+2. `references/metric-category-mapping.md`
+3. `references/metric-dimension-ownership.md`
+
+Core rule: `groups` decide the query subject; `metrics` decide the value being queried. Final execution must still validate metric compatibility through runtime metadata when available.
 
 ## Skill Services
 
@@ -156,49 +187,18 @@ Primary services:
 
 ## Semantic Mapping Guardrails
 
-These are known NAPM semantics, not a gateway rule layer. Use them to avoid common wrong API construction. For application inventory, `applications` plus `Type` filtering is the truth source; `groups-tree.static.json` only describes hierarchy and must not be used as the application catalog.
+These are known NAPM semantics, not a gateway rule layer. The detailed contract now lives in `references/query-workflow-contract.md`.
 
-### Object / Dimension
+High-priority reminders:
 
-- `业务组`, `工作组`, `业务分组` -> `BusinessGroup`
-- `Web应用`, `web应用`, `网站`, `站点`, `业务系统` -> `WebApplication`
-- Plain `业务` usually means `WebApplication` unless the user explicitly says `业务组`
-- `业务都可以查哪些指标` should be answered from the `WebApplication` view, not the `BusinessGroup` view
-- Plain `应用` / `系统中有哪些应用` is ambiguous; do not answer it from groups-tree `Application` nodes or raw full `applications` catalog. Clarify into WebApplication(Type=3), DefinedApp(Type=2), BuiltinApplication(Type=1), CompositeApplication(Type=4), or OtherApp.
-- `已定义应用`, `服务器应用`, `协议应用` -> `DefinedApp` from `applications Type=2`
-- `自动识别应用`, `自动识别的应用`, `自动识别出来的应用`, `系统自动识别的应用`, `特征识别应用`, `复合协议`, `复合应用`, `多协议应用` -> `CompositeApplication` from `applications Type=4`
-- `客户端`, `客户端IP` -> `ClientIPs`
-- `服务端`, `服务端IP`, explicit IP address -> `IPAddress` or server-side IP dimension according to query path
-- `其他web应用`, `其它web应用`, `未注册web应用`, `Other Web Application` -> explicit `WebApplication` argument, not a vague pronoun
-
-<!-- superseded: WebApplication inventory now uses applications Type=3 catalog, not groupArguments. -->
-
-Inventory wording such as `系统中有哪些web应用` / `系统中有哪些业务` should list the `WebApplication` catalog from the southbound `applications` API filtered by `Type=3`. Runtime metric execution still uses `groupType=WebApplication`.
-Inventory wording such as `系统中有哪些已定义应用` should list `DefinedApp` from `applications Type=2`. `系统中有哪些自动识别应用` / `系统中有哪些自动识别的应用` / `系统中有哪些自动识别出来的应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` should list `CompositeApplication` from `applications Type=4`. `系统中有哪些内置应用` should list `BuiltinApplication` from `applications Type=1`.
-
-### Metrics
-
-- `数据包数量`, `包数量`, `包个数`, `数据包个数`, `包流量` -> `PKIO`
-- `流量`, `吞吐`, `吞吐量`, `带宽` -> throughput metrics such as `TPIO` unless the user explicitly asks for packets or bytes
-- `字节流量`, `字节数` -> byte traffic metrics such as `BYTIO`
-- Web `访问量`, `访问次数`, `页面访问` -> `PGNPGE`
-- `服务器响应时间`, `服务端响应时间` -> `TRTI`
-- `客户端响应时间` -> client-side response time metric when supported
-- `RTT`, `往返时延`, `网络时延`, `延迟` -> RTT / latency metrics such as `RTTI`, not `TRTI`
-- `页面响应时间`, `页面耗时`, `页面时延` -> page timing metric such as `PGTME`
-- `丢包`, `丢包率` -> packet loss metrics
-- `重传` -> retransmission metrics
-- `HTTP 4xx`, `HTTP 5xx`, `500错误`, `报错`, `错误率` -> HTTP error metrics or error ratio metrics
-
-### Service Mode
-
-- `有哪些`, `列表`, `清单`, `系统中有哪些...` -> inventory / metadata listing
-- `最多`, `最少`, `最高`, `最低`, `最慢`, `前N`, `TopN`, `是谁`, `哪个` -> ranking
-- Singular ranking questions such as `是谁` or `哪个` should prefer `topCount=1`
-- `是多少`, `平均`, `均值` -> average
-- `整体`, `总览`, `综合分析`, `为什么`, `原因`, `情况怎么样`, `状态` -> comprehensive analysis using execution `service=overview`
-- `趋势`, `走势`, `变化`, `曲线`, `按时间` -> time series
-- Broad performance questions with a known subject and missing metric should run comprehensive-analysis-first rather than asking for every detail
+- Application inventory truth source is `applications` plus `Type` filtering.
+- `groups-tree.static.json` describes hierarchy and must not be used as the application catalog.
+- Plain `业务` maps to `WebApplication`, not `BusinessGroup`.
+- Explicit `业务组` / `工作组` maps to `BusinessGroup`.
+- `自动识别应用` maps to `CompositeApplication`.
+- `已定义应用` maps to `DefinedApp`.
+- Packet-capture wording belongs to `openclaw-napm-packet-analysis`.
+- Report-export wording belongs to `openclaw-napm-report`.
 
 ## Important Query Examples
 
@@ -215,7 +215,7 @@ Inventory wording such as `系统中有哪些已定义应用` should list `Defin
 - Groups: `WebApplication("Other Web Application") -> ClientIPs`
 - Prefer `topCount=1`
 
-`数据包数量最多的�?个应用分别是谁`
+`数据包数量最多的 5 个应用分别是谁`
 
 - Service mode: ranking
 - Metric: `PKIO`

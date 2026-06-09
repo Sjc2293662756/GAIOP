@@ -1,0 +1,23 @@
+{
+  "name": "openclaw-napm-packet-analysis",
+  "version": "0.1.0",
+  "description": "Standalone OpenClaw skill runtime for NetInside / NAPM packet download and tshark analysis.",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "query": "node scripts/run_packet_analysis.js",
+    "check": "node --check scripts/run_packet_analysis.js"
+  },
+  "keywords": [
+    "openclaw",
+    "skill",
+    "napm",
+    "netinside",
+    "pcap",
+    "tshark"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,394 @@
+# NAPM Query Workflow Contract
+
+This document contains query-specific workflow rules that belong to `openclaw-napm-query`.
+
+OpenClaw owns natural-language understanding and `resolvedQuery` construction. This skill owns query normalization, validation, execution, metadata resolution, and result narration input.
+
+## 1. Accepted Scope
+
+Use this skill for:
+
+- NAPM / NetInside metric queries.
+- Object inventory and metadata listing.
+- Metric inventory and metric ownership questions.
+- Drilldown hierarchy and structural path questions.
+- Ranking, average, trend, time-series, overview, and comprehensive analysis.
+- Chinese explanation of current NAPM query results.
+
+Do not use this skill for:
+
+- Packet capture or packet-file analysis. Use `openclaw-napm-packet-analysis`.
+- Report file generation. Use `openclaw-napm-report`.
+- General system operations, deployment, shell, SQL, or unrelated Q&A.
+
+## 2. Structured Input Contract
+
+Production execution requires a complete `resolvedQuery`.
+
+Accepted input channel:
+
+```json
+{
+  "resolvedQuery": {
+    "service": "topValues",
+    "queryModeKey": "direct",
+    "groups": [{ "type": "IPAddress" }],
+    "metrics": ["PLI", "PLO"],
+    "topMetric": "PLI",
+    "topCount": 10,
+    "start": 1780882620,
+    "end": 1780886220,
+    "timeRange": {
+      "key": "last1hour",
+      "displayText": "最近一小时"
+    }
+  }
+}
+```
+
+Rules:
+
+- `resolvedQuery.service` is required.
+- For executable data services, root-level `start` and `end` are required.
+- `timeRange` is declarative metadata only.
+- Do not place executable timestamps only in `timeRange.start` / `timeRange.end`.
+- `start` and `end` must be Unix seconds, not milliseconds.
+- `start` and `end` must be aligned to 60-second minute boundaries.
+
+Bad:
+
+```json
+{
+  "service": "topValues",
+  "timeRange": {
+    "start": 1780882620,
+    "end": 1780886220
+  }
+}
+```
+
+Good:
+
+```json
+{
+  "service": "topValues",
+  "start": 1780882620,
+  "end": 1780886220,
+  "timeRange": {
+    "key": "last1hour",
+    "displayText": "最近一小时"
+  }
+}
+```
+
+## 3. Time Resolution Contract
+
+OpenClaw should resolve time before calling this skill.
+
+Time wording:
+
+- `今天` / `today`: local-day start `00:00:00`, local-day end `23:59:00`.
+- `昨天` / `yesterday`: previous local-day start `00:00:00`, previous local-day end `23:59:00`.
+- `最近一小时` / `过去一小时`: `last1hour`.
+- `最近24小时` / `过去一天` / `最近一天`: `last24hours`.
+- Missing time in metric queries: default to `last1hour`, unless the active conversation context gives a more specific current time scope.
+
+Required hint:
+
+```json
+{
+  "resolutionHints": {
+    "time": {
+      "source": "time_range_resolver",
+      "key": "last1hour",
+      "alignment": "minute_floor"
+    }
+  }
+}
+```
+
+Never hard-code example timestamps from previous turns.
+
+## 4. Object Inventory Contract
+
+Inventory wording such as `系统中有哪些...` belongs to metadata listing.
+
+### WebApplication
+
+Plain business wording maps to `WebApplication`:
+
+- `业务`
+- `业务系统`
+- `Web应用`
+- `web应用`
+- `网站`
+- `站点`
+
+Example:
+
+```json
+{
+  "service": "groups",
+  "queryModeKey": "metadata",
+  "semanticConstraints": {
+    "operation": "metadata_list",
+    "workflowType": "object_inventory"
+  },
+  "groups": [{ "type": "WebApplication" }]
+}
+```
+
+Runtime catalog source:
+
+```text
+applications Type=3
+```
+
+Do not merge `DefinedApp` Type=2 and `WebApplication` Type=3 when the user asks plain `业务`.
+
+### BusinessGroup
+
+Explicit group wording maps to `BusinessGroup`:
+
+- `业务组`
+- `工作组`
+- `业务分组`
+- `BusinessGroup`
+
+Example:
+
+```json
+{
+  "service": "groups",
+  "queryModeKey": "metadata",
+  "semanticConstraints": {
+    "operation": "metadata_list",
+    "workflowType": "object_inventory"
+  },
+  "groups": [{ "type": "BusinessGroup" }]
+}
+```
+
+Do not switch plain `业务` to `BusinessGroup` because WebApplication results seem ambiguous or numerous.
+
+### DefinedApp
+
+Explicit defined-application wording maps to `DefinedApp`:
+
+- `已定义应用`
+- `服务器应用`
+- `已知应用`
+- `DefinedApp`
+
+Runtime catalog source:
+
+```text
+applications Type=2
+```
+
+### CompositeApplication
+
+Explicit auto-recognized application wording maps to `CompositeApplication`:
+
+- `自动识别应用`
+- `自动识别的应用`
+- `自动识别出来的应用`
+- `系统自动识别的应用`
+- `复合协议`
+- `复合应用`
+- `多协议应用`
+
+Runtime catalog source:
+
+```text
+applications Type=4
+```
+
+Example:
+
+```json
+{
+  "service": "groups",
+  "queryModeKey": "metadata",
+  "semanticConstraints": {
+    "operation": "metadata_list",
+    "workflowType": "object_inventory"
+  },
+  "groups": [{ "type": "CompositeApplication" }]
+}
+```
+
+Do not add `argument: "all"` for full inventory. Full inventory is represented by omitting `argument`.
+
+### BuiltinApplication
+
+Explicit builtin/protocol wording maps to `BuiltinApplication`:
+
+- `内置应用`
+- `协议应用`
+- `基础协议`
+
+Runtime catalog source:
+
+```text
+applications Type=1
+```
+
+## 5. Metric Inventory Contract
+
+Metric-inventory wording asks what metrics a dimension supports.
+
+Examples:
+
+```json
+{
+  "service": "metrics",
+  "queryModeKey": "metadata",
+  "semanticConstraints": {
+    "operation": "metadata_list"
+  },
+  "groups": [{ "type": "WebApplication" }]
+}
+```
+
+Important distinctions:
+
+- `业务都可以查哪些指标` uses `WebApplication`.
+- `工作组都可以查哪些指标` uses `BusinessGroup`.
+- Plain `业务` metric inventory should center on Web/page/business metrics such as `PG*`.
+- Do not advertise BusinessGroup network metrics under plain `业务` unless the user explicitly says `业务组` / `工作组`.
+
+Reference order when metric ownership is unclear:
+
+1. `references/top-level-metric-ownership.md`
+2. `references/metric-category-mapping.md`
+3. `references/metric-dimension-ownership.md`
+
+## 6. Drilldown Hierarchy Contract
+
+Hierarchy wording:
+
+- `下钻`
+- `钻取`
+- `层级`
+- `路径`
+- `可以往下钻到哪里`
+- `支持哪些下钻`
+
+Use `drilldownCatalog`.
+
+Example:
+
+```json
+{
+  "service": "drilldownCatalog",
+  "groups": [{ "type": "BusinessGroup" }],
+  "format": "json"
+}
+```
+
+Rules:
+
+- Answer from current skill result, not from guessed hierarchy.
+- The local static groups tree is authoritative for structure when live metadata APIs are blocked.
+- Do not inspect a single `children: []` node and conclude that no drilldown exists.
+- Do not invent combination paths that are not returned by the current catalog.
+
+## 7. Service Selection
+
+Use these service modes:
+
+- `topValues`: ranking / TopN / 最多 / 最高 / 最严重 / 谁 / 哪个.
+- `averageValues`: average / 均值 / 是多少.
+- `timeValues`: trend / 走势 / 曲线 / 按时间.
+- `overview`: overview / 综合分析 / 状态 / 为什么 / 原因.
+- `groups`: object inventory and object metadata.
+- `metrics`: metric inventory.
+- `drilldownCatalog`: hierarchy and drilldown paths.
+- `topValues_multi_protocol`: multi-protocol ranking when explicitly needed.
+- `security_refusal`: security-sensitive refusal path when declared by spec.
+
+Ranking rules:
+
+- Singular questions such as `是谁` / `哪个` prefer `topCount=1`.
+- `前10个` / `Top10` sets `topCount=10`.
+- Discovery steps in composite analysis usually use `topValues`.
+
+## 8. Composite Analysis Contract
+
+Composite asks include:
+
+- `先找最...的对象，再分析它`
+- `找到失败最多的地址，然后综合分析`
+- `报错最多的是哪个业务，继续分析它`
+
+Workflow:
+
+1. Discover target object.
+2. Lock discovered object as analysis focus.
+3. Convert final task into focused comprehensive analysis.
+4. Return both discovery result and analysis result.
+
+Construction:
+
+```json
+{
+  "service": "overview",
+  "analysisType": "comprehensive_analysis",
+  "analysisPipeline": {
+    "discoveryQuery": {
+      "service": "topValues"
+    }
+  }
+}
+```
+
+Keep discovery and focused analysis on the same time range unless the user explicitly changes time.
+
+## 9. Follow-up Contract
+
+OpenClaw owns follow-up understanding.
+
+This skill can consume inherited `sessionState`, but should not independently decide broad conversation policy.
+
+Expected behavior:
+
+- `最近一天呢？` after a metric ranking should inherit object, metric, and service shape, and only change time.
+- `这个呢？` should inherit previous object if the referent is unambiguous.
+- `继续分析` after a discovery result should use the discovered object as focus.
+- If multiple materially different interpretations exist, ask a clarification question.
+
+Do not answer from stale memory when a fresh query is required.
+
+## 10. Boundary With Other Skills
+
+Packet boundary:
+
+- Any request containing `数据包`, `报文`, `抓包`, `pcap`, `cap`, `packetsPreview`, `packetsDown`, `DownServlet`, or `数据包情况` belongs to `openclaw-napm-packet-analysis`.
+- Do not reinterpret packet wording as metric query wording.
+
+Report boundary:
+
+- Any request containing `生成报告`, `导出 Word`, `docx`, `PDF`, `将以上整理成文档` belongs to `openclaw-napm-report`, usually after this query skill has produced structured result data.
+
+## 11. Output Contract
+
+The final user-facing answer should be Chinese.
+
+For data answers:
+
+- Include the data time range.
+- State object scope and metric scope.
+- Prefer skill-returned `displayText` / `summary.displayText` when available.
+- If a `requestUrl` is present and the active OpenClaw policy requires debug output, append `Debug API:` with the exact URL.
+
+For metadata answers:
+
+- State the object type and catalog source when helpful.
+- Do not claim direct curl/python/raw API probing unless that is the actual executed skill path.
+
+For failures:
+
+- Distinguish no data from execution error.
+- Distinguish validation error from southbound API rejection.
+- Do not invent successful data when execution failed.

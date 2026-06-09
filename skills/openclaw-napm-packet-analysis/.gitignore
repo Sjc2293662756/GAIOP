@@ -1,0 +1,6 @@
+.env
+artifacts/
+*.pcap
+*.cap
+*.pcapng
+*.zip

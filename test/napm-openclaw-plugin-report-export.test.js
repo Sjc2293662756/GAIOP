@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { normalizeReportInput } = require('../skills/openclaw-napm-report/services/ReportInputContractService');
 
 function makeReportData(overrides = {}) {
   return {
@@ -87,7 +88,7 @@ describe('napm-openclaw-plugin report export', () => {
       registerHook() {}
     });
 
-    expect(Array.from(tools.keys()).sort()).toEqual(['napm-report-export', 'napm-skill-query']);
+    expect(Array.from(tools.keys()).sort()).toEqual(['napm-packet-analysis', 'napm-report-export', 'napm-skill-query']);
   });
 
   test('should export explicitly provided reportData to docx', async () => {
@@ -119,6 +120,75 @@ describe('napm-openclaw-plugin report export', () => {
 
     expect(result.ok).toBe(true);
     expect(result.title).toBe('上一轮报告');
+    expect(fs.existsSync(result.filePath)).toBe(true);
+  });
+
+  test('should export latest remembered packet analysis result as reportData', async () => {
+    plugin.__test__.rememberSkillResult('分析 101.254.114.238 最近一天的数据包 数据情况', {
+      ok: true,
+      mode: 'preview_download_analyze',
+      downloadType: 'packetsDown',
+      criteria: {
+        ips: ['101.254.114.238'],
+        start: 1780880000,
+        end: 1780883600
+      },
+      urls: {
+        preview: 'https://101.254.114.238/webservice/NetInside?UserName=GAIOP&Password=***&type=packetsPreview',
+        download: 'https://101.254.114.238/webservice/NetInside?UserName=GAIOP&Password=***&type=packetsDown'
+      },
+      summary: {
+        title: 'Packet analysis completed',
+        highlights: ['8,280 packets found', '170 peer IPs observed']
+      },
+      narrationInput: {
+        schema: 'openclaw_napm_packet_analysis.v1'
+      },
+      analysis: {
+        ok: true,
+        endpoints: [
+          { address: '203.0.113.10', packets: 100, bytes: 2048 }
+        ]
+      }
+    });
+
+    const built = normalizeReportInput({
+      prompt: '将以上总结为报告以word的形式给我',
+      format: 'word',
+      sourceResult: {
+        ok: true,
+        mode: 'preview_download_analyze',
+        criteria: {
+          ips: ['101.254.114.238'],
+          start: 1780880000,
+          end: 1780883600
+        },
+        summary: {
+          title: 'Packet analysis completed',
+          highlights: ['8,280 packets found', '170 peer IPs observed']
+        },
+        narrationInput: {
+          schema: 'openclaw_napm_packet_analysis.v1'
+        },
+        analysis: {
+          ok: true,
+          endpoints: [
+            { address: '203.0.113.10', packets: 100, bytes: 2048 }
+          ]
+        }
+      }
+    });
+
+    expect(built.reportType).toBe('diagnostic_report');
+    expect(built.dataSource.sourceSkill).toBe('openclaw-napm-packet-analysis');
+    expect(built.sections.some((section) => section.title === 'Top 对端')).toBe(true);
+
+    const result = await plugin.__test__.runReportExecutor({
+      prompt: '将以上总结为报告以word的形式给我',
+      format: 'docx'
+    });
+
+    expect(result.ok).toBe(true);
     expect(fs.existsSync(result.filePath)).toBe(true);
   });
 
@@ -167,5 +237,30 @@ describe('napm-openclaw-plugin report export', () => {
     expect(first.duplicates).toEqual([]);
     expect(second.fresh).toEqual([]);
     expect(second.duplicates).toEqual(['/home/netinside/.openclaw/media/outbound/report.docx']);
+  });
+
+  test('should block direct docx media for report prompt without report export result', async () => {
+    const hooks = new Map();
+    plugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        hooks.set(name, handler);
+      }
+    });
+
+    const messageSending = hooks.get('message_sending');
+    const result = await messageSending({
+      content: '报告已生成，现在发送给您。',
+      mediaUrls: ['/home/netinside/.openclaw/media/outbound/manual-report.docx']
+    }, {
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'report-direct'
+    });
+
+    expect(result.content).toContain('napm-report-export');
   });
 });

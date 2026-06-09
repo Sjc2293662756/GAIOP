@@ -5,6 +5,7 @@ const path = require('path');
 
 const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
 const ReportGenerationService = require(path.join(workspaceRoot, 'skills/openclaw-napm-report/services/ReportGenerationService'));
+const { normalizeReportInput } = require(path.join(workspaceRoot, 'skills/openclaw-napm-report/services/ReportInputContractService'));
 
 function parseArgs(argv = []) {
   const args = {};
@@ -18,6 +19,15 @@ function parseArgs(argv = []) {
       index += 1;
     } else if (arg === '--downloadBaseUrl') {
       args.downloadBaseUrl = argv[index + 1];
+      index += 1;
+    } else if (arg === '--format') {
+      args.format = argv[index + 1];
+      index += 1;
+    } else if (arg === '--title') {
+      args.title = argv[index + 1];
+      index += 1;
+    } else if (arg === '--prompt') {
+      args.prompt = argv[index + 1];
       index += 1;
     }
   }
@@ -47,11 +57,17 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const raw = await readInput(args);
   const payload = JSON.parse(String(raw || '{}').replace(/^\uFEFF/, ''));
+  const reportData = normalizeReportInput(payload, {
+    format: args.format,
+    title: args.title,
+    prompt: args.prompt,
+    sourceQuestion: args.prompt
+  });
   const service = new ReportGenerationService({
     outputDir: args.outputDir,
     downloadBaseUrl: args.downloadBaseUrl
   });
-  const result = await service.generate(payload);
+  const result = await service.generate(reportData);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!result.ok) {
     process.exitCode = 1;
