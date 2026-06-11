@@ -868,7 +868,177 @@ function hasExplicitResolvedQuery(args = {}) {
   return isPlainObject(args?.resolvedQuery);
 }
 
-function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
+function normalizeQueryModeKeyForService(serviceName = '', queryModeKey = '') {
+  const service = String(serviceName || '').trim();
+  const mode = String(queryModeKey || '').trim();
+  if (!mode) {
+    return mode;
+  }
+
+  const normalizedMode = mode.toLowerCase().replace(/[_\s-]+/g, '');
+  const aliasesByService = {
+    topValues: {
+      topn: 'topn',
+      top: 'topn',
+      topvalues: 'topn',
+      topvalue: 'topn',
+      ranking: 'topn',
+      rank: 'topn',
+      data: 'topn'
+    },
+    topValues_multi_protocol: {
+      topn: 'topn',
+      top: 'topn',
+      topvalues: 'topn',
+      topvalue: 'topn',
+      ranking: 'topn',
+      rank: 'topn',
+      data: 'topn'
+    },
+    averageValues: {
+      average: 'average',
+      avg: 'average',
+      averagevalues: 'average',
+      data: 'average'
+    },
+    timeValues: {
+      timeseries: 'timeseries',
+      timevalues: 'timeseries',
+      trend: 'timeseries',
+      trends: 'timeseries',
+      data: 'timeseries'
+    },
+    overview: {
+      overview: 'overview',
+      overall: 'overview',
+      data: 'overview'
+    },
+    groups: {
+      metadata: 'metadata',
+      group: 'metadata',
+      groups: 'metadata',
+      list: 'metadata',
+      metadatalist: 'metadata',
+      data: 'metadata'
+    },
+    metrics: {
+      metadata: 'metadata',
+      metric: 'metadata',
+      metrics: 'metadata',
+      list: 'metadata',
+      metadatalist: 'metadata',
+      data: 'metadata'
+    },
+    drilldownCatalog: {
+      metadata: 'metadata',
+      drilldowncatalog: 'metadata',
+      catalog: 'metadata',
+      list: 'metadata'
+    },
+    security_refusal: {
+      decision: 'decision',
+      refusal: 'decision',
+      securityrefusal: 'decision'
+    }
+  };
+
+  return aliasesByService[service]?.[normalizedMode] || mode;
+}
+
+function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
+  if (!isPlainObject(resolvedQuery)) {
+    return resolvedQuery;
+  }
+
+  const next = cloneJsonObject(resolvedQuery);
+  const serviceName = String(next.service || '').trim();
+  if (serviceName) {
+    next.service = serviceName;
+  }
+
+  const normalizedQueryModeKey = normalizeQueryModeKeyForService(serviceName, next.queryModeKey);
+  if (normalizedQueryModeKey) {
+    next.queryModeKey = normalizedQueryModeKey;
+  }
+
+  return next;
+}
+
+function getRelativeTimeRangeKey(resolvedQuery = {}) {
+  return String(
+    resolvedQuery?.timeRangeKey
+    || resolvedQuery?.timeRange?.key
+    || resolvedQuery?.resolutionHints?.time?.key
+    || ''
+  ).trim();
+}
+
+function getExpectedResolvedTimeRange(timeRangeKey = '', options = {}) {
+  const key = String(timeRangeKey || '').trim();
+  if (!key) {
+    return null;
+  }
+
+  const resolver = getNapmResolvedQueryResolverService();
+  if (!resolver || typeof resolver.resolveTimeRange !== 'function') {
+    return null;
+  }
+
+  try {
+    return resolver.resolveTimeRange({ timeRangeKey: key }, {
+      nowSeconds: options.nowSeconds
+    });
+  } catch (_error) {
+    return null;
+  }
+}
+
+function validateRelativeTimeRangeFreshness(resolvedQuery = {}, options = {}) {
+  if (!options || !Number.isFinite(Number(options.nowSeconds))) {
+    return { ok: true };
+  }
+
+  const timeRangeKey = getRelativeTimeRangeKey(resolvedQuery);
+  if (!timeRangeKey) {
+    return { ok: true };
+  }
+
+  const expected = getExpectedResolvedTimeRange(timeRangeKey, options);
+  if (!expected || !Number.isFinite(Number(expected.start)) || !Number.isFinite(Number(expected.end))) {
+    return { ok: true };
+  }
+
+  const actualStart = Number(resolvedQuery.start);
+  const actualEnd = Number(resolvedQuery.end);
+  if (!Number.isFinite(actualStart) || !Number.isFinite(actualEnd)) {
+    return { ok: true };
+  }
+
+  const toleranceSeconds = Number.isFinite(Number(options.timeDriftToleranceSeconds))
+    ? Number(options.timeDriftToleranceSeconds)
+    : 300;
+  const startDrift = Math.abs(actualStart - Number(expected.start));
+  const endDrift = Math.abs(actualEnd - Number(expected.end));
+  if (startDrift <= toleranceSeconds && endDrift <= toleranceSeconds) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: 'relative_time_range_stale_or_miscalculated',
+    message: `resolvedQuery uses relative timeRange=${timeRangeKey}, but root-level start/end do not match the current server time. Rebuild timestamps with napm-resolve-time-range before calling napm-skill-query.`,
+    details: {
+      timeRangeKey,
+      expectedStart: Number(expected.start),
+      expectedEnd: Number(expected.end),
+      actualStart,
+      actualEnd,
+      toleranceSeconds
+    }
+  };
+}
+
+function validateResolvedQueryAgainstSpec(resolvedQuery = {}, options = {}) {
   if (!isPlainObject(resolvedQuery)) {
     return {
       ok: false,
@@ -877,7 +1047,8 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
     };
   }
 
-  const serviceName = String(resolvedQuery.service || '').trim();
+  const normalizedResolvedQuery = normalizeResolvedQueryForPlugin(resolvedQuery);
+  const serviceName = String(normalizedResolvedQuery.service || '').trim();
   if (!serviceName) {
     return {
       ok: false,
@@ -901,12 +1072,12 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
   const requiredFields = Array.isArray(serviceSpec.required) ? serviceSpec.required : [];
   const requiresRootStart = requiredFields.includes('start');
   const requiresRootEnd = requiredFields.includes('end');
-  const rootStart = Number(resolvedQuery.start);
-  const rootEnd = Number(resolvedQuery.end);
+  const rootStart = Number(normalizedResolvedQuery.start);
+  const rootEnd = Number(normalizedResolvedQuery.end);
   const hasValidRootStart = Number.isFinite(rootStart) && rootStart > 0;
   const hasValidRootEnd = Number.isFinite(rootEnd) && rootEnd > rootStart;
-  const nestedStart = Number(resolvedQuery?.timeRange?.start);
-  const nestedEnd = Number(resolvedQuery?.timeRange?.end);
+  const nestedStart = Number(normalizedResolvedQuery?.timeRange?.start);
+  const nestedEnd = Number(normalizedResolvedQuery?.timeRange?.end);
   const hasNestedStart = Number.isFinite(nestedStart) && nestedStart > 0;
   const hasNestedEnd = Number.isFinite(nestedEnd) && nestedEnd > 0;
 
@@ -929,15 +1100,15 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
   const missingFields = [];
   requiredFields.forEach((field) => {
     if (field === 'timeRange') {
-      const start = Number(resolvedQuery.start);
-      const end = Number(resolvedQuery.end);
+      const start = Number(normalizedResolvedQuery.start);
+      const end = Number(normalizedResolvedQuery.end);
       if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) {
         missingFields.push('start/end');
       }
       return;
     }
 
-    const value = resolvedQuery[field];
+    const value = normalizedResolvedQuery[field];
     if (field === 'groups') {
       if (!Array.isArray(value) || value.length === 0) {
         missingFields.push(field);
@@ -972,9 +1143,30 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}) {
     };
   }
 
+  const queryModeKey = String(normalizedResolvedQuery.queryModeKey || '').trim();
+  const allowedQueryModes = Array.isArray(serviceSpec.queryModes) ? serviceSpec.queryModes : [];
+  if (queryModeKey && allowedQueryModes.length > 0 && !allowedQueryModes.includes(queryModeKey)) {
+    return {
+      ok: false,
+      reason: 'invalid_query_mode',
+      message: `resolvedQuery.service=${serviceName} only accepts queryModeKey=${allowedQueryModes.join('|')}; received ${queryModeKey}.`,
+      details: {
+        service: serviceName,
+        queryModeKey,
+        allowedQueryModes
+      }
+    };
+  }
+
+  const relativeTimeValidation = validateRelativeTimeRangeFreshness(normalizedResolvedQuery, options);
+  if (!relativeTimeValidation.ok) {
+    return relativeTimeValidation;
+  }
+
   return {
     ok: true,
-    serviceSpec
+    serviceSpec,
+    resolvedQuery: normalizedResolvedQuery
   };
 }
 
@@ -1411,12 +1603,114 @@ function shouldReplaceWithPromptOverview(resolvedQuery = {}, overviewResolvedQue
   return actualScene !== expectedScene;
 }
 
+const RESOLVED_QUERY_AUTO_REPAIR_REASONS = new Set([
+  'missing_resolved_query',
+  'missing_service',
+  'unknown_service',
+  'incomplete_resolved_query',
+  'relative_time_range_stale_or_miscalculated'
+]);
+
+function getResolvedQueryValidationOptions(args = {}) {
+  return {
+    nowSeconds: args?.nowSeconds
+  };
+}
+
+function shouldAttemptResolvedQueryAutoRepair(validation = {}, args = {}) {
+  const prompt = normalizePrompt(args);
+  if (!prompt || validation?.ok) {
+    return false;
+  }
+
+  return RESOLVED_QUERY_AUTO_REPAIR_REASONS.has(String(validation?.reason || '').trim());
+}
+
+function maybeAutoRepairResolvedQuery(prepared = {}) {
+  const prompt = normalizePrompt(prepared);
+  if (isPlainObject(prepared.resolvedQuery)) {
+    prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
+  }
+
+  const validationOptions = getResolvedQueryValidationOptions(prepared);
+  const validation = validateResolvedQueryAgainstSpec(prepared.resolvedQuery, validationOptions);
+  if (validation.ok) {
+    if (isPlainObject(validation.resolvedQuery)) {
+      prepared.resolvedQuery = validation.resolvedQuery;
+    }
+    return {
+      repaired: false,
+      validation
+    };
+  }
+
+  if (!shouldAttemptResolvedQueryAutoRepair(validation, prepared)) {
+    return {
+      repaired: false,
+      validation
+    };
+  }
+
+  const originalResolvedQuery = isPlainObject(prepared.resolvedQuery)
+    ? cloneJsonObject(prepared.resolvedQuery)
+    : null;
+  const repaired = buildResolvedQueryForPrompt(prompt, prepared);
+  if (!isPlainObject(repaired.resolvedQuery)) {
+    appendPluginAuditEvent('napm_plugin_resolved_query_auto_repair_failed', {
+      traceId: normalizeTraceId(prepared?.traceId) || buildNapmTraceId({}, prepared),
+      prompt,
+      reason: validation.reason || null,
+      message: validation.message || null,
+      source: repaired.source || null,
+      resolverReason: repaired.result?.reason || null,
+      resolverMessage: repaired.result?.message || null,
+      originalResolvedQuery: normalizeObject(originalResolvedQuery) || null,
+      originalResolvedQuerySummary: summarizeResolvedQueryForAudit(originalResolvedQuery),
+      diagnostics: normalizeObject(repaired.result?.diagnostics) || null
+    });
+    return {
+      repaired: false,
+      validation,
+      resolverResult: repaired.result || null
+    };
+  }
+
+  prepared.resolvedQuery = repaired.resolvedQuery;
+  const repairedValidation = validateResolvedQueryAgainstSpec(prepared.resolvedQuery, validationOptions);
+  appendPluginAuditEvent('napm_plugin_resolved_query_auto_repaired', {
+    traceId: normalizeTraceId(prepared?.traceId) || buildNapmTraceId({}, prepared),
+    prompt,
+    reason: validation.reason || null,
+    message: validation.message || null,
+    source: repaired.source || null,
+    originalResolvedQuery: normalizeObject(originalResolvedQuery) || null,
+    originalResolvedQuerySummary: summarizeResolvedQueryForAudit(originalResolvedQuery),
+    repairedResolvedQuery: normalizeObject(prepared.resolvedQuery) || null,
+    repairedResolvedQuerySummary: summarizeResolvedQueryForAudit(prepared.resolvedQuery),
+    validation: {
+      ok: Boolean(repairedValidation.ok),
+      reason: repairedValidation.reason || null,
+      message: repairedValidation.message || null
+    },
+    intent: normalizeObject(repaired.result?.intent) || null,
+    diagnostics: normalizeObject(repaired.result?.diagnostics) || null
+  });
+
+  return {
+    repaired: repairedValidation.ok,
+    validation: repairedValidation.ok ? repairedValidation : validation,
+    resolverResult: repaired.result || null
+  };
+}
+
 function prepareSkillExecutionArgs(args = {}) {
   const prepared = isPlainObject(args) ? { ...args } : {};
   const prompt = normalizePrompt(prepared);
   if (!prepared.userQuery && prompt) {
     prepared.userQuery = prompt;
   }
+
+  maybeAutoRepairResolvedQuery(prepared);
 
   return applyPathPreflightToSkillArgs(prepared);
 }
@@ -1431,7 +1725,7 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
   nextParams.prompt = prompt;
   nextParams.userQuery = prompt;
 
-  return applyPathPreflightToSkillArgs(nextParams);
+  return prepareSkillExecutionArgs(nextParams);
 }
 
 function isPluginStructuredOverviewInjection(originalArgs = {}, preparedArgs = {}) {
@@ -1663,6 +1957,19 @@ function rememberDebugApi(prompt, result, conversationKey = '') {
     ...record,
     promptKey: key
   };
+}
+
+function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversationKey = '') {
+  if (!Array.isArray(prompts)) {
+    return;
+  }
+
+  prompts
+    .map((prompt) => String(prompt || '').trim())
+    .filter(Boolean)
+    .forEach((prompt) => {
+      rememberDebugApi(prompt, result, conversationKey);
+    });
 }
 
 function rememberReportExportResult(prompt = '', result = {}, conversationKey = '') {
@@ -2553,10 +2860,71 @@ function buildReportExportReply(result = {}) {
 }
 
 function buildResolvedQueryForPrompt(prompt = '', args = {}) {
+  const normalizedPrompt = String(prompt || '').trim() || normalizePrompt(args);
+  const resolver = getNapmResolvedQueryResolverService();
+  if (!normalizedPrompt) {
+    return {
+      source: 'NapmResolvedQueryResolverService',
+      result: {
+        ok: false,
+        reason: 'missing_prompt',
+        message: 'Cannot construct resolvedQuery because prompt is empty.'
+      },
+      resolvedQuery: null
+    };
+  }
+
+  if (!resolver || typeof resolver.resolvePrompt !== 'function') {
+    return {
+      source: 'NapmResolvedQueryResolverService',
+      result: {
+        ok: false,
+        reason: 'resolver_unavailable',
+        message: 'NAPM resolvedQuery resolver service is unavailable.'
+      },
+      resolvedQuery: null
+    };
+  }
+
+  let result = null;
+  try {
+    result = resolver.resolvePrompt(normalizedPrompt, {
+      nowSeconds: args?.nowSeconds
+    });
+  } catch (error) {
+    return {
+      source: 'NapmResolvedQueryResolverService',
+      result: {
+        ok: false,
+        reason: 'resolver_exception',
+        message: error?.message || 'NAPM resolvedQuery resolver threw an exception.'
+      },
+      resolvedQuery: null
+    };
+  }
+
+  const resolvedQuery = normalizeResolvedQueryForPlugin(result?.resolvedQuery);
+  const validation = validateResolvedQueryAgainstSpec(resolvedQuery, getResolvedQueryValidationOptions(args));
+  if (!result?.ok || !isPlainObject(resolvedQuery) || !validation.ok) {
+    return {
+      source: 'NapmResolvedQueryResolverService',
+      result: {
+        ...(isPlainObject(result) ? result : {}),
+        ok: false,
+        validation: {
+          ok: Boolean(validation.ok),
+          reason: validation.reason || null,
+          message: validation.message || null
+        }
+      },
+      resolvedQuery: null
+    };
+  }
+
   return {
-    source: 'none',
-    result: null,
-    resolvedQuery: null
+    source: 'NapmResolvedQueryResolverService',
+    result,
+    resolvedQuery: validation.resolvedQuery || resolvedQuery
   };
 }
 
@@ -3047,7 +3415,13 @@ function createSkillToolDefinition() {
     },
     execute: async (_toolCallId, args) => {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
-      const validation = validateResolvedQueryAgainstSpec(preparedArgs?.resolvedQuery);
+      const validation = validateResolvedQueryAgainstSpec(
+        preparedArgs?.resolvedQuery,
+        getResolvedQueryValidationOptions(preparedArgs)
+      );
+      if (isPlainObject(validation.resolvedQuery)) {
+        preparedArgs.resolvedQuery = validation.resolvedQuery;
+      }
       if (!validation.ok) {
         appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
           traceId: normalizeTraceId(preparedArgs?.traceId) || buildNapmTraceId({}, preparedArgs),
@@ -3567,8 +3941,13 @@ const plugin = {
           const canonicalTraceId = normalizeTraceId(canonicalSkillParams?.traceId);
           const originalResolvedGroup = String(toolParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
+          const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
+          const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
           const resolvedQueryValidation = validateResolvedQueryAgainstSpec(canonicalSkillParams?.resolvedQuery);
+          if (isPlainObject(resolvedQueryValidation.resolvedQuery)) {
+            canonicalSkillParams.resolvedQuery = resolvedQueryValidation.resolvedQuery;
+          }
           const promptLooksStructuredMetaRequest = Boolean(
             isMetricInventoryPrompt(activePrompt)
             || isBusinessObjectInventoryPrompt(activePrompt)
@@ -3595,24 +3974,6 @@ const plugin = {
             canonicalResolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
             context: buildAuditContextSnapshot(ctx)
           });
-          if (!resolvedQueryValidation.ok && (boundaryMode === 'strict' || promptLooksStructuredMetaRequest)) {
-            api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid resolvedQuery: reason=${resolvedQueryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
-            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
-              traceId,
-              toolName,
-              prompt: activePrompt,
-              boundaryMode,
-              reason: resolvedQueryValidation.reason || null,
-              message: resolvedQueryValidation.message || null,
-              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
-              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
-              context: buildAuditContextSnapshot(ctx)
-            });
-            return {
-              block: true,
-              blockReason: `${resolvedQueryValidation.message} OpenClaw must construct resolvedQuery first.`
-            };
-          }
           const compositeApplicationInventoryValidation = validateCompositeApplicationInventoryResolvedQuery(
             activePrompt,
             canonicalSkillParams?.resolvedQuery
@@ -3657,12 +4018,31 @@ const plugin = {
               blockReason: `${objectInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
             };
           }
+          if (!resolvedQueryValidation.ok && (boundaryMode === 'strict' || promptLooksStructuredMetaRequest)) {
+            api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid resolvedQuery: reason=${resolvedQueryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
+              traceId,
+              toolName,
+              prompt: activePrompt,
+              boundaryMode,
+              reason: resolvedQueryValidation.reason || null,
+              message: resolvedQueryValidation.message || null,
+              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
+              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: `${resolvedQueryValidation.message} OpenClaw must construct resolvedQuery first.`
+            };
+          }
           const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
               canonicalPrompt !== originalPrompt
               || canonicalResolvedGroup !== originalResolvedGroup
               || canonicalTraceId !== originalTraceId
+              || canonicalResolvedQueryJson !== originalResolvedQueryJson
             )
           );
           appendPluginAuditEvent('napm_plugin_resolved_query_forwarded', {
@@ -4022,6 +4402,8 @@ module.exports.__test__ = {
   shouldEnableDevResolverTools,
   isSafeNapmToolName,
   summarizeResolvedQueryForAudit,
+  normalizeQueryModeKeyForService,
+  normalizeResolvedQueryForPlugin,
   validateResolvedQueryAgainstSpec,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
@@ -4038,6 +4420,7 @@ module.exports.__test__ = {
   buildOverviewResolvedQuery,
   buildMetricInventoryResolvedQuery,
   buildPacketLossClientTopResolvedQuery,
+  buildResolvedQueryForPrompt,
   createResolvedQueryResolverToolDefinition,
   createMainflowQueryToolDefinition,
   createReportExportToolDefinition,
@@ -4072,6 +4455,7 @@ module.exports.__test__ = {
   normalizeHierarchyQuestionTarget,
   normalizeOverviewSceneKey,
   shouldReplaceWithPromptOverview,
+  rememberDebugApiForPromptAliases,
   rememberSkillResult,
   getLatestRememberedSkillRecord,
   getReportDataFromRecord,

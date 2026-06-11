@@ -33,17 +33,96 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(resolvedQuery).toBeNull();
   });
 
-  test('should preserve raw packet loss prompt without injecting resolvedQuery', () => {
+  test('should auto-resolve raw packet loss prompt before skill execution', () => {
     const testApi = plugin.__test__;
     const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
       prompt,
-      userQuery: prompt
+      userQuery: prompt,
+      nowSeconds: 1779350400
     });
 
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
-    expect(prepared.resolvedQuery).toBeUndefined();
+    expect(prepared.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PLI',
+      metrics: ['PLI'],
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 1,
+      start: 1779346800,
+      end: 1779350400
+    });
+  });
+
+  test('should repair model-written packet loss resolvedQuery before boundary validation', () => {
+    const testApi = plugin.__test__;
+    const prompt = '\u6700\u8fd1\u4e22\u5305\u7387\u6700\u9ad8\u7684\u524d10\u4e2aIP\u90fd\u6709\u8c01\uff1f';
+    const prepared = testApi.prepareSkillExecutionArgs({
+      prompt,
+      userQuery: prompt,
+      nowSeconds: 1780974060,
+      resolvedQuery: {
+        service: 'topValues',
+        start: 1717891200,
+        end: 1717923600,
+        timeRange: { key: 'last1hour', displayText: '\u6700\u8fd11\u5c0f\u65f6' },
+        metric: 'packetLossRate',
+        topCount: 10,
+        groups: [{ type: 'IPAddress' }],
+        order: 'desc'
+      }
+    });
+
+    expect(prepared.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PLI',
+      metrics: ['PLI'],
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 10,
+      start: 1780970460,
+      end: 1780974060
+    });
+    expect(testApi.validateResolvedQueryAgainstSpec(prepared.resolvedQuery).ok).toBe(true);
+  });
+
+  test('should normalize topValues queryModeKey to topn without replacing valid explicit query', () => {
+    const testApi = plugin.__test__;
+    const prompt = '\u6700\u8fd1\u4e00\u5c0f\u65f6\u4e22\u5305\u7387\u6700\u9ad8\u7684\u524d10\u4e2aIP';
+    const prepared = testApi.prepareSkillExecutionArgs({
+      prompt,
+      userQuery: prompt,
+      nowSeconds: 1780974060,
+      resolvedQuery: {
+        service: 'topValues',
+        queryModeKey: 'topValues',
+        metric: 'PLI',
+        metrics: ['PLI'],
+        topMetric: 'PLI',
+        groups: [{ type: 'IPAddress' }],
+        topCount: 10,
+        start: 1780970460,
+        end: 1780974060,
+        timeRange: { key: 'last1hour', displayText: '\u6700\u8fd11\u5c0f\u65f6' },
+        format: 'json'
+      }
+    });
+
+    expect(prepared.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PLI',
+      metrics: ['PLI'],
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 10,
+      start: 1780970460,
+      end: 1780974060
+    });
   });
 
   test('should block removed direct topn tool even after a NAPM turn is active', async () => {
@@ -169,7 +248,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
       sessionId: 'session-loss-continuation',
       runId: 'run-loss-continuation'
     };
-    const shortPrompt = '\u6700\u8fd1\u4e00\u5929\u5462\uff1f';
+    const shortPrompt = '\u6700\u8fd1\u4e00\u5929\u4e22\u5305\u5462\uff1f';
     const expandedPrompt = '\u6700\u8fd1\u4e00\u5929\u4e22\u5305\u6700\u4e25\u91cd\u7684\u524d10\u4e2aIP';
     const resolvedQuery = {
       service: 'topValues',
@@ -219,5 +298,62 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     expect(skillTool).toBeTruthy();
     expect(result).toBeUndefined();
+  });
+
+  test('before_tool_call should rewrite missing resolvedQuery to resolver output', async () => {
+    const hooks = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-loss-auto-resolve',
+      conversationId: 'conv-loss-auto-resolve',
+      sessionKey: 'session-loss-auto-resolve',
+      sessionId: 'session-loss-auto-resolve',
+      runId: 'run-loss-auto-resolve'
+    };
+    const prompt = '\u6700\u8fd1\u4e22\u5305\u7387\u6700\u9ad8\u7684\u524d10\u4e2aIP\u90fd\u6709\u8c01\uff1f';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const result = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        nowSeconds: 1780974060
+      }
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.params.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PLI',
+      metrics: ['PLI'],
+      topMetric: 'PLI',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 10,
+      start: 1780970460,
+      end: 1780974060
+    });
   });
 });

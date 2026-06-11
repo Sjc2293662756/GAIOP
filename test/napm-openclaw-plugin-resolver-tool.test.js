@@ -29,7 +29,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
     }
   });
 
-  test('should register production NAPM query and report export tools by default', () => {
+  test('should register production NAPM tools by default without diagnostic resolver tools', () => {
     const plugin = loadPlugin();
     const tools = new Map();
     const api = {
@@ -48,7 +48,13 @@ describe('napm-openclaw-plugin resolver tools', () => {
 
     plugin.register(api);
 
-    expect(Array.from(tools.keys()).sort()).toEqual(['napm-report-export', 'napm-skill-query']);
+    expect(Array.from(tools.keys()).sort()).toEqual([
+      'napm-packet-analysis',
+      'napm-report-export',
+      'napm-skill-query'
+    ]);
+    expect(tools.has('napm-resolve-query')).toBe(false);
+    expect(tools.has('napm-mainflow-query')).toBe(false);
   });
 
   test('should register resolver and mainflow tools only when diagnostic flag is enabled', () => {

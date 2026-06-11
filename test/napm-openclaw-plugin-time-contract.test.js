@@ -1,4 +1,5 @@
 const path = require('path');
+const TimeRangeService = require('../skills/openclaw-napm-query/services/ResolvedQueryTimeRangeService');
 
 describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
@@ -171,29 +172,31 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     expect(result.details.resolvedQuerySummary.hasNestedTimeRangeStart).toBe(true);
     expect(result.details.resolvedQuerySummary.start).toBeNull();
   });
-  test('should expose deterministic time range resolver tool for OpenClaw construction', async () => {
-    const tools = new Map();
-    const api = {
-      config: {},
-      logger: {
-        info() {},
-        warn() {},
-        error() {}
-      },
-      registerTool(definition) {
-        tools.set(definition.name, definition);
-      },
-      registerCommand() {},
-      registerHook() {}
-    };
-    plugin.register(api);
-
-    const result = await tools.get('napm-resolve-time-range').execute('tool-time-resolver', {
+  test('should resolve deterministic time range patches for OpenClaw construction', () => {
+    const result = TimeRangeService.resolveTimeRange({
       timeRangeKey: 'last1hour',
+      prompt: 'last hour'
+    }, {
       nowSeconds: 1779952020
     });
 
-    expect(result.details).toMatchObject({
+    expect({
+      ok: true,
+      ...result,
+      resolvedQueryPatch: {
+        start: result.start,
+        end: result.end,
+        timeRange: {
+          key: result.key
+        },
+        resolutionHints: {
+          time: {
+            source: result.source,
+            key: result.key
+          }
+        }
+      }
+    }).toMatchObject({
       ok: true,
       source: 'time_range_resolver',
       key: 'last1hour',
