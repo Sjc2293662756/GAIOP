@@ -39,11 +39,22 @@ If the requested time range is larger than `PACKET_MAX_TIME_RANGE_SECONDS`, ask 
 Core structured packet-query contract:
 
 - Live preview/download requires root-level `criteria.start` and `criteria.end`.
-- Live preview/download requires one of `criteria.ips`, `criteria.ipRanges`, `criteria.id`, `criteria.top`, or `criteria.instanceId`.
+- Live preview/download requires one of `criteria.ips`, `criteria.ipRanges`, `criteria.id`, `criteria.top`, `criteria.instanceId`, `criteria.businessName`, `criteria.pageFamilyId`, or `criteria.pageFamilyDetailId`.
 - `build_url_only` is the safe default for link-only requests.
 - `preview_only` is preferred for large or uncertain windows.
 - `preview_download` and `preview_download_analyze` must pass the preview gate by default.
+- `packetsPreview` results must be rendered as a download-risk preview, not just as "has data". Use `preview.overview` and `preview.risk` to tell the user estimated size, packet count, risk level, and whether confirmation or a narrower time range is recommended.
+- If preview risk returns `CONFIRM_DOWNLOAD` or `SUGGEST_NARROW_TIME_RANGE`, do not claim the packet was downloaded or analyzed. Ask the user to confirm download or narrow the time range.
 - Packet endpoint credentials come from runtime env or `.env`; NetInside packet URLs may include `UserName` and `Password` query parameters. User-facing URLs must keep `UserName` visible when present and render `Password=***`.
+
+Business packet analysis contract:
+
+- If the user asks for business/Web application packet analysis and only provides a business name, pass `criteria.businessName`.
+- This skill resolves `businessName -> pageFamilyId -> pageFamilyDetailId -> instanceId` internally, using the v3 business packet chain.
+- If the caller already has `criteria.pageFamilyId`, this skill skips the business Top query and starts from `pageViews`.
+- If the caller already has `criteria.pageFamilyDetailId`, `criteria.resultName`, or `criteria.instanceId`, this skill directly builds the `DownServlet` URL.
+- Business packet downloads use `downloadType: "DownServlet"` with fixed `moduleKey=Ipv`, `groupId=45`, and `rtClickId=5`, unless the caller explicitly overrides them.
+- `DownServlet` has no `packetsPreview` endpoint. After instance resolution succeeds, download/analyze modes use the resolved `DownServlet` URL directly.
 
 ## Runtime Shape
 
@@ -92,6 +103,17 @@ Do not write custom packet/protocol parsers in this skill. Use host tools such a
 
 Default mode is `build_url_only` to avoid accidental live downloads. For any real `packetsDown` download, call `packetsPreview` first unless the query explicitly sets `forceDownload=true` or `filePolicy.requirePreviewBeforeDownload=false`. If preview is empty, do not call `packetsDown`; return a `NO_DOWNLOAD` decision.
 
+Preview risk policy:
+
+- `preview.overview.responseBytes` / `preview.responseBytes` describe the preview API response size, not the estimated pcap size.
+- `preview.overview.estimatedBytes` describes the estimated downloadable packet size when the API exposes it.
+- `preview.overview.packetCount` describes the estimated packet count when the API exposes it.
+- `preview.risk.level` can be `low`, `medium`, `high`, or `unknown`.
+- `preview.risk.recommendation=CONTINUE_DOWNLOAD` allows normal download.
+- `preview.risk.recommendation=CONFIRM_DOWNLOAD` means OpenClaw should ask the user to confirm before download.
+- `preview.risk.recommendation=SUGGEST_NARROW_TIME_RANGE` means OpenClaw should recommend narrowing the time window and must not download automatically.
+- If the user confirms a previously previewed risky download, call this skill again with the same criteria and `previewRiskAccepted=true`.
+
 ## Input Contract
 
 Use `--queryFile` to avoid shell quoting problems:
@@ -124,6 +146,34 @@ For event packet download:
     "id": "12345",
     "start": 1717200000,
     "end": 1717200600
+  }
+}
+```
+
+For business packet analysis by Web application name:
+
+```json
+{
+  "mode": "preview_download_analyze",
+  "downloadType": "DownServlet",
+  "criteria": {
+    "businessName": "其他Web应用",
+    "start": 1781147760,
+    "end": 1781151360
+  }
+}
+```
+
+For business packet URL construction when the page visit detail is already known:
+
+```json
+{
+  "mode": "build_url_only",
+  "downloadType": "DownServlet",
+  "criteria": {
+    "pageFamilyDetailId": "36916498-1781149080---1781149111.656803-1781149111.657076-182.242.169.138",
+    "start": 1781147760,
+    "end": 1781151360
   }
 }
 ```
@@ -187,7 +237,7 @@ Optional for richer file metadata:
 ## Guardrails
 
 - `start` and `end` must be Unix seconds. Millisecond timestamps are normalized when obvious.
-- One of `ips`, `ipRanges`, `id`, or `top` is required for `packetsDown`.
+- One of `ips`, `ipRanges`, `id`, `top`, `instanceId`, `businessName`, `pageFamilyId`, or `pageFamilyDetailId` is required.
 - Page parameter `iprangs` is normalized to API parameter `ipRanges`.
 - `packetsDown` is treated as a file stream, not JSON.
 - Real `packetsDown` downloads must pass the preview gate by default. Empty preview means "no downloadable packet data for the requested scope/time range"; do not download.
@@ -196,7 +246,9 @@ Optional for richer file metadata:
 - Files are written under `PACKET_DOWNLOAD_DIR`, or by default `$HOME/.openclaw/artifacts/openclaw-napm-packet-analysis`.
 - Artifact directories are marked with `.packet-artifact`; expired marked directories are cleaned at the start of download tasks.
 - Default retention is 24 hours via `PACKET_RETENTION_HOURS=24`.
-- Default `PACKET_KEEP_FILES=false` removes the downloaded packet file after `download_analyze` or `preview_download_analyze`, while keeping `download.meta.json` and `analysis.json`.
+- Default `PACKET_KEEP_FILES=true` keeps downloaded packet files after analysis for short-term review and follow-up analysis.
+- Storage governance checks disk usage before download. If the packet artifact partition reaches `PACKET_STORAGE_CLEAN_PERCENT` (default 80), old managed packet artifacts are cleaned by download time until the target watermark is reached.
+- If disk usage remains above `PACKET_STORAGE_BLOCK_PERCENT` (default 90) or free space is below the required reserve, the skill must not download and should return a storage decision explaining the reason.
 - Analysis never prints raw packet payloads by default.
 
 ## References

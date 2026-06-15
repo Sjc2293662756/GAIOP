@@ -14,12 +14,40 @@ const DEFAULT_MODE = 'build_url_only';
 const DOWNLOAD_MODES = new Set(['download_only', 'preview_download', 'download_analyze', 'preview_download_analyze']);
 const PREVIEW_MODES = new Set(['preview_only', 'preview_download', 'preview_download_analyze']);
 const ANALYZE_MODES = new Set(['analyze_file', 'download_analyze', 'preview_download_analyze']);
+const BUSINESS_TOP_METRICS = ['PGNPGE', 'PGTME', 'PGNSLPGE', 'PGSLPCT', 'PGHTTP400', 'PGHTTP500'];
+const PAGE_FAMILY_TOP_METRICS = ['PGNPGE', 'PGNOBJE', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500'];
+const PACKET_COUNT_KEYS = [
+  'packetCount',
+  'packetsCount',
+  'totalPacketCount',
+  'totalPackets',
+  'packetNum',
+  'packetNumber',
+  'packets',
+  'count',
+  'num',
+];
+const PACKET_SIZE_KEYS = [
+  'packetBytes',
+  'packetSize',
+  'packetsSize',
+  'totalBytes',
+  'totalSize',
+  'fileSize',
+  'pcapSize',
+  'captureSize',
+  'bytes',
+  'size',
+];
+const PACKET_PAYLOAD_EXTENSIONS = new Set(['.pcap', '.cap', '.pcapng', '.zip']);
 
-main().catch((error) => {
-  const result = failureResult('PACKET_RUNTIME_ERROR', error.message || String(error), { stack: error.stack });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    const result = failureResult('PACKET_RUNTIME_ERROR', error.message || String(error), { stack: error.stack });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   loadDotEnv(path.resolve(process.cwd(), '.env'));
@@ -43,6 +71,40 @@ async function main() {
   }
 
   const task = resolved.task;
+  if (task.needsBusinessInstanceResolution) {
+    const businessResolution = await resolveBusinessPacketInstance(task);
+    task.businessResolution = businessResolution;
+    if (!businessResolution.ok) {
+      writeJson({
+        ok: false,
+        mode: task.mode,
+        downloadType: task.downloadType,
+        criteria: task.criteria,
+        businessResolution,
+        error: businessResolution.error,
+        decision: {
+          next_action: 'CLARIFICATION_REQUIRED',
+          reason: businessResolution.error && businessResolution.error.code,
+          message: businessResolution.error && businessResolution.error.message,
+        },
+        summary: {
+          title: '业务数据包实例解析失败',
+          highlights: [businessResolution.error && businessResolution.error.message].filter(Boolean),
+        },
+      });
+      return;
+    }
+    task.criteria = {
+      ...task.criteria,
+      ...businessResolution.criteriaPatch,
+    };
+    task.urls = buildUrls({
+      host: task.host,
+      criteria: task.criteria,
+      downloadType: task.downloadType,
+      showFullUrls: task.showFullUrls,
+    });
+  }
   const result = {
     ok: true,
     mode: task.mode,
@@ -54,6 +116,7 @@ async function main() {
     preview: null,
     download: null,
     analysis: null,
+    businessResolution: task.businessResolution || null,
     error: null,
     decision: null,
   };
@@ -73,8 +136,9 @@ async function main() {
     return;
   }
 
-  if (PREVIEW_MODES.has(task.mode)) {
+  if (PREVIEW_MODES.has(task.mode) && task.urls.previewRaw) {
     result.preview = await requestPreview(task);
+    task.preview = result.preview;
     if (!result.preview.ok || result.preview.empty) {
       result.ok = false;
       result.error = result.preview.error || {
@@ -91,11 +155,28 @@ async function main() {
       writeJson(result);
       return;
     }
+    if (DOWNLOAD_MODES.has(task.mode) && applyPreviewRiskGate(result, task)) {
+      result.summary = buildSummary(result);
+      result.narrationInput = buildNarrationInput(result);
+      writeJson(result);
+      return;
+    }
+  } else if (PREVIEW_MODES.has(task.mode) && task.downloadType !== 'DownServlet') {
+    result.ok = false;
+    result.error = {
+      code: 'PACKET_PREVIEW_UNSUPPORTED',
+      message: '当前数据包任务没有可用的 packetsPreview URL。',
+    };
+    result.summary = buildSummary(result);
+    result.narrationInput = buildNarrationInput(result);
+    writeJson(result);
+    return;
   }
 
   if (DOWNLOAD_MODES.has(task.mode)) {
     if (shouldPreviewBeforeDownload(task) && !result.preview) {
       result.preview = await requestPreview(task);
+      task.preview = result.preview;
       if (!result.preview.ok || result.preview.empty) {
         result.ok = false;
         result.error = result.preview.error || {
@@ -107,6 +188,12 @@ async function main() {
           reason: result.error.code,
           message: '预览接口没有发现可下载数据包，因此没有发起下载请求。',
         };
+        result.summary = buildSummary(result);
+        result.narrationInput = buildNarrationInput(result);
+        writeJson(result);
+        return;
+      }
+      if (applyPreviewRiskGate(result, task)) {
         result.summary = buildSummary(result);
         result.narrationInput = buildNarrationInput(result);
         writeJson(result);
@@ -241,13 +328,18 @@ function resolveQuery(query) {
   const validation = validateCriteria(criteria, mode);
   if (!validation.ok) return validation;
 
-  const downloadType = query.downloadType || criteria.downloadType || 'packetsDown';
+  const needsBusinessInstanceResolution = shouldResolveBusinessPacketInstance(criteria);
+  const downloadType = needsBusinessInstanceResolution
+    ? 'DownServlet'
+    : (query.downloadType || criteria.downloadType || 'packetsDown');
   const host = normalizeHost(query.host || criteria.host || process.env.NETINSIDE_HOST);
   if (!host) {
     return failResolve('NETINSIDE_HOST_REQUIRED', '需要 NETINSIDE_HOST，或在 query.host / criteria.host 中提供 NetInside 地址。');
   }
 
-  const urls = buildUrls({ host, criteria, downloadType, showFullUrls });
+  const urls = needsBusinessInstanceResolution
+    ? {}
+    : buildUrls({ host, criteria, downloadType, showFullUrls });
   return {
     ok: true,
     task: {
@@ -257,9 +349,11 @@ function resolveQuery(query) {
       host,
       urls,
       showFullUrls,
+      needsBusinessInstanceResolution,
       analysis: normalizeAnalysisOptions(query.analysis),
       filePolicy: normalizeFilePolicy(query.filePolicy),
       forceDownload: Boolean(query.forceDownload || criteria.forceDownload),
+      previewRiskAccepted: Boolean(query.previewRiskAccepted || criteria.previewRiskAccepted),
     },
   };
 }
@@ -273,6 +367,12 @@ function normalizeCriteria(input) {
   delete criteria.password;
   delete criteria.passwd;
   if (criteria.iprangs && !criteria.ipRanges) criteria.ipRanges = criteria.iprangs;
+  if (!criteria.businessName) {
+    criteria.businessName = criteria.webApplication || criteria.applicationName || criteria.appName || criteria.business;
+  }
+  if (criteria.pageFamilyDetailId && !criteria.resultName) {
+    criteria.resultName = criteria.pageFamilyDetailId;
+  }
   criteria.ips = toArray(criteria.ips).filter(Boolean);
   criteria.ipRanges = toArray(criteria.ipRanges).filter(Boolean);
   if (criteria.id != null) criteria.id = String(criteria.id);
@@ -301,11 +401,19 @@ function validateCriteria(criteria, mode) {
     }
     const hasPacketCondition = criteria.ips.length || criteria.ipRanges.length || criteria.id || Number.isFinite(criteria.top);
     const hasDownServletCondition = criteria.instanceId;
-    if (!hasPacketCondition && !hasDownServletCondition) {
-      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top 或 instanceId 之一。');
+    const hasBusinessPacketCondition = criteria.businessName || criteria.pageFamilyId || criteria.pageFamilyDetailId || criteria.resultName;
+    if (!hasPacketCondition && !hasDownServletCondition && !hasBusinessPacketCondition) {
+      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top、instanceId、businessName、pageFamilyId 或 pageFamilyDetailId 之一。');
     }
   }
   return { ok: true };
+}
+
+function shouldResolveBusinessPacketInstance(criteria = {}) {
+  if (!criteria || criteria.instanceId || criteria.resultName) {
+    return false;
+  }
+  return Boolean(criteria.businessName || criteria.pageFamilyId);
 }
 
 function buildUrls({ host, criteria, downloadType, showFullUrls }) {
@@ -316,6 +424,7 @@ function buildUrls({ host, criteria, downloadType, showFullUrls }) {
     url.searchParams.set('groupId', String(criteria.groupId || 45));
     if (criteria.rtClickId) url.searchParams.set('rtClickId', String(criteria.rtClickId));
     else if (criteria.downloadId) url.searchParams.set('rtClickId', String(criteria.downloadId));
+    else url.searchParams.set('rtClickId', '5');
     url.searchParams.set('start', String(criteria.start));
     url.searchParams.set('end', String(criteria.end));
     url.searchParams.set('instanceId', normalizeInstanceId(criteria.instanceId || criteria.resultName));
@@ -356,6 +465,296 @@ function buildNetInsideUrl(host, type, criteria) {
   url.searchParams.set('end', String(criteria.end));
   url.searchParams.set('json', 'true');
   return url.toString();
+}
+
+async function resolveBusinessPacketInstance(task) {
+  const criteria = task.criteria || {};
+  const steps = [];
+  let businessName = criteria.businessName ? String(criteria.businessName).trim() : '';
+  let pageFamilyId = criteria.pageFamilyId ? String(criteria.pageFamilyId).trim() : '';
+
+  if (!businessName && !pageFamilyId) {
+    const businessUrl = buildBusinessTopValuesUrl(task.host, criteria);
+    const businessResult = await requestNetInsideJson(businessUrl, 'business_top_values');
+    steps.push({
+      name: 'business_top_values',
+      url: publicPacketUrl(businessUrl, task.showFullUrls),
+      ok: businessResult.ok,
+      rowCount: businessResult.rows.length,
+    });
+    if (!businessResult.ok) {
+      return businessResolveFailure('BUSINESS_PACKET_BUSINESS_QUERY_FAILED', businessResult.message, steps);
+    }
+    const selectedBusiness = selectBusinessRow(businessResult.rows, criteria);
+    if (!selectedBusiness) {
+      return businessResolveFailure('BUSINESS_PACKET_BUSINESS_NOT_FOUND', '未从业务 Top 查询中找到可用于数据包分析的业务对象。', steps);
+    }
+    businessName = extractBusinessName(selectedBusiness);
+    steps[steps.length - 1].selectedBusiness = businessName;
+  }
+
+  if (!pageFamilyId) {
+    if (!businessName) {
+      return businessResolveFailure('BUSINESS_PACKET_BUSINESS_REQUIRED', '业务数据包分析需要 businessName，或直接提供 pageFamilyId。', steps);
+    }
+    const pageFamilyUrl = buildPageFamilyTopValuesUrl(task.host, criteria, businessName);
+    const pageFamilyResult = await requestNetInsideJson(pageFamilyUrl, 'page_family_top_values');
+    steps.push({
+      name: 'page_family_top_values',
+      url: publicPacketUrl(pageFamilyUrl, task.showFullUrls),
+      ok: pageFamilyResult.ok,
+      rowCount: pageFamilyResult.rows.length,
+      businessName,
+    });
+    if (!pageFamilyResult.ok) {
+      return businessResolveFailure('BUSINESS_PACKET_PAGE_FAMILY_QUERY_FAILED', pageFamilyResult.message, steps);
+    }
+    const selectedPageFamily = selectPageFamilyRow(pageFamilyResult.rows, criteria);
+    if (!selectedPageFamily) {
+      return businessResolveFailure('BUSINESS_PACKET_PAGE_FAMILY_NOT_FOUND', '未从页面错误分析结果中找到可解析 pageFamilyId 的页面行。', steps);
+    }
+    pageFamilyId = extractPageFamilyId(selectedPageFamily);
+    steps[steps.length - 1].selectedPageFamilyId = pageFamilyId;
+    steps[steps.length - 1].selectedPageFamilyLabel = extractPageFamilyLabel(selectedPageFamily);
+  }
+
+  const pageViewsUrl = buildPageViewsUrl(task.host, criteria, pageFamilyId);
+  const pageViewsResult = await requestNetInsideJson(pageViewsUrl, 'page_views');
+  steps.push({
+    name: 'page_views',
+    url: publicPacketUrl(pageViewsUrl, task.showFullUrls),
+    ok: pageViewsResult.ok,
+    rowCount: pageViewsResult.rows.length,
+    pageFamilyId,
+  });
+  if (!pageViewsResult.ok) {
+    return businessResolveFailure('BUSINESS_PACKET_PAGE_VIEWS_QUERY_FAILED', pageViewsResult.message, steps);
+  }
+
+  const selectedPageView = selectPageViewRow(pageViewsResult.rows, criteria);
+  if (!selectedPageView) {
+    return businessResolveFailure('BUSINESS_PACKET_PAGE_VIEW_NOT_FOUND', 'pageViews 未返回包含 pageFamilyDetailId 的页面访问明细。', steps);
+  }
+  const pageFamilyDetailId = extractPageFamilyDetailId(selectedPageView);
+  steps[steps.length - 1].selectedPageFamilyDetailId = pageFamilyDetailId;
+  steps[steps.length - 1].selectedClientIp = selectedPageView.clientIp || selectedPageView.clientIP || selectedPageView.client;
+  steps[steps.length - 1].selectedHttpStatus = selectedPageView.httpStatus || selectedPageView.status || selectedPageView.responseCode;
+
+  return {
+    ok: true,
+    businessName,
+    pageFamilyId,
+    pageFamilyDetailId,
+    instanceId: normalizeInstanceId(pageFamilyDetailId),
+    criteriaPatch: {
+      businessName,
+      pageFamilyId,
+      pageFamilyDetailId,
+      resultName: pageFamilyDetailId,
+      instanceId: normalizeInstanceId(pageFamilyDetailId),
+      moduleKey: criteria.moduleKey || 'Ipv',
+      groupId: criteria.groupId || 45,
+      rtClickId: criteria.rtClickId || criteria.downloadId || 5,
+    },
+    steps,
+  };
+}
+
+function businessResolveFailure(code, message, steps = []) {
+  return {
+    ok: false,
+    error: { code, message },
+    steps,
+  };
+}
+
+function buildBusinessTopValuesUrl(host, criteria = {}) {
+  const url = new URL('/webservice/NetInside', host);
+  appendRuntimeAuthQueryParams(url);
+  url.searchParams.set('type', 'topValues');
+  url.searchParams.set('numGroups', '1');
+  url.searchParams.set('groupType1', 'WebApplication');
+  url.searchParams.set('start', String(criteria.start));
+  url.searchParams.set('end', String(criteria.end));
+  url.searchParams.set('metrics', normalizeMetricList(criteria.businessMetrics, BUSINESS_TOP_METRICS).join(','));
+  url.searchParams.set('topMetric', criteria.businessTopMetric || 'PGNPGE');
+  url.searchParams.set('topCount', String(criteria.businessTopCount || 20));
+  url.searchParams.set('json', 'true');
+  return url.toString();
+}
+
+function buildPageFamilyTopValuesUrl(host, criteria = {}, businessName = '') {
+  const url = new URL('/webservice/NetInside', host);
+  appendRuntimeAuthQueryParams(url);
+  url.searchParams.set('type', 'topValues');
+  url.searchParams.set('numGroups', '3');
+  url.searchParams.set('groupType1', 'WebApplication');
+  url.searchParams.set('groupArgument1', businessName);
+  url.searchParams.set('groupType2', 'PageFamilies');
+  url.searchParams.set('groupType3', 'PageFamily');
+  url.searchParams.set('metrics', normalizeMetricList(criteria.pageFamilyMetrics, PAGE_FAMILY_TOP_METRICS).join(','));
+  url.searchParams.set('start', String(criteria.start));
+  url.searchParams.set('end', String(criteria.end));
+  url.searchParams.set('topMetric', criteria.pageFamilyTopMetric || 'PGHTTP500');
+  url.searchParams.set('topCount', String(criteria.pageFamilyTopCount || 5));
+  url.searchParams.set('json', 'true');
+  return url.toString();
+}
+
+function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
+  const url = new URL('/webservice/NetInside', host);
+  appendRuntimeAuthQueryParams(url);
+  url.searchParams.set('type', 'pageViews');
+  url.searchParams.set('start', String(criteria.start));
+  url.searchParams.set('end', String(criteria.end));
+  url.searchParams.set('csv', 'true');
+  url.searchParams.set('pageFamilyId', String(pageFamilyId));
+  url.searchParams.set('maxLimit', String(criteria.maxLimit == null ? 'undefined' : criteria.maxLimit));
+  return url.toString();
+}
+
+async function requestNetInsideJson(url, stepName) {
+  try {
+    const response = await httpRequest(url, { responseType: 'text' });
+    const text = response.body.toString('utf8').trim();
+    const parsed = parseMaybeJson(text);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return {
+        ok: false,
+        rows: [],
+        message: `${stepName} HTTP 状态码 ${response.statusCode}。`,
+        statusCode: response.statusCode,
+        textSample: text.slice(0, 500),
+      };
+    }
+    const rows = normalizeRowsFromPayload(parsed);
+    return {
+      ok: true,
+      rows,
+      statusCode: response.statusCode,
+      parsed,
+      textSample: typeof parsed === 'string' ? parsed.slice(0, 500) : undefined,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      rows: [],
+      message: error.message,
+    };
+  }
+}
+
+function normalizeRowsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  if (payload.data && typeof payload.data === 'object') {
+    return normalizeRowsFromPayload(payload.data);
+  }
+  return [payload];
+}
+
+function selectBusinessRow(rows = [], criteria = {}) {
+  const expected = String(criteria.businessName || '').trim();
+  if (expected) {
+    return rows.find((row) => extractBusinessName(row) === expected)
+      || rows.find((row) => extractBusinessName(row).includes(expected) || expected.includes(extractBusinessName(row)));
+  }
+  return rows.find((row) => extractBusinessName(row)) || null;
+}
+
+function selectPageFamilyRow(rows = [], criteria = {}) {
+  const expectedPageFamilyId = String(criteria.pageFamilyId || '').trim();
+  if (expectedPageFamilyId) {
+    return rows.find((row) => extractPageFamilyId(row) === expectedPageFamilyId) || null;
+  }
+  const expectedPage = String(criteria.page || criteria.pageUrl || criteria.url || '').trim();
+  if (expectedPage) {
+    return rows.find((row) => extractPageFamilyLabel(row).includes(expectedPage)) || null;
+  }
+  return rows.find((row) => extractPageFamilyId(row)) || null;
+}
+
+function selectPageViewRow(rows = [], criteria = {}) {
+  const expectedDetailId = String(criteria.pageFamilyDetailId || criteria.resultName || '').replace(/^PATH1\//, '').trim();
+  if (expectedDetailId) {
+    return rows.find((row) => extractPageFamilyDetailId(row) === expectedDetailId) || null;
+  }
+  const clientIp = String(criteria.clientIp || criteria.clientIP || '').trim();
+  const serverIp = String(criteria.serverIp || criteria.serverIP || '').trim();
+  const httpStatus = String(criteria.httpStatus || criteria.status || criteria.responseCode || '').trim();
+  const page = String(criteria.page || criteria.pageUrl || criteria.url || '').trim();
+  let candidates = rows.filter((row) => extractPageFamilyDetailId(row));
+  if (clientIp) candidates = candidates.filter((row) => String(row.clientIp || row.clientIP || row.client || '').includes(clientIp));
+  if (serverIp) candidates = candidates.filter((row) => String(row.serverIp || row.serverIP || row.server || '').includes(serverIp));
+  if (httpStatus) candidates = candidates.filter((row) => String(row.httpStatus || row.status || row.responseCode || '').includes(httpStatus));
+  if (page) candidates = candidates.filter((row) => String(row.page || row.url || row.uri || '').includes(page));
+  const index = Number(criteria.pageViewIndex || 0);
+  return candidates[Number.isFinite(index) && index >= 0 ? index : 0] || null;
+}
+
+function extractBusinessName(row) {
+  if (!row || typeof row !== 'object') return '';
+  if (row.group && typeof row.group === 'object' && row.group.argument) return String(row.group.argument).trim();
+  return String(row.argument || row.name || row.label || row.groupArgument || row.application || row.webApplication || '').trim();
+}
+
+function extractPageFamilyLabel(row) {
+  if (!row || typeof row !== 'object') return '';
+  if (row.group && typeof row.group === 'object' && row.group.argument) return String(row.group.argument).trim();
+  return String(row.argument || row.name || row.label || row.page || row.url || row.groupPath || '').trim();
+}
+
+function extractPageFamilyId(row) {
+  if (!row || typeof row !== 'object') return '';
+  const direct = row.pageFamilyId || row.pageFamilyID || row.id;
+  if (direct && /^\d+$/.test(String(direct))) return String(direct);
+  const groupPath = String(row.groupPath || row.path || row.group_path || '').trim();
+  const match = groupPath.match(/page\s+(\d+)\//i)
+    || groupPath.match(/pageFamilyId[=: ]+(\d+)/i)
+    || groupPath.match(/PageFamily[^\d]+(\d+)/i);
+  return match ? match[1] : '';
+}
+
+function extractPageFamilyDetailId(row) {
+  if (!row) return '';
+  if (typeof row === 'string') return extractDetailIdFromText(row, false);
+  if (Array.isArray(row)) {
+    for (let index = row.length - 1; index >= 0; index -= 1) {
+      const found = extractDetailIdFromText(row[index], false);
+      if (found) return found;
+    }
+    return '';
+  }
+  if (typeof row !== 'object') return '';
+  const direct = row.pageFamilyDetailId || row.pageFamilyDetailID || row.resultName || row.instanceId;
+  if (direct) return extractDetailIdFromText(direct, true);
+  for (const value of Object.values(row).reverse()) {
+    const found = extractPageFamilyDetailId(value);
+    if (found) return found;
+  }
+  return '';
+}
+
+function extractDetailIdFromText(value, loose = false) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const withoutPath = text.replace(/^PATH1\//, '');
+  const rightSide = withoutPath.includes('##') ? withoutPath.split('##').pop() : withoutPath;
+  const match = rightSide.match(/\d+-\d+---\d+(?:\.\d+)?-\d+(?:\.\d+)?-[0-9a-fA-F:.]+/);
+  if (match) return match[0];
+  if (loose || withoutPath.includes('##')) return rightSide;
+  return '';
+}
+
+function normalizeMetricList(value, fallback) {
+  if (Array.isArray(value)) return value.filter(Boolean).map(String);
+  if (typeof value === 'string' && value.trim()) {
+    return value.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  return fallback;
 }
 
 function appendRuntimeAuthQueryParams(url) {
@@ -400,13 +799,20 @@ async function requestPreview(task) {
     const response = await httpRequest(task.urls.previewRaw, { responseType: 'text' });
     const text = response.body.toString('utf8').trim();
     const parsed = parseMaybeJson(text);
+    const responseBytes = Buffer.byteLength(response.body);
+    const empty = isEmptyPreview(parsed, text);
+    const overview = normalizePreviewOverview(parsed, task.criteria);
+    const risk = assessPacketDownloadRisk(overview, task.criteria, task.filePolicy);
     return {
       ok: response.statusCode >= 200 && response.statusCode < 300,
       statusCode: response.statusCode,
-      empty: isEmptyPreview(parsed, text),
+      empty,
       contentType: response.headers['content-type'] || null,
-      bytes: Buffer.byteLength(response.body),
+      bytes: responseBytes,
+      responseBytes,
       data: parsed,
+      overview,
+      risk,
       textSample: typeof parsed === 'string' ? parsed.slice(0, 500) : undefined,
       urlMasked: task.urls.preview,
       error: response.statusCode >= 200 && response.statusCode < 300 ? null : {
@@ -427,9 +833,326 @@ async function requestPreview(task) {
   }
 }
 
+function normalizePreviewOverview(parsed, criteria = {}) {
+  const rows = previewRowsFromPayload(parsed);
+  const durationSeconds = Number(criteria.end) > Number(criteria.start)
+    ? Number(criteria.end) - Number(criteria.start)
+    : null;
+  const packetCountMatch = extractNumericByCandidateKeys(parsed, PACKET_COUNT_KEYS, {
+    rowFallback: rows,
+    integer: true,
+  });
+  const estimatedBytesMatch = extractNumericByCandidateKeys(parsed, PACKET_SIZE_KEYS, {
+    rowFallback: rows,
+    bytes: true,
+  });
+  const packetCount = packetCountMatch.value;
+  const estimatedBytes = estimatedBytesMatch.value;
+  return {
+    packetCount,
+    estimatedBytes,
+    estimatedSizeText: estimatedBytes != null ? formatBytes(estimatedBytes) : null,
+    durationSeconds,
+    avgBytesPerSecond: estimatedBytes != null && durationSeconds > 0
+      ? estimatedBytes / durationSeconds
+      : null,
+    avgPacketsPerSecond: packetCount != null && durationSeconds > 0
+      ? packetCount / durationSeconds
+      : null,
+    topEndpoints: summarizePreviewRows(rows, ['ip', 'host', 'endpoint', 'srcIp', 'dstIp', 'clientIp', 'serverIp']),
+    topConversations: summarizePreviewRows(rows, ['conversation', 'flow', 'session', 'srcDst', 'pair']),
+    timeBuckets: extractPreviewCollection(parsed, ['timeBuckets', 'timeline', 'series', 'chartData']),
+    trafficDistribution: extractPreviewCollection(parsed, ['flowDistribution', 'trafficDistribution', 'distribution']),
+    rawFieldHints: {
+      packetCountField: packetCountMatch.path,
+      sizeField: estimatedBytesMatch.path,
+    },
+  };
+}
+
+function assessPacketDownloadRisk(overview = {}, criteria = {}, filePolicy = {}) {
+  const warnBytes = envNumber('PACKET_PREVIEW_WARN_BYTES', 209715200);
+  const blockBytes = envNumber('PACKET_PREVIEW_BLOCK_BYTES', 1073741824);
+  const warnPackets = envNumber('PACKET_PREVIEW_WARN_PACKETS', 200000);
+  const blockPackets = envNumber('PACKET_PREVIEW_BLOCK_PACKETS', 1000000);
+  const blockUnknown = envBool('PACKET_PREVIEW_BLOCK_UNKNOWN', true);
+  const blockMedium = envBool('PACKET_PREVIEW_BLOCK_MEDIUM', false);
+  const confirmDownload = envBool('PACKET_PREVIEW_CONFIRM_DOWNLOAD', false);
+  const estimatedBytes = asFiniteNumber(overview.estimatedBytes);
+  const packetCount = asFiniteNumber(overview.packetCount);
+  const reasons = [];
+  let level = 'low';
+
+  if (estimatedBytes == null && packetCount == null) {
+    level = 'unknown';
+    reasons.push('预览接口确认有数据，但未返回可解析的预计下载大小或包数量。');
+  } else {
+    if (estimatedBytes != null && estimatedBytes >= blockBytes) {
+      level = 'high';
+      reasons.push(`预计下载大小 ${formatBytes(estimatedBytes)}，达到高风险阈值 ${formatBytes(blockBytes)}。`);
+    } else if (estimatedBytes != null && estimatedBytes >= warnBytes && level !== 'high') {
+      level = 'medium';
+      reasons.push(`预计下载大小 ${formatBytes(estimatedBytes)}，超过提示阈值 ${formatBytes(warnBytes)}。`);
+    }
+    if (packetCount != null && packetCount >= blockPackets) {
+      level = 'high';
+      reasons.push(`预计数据包数量 ${formatInteger(packetCount)}，达到高风险阈值 ${formatInteger(blockPackets)}。`);
+    } else if (packetCount != null && packetCount >= warnPackets && level !== 'high') {
+      level = 'medium';
+      reasons.push(`预计数据包数量 ${formatInteger(packetCount)}，超过提示阈值 ${formatInteger(warnPackets)}。`);
+    }
+  }
+
+  if (!reasons.length) {
+    reasons.push('预览结果低于当前自动下载风险阈值。');
+  }
+
+  let recommendation = 'CONTINUE_DOWNLOAD';
+  if (level === 'high') recommendation = 'SUGGEST_NARROW_TIME_RANGE';
+  else if (level === 'unknown' && blockUnknown) recommendation = 'CONFIRM_DOWNLOAD';
+  else if (level === 'medium' && (blockMedium || confirmDownload)) recommendation = 'CONFIRM_DOWNLOAD';
+  else if (level === 'low' && confirmDownload) recommendation = 'CONFIRM_DOWNLOAD';
+
+  const message = buildPreviewRiskMessage(level, recommendation, overview, reasons);
+  return {
+    level,
+    recommendation,
+    message,
+    reasons,
+    thresholds: {
+      warnBytes,
+      blockBytes,
+      warnPackets,
+      blockPackets,
+      blockUnknown,
+      blockMedium,
+      confirmDownload,
+    },
+    suggestedActions: previewRiskSuggestedActions(recommendation, criteria),
+  };
+}
+
+function buildPreviewRiskMessage(level, recommendation, overview, reasons) {
+  const packetText = overview.packetCount != null ? `${formatInteger(overview.packetCount)} 个包` : '包数未知';
+  const sizeText = overview.estimatedBytes != null ? overview.estimatedSizeText || formatBytes(overview.estimatedBytes) : '大小未知';
+  if (recommendation === 'CONTINUE_DOWNLOAD') {
+    return `预览结果：${packetText}，预计 ${sizeText}，风险等级 ${level}，可继续下载。`;
+  }
+  if (recommendation === 'SUGGEST_NARROW_TIME_RANGE') {
+    return `预览结果：${packetText}，预计 ${sizeText}，风险等级 ${level}。${reasons[0]}建议先缩小时间范围。`;
+  }
+  return `预览结果：${packetText}，预计 ${sizeText}，风险等级 ${level}。下载前需要用户确认。`;
+}
+
+function previewRiskSuggestedActions(recommendation, criteria = {}) {
+  if (recommendation === 'CONTINUE_DOWNLOAD') return [];
+  const actions = ['确认继续下载'];
+  if (criteria.start && criteria.end) actions.push('缩小时间范围后重新预览');
+  actions.push('只查看预览概览，不下载');
+  return actions;
+}
+
+function extractNumericByCandidateKeys(payload, candidateKeys, options = {}) {
+  const matches = collectNumericMatches(payload, candidateKeys, options);
+  if (matches.length) {
+    matches.sort((a, b) => a.score - b.score);
+    return {
+      value: options.integer ? Math.floor(matches[0].value) : matches[0].value,
+      path: matches[0].path,
+    };
+  }
+
+  const rows = Array.isArray(options.rowFallback) ? options.rowFallback : [];
+  if (rows.length) {
+    let total = 0;
+    let found = false;
+    let path = null;
+    for (let index = 0; index < rows.length; index += 1) {
+      const rowMatches = collectNumericMatches(rows[index], candidateKeys, options);
+      if (!rowMatches.length) continue;
+      rowMatches.sort((a, b) => a.score - b.score);
+      total += rowMatches[0].value;
+      path = path || `rows[].${rowMatches[0].path}`;
+      found = true;
+    }
+    if (found) {
+      return {
+        value: options.integer ? Math.floor(total) : total,
+        path,
+      };
+    }
+  }
+
+  return { value: null, path: null };
+}
+
+function collectNumericMatches(value, candidateKeys, options = {}, pathParts = [], matches = []) {
+  if (value == null) return matches;
+  if (Array.isArray(value)) {
+    if (options.includeArrays) {
+      value.forEach((item, index) => collectNumericMatches(item, candidateKeys, options, pathParts.concat(`[${index}]`), matches));
+    }
+    return matches;
+  }
+  if (typeof value !== 'object') return matches;
+
+  const lowerCandidates = candidateKeys.map((key) => String(key).toLowerCase());
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const candidateIndex = lowerCandidates.findIndex((candidate) => candidate.toLowerCase().replace(/[^a-z0-9]/g, '') === normalizedKey);
+    const childPath = pathParts.concat(key);
+    if (candidateIndex !== -1) {
+      const numeric = options.bytes ? normalizeSizeBytes(child) : asFiniteNumber(child);
+      if (numeric != null) {
+        const genericPenalty = ['count', 'num', 'bytes', 'size'].includes(normalizedKey) ? 100 : 0;
+        matches.push({
+          value: numeric,
+          path: childPath.join('.'),
+          score: candidateIndex + childPath.length * 10 + genericPenalty,
+        });
+      }
+    }
+    collectNumericMatches(child, candidateKeys, options, childPath, matches);
+  }
+  return matches;
+}
+
+function normalizeSizeBytes(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const normalized = text.replace(/,/g, '');
+  const match = normalized.match(/^(-?\d+(?:\.\d+)?)\s*(b|bytes?|kb|kib|mb|mib|gb|gib|tb|tib)?$/i);
+  if (!match) return asFiniteNumber(normalized);
+  const number = Number(match[1]);
+  if (!Number.isFinite(number) || number < 0) return null;
+  const unit = String(match[2] || 'b').toLowerCase();
+  const multipliers = {
+    b: 1,
+    byte: 1,
+    bytes: 1,
+    kb: 1024,
+    kib: 1024,
+    mb: 1024 ** 2,
+    mib: 1024 ** 2,
+    gb: 1024 ** 3,
+    gib: 1024 ** 3,
+    tb: 1024 ** 4,
+    tib: 1024 ** 4,
+  };
+  return Math.floor(number * (multipliers[unit] || 1));
+}
+
+function previewRowsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  if (payload.data && typeof payload.data === 'object') return previewRowsFromPayload(payload.data);
+  return [];
+}
+
+function summarizePreviewRows(rows = [], labelKeys = []) {
+  const summary = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const label = firstStringByKeys(row, labelKeys);
+    if (!label) continue;
+    const bytes = extractNumericByCandidateKeys(row, PACKET_SIZE_KEYS, { bytes: true }).value;
+    const packets = extractNumericByCandidateKeys(row, PACKET_COUNT_KEYS, { integer: true }).value;
+    summary.push({ label, bytes, packets });
+    if (summary.length >= 10) break;
+  }
+  return summary;
+}
+
+function firstStringByKeys(row, keys) {
+  for (const key of keys) {
+    if (row[key] != null && String(row[key]).trim()) return String(row[key]).trim();
+  }
+  return '';
+}
+
+function extractPreviewCollection(payload, keys = []) {
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key].slice(0, 20);
+  }
+  if (payload.data && typeof payload.data === 'object') return extractPreviewCollection(payload.data, keys);
+  return [];
+}
+
+function formatBytes(bytes) {
+  const number = asFiniteNumber(bytes);
+  if (number == null) return null;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = number;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 100 || unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function formatInteger(value) {
+  const number = asFiniteNumber(value);
+  return number == null ? '' : Math.floor(number).toLocaleString('en-US');
+}
+
+function asFiniteNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim()) {
+    const number = Number(value.replace(/,/g, ''));
+    return Number.isFinite(number) ? number : null;
+  }
+  return null;
+}
+
+function applyPreviewRiskGate(result, task) {
+  if (!result.preview || !result.preview.risk) return false;
+  if (isPreviewRiskAccepted(task)) return false;
+  const recommendation = result.preview.risk.recommendation;
+  if (!recommendation || recommendation === 'CONTINUE_DOWNLOAD') return false;
+  const level = result.preview.risk.level || 'unknown';
+  const reason = `PACKET_PREVIEW_RISK_${String(level).toUpperCase()}`;
+  result.ok = false;
+  result.error = {
+    code: recommendation === 'SUGGEST_NARROW_TIME_RANGE'
+      ? 'PACKET_PREVIEW_RISK_TOO_HIGH'
+      : 'PACKET_PREVIEW_REQUIRES_CONFIRMATION',
+    message: result.preview.risk.message || '数据包预览结果需要用户确认后才能下载。',
+  };
+  result.decision = {
+    next_action: recommendation,
+    reason,
+    message: result.error.message,
+    suggestedActions: result.preview.risk.suggestedActions || [],
+  };
+  return true;
+}
+
+function isPreviewRiskAccepted(task) {
+  return Boolean(task && (task.forceDownload || task.previewRiskAccepted));
+}
+
 async function downloadPacket(task) {
   const downloadUrl = task.urls.downloadRaw;
   await cleanupExpiredArtifacts(task.filePolicy.downloadDir, task.filePolicy.retentionHours);
+  const storage = await preflightStorageForDownload(task, task.preview);
+  if (!storage.decision.allowed) {
+    return {
+      ok: false,
+      error: {
+        code: 'PACKET_STORAGE_NOT_ENOUGH_SPACE',
+        message: storage.decision.message,
+      },
+      urlMasked: task.urls.download,
+      storage,
+    };
+  }
   const artifactDir = await createArtifactDir(task.filePolicy.downloadDir);
   const maxBytes = task.filePolicy.maxBytes;
   const metaPath = path.join(artifactDir, 'download.meta.json');
@@ -462,6 +1185,7 @@ async function downloadPacket(task) {
       downloadedAt: new Date().toISOString(),
       retentionHours: task.filePolicy.retentionHours,
       expiresAt: retentionExpiry(task.filePolicy.retentionHours),
+      storage,
     };
     await fsp.writeFile(metaPath, JSON.stringify(meta, null, 2));
     return { ok: true, ...meta, artifactDir };
@@ -474,6 +1198,7 @@ async function downloadPacket(task) {
       },
       urlMasked: task.urls.download,
       artifactDir,
+      storage,
     };
   }
 }
@@ -655,7 +1380,7 @@ function hasAuthQueryParams(searchParams) {
 }
 
 function isSensitiveParam(key) {
-  return /password|passwd|pwd|token|cookie|session|credential|secret|key/i.test(key);
+  return /^(password|passwd|pwd|token|cookie|session|sessionid|credential|secret|apikey|api_key|access_token|refresh_token)$/i.test(String(key || ''));
 }
 
 function isUsernameParam(key) {
@@ -766,6 +1491,285 @@ async function cleanupExpiredArtifacts(downloadDir, retentionHours) {
   }
 }
 
+async function preflightStorageForDownload(task, preview = null) {
+  const downloadDir = task.filePolicy.downloadDir || defaultDownloadDir();
+  await fsp.mkdir(downloadDir, { recursive: true });
+  const policy = normalizeStoragePolicy(task.filePolicy.storagePolicy);
+  const before = await getDiskUsage(downloadDir);
+  const cleanup = {
+    triggered: false,
+    deletedFiles: 0,
+    deletedDirs: 0,
+    deletedBytes: 0,
+    errors: [],
+  };
+  let afterCleanup = before;
+
+  if (before && before.usedPercent >= policy.cleanPercent) {
+    const cleanupResult = await cleanupArtifactsByWatermark(downloadDir, {
+      targetPercent: policy.targetPercent,
+      dryRun: policy.dryRun,
+      getDiskUsageFn: getDiskUsage,
+    });
+    Object.assign(cleanup, cleanupResult, { triggered: true });
+    afterCleanup = await getDiskUsage(downloadDir);
+  }
+
+  const estimatedDownloadBytes = getEstimatedDownloadBytes(preview, task.filePolicy);
+  const requiredFreeBytes = Math.ceil(estimatedDownloadBytes * policy.reserveMultiplier + policy.minFreeBytes);
+  const decision = buildStorageDecision(afterCleanup, {
+    estimatedDownloadBytes,
+    requiredFreeBytes,
+    policy,
+  });
+
+  return {
+    downloadDir: path.resolve(downloadDir),
+    before,
+    afterCleanup,
+    cleanup,
+    estimatedDownloadBytes,
+    requiredFreeBytes,
+    decision,
+  };
+}
+
+function buildStorageDecision(usage, { estimatedDownloadBytes, requiredFreeBytes, policy }) {
+  if (!usage) {
+    return {
+      allowed: true,
+      reason: 'DISK_USAGE_UNKNOWN',
+      message: '未能获取下载目录磁盘水位，按保守下载限制继续执行。',
+    };
+  }
+  if (usage.usedPercent >= policy.blockPercent) {
+    return {
+      allowed: false,
+      reason: 'DISK_USAGE_BLOCKED',
+      message: `当前磁盘使用率 ${usage.usedPercent.toFixed(1)}%，已达到阻断阈值 ${policy.blockPercent}%。`,
+    };
+  }
+  if (usage.freeBytes < requiredFreeBytes) {
+    return {
+      allowed: false,
+      reason: 'FREE_SPACE_NOT_ENOUGH',
+      message: `当前可用空间 ${formatBytes(usage.freeBytes)}，低于安全预留 ${formatBytes(requiredFreeBytes)}。`,
+    };
+  }
+  const reason = usage.usedPercent >= policy.warnPercent ? 'DISK_USAGE_WARN' : 'ENOUGH_SPACE';
+  return {
+    allowed: true,
+    reason,
+    message: reason === 'DISK_USAGE_WARN'
+      ? `当前磁盘使用率 ${usage.usedPercent.toFixed(1)}%，已超过提示阈值 ${policy.warnPercent}%，但仍允许下载。`
+      : '下载目录磁盘空间满足要求。',
+    estimatedDownloadBytes,
+  };
+}
+
+function getEstimatedDownloadBytes(preview, filePolicy = {}) {
+  const estimated = preview && preview.overview && asFiniteNumber(preview.overview.estimatedBytes);
+  if (estimated != null) return estimated;
+  const maxBytes = asFiniteNumber(filePolicy.maxBytes);
+  return maxBytes != null ? maxBytes : envNumber('PACKET_MAX_BYTES', 524288000);
+}
+
+function normalizeStoragePolicy(policy = {}) {
+  return {
+    warnPercent: Number(policy.warnPercent ?? envNumber('PACKET_STORAGE_WARN_PERCENT', 75)),
+    cleanPercent: Number(policy.cleanPercent ?? envNumber('PACKET_STORAGE_CLEAN_PERCENT', 80)),
+    targetPercent: Number(policy.targetPercent ?? envNumber('PACKET_STORAGE_TARGET_PERCENT', 70)),
+    blockPercent: Number(policy.blockPercent ?? envNumber('PACKET_STORAGE_BLOCK_PERCENT', 90)),
+    minFreeBytes: Number(policy.minFreeBytes ?? envNumber('PACKET_STORAGE_MIN_FREE_BYTES', 2147483648)),
+    reserveMultiplier: Number(policy.reserveMultiplier ?? envNumber('PACKET_STORAGE_RESERVE_MULTIPLIER', 1.5)),
+    dryRun: policy.dryRun != null ? Boolean(policy.dryRun) : envBool('PACKET_STORAGE_CLEANUP_DRY_RUN', false),
+  };
+}
+
+async function getDiskUsage(targetDir) {
+  const resolvedDir = path.resolve(targetDir || defaultDownloadDir());
+  if (process.platform === 'win32') return getDiskUsageWindows(resolvedDir);
+  const result = await runCommand('df', ['-Pk', resolvedDir], { timeoutMs: 10000 });
+  if (!result.ok) return null;
+  const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return null;
+  const parts = lines[lines.length - 1].trim().split(/\s+/);
+  if (parts.length < 6) return null;
+  const totalBytes = Number(parts[1]) * 1024;
+  const usedBytes = Number(parts[2]) * 1024;
+  const freeBytes = Number(parts[3]) * 1024;
+  const usedPercent = Number(String(parts[4]).replace('%', ''));
+  if (![totalBytes, usedBytes, freeBytes, usedPercent].every(Number.isFinite)) return null;
+  return {
+    path: resolvedDir,
+    totalBytes,
+    usedBytes,
+    freeBytes,
+    usedPercent,
+    source: 'df',
+  };
+}
+
+function getDiskUsageWindows(targetDir) {
+  try {
+    const root = path.parse(path.resolve(targetDir)).root;
+    const output = require('child_process').execFileSync('wmic', ['logicaldisk', 'get', 'size,freespace,caption'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const drive = root.replace(/\\$/, '').toUpperCase();
+    const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const line of lines.slice(1)) {
+      const parts = line.split(/\s+/);
+      if (parts[0].toUpperCase() !== drive) continue;
+      const freeBytes = Number(parts[1]);
+      const totalBytes = Number(parts[2]);
+      if (!Number.isFinite(freeBytes) || !Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+      const usedBytes = totalBytes - freeBytes;
+      return {
+        path: path.resolve(targetDir),
+        totalBytes,
+        usedBytes,
+        freeBytes,
+        usedPercent: (usedBytes / totalBytes) * 100,
+        source: 'wmic',
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function cleanupArtifactsByWatermark(downloadDir, options = {}) {
+  const baseDir = path.resolve(downloadDir || defaultDownloadDir());
+  const targetPercent = Number(options.targetPercent ?? envNumber('PACKET_STORAGE_TARGET_PERCENT', 70));
+  const dryRun = Boolean(options.dryRun);
+  const getDiskUsageFn = options.getDiskUsageFn || getDiskUsage;
+  const result = {
+    triggered: true,
+    deletedFiles: 0,
+    deletedDirs: 0,
+    deletedBytes: 0,
+    errors: [],
+  };
+  const artifacts = await listManagedPacketArtifacts(baseDir);
+
+  for (const artifact of artifacts) {
+    const usage = await getDiskUsageFn(baseDir);
+    if (usage && usage.usedPercent <= targetPercent) break;
+    const payloadResult = await deletePacketPayloadFiles(artifact.dir, { dryRun });
+    result.deletedFiles += payloadResult.deletedFiles;
+    result.deletedBytes += payloadResult.deletedBytes;
+    result.errors.push(...payloadResult.errors);
+  }
+
+  for (const artifact of artifacts) {
+    const usage = await getDiskUsageFn(baseDir);
+    if (usage && usage.usedPercent <= targetPercent) break;
+    const dirSize = await safePathSize(artifact.dir);
+    try {
+      if (!dryRun) await fsp.rm(artifact.dir, { recursive: true, force: true });
+      result.deletedDirs += 1;
+      result.deletedBytes += dirSize;
+    } catch (error) {
+      result.errors.push({ path: artifact.dir, message: error.message });
+    }
+  }
+
+  return result;
+}
+
+async function listManagedPacketArtifacts(downloadDir) {
+  const baseDir = path.resolve(downloadDir || defaultDownloadDir());
+  if (!fs.existsSync(baseDir)) return [];
+  const entries = await fsp.readdir(baseDir, { withFileTypes: true });
+  const artifacts = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(baseDir, entry.name);
+    const marker = path.join(dir, '.packet-artifact');
+    if (!fs.existsSync(marker)) continue;
+    const stat = await fsp.stat(dir);
+    const metadata = await readArtifactMetadata(dir);
+    artifacts.push({
+      dir,
+      marker,
+      createdAtMs: metadata.createdAtMs || stat.mtimeMs,
+      downloadedAtMs: metadata.downloadedAtMs,
+      mtimeMs: stat.mtimeMs,
+    });
+  }
+  return artifacts.sort((a, b) => (a.downloadedAtMs || a.createdAtMs || a.mtimeMs) - (b.downloadedAtMs || b.createdAtMs || b.mtimeMs));
+}
+
+async function readArtifactMetadata(artifactDir) {
+  const metadata = {};
+  try {
+    const marker = JSON.parse(await fsp.readFile(path.join(artifactDir, '.packet-artifact'), 'utf8'));
+    const createdAt = Date.parse(marker.createdAt);
+    if (Number.isFinite(createdAt)) metadata.createdAtMs = createdAt;
+  } catch {
+    // Ignore malformed marker metadata; mtime fallback keeps cleanup deterministic.
+  }
+  try {
+    const downloadMeta = JSON.parse(await fsp.readFile(path.join(artifactDir, 'download.meta.json'), 'utf8'));
+    const downloadedAt = Date.parse(downloadMeta.downloadedAt);
+    if (Number.isFinite(downloadedAt)) metadata.downloadedAtMs = downloadedAt;
+  } catch {
+    // download.meta.json may not exist for failed or partial tasks.
+  }
+  return metadata;
+}
+
+async function deletePacketPayloadFiles(artifactDir, options = {}) {
+  const dryRun = Boolean(options.dryRun);
+  const result = {
+    deletedFiles: 0,
+    deletedBytes: 0,
+    errors: [],
+  };
+  if (!fs.existsSync(path.join(artifactDir, '.packet-artifact'))) return result;
+  const files = await listFilesRecursive(artifactDir);
+  for (const filePath of files) {
+    if (!PACKET_PAYLOAD_EXTENSIONS.has(path.extname(filePath).toLowerCase())) continue;
+    try {
+      const stat = await fsp.stat(filePath);
+      if (!dryRun) await fsp.rm(filePath, { force: true });
+      result.deletedFiles += 1;
+      result.deletedBytes += stat.size;
+    } catch (error) {
+      result.errors.push({ path: filePath, message: error.message });
+    }
+  }
+  return result;
+}
+
+async function listFilesRecursive(dir) {
+  const output = [];
+  if (!fs.existsSync(dir)) return output;
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) output.push(...await listFilesRecursive(fullPath));
+    else if (entry.isFile()) output.push(fullPath);
+  }
+  return output;
+}
+
+async function safePathSize(targetPath) {
+  if (!fs.existsSync(targetPath)) return 0;
+  const stat = await fsp.stat(targetPath);
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+  let total = 0;
+  const entries = await fsp.readdir(targetPath, { withFileTypes: true });
+  for (const entry of entries) {
+    total += await safePathSize(path.join(targetPath, entry.name));
+  }
+  return total;
+}
+
 async function writeArtifactJson(artifactDir, fileName, value) {
   try {
     await fsp.writeFile(path.join(artifactDir, fileName), JSON.stringify(value, null, 2));
@@ -814,16 +1818,23 @@ function buildSummary(result) {
   const highlights = [];
   if (result.urls && result.urls.preview) highlights.push(`预览 URL 已生成：${result.urls.preview}`);
   if (result.urls && result.urls.download) highlights.push(`下载 URL 已生成：${result.urls.download}`);
+  if (result.businessResolution && result.businessResolution.ok) {
+    highlights.push(`业务数据包实例已解析：pageFamilyId=${result.businessResolution.pageFamilyId}，pageFamilyDetailId=${result.businessResolution.pageFamilyDetailId}`);
+  }
   if (result.explanation) highlights.push(result.explanation.meaning);
-  if (result.preview) highlights.push(result.preview.empty ? '预览结果为空。' : '预览接口返回了数据。');
+  if (result.preview) highlights.push(formatPreviewSummary(result.preview));
   if (result.download && result.download.ok) highlights.push(`下载完成：${result.download.fileName}，${result.download.bytes} bytes。`);
+  if (result.download && result.download.storage && result.download.storage.decision && !result.download.storage.decision.allowed) {
+    highlights.push(`存储预检未通过：${result.download.storage.decision.message}`);
+  }
   if (result.analysis && result.analysis.ok) {
     const packetCount = result.analysis.capinfos && (result.analysis.capinfos.number_of_packets || result.analysis.capinfos.packet_count);
     highlights.push(packetCount ? `tshark/capinfos 分析完成，包数：${packetCount}。` : 'tshark/capinfos 分析完成。');
   }
   if (result.error) highlights.push(result.error.message);
+  const waitingDecision = result.decision && ['CONFIRM_DOWNLOAD', 'SUGGEST_NARROW_TIME_RANGE'].includes(result.decision.next_action);
   return {
-    title: result.ok ? '数据包任务完成' : '数据包任务失败',
+    title: result.ok ? '数据包任务完成' : waitingDecision ? '数据包任务等待确认' : '数据包任务失败',
     highlights,
   };
 }
@@ -835,6 +1846,7 @@ function buildNarrationInput(result) {
     mode: result.mode,
     ok: result.ok,
     criteria: result.criteria,
+    businessResolution: result.businessResolution ? summarizeBusinessResolution(result.businessResolution) : null,
     urls: result.urls,
     preview: summarizePreview(result.preview),
     download: result.download ? {
@@ -844,6 +1856,7 @@ function buildNarrationInput(result) {
       bytes: result.download.bytes,
       contentType: result.download.contentType,
       urlMasked: result.download.urlMasked,
+      storage: result.download.storage,
     } : null,
     analysis: result.analysis ? summarizeAnalysis(result.analysis) : null,
     error: result.error,
@@ -858,6 +1871,32 @@ function buildNarrationInput(result) {
   };
 }
 
+function summarizeBusinessResolution(businessResolution) {
+  if (!businessResolution) return null;
+  return {
+    ok: businessResolution.ok,
+    businessName: businessResolution.businessName,
+    pageFamilyId: businessResolution.pageFamilyId,
+    pageFamilyDetailId: businessResolution.pageFamilyDetailId,
+    instanceId: businessResolution.instanceId,
+    steps: Array.isArray(businessResolution.steps)
+      ? businessResolution.steps.map((step) => ({
+        name: step.name,
+        ok: step.ok,
+        rowCount: step.rowCount,
+        url: step.url,
+        selectedBusiness: step.selectedBusiness,
+        selectedPageFamilyId: step.selectedPageFamilyId,
+        selectedPageFamilyLabel: step.selectedPageFamilyLabel,
+        selectedPageFamilyDetailId: step.selectedPageFamilyDetailId,
+        selectedClientIp: step.selectedClientIp,
+        selectedHttpStatus: step.selectedHttpStatus,
+      }))
+      : [],
+    error: businessResolution.error,
+  };
+}
+
 function summarizePreview(preview) {
   if (!preview) return null;
   return {
@@ -866,9 +1905,24 @@ function summarizePreview(preview) {
     statusCode: preview.statusCode,
     contentType: preview.contentType,
     bytes: preview.bytes,
+    responseBytes: preview.responseBytes,
+    overview: preview.overview,
+    risk: preview.risk,
     urlMasked: preview.urlMasked,
     error: preview.error,
   };
+}
+
+function formatPreviewSummary(preview) {
+  if (preview.empty) return '预览结果为空。';
+  const overview = preview.overview || {};
+  const risk = preview.risk || {};
+  const packetText = overview.packetCount != null ? `${formatInteger(overview.packetCount)} 个包` : '包数未知';
+  const sizeText = overview.estimatedBytes != null ? overview.estimatedSizeText || formatBytes(overview.estimatedBytes) : '大小未知';
+  if (risk.level) {
+    return `预览结果：${packetText}，预计 ${sizeText}，风险等级 ${risk.level}。`;
+  }
+  return '预览接口返回了数据。';
 }
 
 function summarizeAnalysis(analysis) {
@@ -924,11 +1978,12 @@ function normalizeFilePolicy(policy = {}) {
   return {
     downloadDir: policy.downloadDir || process.env.PACKET_DOWNLOAD_DIR || defaultDownloadDir(),
     maxBytes: Number(policy.maxBytes || process.env.PACKET_MAX_BYTES || 524288000),
-    keepFiles: policy.keepFiles != null ? Boolean(policy.keepFiles) : envBool('PACKET_KEEP_FILES', false),
+    keepFiles: policy.keepFiles != null ? Boolean(policy.keepFiles) : envBool('PACKET_KEEP_FILES', true),
     retentionHours: Number(policy.retentionHours || process.env.PACKET_RETENTION_HOURS || 24),
     requirePreviewBeforeDownload: policy.requirePreviewBeforeDownload != null
       ? Boolean(policy.requirePreviewBeforeDownload)
       : envBool('PACKET_REQUIRE_PREVIEW_BEFORE_DOWNLOAD', true),
+    storagePolicy: normalizeStoragePolicy(policy.storagePolicy || {}),
   };
 }
 
@@ -1023,6 +2078,13 @@ function envBool(name, defaultValue) {
   return !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
 }
 
+function envNumber(name, defaultValue) {
+  const value = process.env[name];
+  if (value == null || value === '') return defaultValue;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : defaultValue;
+}
+
 function failResolve(code, message) {
   return {
     ok: false,
@@ -1057,3 +2119,37 @@ function loadDotEnv(filePath) {
     if (key && process.env[key] == null) process.env[key] = value;
   }
 }
+
+module.exports = {
+  resolveQuery,
+  normalizeCriteria,
+  validateCriteria,
+  buildUrls,
+  buildBusinessTopValuesUrl,
+  buildPageFamilyTopValuesUrl,
+  buildPageViewsUrl,
+  shouldResolveBusinessPacketInstance,
+  extractBusinessName,
+  extractPageFamilyId,
+  extractPageFamilyLabel,
+  extractPageFamilyDetailId,
+  extractDetailIdFromText,
+  normalizeInstanceId,
+  normalizeRowsFromPayload,
+  normalizePreviewOverview,
+  assessPacketDownloadRisk,
+  extractNumericByCandidateKeys,
+  normalizeSizeBytes,
+  formatBytes,
+  normalizeStoragePolicy,
+  preflightStorageForDownload,
+  buildStorageDecision,
+  cleanupArtifactsByWatermark,
+  listManagedPacketArtifacts,
+  deletePacketPayloadFiles,
+  safePathSize,
+  selectBusinessRow,
+  selectPageFamilyRow,
+  selectPageViewRow,
+  normalizeMetricList,
+};

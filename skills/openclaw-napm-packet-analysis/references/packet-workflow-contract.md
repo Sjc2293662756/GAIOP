@@ -62,7 +62,7 @@ Required criteria for live preview/download:
 
 - `start`
 - `end`
-- One of `ips`, `ipRanges`, `id`, `top`, or `instanceId`
+- One of `ips`, `ipRanges`, `id`, `top`, `instanceId`, `businessName`, `pageFamilyId`, or `pageFamilyDetailId`
 
 Rules:
 
@@ -71,6 +71,13 @@ Rules:
 - `end` must be greater than `start`.
 - `iprangs` is a page spelling and must be normalized to API `ipRanges`.
 - Never put credentials in user-provided `criteria`; credentials come from runtime env or `.env`.
+
+Business packet criteria:
+
+- `businessName`: WebApplication/business display name. The skill will query business Top values, then page family Top values, then pageViews to resolve a concrete `pageFamilyDetailId`.
+- `pageFamilyId`: skip the business/page-family selection and query pageViews directly.
+- `pageFamilyDetailId` / `resultName`: skip multi-step resolution and build `DownServlet` directly with `instanceId=PATH1/{pageFamilyDetailId}`.
+- Optional selectors: `page`, `pageUrl`, `clientIp`, `serverIp`, `httpStatus`, `pageViewIndex`.
 
 ## 3. Mode Selection
 
@@ -123,16 +130,49 @@ Standard live flow:
 ```text
 packetQuery
   -> packetsPreview
+  -> normalize preview overview
+  -> assess preview risk
+  -> if risk requires confirmation: stop and ask user
   -> if preview has data: packetsDown
   -> if analysis requested: tshark
   -> JSON result
   -> OpenClaw Chinese answer
 ```
 
+Business packet flow:
+
+```text
+packetQuery(criteria.businessName)
+  -> NetInside topValues(WebApplication)
+  -> NetInside topValues(WebApplication + PageFamilies + PageFamily)
+  -> parse pageFamilyId from selected row groupPath
+  -> NetInside pageViews(csv=true, pageFamilyId)
+  -> read pageFamilyDetailId from selected page visit row
+  -> DownServlet(moduleKey=Ipv, groupId=45, rtClickId=5, instanceId=PATH1/{pageFamilyDetailId})
+  -> if analysis requested: tshark
+  -> JSON result
+  -> OpenClaw Chinese answer
+```
+
+Rules for business packet flow:
+
+- Do not route business packet tasks to `openclaw-napm-query` just because the resolver uses `topValues` internally. Those `topValues` calls are implementation steps inside this packet skill.
+- `DownServlet` has no `packetsPreview` equivalent. Do not call `packetsPreview` for the resolved `DownServlet` URL.
+- If no row can be selected at any step, return `CLARIFICATION_REQUIRED` with the executed `businessResolution.steps`; do not invent an `instanceId`.
+- The default page-family ranking metric is `PGHTTP500`, matching the v3 packet-download document.
+- The default business ranking metric is `PGNPGE`, matching the v3 packet-download document.
+
 Rules:
 
 - Real `packetsDown` download must pass preview by default.
 - Empty preview means no download.
+- Non-empty preview must expose `preview.overview` and `preview.risk` in the JSON result.
+- Do not summarize preview as only "has data"; include estimated size, packet count, and risk level when available.
+- `preview.responseBytes` is the preview API response size, not the estimated pcap size.
+- `preview.overview.estimatedBytes` is the estimated pcap/download size when the API returns it.
+- `preview.risk.recommendation=CONFIRM_DOWNLOAD` stops automatic download until the user confirms.
+- `preview.risk.recommendation=SUGGEST_NARROW_TIME_RANGE` stops automatic download and recommends a smaller time window.
+- To continue after user confirmation, reuse the same criteria and set `previewRiskAccepted=true`.
 - `packetsDown` returns a file stream, not JSON.
 - Do not parse downloaded packet stream as JSON.
 - `tshark` is the primary analysis tool.
@@ -184,6 +224,8 @@ Important fields:
 - `criteria`
 - `urls`
 - `preview`
+- `preview.overview`
+- `preview.risk`
 - `download`
 - `analysis`
 - `decision`
@@ -194,9 +236,10 @@ OpenClaw final answer should:
 
 - Be Chinese.
 - State the time range and target scope.
-- State whether preview found data.
+- State whether preview found data, and include `packetCount`, `estimatedSizeText`, and `risk.level` when available.
 - If downloaded, state artifact path or download reference when safe.
 - If analyzed, summarize protocol distribution, endpoints, conversations, DNS/HTTP/TLS findings when present.
+- If preview risk asks for confirmation or narrowing the time range, do not say the packet was downloaded or analyzed.
 - Never expose raw packet payloads or plaintext credentials.
 - Do not claim “permission denied” when `preview.statusCode=200`.
 
@@ -206,10 +249,17 @@ Common decisions:
 
 - `CLARIFICATION_REQUIRED`: missing IP/range/event/time or unsupported mode.
 - `NO_DOWNLOAD`: preview empty or preview failed.
+- `CONFIRM_DOWNLOAD`: preview found data but download requires user confirmation.
+- `SUGGEST_NARROW_TIME_RANGE`: preview found data but estimated size/packet count is too risky for automatic download.
 - `PACKET_TIME_RANGE_TOO_LARGE`: requested range exceeds configured max.
 - `PACKET_PREVIEW_FAILED`: preview HTTP/API failed.
 - `PACKET_DOWNLOAD_FAILED`: file stream download failed.
 - `PACKET_TSHARK_FAILED`: tshark analysis failed.
+- `PACKET_STORAGE_NOT_ENOUGH_SPACE`: download was blocked by storage governance before file download.
+- `BUSINESS_PACKET_BUSINESS_QUERY_FAILED`: business Top query failed.
+- `BUSINESS_PACKET_PAGE_FAMILY_QUERY_FAILED`: page-family Top query failed.
+- `BUSINESS_PACKET_PAGE_VIEWS_QUERY_FAILED`: pageViews query failed.
+- `BUSINESS_PACKET_PAGE_VIEW_NOT_FOUND`: pageViews returned no row with `pageFamilyDetailId`.
 
 Distinguish:
 
@@ -217,8 +267,36 @@ Distinguish:
 - Permission/auth failure: preview status is 401/403.
 - Tooling failure: `tshark` missing or exits non-zero.
 - Time-range violation: validation fails before network call.
+- Storage pressure: disk usage/free-space preflight blocks download before `packetsDown`.
 
 Do not fall back to `openclaw-napm-query` when packet download/analysis fails. Report the packet failure and next action.
+
+## 8.1 Storage Governance
+
+Packet artifacts are stored under `PACKET_DOWNLOAD_DIR`, defaulting to:
+
+```text
+$HOME/.openclaw/artifacts/openclaw-napm-packet-analysis
+```
+
+Rules:
+
+- Downloaded packet files are kept by default after analysis via `PACKET_KEEP_FILES=true`.
+- Old packet artifacts are still governed by `PACKET_RETENTION_HOURS`.
+- Before download, the skill checks disk usage for the artifact partition.
+- If disk usage reaches `PACKET_STORAGE_CLEAN_PERCENT` (default 80), the skill cleans old managed artifacts by download time.
+- Cleanup only touches directories with `.packet-artifact`.
+- Cleanup first deletes packet payload files (`.pcap`, `.cap`, `.pcapng`, `.zip`) and keeps metadata where possible.
+- If disk usage reaches `PACKET_STORAGE_BLOCK_PERCENT` (default 90), or free space is below the required reserve, the skill blocks download.
+
+Storage-related result fields:
+
+```text
+download.storage.before
+download.storage.afterCleanup
+download.storage.cleanup
+download.storage.decision
+```
 
 ## 9. Follow-up Contract
 
