@@ -77,6 +77,7 @@ async function executeAlertQuery(payload = {}, options = {}) {
     ok: true,
     mode: query.mode,
     service: serviceForMode(query.mode),
+    criteria: query.criteria,
     timeRange: buildTimeRange(query.criteria),
     summary: null,
     events: [],
@@ -96,9 +97,8 @@ async function executeAlertQuery(payload = {}, options = {}) {
 
   if (query.mode === 'summary' || query.mode === 'analysis') {
     const rawSummary = await api.getSummary(query.criteria);
-    const events = sortAlertEvents(filterEvents(normalizeSummary(rawSummary, query.options), query.criteria))
-      .slice(0, query.options.maxEvents);
-    result.events = events;
+    const events = sortAlertEvents(filterEvents(normalizeSummary(rawSummary, query.options), query.criteria));
+    result.events = events.slice(0, query.options.maxEvents);
     result.summary = analyzeEvents(events, query.options);
     if (query.options.includeRaw) result.rawSummary = rawSummary;
   }

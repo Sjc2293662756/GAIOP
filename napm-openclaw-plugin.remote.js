@@ -42,6 +42,15 @@ const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot']);
+const ALERT_CATEGORY_LABELS = {
+  networkAlerts: '网络性能告警',
+  networkIssueAlerts: '网络异常告警',
+  appAlerts: '应用性能告警',
+  busAlerts: '业务故障告警',
+  userAlerts: '用户体验告警',
+  securityAlerts: '安全事件告警',
+  AIAlerts: '智能分析告警'
+};
 const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
   'napm-mainflow-query'
@@ -2887,19 +2896,28 @@ function buildAlertQueryReply(result = {}) {
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
   const bySeverity = result.summary?.bySeverity || {};
+  const shouldGroupByCategory = shouldRenderAlertCategorySections(result);
   if (result.summary?.total != null) {
-    lines.push(`告警总数：${result.summary.total} 条`);
-    lines.push('');
-    lines.push(`- ${formatSeverityBadge(4)} 紧急：${bySeverity.critical || 0} 条`);
-    lines.push(`- ${formatSeverityBadge(3)} 重大：${bySeverity.major || 0} 条`);
-    lines.push(`- ${formatSeverityBadge(2)} 轻微：${bySeverity.minor || 0} 条`);
-    lines.push('');
+    if (shouldGroupByCategory) {
+      if (Number(result.summary.total || 0) > 0) {
+        lines.push(...buildAlertCategorySections(result.summary.byCategoryDetail, events));
+      } else {
+        lines.push('本时间范围内未查询到告警事件。');
+      }
+    } else {
+      lines.push(`告警总数：${result.summary.total} 条`);
+      lines.push('');
+      lines.push(`- ${formatSeverityBadge(4)} 紧急：${bySeverity.critical || 0} 条`);
+      lines.push(`- ${formatSeverityBadge(3)} 重大：${bySeverity.major || 0} 条`);
+      lines.push(`- ${formatSeverityBadge(2)} 轻微：${bySeverity.minor || 0} 条`);
+      lines.push('');
+    }
   } else if (Array.isArray(result.timeline) && result.timeline.length > 0) {
     lines.push(`时间线桶数量：${result.timeline.length}`);
   }
 
   const displayEvents = events.slice(0, 5);
-  if (displayEvents.length > 0) {
+  if (!shouldGroupByCategory && displayEvents.length > 0) {
     lines.push(`前 ${displayEvents.length} 条告警摘要：`);
     lines.push('');
     lines.push('| 级别 | 类型 | 对象 | 描述 |');
@@ -2918,7 +2936,7 @@ function buildAlertQueryReply(result = {}) {
       lines.push('');
       lines.push(`初步判断：${judgement}`);
     }
-  } else if (result.summary?.total === 0) {
+  } else if (!shouldGroupByCategory && result.summary?.total === 0) {
     lines.push('本时间范围内未查询到告警事件。');
   }
 
@@ -2936,6 +2954,82 @@ function buildAlertQueryReply(result = {}) {
     return text;
   }
   return `${text}\n\nDebug API:\n${requestUrl}`;
+}
+
+function shouldRenderAlertCategorySections(result = {}) {
+  if (!result?.ok || result?.mode !== 'summary') {
+    return false;
+  }
+  const categories = result.criteria?.categories;
+  return !Array.isArray(categories) || categories.length === 0;
+}
+
+function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
+  const details = Array.isArray(categoryDetails) && categoryDetails.length > 0
+    ? categoryDetails
+    : buildAlertCategoryDetailsFromEvents(fallbackEvents);
+  const lines = [];
+
+  for (const detail of details.filter((item) => Number(item?.total || 0) > 0)) {
+    const bySeverity = detail.bySeverity || {};
+    lines.push(`${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)}：`);
+    lines.push(`共 ${detail.total || 0} 个告警：`);
+    lines.push(`紧急告警 ${bySeverity.critical || 0} 个`);
+    lines.push(`重大告警 ${bySeverity.major || 0} 个`);
+    lines.push(`轻微告警 ${bySeverity.minor || 0} 个`);
+    if (Number(bySeverity.unknown || 0) > 0) {
+      lines.push(`未知级别告警 ${bySeverity.unknown || 0} 个`);
+    }
+    lines.push('告警概览：');
+
+    const overviewEvents = Array.isArray(detail.overviewEvents) ? detail.overviewEvents.slice(0, 3) : [];
+    if (overviewEvents.length > 0) {
+      lines.push('| 级别 | 对象 | 描述 |');
+      lines.push('| --- | --- | --- |');
+      for (const event of overviewEvents) {
+        const cells = [
+          escapeMarkdownTableCell(`${formatSeverityBadge(event.severity)} ${event.severityLabel || event.severity || '-'}`),
+          escapeMarkdownTableCell(event.group || '-'),
+          escapeMarkdownTableCell(event.name || '-')
+        ];
+        lines.push(`| ${cells.join(' | ')} |`);
+      }
+    } else {
+      lines.push('暂无可展示明细。');
+    }
+    lines.push('');
+  }
+
+  return lines;
+}
+
+function buildAlertCategoryDetailsFromEvents(events = []) {
+  const map = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    const category = event.category || event.categoryLabel || 'unknown';
+    if (!map.has(category)) {
+      map.set(category, {
+        category,
+        categoryLabel: event.categoryLabel || ALERT_CATEGORY_LABELS[category] || category,
+        total: 0,
+        bySeverity: { critical: 0, major: 0, minor: 0, unknown: 0 },
+        overviewEvents: []
+      });
+    }
+    const detail = map.get(category);
+    detail.total += 1;
+    if (Number(event.severity) === 4) detail.bySeverity.critical += 1;
+    else if (Number(event.severity) === 3) detail.bySeverity.major += 1;
+    else if (Number(event.severity) === 2) detail.bySeverity.minor += 1;
+    else detail.bySeverity.unknown += 1;
+    if (detail.overviewEvents.length < 3) detail.overviewEvents.push(event);
+  }
+  return Array.from(map.values());
+}
+
+function formatAlertCategorySectionTitle(label = '') {
+  const text = String(label || '').trim();
+  return ALERT_CATEGORY_LABELS[text] || text || '未知告警';
 }
 
 function formatSeverityBadge(severity) {
