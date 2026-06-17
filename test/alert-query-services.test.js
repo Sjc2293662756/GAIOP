@@ -142,6 +142,45 @@ describe('openclaw-napm-alert-query services', () => {
     expect(summary.topMetrics).toEqual([{ metric: 'TPIO', count: 1 }]);
   });
 
+  test('should aggregate alert counts by category for grouped replies', () => {
+    const events = normalizeSummary({
+      networkAlerts: {
+        '192.168.1.16': [
+          { id: 1, severity: 4, categoryType: 3, metrics: ['TPIO'], name: '吞吐过高' },
+          { id: 2, severity: 2, categoryType: 3, metrics: ['RTTI'], name: '时延异常' }
+        ]
+      },
+      appAlerts: {
+        HTTPS: [
+          { id: 3, severity: 3, categoryType: 25, metrics: ['UEIO'], name: '外部应用性能下降' }
+        ]
+      }
+    });
+
+    const summary = analyzeEvents(events, { categoryOverviewLimit: 1 });
+
+    expect(summary.byCategoryDetail).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'networkAlerts',
+        categoryLabel: '网络性能告警',
+        total: 2,
+        bySeverity: expect.objectContaining({
+          critical: 1,
+          minor: 1
+        }),
+        overviewEvents: [expect.objectContaining({ id: '1' })]
+      }),
+      expect.objectContaining({
+        category: 'appAlerts',
+        categoryLabel: '应用性能告警',
+        total: 1,
+        bySeverity: expect.objectContaining({
+          major: 1
+        })
+      })
+    ]));
+  });
+
   test('should normalize Chinese alert category labels to backend category keys', () => {
     const result = validateAlertQuery({
       mode: 'summary',

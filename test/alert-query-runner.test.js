@@ -143,6 +143,61 @@ describe('openclaw-napm-alert-query runner', () => {
     expect(result.events.map((event) => event.name)).not.toContain('轻微业务告警');
   });
 
+  test('should calculate summary category totals from all filtered events before maxEvents slicing', async () => {
+    const api = {
+      async getSummary() {
+        return {
+          networkAlerts: {
+            '192.168.1.16': [
+              { id: 1, severity: 4, categoryType: 3, metrics: ['TPIO'], name: '吞吐过高', start: 1781489000 },
+              { id: 2, severity: 2, categoryType: 3, metrics: ['RTTI'], name: '时延异常', start: 1781488900 }
+            ]
+          },
+          appAlerts: {
+            HTTPS: [
+              { id: 3, severity: 3, categoryType: 25, metrics: ['UEIO'], name: '外部应用性能下降', start: 1781488800 }
+            ]
+          }
+        };
+      }
+    };
+
+    const result = await executeAlertQuery({
+      prompt: '最近一小时有哪些告警',
+      alertQuery: {
+        mode: 'summary',
+        criteria: {
+          start: 1781488800,
+          end: 1781492400
+        },
+        options: {
+          maxEvents: 1
+        }
+      }
+    }, { api });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.summary.total).toBe(3);
+    expect(result.summary.byCategoryDetail).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'networkAlerts',
+        total: 2,
+        bySeverity: expect.objectContaining({
+          critical: 1,
+          minor: 1
+        })
+      }),
+      expect.objectContaining({
+        category: 'appAlerts',
+        total: 1,
+        bySeverity: expect.objectContaining({
+          major: 1
+        })
+      })
+    ]));
+    expect(result.criteria.categories).toEqual([]);
+  });
+
   test('should execute summary query with Chinese category label filter', async () => {
     const api = {
       async getSummary() {

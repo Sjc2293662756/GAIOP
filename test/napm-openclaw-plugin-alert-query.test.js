@@ -138,6 +138,99 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('Password=***');
   });
 
+  test('should render grouped alert summary by category when no alert type is specified', () => {
+    const text = plugin.__test__.buildAlertQueryReply({
+      ok: true,
+      mode: 'summary',
+      criteria: {
+        start: 1781488800,
+        end: 1781492400,
+        categories: []
+      },
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 3,
+        bySeverity: { critical: 1, major: 1, minor: 1 },
+        byCategoryDetail: [
+          {
+            category: 'networkAlerts',
+            categoryLabel: '网络性能告警',
+            total: 2,
+            bySeverity: { critical: 1, major: 0, minor: 1 },
+            overviewEvents: [
+              {
+                id: '369652',
+                severityLabel: '紧急',
+                severity: 4,
+                group: '192.168.1.16',
+                name: '吞吐过高'
+              }
+            ]
+          },
+          {
+            category: 'appAlerts',
+            categoryLabel: '应用性能告警',
+            total: 1,
+            bySeverity: { critical: 0, major: 1, minor: 0 },
+            overviewEvents: [
+              {
+                id: '369653',
+                severityLabel: '重大',
+                severity: 3,
+                group: 'HTTPS',
+                name: '外部应用性能下降'
+              }
+            ]
+          }
+        ]
+      },
+      events: []
+    });
+
+    expect(text).toContain('最近一小时告警概况：');
+    expect(text).toContain('网络性能告警：');
+    expect(text).toContain('共 2 个告警：');
+    expect(text).toContain('紧急告警 1 个');
+    expect(text).toContain('重大告警 0 个');
+    expect(text).toContain('轻微告警 1 个');
+    expect(text).toContain('应用性能告警：');
+    expect(text).toContain('| 级别 | 对象 | 描述 |');
+    expect(text).toContain('| 🔴 紧急 | 192.168.1.16 | 吞吐过高 |');
+    expect(text).toContain('| 🟠 重大 | HTTPS | 外部应用性能下降 |');
+    expect(text).not.toContain('告警总数：3 条');
+  });
+
+  test('should keep global alert table when an alert type is specified', () => {
+    const text = plugin.__test__.buildAlertQueryReply({
+      ok: true,
+      mode: 'summary',
+      criteria: {
+        start: 1781488800,
+        end: 1781492400,
+        categories: ['appAlerts']
+      },
+      summary: {
+        total: 1,
+        bySeverity: { critical: 0, major: 1, minor: 0 }
+      },
+      events: [
+        {
+          id: '369653',
+          severityLabel: '重大',
+          severity: 3,
+          categoryLabel: '应用性能告警',
+          group: 'HTTPS',
+          name: '外部应用性能下降'
+        }
+      ]
+    });
+
+    expect(text).toContain('告警总数：1 条');
+    expect(text).toContain('| 级别 | 类型 | 对象 | 描述 |');
+    expect(text).toContain('| 🟠 重大 | 应用性能 | HTTPS | 外部应用性能下降 |');
+    expect(text).not.toContain('应用性能告警：');
+  });
+
   test('should classify alert event questions separately from broad overview prompts', () => {
     expect(plugin.__test__.isAlertEventPrompt('最近一小时有哪些告警？')).toBe(true);
     expect(plugin.__test__.isAlertEventPrompt('告警 369652 的详情是什么？')).toBe(true);
