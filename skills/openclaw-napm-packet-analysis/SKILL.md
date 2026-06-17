@@ -17,6 +17,14 @@ For detailed routing, mode selection, time-window policy, preview/download/analy
 
 ## Routing Contract
 
+Priority routing rules:
+
+- Data packet, packet capture, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews, and business page packet preview requests must use this skill.
+- If the user provides a Web page URL/path such as `http://101.254.114.238/SDK/webLanguage` and asks for packet preview or packet analysis, treat it as a business page packet preview.
+- Business page packet preview must use `downloadType: "DownServlet"` and `mode: "preview_only"` with `criteria.page` or `criteria.pageUrl`; if known, also include `criteria.businessName` or `criteria.pageFamilyId`.
+- Do not extract the IP from a Web page URL and call ordinary IP `packetsPreview` unless the user explicitly asks to query by IP.
+- Business page preview means NetInside `type=pageViews&json=true&pageFamilyId=...` candidate rows. It is not ordinary `packetsPreview` and does not estimate pcap size.
+
 Use this skill, not NAPM metric/query skills, whenever the user asks about:
 
 - 数据包、报文、抓包、抓取包、下载包、下载数据包、包详情、原始包。
@@ -53,6 +61,7 @@ Business packet analysis contract:
 - This skill resolves `businessName -> pageFamilyId -> pageFamilyDetailId -> instanceId` internally, using the v3 business packet chain.
 - If the caller already has `criteria.pageFamilyId`, this skill skips the business Top query and starts from `pageViews`.
 - If the caller already has `criteria.pageFamilyDetailId`, `criteria.resultName`, or `criteria.instanceId`, this skill directly builds the `DownServlet` URL.
+- If the user asks to preview a specific business page before download, use `mode: "preview_only"` with `businessName/pageFamilyId/page/pageUrl`. The skill returns `businessResolution.pageViewsPreview.rows` so the user can choose `clientIp` or `pageViewIndex`.
 - Business packet downloads use `downloadType: "DownServlet"` with fixed `moduleKey=Ipv`, `groupId=45`, and `rtClickId=5`, unless the caller explicitly overrides them.
 - `DownServlet` has no `packetsPreview` endpoint. After instance resolution succeeds, download/analyze modes use the resolved `DownServlet` URL directly.
 
@@ -163,6 +172,23 @@ For business packet analysis by Web application name:
   }
 }
 ```
+
+For business page visit preview before choosing a packet:
+
+```json
+{
+  "mode": "preview_only",
+  "downloadType": "DownServlet",
+  "criteria": {
+    "businessName": "其他Web应用",
+    "page": "http://101.254.114.238/SDK/webLanguage",
+    "start": 1781488800,
+    "end": 1781492400
+  }
+}
+```
+
+OpenClaw should render `businessResolution.pageViewsPreview.rows` as selectable rows with `index`, `startTime`, `clientIp`, `serverIp`, `httpStatus`, and `pageFamilyDetailId`. After the user selects a row or client IP, call again with `pageViewIndex` or `clientIp` to construct/download the `DownServlet` packet.
 
 For business packet URL construction when the page visit detail is already known:
 

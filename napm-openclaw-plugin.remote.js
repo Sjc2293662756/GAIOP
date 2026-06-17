@@ -14,6 +14,10 @@ const NAPM_REPORT_EXECUTOR = process.env.NAPM_REPORT_EXECUTOR
   || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-report/scripts/generate_napm_report.js');
 const NAPM_PACKET_EXECUTOR = process.env.NAPM_PACKET_EXECUTOR
   || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js');
+const NAPM_ALERT_EXECUTOR = process.env.NAPM_ALERT_EXECUTOR
+  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-alert-query/scripts/run_alert_query.js');
+const NAPM_INSPECTION_EXECUTOR = process.env.NAPM_INSPECTION_EXECUTOR
+  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-inspection/scripts/run_inspection_snapshot.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmDebugApiByPrompt = new Map();
@@ -37,7 +41,7 @@ const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
-const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis']);
+const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot']);
 const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
   'napm-mainflow-query'
@@ -310,6 +314,41 @@ function isNapmMetaFollowUpPrompt(prompt = '', previousState = null) {
   }
 
   return hasReference && hasMetaIntent;
+}
+
+function isAlertEventPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  if (/\b(?:alertsSummary|alertsSummaryTimeLine|alertsDetail)\b/i.test(text)) {
+    return true;
+  }
+
+  if (/(?:Email|SNMP|SysLog|快照)[^，。！？\n]{0,12}告警|告警[^，。！？\n]{0,24}(?:Email|SNMP|SysLog|快照|通知|动作|字段|配置)/i.test(text)) {
+    return true;
+  }
+
+  if (!/告警/.test(text)) {
+    return false;
+  }
+
+  return /(?:有哪些|有什么|有没有|是否有|查(?:询)?|列(?:出)?|列表|清单|摘要|明细|详情|事件|event\s*id|id|时间线|趋势|数量|统计|汇总|紧急|重大|轻微|严重|触发|原因|为什么|关联|数据包|napm-alert-query|告警查询\s*skill|告警\s*skill)/i.test(text);
+}
+
+function isAlertSkillMetaFollowUpPrompt(prompt = '', previousState = null) {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const mentionsAlertSkill = /(?:告警|napm-alert-query|alert\s*query|alertsSummary|alertsDetail|alertsSummaryTimeLine)/i.test(text);
+  return Boolean(
+    (isNapmMetaFollowUpPrompt(text, previousState) && (mentionsAlertSkill || previousState?.alertRelated))
+    || /(?:告警查询\s*skill|告警\s*skill|napm-alert-query)[^，。！？\n]{0,24}(?:用了|使用|调用|走了|执行|是否|是不是|有没有)/i.test(text)
+    || /(?:用了|使用|调用|走了|执行|是否|是不是|有没有)[^，。！？\n]{0,24}(?:告警查询\s*skill|告警\s*skill|napm-alert-query)/i.test(text)
+  );
 }
 
 function looksLikeNapmBypassProcessText(text = '') {
@@ -1765,22 +1804,34 @@ function setGuardState(ctx = {}, state) {
 function buildConversationScopedGuardState(content = '', previousState = null) {
   const prompt = String(content || '').trim();
   const overviewRelated = isOverviewPrompt(prompt);
+  const alertEventPrompt = isAlertEventPrompt(prompt);
+  const alertMetaFollowUpPrompt = isAlertSkillMetaFollowUpPrompt(prompt, previousState);
   const metricInventoryPrompt = isMetricInventoryPrompt(prompt)
     || (previousState?.lastMetricInventoryGroup && isMetricInventoryDetailPrompt(prompt));
   const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
   const domainRelated = overviewRelated
+    || alertEventPrompt
+    || alertMetaFollowUpPrompt
     || isSystemDomainPrompt(prompt)
     || metaFollowUpPrompt
     || (previousState?.domainRelated && isContinuationPrompt(prompt));
   const napmRelated = overviewRelated
+    || alertEventPrompt
+    || alertMetaFollowUpPrompt
     || isNapmRelatedPrompt(prompt)
     || metaFollowUpPrompt
     || (previousState?.napmRelated && isContinuationPrompt(prompt));
+  const alertRelated = alertEventPrompt
+    || alertMetaFollowUpPrompt
+    || Boolean(previousState?.alertRelated && (isContinuationPrompt(prompt) || metaFollowUpPrompt));
 
   return {
     prompt,
     napmRelated,
     domainRelated,
+    alertRelated,
+    alertEventPrompt,
+    alertMetaFollowUpPrompt,
     metricInventoryPrompt,
     metaFollowUpPrompt,
     lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
@@ -2070,6 +2121,46 @@ function getRememberedRecordForPrompt(activePrompt = '', conversationState = nul
     || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
     || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null)
     || (metaFollowUp ? getRecentRememberedSkillResult('') : null);
+}
+
+function isAlertSkillResultRecord(record = null) {
+  if (!record || !isPlainObject(record.result) || record.result?.error) {
+    return false;
+  }
+
+  const result = record.result;
+  const service = String(result.service || result?.reportData?.dataSource?.queryService || '').trim();
+  const schema = String(result?.narrationInput?.schema || '').trim();
+  const sourceSkill = String(
+    result?.reportData?.dataSource?.sourceSkill
+    || result?.reportData?.audit?.sourceSkill
+    || ''
+  ).trim();
+
+  return Boolean(
+    ['alertsSummary', 'alertsSummaryTimeLine', 'alertsDetail', 'explain_notification', 'explain_event_fields'].includes(service)
+    || schema === 'openclaw_napm_alert.v1'
+    || sourceSkill === 'openclaw-napm-alert-query'
+  );
+}
+
+function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
+  const candidates = [
+    getRememberedSkillResult(activePrompt, conversationKey),
+    getRememberedSkillResult(activePrompt, '')
+  ];
+
+  const alertFollowUp = Boolean(
+    isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
+    || conversationState?.alertRelated
+    || guardState?.alertRelated
+  );
+  if (alertFollowUp) {
+    candidates.push(getRecentRememberedSkillResult(conversationKey));
+    candidates.push(getRecentRememberedSkillResult(''));
+  }
+
+  return candidates.find((record) => isFreshRememberedRecord(record) && isAlertSkillResultRecord(record)) || null;
 }
 
 function getRememberedMetricInventoryFollowUpRecord(prompt = '', conversationState = null, conversationKey = '') {
@@ -2474,6 +2565,7 @@ async function runSkillExecutor(args = {}) {
       env: {
         ...process.env,
         NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        NETINSIDE_TLS_REJECT_UNAUTHORIZED: process.env.NETINSIDE_TLS_REJECT_UNAUTHORIZED || 'false',
         FORCE_COLOR: '0',
         NO_COLOR: '1'
       }
@@ -2533,6 +2625,370 @@ function buildPacketTraceId(args = {}) {
     || `napm-packet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function buildAlertTraceId(args = {}) {
+  return normalizeTraceId(args?.traceId)
+    || `napm-alert-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildInspectionTraceId(args = {}) {
+  return normalizeTraceId(args?.traceId)
+    || `napm-inspection-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildInspectionExecutorPayload(args = {}) {
+  const inspectionQuery = isPlainObject(args.inspectionQuery)
+    ? args.inspectionQuery
+    : {};
+  const payload = {
+    ...inspectionQuery,
+    prompt: normalizePrompt(args) || inspectionQuery.prompt || '',
+    sourceQuestion: String(args.sourceQuestion || inspectionQuery.sourceQuestion || '').trim() || undefined,
+    title: String(args.title || inspectionQuery.title || '').trim() || undefined,
+    customerName: String(args.customerName || inspectionQuery.customerName || '').trim() || undefined,
+    projectName: String(args.projectName || inspectionQuery.projectName || '').trim() || undefined,
+    reportDate: String(args.reportDate || inspectionQuery.reportDate || '').trim() || undefined,
+    format: String(args.format || inspectionQuery.format || 'docx').trim() || 'docx',
+    nowSeconds: Number(args.nowSeconds || inspectionQuery.nowSeconds) || undefined,
+    timezone: String(args.timezone || inspectionQuery.timezone || '').trim() || undefined,
+    source: isPlainObject(args.source)
+      ? args.source
+      : (isPlainObject(inspectionQuery.source) ? inspectionQuery.source : undefined),
+    thresholds: isPlainObject(args.thresholds)
+      ? args.thresholds
+      : (isPlainObject(inspectionQuery.thresholds) ? inspectionQuery.thresholds : undefined),
+    traceId: normalizeTraceId(args.traceId) || undefined
+  };
+
+  Object.keys(payload).forEach((key) => {
+    if (payload[key] === undefined || payload[key] === '') {
+      delete payload[key];
+    }
+  });
+  return payload;
+}
+
+async function runInspectionExecutor(args = {}) {
+  const traceId = buildInspectionTraceId(args);
+  const payload = buildInspectionExecutorPayload({
+    ...args,
+    traceId
+  });
+  appendPluginAuditEvent('napm_inspection_snapshot_invoked', {
+    traceId,
+    prompt: normalizePrompt(args),
+    customerName: String(payload.customerName || '').trim() || null,
+    projectName: String(payload.projectName || '').trim() || null,
+    reportDate: String(payload.reportDate || '').trim() || null,
+    hasFixtureSource: isPlainObject(payload.source)
+  });
+
+  let tempInputDir = null;
+  try {
+    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-inspection-input-'));
+    const tempInputPath = path.join(tempInputDir, 'inspection.json');
+    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
+    const { stdout, stderr } = await execFileAsync('node', [
+      NAPM_INSPECTION_EXECUTOR,
+      '--input',
+      tempInputPath
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024,
+      env: {
+        ...process.env,
+        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        FORCE_COLOR: '0',
+        NO_COLOR: '1'
+      }
+    });
+
+    const result = extractSkillJson(stdout);
+    if (stderr && String(stderr).trim()) {
+      result.executorStderr = String(stderr).trim();
+    }
+    appendPluginAuditEvent(result?.ok ? 'napm_inspection_snapshot_completed' : 'napm_inspection_snapshot_failed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      ok: Boolean(result?.ok),
+      status: String(result?.summary?.status || result?.inspection?.summary?.overallStatus || '').trim() || null,
+      reportType: String(result?.reportData?.reportType || '').trim() || null,
+      evidenceCount: Array.isArray(result?.reportData?.audit?.queryEvidence) ? result.reportData.audit.queryEvidence.length : null,
+      errorCode: result?.error?.code || result?.errorCode || null
+    });
+    return result;
+  } catch (error) {
+    const result = {
+      ok: false,
+      errorCode: error?.code || 'INSPECTION_SNAPSHOT_FAILED',
+      message: error?.message || String(error)
+    };
+    appendPluginAuditEvent('napm_inspection_snapshot_failed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      ...result
+    });
+    return result;
+  } finally {
+    if (tempInputDir) {
+      try {
+        fs.rmSync(tempInputDir, { recursive: true, force: true });
+      } catch (_cleanupError) {
+        // best-effort temp cleanup
+      }
+    }
+  }
+}
+
+function buildInspectionSnapshotReply(result = {}) {
+  if (!result?.ok) {
+    return String(
+      result?.message
+      || result?.error?.message
+      || '巡检数据采集失败。'
+    ).trim();
+  }
+  const lines = [];
+  const title = String(result?.summary?.title || result?.reportData?.title || 'NAPM 巡检快照').trim();
+  const status = String(result?.summary?.status || result?.inspection?.summary?.overallStatus || '').trim();
+  lines.push(`巡检数据已生成：${title}`);
+  if (status) {
+    lines.push(`总体状态：${status}`);
+  }
+  const highlights = Array.isArray(result?.summary?.highlights)
+    ? result.summary.highlights.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (highlights.length > 0) {
+    lines.push('关注事项：');
+    highlights.slice(0, 8).forEach((item) => lines.push(`- ${item}`));
+  }
+  if (result?.reportData?.reportType) {
+    lines.push(`报告数据类型：${result.reportData.reportType}`);
+  }
+  lines.push('如需 Word 文件，请继续调用 napm-report-export 消费本次 reportData。');
+  return lines.join('\n');
+}
+
+function buildAlertExecutorPayload(args = {}) {
+  const alertQuery = isPlainObject(args.alertQuery)
+    ? args.alertQuery
+    : {};
+  return {
+    prompt: normalizePrompt(args) || alertQuery.prompt || '',
+    alertQuery: {
+      ...alertQuery,
+      mode: String(args.mode || alertQuery.mode || '').trim() || alertQuery.mode,
+      criteria: isPlainObject(args.criteria)
+        ? args.criteria
+        : (isPlainObject(alertQuery.criteria) ? alertQuery.criteria : {}),
+      options: isPlainObject(args.options)
+        ? args.options
+        : (isPlainObject(alertQuery.options) ? alertQuery.options : undefined)
+    },
+    sessionState: isPlainObject(args.sessionState) ? args.sessionState : undefined,
+    traceId: normalizeTraceId(args.traceId) || undefined
+  };
+}
+
+async function runAlertExecutor(args = {}) {
+  const traceId = buildAlertTraceId(args);
+  const payload = buildAlertExecutorPayload({
+    ...args,
+    traceId
+  });
+  appendPluginAuditEvent('napm_alert_query_invoked', {
+    traceId,
+    prompt: normalizePrompt(args),
+    mode: String(payload?.alertQuery?.mode || '').trim() || null,
+    criteria: normalizeObject(payload?.alertQuery?.criteria) || null
+  });
+
+  let tempInputDir = null;
+  try {
+    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-input-'));
+    const tempInputPath = path.join(tempInputDir, 'alert.json');
+    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
+    const { stdout, stderr } = await execFileAsync('node', [
+      NAPM_ALERT_EXECUTOR,
+      '--queryFile',
+      tempInputPath
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      env: {
+        ...process.env,
+        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        FORCE_COLOR: '0',
+        NO_COLOR: '1'
+      }
+    });
+
+    const result = extractSkillJson(stdout);
+    if (stderr && String(stderr).trim()) {
+      result.executorStderr = String(stderr).trim();
+    }
+    appendPluginAuditEvent(result?.ok ? 'napm_alert_query_completed' : 'napm_alert_query_failed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      ok: Boolean(result?.ok),
+      mode: String(result?.mode || payload?.alertQuery?.mode || '').trim() || null,
+      service: String(result?.service || '').trim() || null,
+      eventCount: Array.isArray(result?.events) ? result.events.length : null,
+      detailCount: Array.isArray(result?.details) ? result.details.length : null,
+      errorCode: result?.error?.code || result?.errorCode || null
+    });
+    return result;
+  } catch (error) {
+    const result = {
+      ok: false,
+      mode: String(payload?.alertQuery?.mode || '').trim() || null,
+      errorCode: error?.code || 'ALERT_QUERY_FAILED',
+      message: error?.message || String(error)
+    };
+    appendPluginAuditEvent('napm_alert_query_failed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      ...result
+    });
+    return result;
+  } finally {
+    if (tempInputDir) {
+      try {
+        fs.rmSync(tempInputDir, { recursive: true, force: true });
+      } catch (_cleanupError) {
+        // best-effort temp cleanup
+      }
+    }
+  }
+}
+
+function buildAlertQueryReply(result = {}) {
+  if (!result?.ok) {
+    return String(
+      result?.message
+      || result?.error?.message
+      || '告警查询失败。'
+    ).trim();
+  }
+
+  if (result?.explanation?.title) {
+    return String(result.explanation.title);
+  }
+
+  const lines = [];
+  const timeRange = result.timeRange || {};
+  const timeText = timeRange.displayText
+    || (timeRange.start && timeRange.end ? `${timeRange.start} 至 ${timeRange.end}` : '');
+  if (timeText) {
+    lines.push(`${timeText}告警概况：`);
+    lines.push('');
+  }
+
+  const events = Array.isArray(result.details) && result.details.length > 0
+    ? result.details
+    : (Array.isArray(result.events) ? result.events : []);
+  const bySeverity = result.summary?.bySeverity || {};
+  if (result.summary?.total != null) {
+    lines.push(`告警总数：${result.summary.total} 条`);
+    lines.push('');
+    lines.push(`- ${formatSeverityBadge(4)} 紧急：${bySeverity.critical || 0} 条`);
+    lines.push(`- ${formatSeverityBadge(3)} 重大：${bySeverity.major || 0} 条`);
+    lines.push(`- ${formatSeverityBadge(2)} 轻微：${bySeverity.minor || 0} 条`);
+    lines.push('');
+  } else if (Array.isArray(result.timeline) && result.timeline.length > 0) {
+    lines.push(`时间线桶数量：${result.timeline.length}`);
+  }
+
+  const displayEvents = events.slice(0, 5);
+  if (displayEvents.length > 0) {
+    lines.push(`前 ${displayEvents.length} 条告警摘要：`);
+    lines.push('');
+    lines.push('| 级别 | 类型 | 对象 | 描述 |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const event of displayEvents) {
+      const cells = [
+        escapeMarkdownTableCell(`${formatSeverityBadge(event.severity)} ${event.severityLabel || event.severity || '-'}`),
+        escapeMarkdownTableCell(formatAlertCategoryLabel(event.categoryLabel || event.category || '-')),
+        escapeMarkdownTableCell(event.group || '-'),
+        escapeMarkdownTableCell(event.name || '-')
+      ];
+      lines.push(`| ${cells.join(' | ')} |`);
+    }
+    const judgement = buildAlertInitialJudgement(displayEvents);
+    if (judgement) {
+      lines.push('');
+      lines.push(`初步判断：${judgement}`);
+    }
+  } else if (result.summary?.total === 0) {
+    lines.push('本时间范围内未查询到告警事件。');
+  }
+
+  if (result.packetHandoff?.available) {
+    lines.push('');
+    lines.push('该告警结果包含可继续转数据包分析的 packetHandoff。');
+  }
+
+  lines.push('');
+  lines.push('需要查看某条告警的详情，或继续查看告警时间线吗？');
+
+  const text = lines.join('\n').trim() || JSON.stringify(result, null, 2);
+  const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
+  if (!requestUrl || text.includes(requestUrl)) {
+    return text;
+  }
+  return `${text}\n\nDebug API:\n${requestUrl}`;
+}
+
+function formatSeverityBadge(severity) {
+  const value = Number(severity);
+  if (value === 4) return '🔴';
+  if (value === 3) return '🟠';
+  if (value === 2) return '🟢';
+  return '⚪';
+}
+
+function formatAlertCategoryLabel(label = '') {
+  return String(label || '').replace(/告警$/u, '') || '-';
+}
+
+function escapeMarkdownTableCell(value = '') {
+  return String(value == null ? '' : value)
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim() || '-';
+}
+
+function buildAlertInitialJudgement(events = []) {
+  const criticalEvents = events.filter((event) => Number(event.severity) === 4);
+  const focusEvents = criticalEvents.length > 0 ? criticalEvents : events;
+  if (focusEvents.length === 0) {
+    return '';
+  }
+
+  const groups = [...new Set(focusEvents.map((event) => String(event.group || '').trim()).filter(Boolean))].slice(0, 3);
+  const names = [...new Set(focusEvents.map((event) => String(event.name || '').trim()).filter(Boolean))].slice(0, 2);
+  const targetText = groups.length > 0 ? groups.join('、') : '相关对象';
+  const nameText = names.length > 0 ? `，主要表现为${names.join('、')}` : '';
+  return `告警主要集中在${targetText}${nameText}。建议优先查看紧急/重大告警详情。`;
+}
+
+function maskDebugApiUrl(inputUrl = '') {
+  const raw = String(inputUrl || '').trim();
+  if (!raw) {
+    return '';
+  }
+  try {
+    const url = new URL(raw);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/password|passwd|token|secret|authorization/i.test(key)) {
+        url.searchParams.set(key, '***');
+      }
+    }
+    return url.toString();
+  } catch (_error) {
+    return raw.replace(/([?&](?:Password|password|passwd|token|secret|authorization)=)[^&\s]+/g, '$1***');
+  }
+}
+
 function buildPacketExecutorPayload(args = {}) {
   const packetQuery = isPlainObject(args.packetQuery)
     ? args.packetQuery
@@ -2541,7 +2997,8 @@ function buildPacketExecutorPayload(args = {}) {
     ? args.criteria
     : (isPlainObject(packetQuery.criteria) ? packetQuery.criteria : {});
 
-  return {
+  const prompt = normalizePrompt(args) || packetQuery.prompt || '';
+  const normalized = normalizePacketBusinessPagePayload({
     ...packetQuery,
     mode: String(args.mode || packetQuery.mode || '').trim() || packetQuery.mode,
     downloadType: String(args.downloadType || packetQuery.downloadType || '').trim() || packetQuery.downloadType,
@@ -2554,8 +3011,62 @@ function buildPacketExecutorPayload(args = {}) {
     filePolicy: isPlainObject(args.filePolicy)
       ? args.filePolicy
       : (isPlainObject(packetQuery.filePolicy) ? packetQuery.filePolicy : undefined),
-    prompt: normalizePrompt(args) || packetQuery.prompt || ''
+    prompt
+  });
+  return normalized;
+}
+
+function looksLikeBusinessPagePacketPreviewPrompt(text = '') {
+  const raw = String(text || '');
+  if (!raw) return false;
+  const hasPacketPreview = /(数据包|报文|抓包|原始包|pcap|cap\b|packet|DownServlet|pageViews)/i.test(raw)
+    && /(预览|查看|分析|明细|访问实例|对端|选择)/i.test(raw);
+  const hasHttpPageUrl = /https?:\/\/[^\s"'<>]+\/[^\s"'<>]+/i.test(raw);
+  const hasPagePath = /\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)+/.test(raw);
+  return hasPacketPreview && (hasHttpPageUrl || hasPagePath);
+}
+
+function extractFirstHttpPageUrl(text = '') {
+  const match = String(text || '').match(/https?:\/\/[^\s"'<>，。；、]+\/[^\s"'<>，。；、]+/i);
+  return match ? match[0] : '';
+}
+
+function normalizePacketBusinessPagePayload(payload = {}) {
+  const criteria = isPlainObject(payload.criteria) ? { ...payload.criteria } : {};
+  const prompt = String(payload.prompt || '').trim();
+  const hasBusinessPageSignal = Boolean(
+    criteria.page
+    || criteria.pageUrl
+    || criteria.pageFamilyId
+    || criteria.pageFamilyDetailId
+    || criteria.businessName
+    || criteria.businessPageViewsPreviewOnly
+    || payload.downloadType === 'DownServlet'
+    || looksLikeBusinessPagePacketPreviewPrompt(prompt)
+  );
+  if (!hasBusinessPageSignal) {
+    return payload;
+  }
+
+  const pageUrl = String(criteria.page || criteria.pageUrl || '').trim() || extractFirstHttpPageUrl(prompt);
+  if (pageUrl && !criteria.page) criteria.page = pageUrl;
+  if (pageUrl && !criteria.pageUrl) criteria.pageUrl = pageUrl;
+
+  const normalized = {
+    ...payload,
+    downloadType: 'DownServlet',
+    criteria
   };
+
+  const asksPreview = String(normalized.mode || '').trim() === 'preview_only'
+    || /预览|查看|明细|访问实例|对端|选择/.test(prompt)
+    || criteria.businessPageViewsPreviewOnly;
+  if (asksPreview) {
+    normalized.mode = 'preview_only';
+    normalized.criteria.businessPageViewsPreviewOnly = true;
+  }
+
+  return normalized;
 }
 
 async function runPacketExecutor(args = {}) {
@@ -3035,6 +3546,10 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
     return '';
   }
 
+  if (isAlertSkillResultRecord(rememberedRecord)) {
+    return buildAlertQueryReply(rememberedRecord.result);
+  }
+
   const rememberedReply = makeTextReplyFromSkillResult(rememberedRecord.result);
   return String(rememberedReply?.text || '').trim();
 }
@@ -3058,6 +3573,14 @@ function buildSkillRequiredReply() {
   ].join('\n');
 }
 
+function buildAlertSkillRequiredReply() {
+  return [
+    '当前问题必须通过 napm-alert-query 执行后才能回答。',
+    '本轮没有拿到可核验的告警查询结果，因此不能判断“没有告警”，也不能补写告警查询过程。',
+    '请以 napm-alert-query 返回的 alertsSummary / alertsSummaryTimeLine / alertsDetail 结构化结果为准。'
+  ].join('\n');
+}
+
 function buildHierarchySkillRequiredReply() {
   return [
     '当前问题属于 NAPM 下钻/层级目录查询，不能手动读取 groups-tree.static.json、不能只看某个 children=[] 节点，也不能用组合路径推测回答。',
@@ -3067,6 +3590,9 @@ function buildHierarchySkillRequiredReply() {
 }
 
 function buildSkillRequiredReplyForPrompt(prompt = '') {
+  if (isAlertEventPrompt(prompt) || isAlertSkillMetaFollowUpPrompt(prompt)) {
+    return buildAlertSkillRequiredReply();
+  }
   if (isPacketCapturePrompt(prompt)) {
     return buildPacketSkillRequiredReply();
   }
@@ -3090,7 +3616,10 @@ function shouldForceSkillRecordForPrompt(prompt = '', guardState = null) {
   }
 
   return Boolean(
-    isPacketCapturePrompt(text)
+    isAlertEventPrompt(text)
+    || isAlertSkillMetaFollowUpPrompt(text, guardState)
+    || guardState?.alertRelated
+    || isPacketCapturePrompt(text)
     || isBusinessObjectInventoryPrompt(text)
     || isBusinessGroupInventoryPrompt(text)
     || isCompositeApplicationInventoryPrompt(text)
@@ -3114,6 +3643,10 @@ function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rem
   const prompt = String(activePrompt || '').trim();
   if (!prompt) {
     return false;
+  }
+
+  if (isAlertEventPrompt(prompt) || isAlertSkillMetaFollowUpPrompt(prompt, guardState) || guardState?.alertRelated) {
+    return !isAlertSkillResultRecord(rememberedRecord);
   }
 
   if (rememberedRecord && isPlainObject(rememberedRecord.result)) {
@@ -3200,6 +3733,44 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   return lines.join('\n');
 }
 
+function buildAlertExecutionTraceReplyFromRememberedRecord(record = null) {
+  if (!isAlertSkillResultRecord(record)) {
+    return [
+      '当前没有可核验的 napm-alert-query 执行记录，不能确认刚才实际走了告警查询 skill。',
+      '因此我不会补写任何未被日志证明的工具调用、查询数量或执行过程。',
+      '告警事件问题需要以 napm-alert-query 的 alertsSummary / alertsSummaryTimeLine / alertsDetail 结果为准。'
+    ].join('\n');
+  }
+
+  const result = record.result;
+  const service = String(result.service || '').trim() || 'unknown';
+  const mode = String(result.mode || result?.narrationInput?.mode || '').trim() || 'unknown';
+  const total = result?.summary?.total;
+  const timeRange = result.timeRange || {};
+  const lines = [
+    '这次只能按已记录的告警 skill 结果说明查询链路：',
+    '工具：napm-alert-query',
+    `mode：${mode}`,
+    `service：${service}`
+  ];
+
+  if (timeRange.start || timeRange.end) {
+    lines.push(`timeRange：${timeRange.start || 'unknown'} ~ ${timeRange.end || 'unknown'}`);
+  }
+  if (total != null) {
+    lines.push(`告警总数：${total}`);
+  }
+  const requestUrls = Array.isArray(result.requestUrls) && result.requestUrls.length > 0
+    ? result.requestUrls
+    : (result.requestUrl ? [result.requestUrl] : []);
+  for (const requestUrl of requestUrls.map(maskDebugApiUrl).filter(Boolean).slice(0, 5)) {
+    lines.push(`Debug API：${requestUrl}`);
+  }
+  lines.push('未发现可核验的 napm-alert-query 记录时，不能声明已经查过告警或没有告警。');
+
+  return lines.join('\n');
+}
+
 function selectActivePromptText(conversationState = null, guardState = null, fallbackPrompt = '') {
   const candidates = [
     conversationState?.prompt,
@@ -3214,7 +3785,9 @@ function selectActivePromptText(conversationState = null, guardState = null, fal
   }
 
   const preferred = candidates.find((text) => (
-    isMetricInventoryPrompt(text)
+    isAlertEventPrompt(text)
+    || isAlertSkillMetaFollowUpPrompt(text, guardState || conversationState)
+    || isMetricInventoryPrompt(text)
     || isMetricInventoryDetailPrompt(text)
     || isHierarchyCatalogPrompt(text)
     || isOverviewPrompt(text)
@@ -3474,11 +4047,125 @@ function createReportExportToolDefinition() {
   };
 }
 
+function createAlertQueryToolDefinition() {
+  return {
+    label: 'NAPM Alert Query',
+    name: 'napm-alert-query',
+    description: 'Execute the standalone NAPM alert skill for alert summary, alert timeline, alert detail, trigger metric series, notification field explanation, packet handoff, and reportData generation. Use this for 告警, 告警事件, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog alert notification explanation. This tool is read-only and must not modify alert rules.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
+        mode: {
+          type: 'string',
+          enum: [
+            'summary',
+            'timeline',
+            'detail',
+            'detail_with_timeseries',
+            'analysis',
+            'explain_notification',
+            'explain_event_fields'
+          ],
+          description: 'Alert task mode.'
+        },
+        alertQuery: { type: 'object', description: 'Full alert query payload accepted by openclaw-napm-alert-query.', additionalProperties: true },
+        criteria: {
+          type: 'object',
+          description: 'Alert criteria. Executable modes require start/end Unix-second timestamps. detail modes require eventIds.',
+          properties: {
+            start: { type: 'number', description: 'Unix-second start timestamp.' },
+            end: { type: 'number', description: 'Unix-second end timestamp.' },
+            categories: { type: 'array', items: { type: 'string' } },
+            severities: { type: 'array', items: { type: 'number' }, description: '2=轻微, 3=重大, 4=紧急.' },
+            objects: { type: 'array', items: { type: 'string' } },
+            eventIds: { type: 'array', items: { type: 'string' } },
+            metrics: { type: 'array', items: { type: 'string' } },
+            categoryTypes: { type: 'array', items: { type: 'number' } },
+            taskTypes: { type: 'array', items: { type: 'string' } },
+            linkTypes: { type: 'array', items: { type: 'number' } },
+            granularity: { type: 'number' }
+          },
+          additionalProperties: true
+        },
+        options: {
+          type: 'object',
+          properties: {
+            includeRaw: { type: 'boolean' },
+            includeTimeline: { type: 'boolean' },
+            includeDetail: { type: 'boolean' },
+            includeMetricSeries: { type: 'boolean' },
+            packetHandoff: { type: 'boolean' },
+            topObjectsLimit: { type: 'number' },
+            maxEvents: { type: 'number' }
+          },
+          additionalProperties: true
+        },
+        sessionState: { type: 'object', description: 'Optional multi-turn alert session state.', additionalProperties: true },
+        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
+      },
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => {
+      const result = await runAlertExecutor(args || {});
+      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      return {
+        content: [
+          {
+            type: 'text',
+            text: buildAlertQueryReply(result)
+          }
+        ],
+        details: result
+      };
+    }
+  };
+}
+
+function createInspectionSnapshotToolDefinition() {
+  return {
+    label: 'NAPM Inspection Snapshot',
+    name: 'napm-inspection-snapshot',
+    description: 'Collect a structured NAPM health inspection snapshot for traffic analysis system inspection reports. Use this for 巡检, 巡检报告, 健康检查报告, 流量分析系统巡检, device health inspection, traffic trend inspection, and business performance inspection. The tool queries NAPM and returns reportData for napm-report-export.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
+        customerName: { type: 'string', description: 'Customer name for the inspection report, for example 北京烟草.' },
+        projectName: { type: 'string', description: 'Project/system name. Defaults to 流量分析系统.' },
+        reportDate: { type: 'string', description: 'Report date, usually YYYY-MM-DD.' },
+        title: { type: 'string', description: 'Optional report title override.' },
+        format: { type: 'string', enum: ['docx', 'word'], description: 'Requested reportData format. word is normalized by the report skill.' },
+        inspectionQuery: { type: 'object', description: 'Full inspection query payload accepted by openclaw-napm-inspection.', additionalProperties: true },
+        source: { type: 'object', description: 'Optional fixture source for tests/offline rendering. Omit for live NAPM collection.', additionalProperties: true },
+        thresholds: { type: 'object', description: 'Optional inspection threshold overrides.', additionalProperties: true },
+        nowSeconds: { type: 'number', description: 'Optional deterministic current Unix timestamp in seconds for tests.' },
+        timezone: { type: 'string', description: 'Timezone for formatted inspection timestamps.' },
+        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
+      },
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => {
+      const result = await runInspectionExecutor(args || {});
+      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      return {
+        content: [
+          {
+            type: 'text',
+            text: buildInspectionSnapshotReply(result)
+          }
+        ],
+        details: result
+      };
+    }
+  };
+}
+
 function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, or packet-data analysis requests. Do not route packet requests to napm-skill-query or NAPM metric overview/topValues fallback.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews, or packet-data analysis requests. If the user provides a Web page URL/path such as http://host/SDK/webLanguage and asks 数据包预览/分析, use DownServlet business-page preview with criteria.page/pageUrl; do not convert it into ordinary IP packetsPreview.',
     parameters: {
       type: 'object',
       properties: {
@@ -3501,13 +4188,21 @@ function createPacketAnalysisToolDefinition() {
         packetQuery: { type: 'object', description: 'Optional full packet query payload accepted by openclaw-napm-packet-analysis.', additionalProperties: true },
         criteria: {
           type: 'object',
-          description: 'Packet criteria. Live preview/download requires start/end and one target such as ips, ipRanges, id, top, or instanceId.',
+          description: 'Packet criteria. Live preview/download requires start/end and one target such as ips, ipRanges, id, top, instanceId, businessName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
           properties: {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
             ipRanges: { type: 'array', items: { type: 'string' } },
             id: { type: 'string' },
             instanceId: { type: 'string' },
+            businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
+            page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
+            pageUrl: { type: 'string', description: 'Alias of page. Use for Web page URL/path packet preview.' },
+            pageFamilyId: { type: 'string', description: 'Known PageFamily id. Starts business packet preview from pageViews.' },
+            pageFamilyDetailId: { type: 'string', description: 'Known pageViews detail id. Used to construct DownServlet instanceId.' },
+            clientIp: { type: 'string', description: 'Optional client IP selected from pageViews preview rows.' },
+            serverIp: { type: 'string', description: 'Optional server IP selected from pageViews preview rows.' },
+            pageViewIndex: { type: 'number', description: 'Optional row index selected from pageViews preview rows.' },
             top: { type: 'object', additionalProperties: true },
             start: { type: 'number', description: 'Unix-second start timestamp.' },
             end: { type: 'number', description: 'Unix-second end timestamp.' }
@@ -3709,6 +4404,18 @@ function registerCommand(api, definition) {
         return makeTextReply(buildReportExportReply(result));
       }
 
+      if (definition.name === 'napm-alert-query') {
+        const result = await runAlertExecutor({ prompt });
+        rememberSkillResult(prompt, result, null);
+        return makeTextReply(buildAlertQueryReply(result));
+      }
+
+      if (definition.name === 'napm-inspection-snapshot') {
+        const result = await runInspectionExecutor({ prompt });
+        rememberSkillResult(prompt, result, null);
+        return makeTextReply(buildInspectionSnapshotReply(result));
+      }
+
       if (definition.name === 'napm-packet-analysis') {
         const result = await runPacketExecutor({ prompt });
         rememberSkillResult(prompt, result, null);
@@ -3744,9 +4451,15 @@ function buildNapmRoutingSystemContext() {
     'Bad resolvedQuery example: `{service:"topValues", timeRange:{start:1779638400,end:1779724799}}`. Good example: `{service:"topValues", start:1779638400, end:1779724740, timeRange:{key:"today"}}`.',
     'Query-specific construction rules for inventory, metric ownership, drilldown, time wording, follow-up inheritance, and object vocabulary now live in `skills/openclaw-napm-query/references/query-workflow-contract.md`. Use that skill contract instead of treating this plugin context as the semantic rule source.',
     'High-level query boundary: metric, ranking, average, trend, overview, inventory, metric-list, and drilldown questions belong to `openclaw-napm-query` with a complete `resolvedQuery`.',
+    'Alert boundary: alert event questions such as 告警, 告警事件, 告警摘要, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog 告警通知字段解释 must call `napm-alert-query` with a structured `alertQuery`.',
+    'Alert tool contract: use `napm-alert-query` with mode=`summary` for alert lists, mode=`timeline` for alert count trends, mode=`detail` for event IDs, mode=`detail_with_timeseries` for trigger metric analysis, and mode=`explain_notification` for notification field explanations. This alert tool is read-only and must not add/update/delete alert definitions.',
+    'Inspection boundary: inspection report requests such as 巡检, 巡检报告, 健康检查报告, 流量分析系统巡检, 设备健康巡检, 流量分析状况, 业务性能状况 must call `napm-inspection-snapshot` first. It queries NAPM, returns `inspection` and `reportData`, and then `napm-report-export` may render Word/docx.',
+    'Inspection tool contract: `napm-inspection-snapshot` owns live data collection for applianceInfo, packetsInfo, TotalTraffic timeValues, and WebApplication business performance topValues. `napm-report-export` must only render the returned reportData and must not query NAPM.',
     'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis`. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
     'Packet tool contract: use `napm-packet-analysis` with a structured packet query. For link-only requests use mode=`build_url_only`; for large time ranges use mode=`preview_only` first; for safe packet analysis use mode=`preview_download_analyze`.',
-    'Cross-skill boundary: report/export wording belongs to `napm-report-export` after valid source data exists.',
+    'Business page packet preview contract: if the user provides a Web page URL/path and asks 数据包预览/分析, call `napm-packet-analysis` with `downloadType:"DownServlet"`, `mode:"preview_only"`, and `criteria.page` or `criteria.pageUrl`. If prior query context contains pageFamilyId/businessName for that page, include it. This preview means `pageViews` candidate rows, not ordinary `packetsPreview`.',
+    'Never downgrade a business page packet preview to IP-based `packetsPreview` merely because the URL contains an IP address. IP-based packetsPreview is allowed only when the user explicitly asks 按IP/IP数据包 or provides only an IP target.',
+    'Cross-skill boundary: report/export wording belongs to `napm-report-export` after valid source data exists. If the report request asks for fresh alert data, call `napm-alert-query` first and then `napm-report-export` with the returned reportData. If it asks for a fresh inspection report, call `napm-inspection-snapshot` first and then `napm-report-export` with the returned reportData.',
     'Never claim that business inventory was queried by direct curl/API, exec, python filtering, raw backend probing, or by bypassing napm-skill-query. If a valid current skill result is unavailable, say the question must be executed through napm-skill-query with resolvedQuery first.',
     'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first production entry.',
     'This rule also applies to boundary-check requests such as restart, deploy, modify config, inspect SQL, code debugging, or DB-internal asks when they mention NAPM-monitored objects.',
@@ -3767,6 +4480,8 @@ function buildNapmRoutingSystemContext() {
 
 const skillTool = createSkillToolDefinition();
 const reportExportTool = createReportExportToolDefinition();
+const alertQueryTool = createAlertQueryToolDefinition();
+const inspectionSnapshotTool = createInspectionSnapshotToolDefinition();
 const packetAnalysisTool = createPacketAnalysisToolDefinition();
 const resolverTool = createResolvedQueryResolverToolDefinition();
 const mainflowTool = createMainflowQueryToolDefinition();
@@ -3793,6 +4508,8 @@ const plugin = {
     }
     api.registerTool(skillTool);
     api.registerTool(reportExportTool);
+    api.registerTool(alertQueryTool);
+    api.registerTool(inspectionSnapshotTool);
     api.registerTool(packetAnalysisTool);
 
     registerNapmHook(
@@ -3844,6 +4561,9 @@ const plugin = {
             prompt,
             napmRelated: effectiveNapmRelated,
             domainRelated: effectiveDomainRelated,
+            alertRelated: Boolean(conversationState?.alertRelated),
+            alertEventPrompt: Boolean(conversationState?.alertEventPrompt),
+            alertMetaFollowUpPrompt: Boolean(conversationState?.alertMetaFollowUpPrompt),
             generalOutOfScopeRequested: prompt
               ? !effectiveDomainRelated
               : (promptGeneralOutOfScopeRequested || Boolean(conversationState?.generalOutOfScopeRequested)),
@@ -3901,6 +4621,11 @@ const plugin = {
             || isNapmRelatedPrompt(activePrompt)
           );
         const activePacketPrompt = Boolean(activePrompt) && isPacketCapturePrompt(activePrompt);
+        const activeAlertPrompt = Boolean(activePrompt) && (
+          isAlertEventPrompt(activePrompt)
+          || isAlertSkillMetaFollowUpPrompt(activePrompt, activePromptState)
+          || Boolean(activePromptState?.alertRelated)
+        );
 
         if (isDirectNapmTool(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
@@ -3922,6 +4647,29 @@ const plugin = {
             block: true,
             blockReason: 'Packet capture/download/analysis requests must use napm-packet-analysis, not napm-skill-query.'
           };
+        }
+
+        if (toolName === 'napm-skill-query' && activeAlertPrompt) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query for alert prompt: prompt=${activePrompt.slice(0, 120)}`);
+          appendPluginAuditEvent('napm_plugin_alert_prompt_wrong_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            expectedTool: 'napm-alert-query',
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'Alert event queries must use napm-alert-query, not napm-skill-query or overview/security summaries.'
+          };
+        }
+
+        if (toolName === 'napm-alert-query' && activeAlertPrompt) {
+          setGuardState(ctx, {
+            ...activePromptState,
+            turnNapmToolUsed: true,
+            updatedAt: Date.now()
+          });
+          return undefined;
         }
 
         if (toolName === 'napm-skill-query' && activeNapmPrompt && activePrompt) {
@@ -4170,7 +4918,15 @@ const plugin = {
 
         if (!outOfScopeBoundaryRequested) {
           const activePrompt = activePromptForReport;
-          const rememberedRecord = getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
+          const alertScopedPrompt = Boolean(
+            isAlertEventPrompt(activePrompt)
+            || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
+            || guardState?.alertRelated
+            || conversationState?.alertRelated
+          );
+          const rememberedRecord = alertScopedPrompt
+            ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
+            : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
           const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
           if (shouldAllowNapmReasoningPreviewForCtx(ctx) && isStreamingPreviewMessageEvent(event)) {
             return undefined;
@@ -4187,9 +4943,16 @@ const plugin = {
             };
           }
           const leakedBypassProcessText = looksLikeNapmBypassProcessText(leakedReasoningText);
-          if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
+          if (isNapmMetaFollowUpPrompt(activePrompt, guardState) || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)) {
             return {
-              content: buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+              content: alertScopedPrompt
+                ? buildAlertExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+                : buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+            };
+          }
+          if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {
+            return {
+              content: buildAlertQueryReply(rememberedRecord.result)
             };
           }
           if (looksLikeInvalidBusinessInventoryAnswer(leakedReasoningText)) {
@@ -4292,7 +5055,15 @@ const plugin = {
         }
 
         const activePrompt = selectActivePromptText(conversationState, guardState, extractMessageText(message));
-        const rememberedRecord = getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
+        const alertScopedPrompt = Boolean(
+          isAlertEventPrompt(activePrompt)
+          || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
+          || guardState?.alertRelated
+          || conversationState?.alertRelated
+        );
+        const rememberedRecord = alertScopedPrompt
+          ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
+          : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
         if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(existingText) && !isFreshReportExportResult()) {
@@ -4305,9 +5076,19 @@ const plugin = {
             message: buildAssistantTextMessage(buildReportExportRequiredReply(), message)
           };
         }
-        if (isNapmMetaFollowUpPrompt(activePrompt, guardState)) {
+        if (isNapmMetaFollowUpPrompt(activePrompt, guardState) || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)) {
           return {
-            message: buildAssistantTextMessage(buildExecutionTraceReplyFromRememberedRecord(rememberedRecord), message)
+            message: buildAssistantTextMessage(
+              alertScopedPrompt
+                ? buildAlertExecutionTraceReplyFromRememberedRecord(rememberedRecord)
+                : buildExecutionTraceReplyFromRememberedRecord(rememberedRecord),
+              message
+            )
+          };
+        }
+        if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {
+          return {
+            message: buildAssistantTextMessage(buildAlertQueryReply(rememberedRecord.result), message)
           };
         }
         if (looksLikeInvalidBusinessInventoryAnswer(existingText)) {
@@ -4378,6 +5159,18 @@ const plugin = {
       endpoint: 'local://napm.packet.analysis'
     });
 
+    registerCommand(api, {
+      name: 'napm-alert-query',
+      description: 'Run the NAPM alert event query skill.',
+      endpoint: 'local://napm.alert.query'
+    });
+
+    registerCommand(api, {
+      name: 'napm-inspection-snapshot',
+      description: 'Collect NAPM inspection snapshot data for traffic analysis system inspection reports.',
+      endpoint: 'local://napm.inspection.snapshot'
+    });
+
     if (shouldEnableDevResolverTools()) {
       registerCommand(api, {
         name: 'napm-resolve-query',
@@ -4424,7 +5217,15 @@ module.exports.__test__ = {
   createResolvedQueryResolverToolDefinition,
   createMainflowQueryToolDefinition,
   createReportExportToolDefinition,
+  createAlertQueryToolDefinition,
+  createInspectionSnapshotToolDefinition,
   createPacketAnalysisToolDefinition,
+  runInspectionExecutor,
+  buildInspectionExecutorPayload,
+  buildInspectionSnapshotReply,
+  runAlertExecutor,
+  buildAlertExecutorPayload,
+  buildAlertQueryReply,
   runPacketExecutor,
   buildPacketExecutorPayload,
   buildPacketAnalysisReply,
@@ -4444,6 +5245,11 @@ module.exports.__test__ = {
   inferMetricInventoryGroup,
   isBusinessObjectInventoryPrompt,
   isHierarchyCatalogPrompt,
+  isAlertEventPrompt,
+  isAlertSkillMetaFollowUpPrompt,
+  isAlertSkillResultRecord,
+  buildAlertSkillRequiredReply,
+  buildAlertExecutionTraceReplyFromRememberedRecord,
   isMetricInventoryPrompt,
   isMetricInventoryDetailPrompt,
   isNapmMetaFollowUpPrompt,

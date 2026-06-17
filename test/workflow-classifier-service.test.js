@@ -46,3 +46,14 @@ describe('WorkflowClassifierService', () => {
     });
   });
 });
+
+describe('WorkflowClassifierService metric condition arbitration', () => {
+  test('should classify metric-conditioned list questions as metric topn, not inventory', () => {
+    const result = WorkflowClassifierService.classifyWorkflow('\u5728\u5176\u4ed6web\u5e94\u7528\u4e2d\uff0c\u6709\u54ea\u4e9b\u9875\u9762\u51fa\u73b0400\u9519\u8bef\uff1f');
+
+    expect(result).toMatchObject({
+      workflowType: 'metric_topn',
+      reason: 'metric_condition_over_inventory'
+    });
+  });
+});

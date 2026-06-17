@@ -118,6 +118,12 @@ Core report-data contract:
 }
 ```
 
+## Inspection Report
+
+`openclaw-napm-report` now supports `reportType: "inspection_report"` with `templateId: "napm_traffic_health_inspection_v1"`.
+
+This report type must consume `inspection` data produced by `openclaw-napm-inspection`. The report skill renders device status, data retention, configuration, packet storage, traffic trend datasets, business performance findings, and query evidence. It must not call NetInside APIs or create traffic/business conclusions without evidence from the inspection payload.
+
 ## CLI
 
 ```bash

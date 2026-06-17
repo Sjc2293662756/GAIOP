@@ -1,0 +1,53 @@
+{
+  "schema": "openclaw_napm_inspection_chart_specs.v1",
+  "charts": [
+    {
+      "id": "traffic.recentHour.total",
+      "title": "最近1小时总流量趋势图",
+      "chartType": "line",
+      "datasetPath": "inspection.trafficAnalysis.recentHour.dataset",
+      "xField": "time",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "inspection.trafficAnalysis.recentHour.dataset.unit"
+    },
+    {
+      "id": "traffic.recentDay.total",
+      "title": "最近1天总流量趋势图",
+      "chartType": "line",
+      "datasetPath": "inspection.trafficAnalysis.recentDay.dataset",
+      "xField": "time",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "inspection.trafficAnalysis.recentDay.dataset.unit"
+    },
+    {
+      "id": "business.slowAccess.top",
+      "title": "慢访问业务 Top 图",
+      "chartType": "bar",
+      "datasetPath": "inspection.businessPerformance.slowAccess",
+      "xField": "businessName",
+      "series": [
+        { "field": "slowCount", "name": "慢访问次数" },
+        { "field": "avgPageDelayMs", "name": "平均页面时延(ms)" }
+      ]
+    },
+    {
+      "id": "business.httpErrors.top",
+      "title": "HTTP 400/500 业务 Top 图",
+      "chartType": "bar",
+      "datasetPath": "inspection.businessPerformance.httpErrors",
+      "xField": "businessName",
+      "series": [
+        { "field": "http400", "name": "HTTP 400" },
+        { "field": "http500", "name": "HTTP 500" }
+      ]
+    }
+  ]
+}

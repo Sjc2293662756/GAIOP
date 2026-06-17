@@ -2,9 +2,29 @@ const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
 const ObjectOntologyService = require('./ObjectOntologyService');
+const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 
 function normalizePromptText(prompt = '') {
   return String(prompt || '').trim();
+}
+
+function inferInventoryObjectType(text = '') {
+  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
+  if (ontologyMatch.objectType) {
+    return ontologyMatch.objectType;
+  }
+
+  const applicationCatalog = classifyApplicationCatalogPrompt(text);
+  return applicationCatalog.objectType || null;
+}
+
+function hasMetricConditionIntent(text = '') {
+  return MetricSemanticNormalizerService.hasMetricSemantic(text)
+    || /错误|报错|异常|失败|超时|慢|响应时间|耗时|重传|连接数|访问数/i.test(text);
+}
+
+function hasQuestionListIntent(text = '') {
+  return /有哪些|哪些|有哪几个|都有哪些|列出|查看|查询|谁|哪个|哪一个/.test(text);
 }
 
 function hasInventoryIntent(text = '') {
@@ -27,7 +47,7 @@ function hasOverviewIntent(text = '') {
 }
 
 function hasRankingIntent(text = '') {
-  return /(最大|最高|最多|最小|最低|最少|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
+  return /(最大|最高|最多|最少|最低|最小|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
 }
 
 function hasTrendIntent(text = '') {
@@ -36,16 +56,6 @@ function hasTrendIntent(text = '') {
 
 function hasAverageIntent(text = '') {
   return /(平均|均值|average|avg)/i.test(text);
-}
-
-function inferInventoryObjectType(text = '') {
-  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
-  if (ontologyMatch.objectType) {
-    return ontologyMatch.objectType;
-  }
-
-  const applicationCatalog = classifyApplicationCatalogPrompt(text);
-  return applicationCatalog.objectType || null;
 }
 
 function classifyWorkflow(prompt = '') {
@@ -58,11 +68,13 @@ function classifyWorkflow(prompt = '') {
     };
   }
 
+  const targetObjectType = inferInventoryObjectType(text);
+
   if (hasDrilldownIntent(text)) {
     return {
       workflowType: 'drilldown_catalog',
       confidence: 0.9,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'drilldown_catalog_intent'
     };
   }
@@ -71,8 +83,19 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'metric_inventory',
       confidence: 0.9,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'metric_inventory_intent'
+    };
+  }
+
+  // Metric evidence wins over inventory wording. "有哪些页面出现400错误"
+  // asks for ranked/filterable metric data, not a metadata catalog.
+  if (hasMetricConditionIntent(text) && (hasRankingIntent(text) || hasQuestionListIntent(text))) {
+    return {
+      workflowType: 'metric_topn',
+      confidence: 0.88,
+      targetObjectType,
+      reason: 'metric_condition_over_inventory'
     };
   }
 
@@ -80,7 +103,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'object_inventory',
       confidence: 0.92,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'object_inventory_intent'
     };
   }
@@ -89,7 +112,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'metric_timeseries',
       confidence: 0.75,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'trend_intent'
     };
   }
@@ -98,7 +121,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'metric_average',
       confidence: 0.75,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'average_intent'
     };
   }
@@ -107,7 +130,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'metric_topn',
       confidence: 0.75,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'ranking_intent'
     };
   }
@@ -116,7 +139,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'overview',
       confidence: 0.7,
-      targetObjectType: inferInventoryObjectType(text),
+      targetObjectType,
       reason: 'overview_intent'
     };
   }
@@ -124,7 +147,7 @@ function classifyWorkflow(prompt = '') {
   return {
     workflowType: null,
     confidence: 0.2,
-    targetObjectType: inferInventoryObjectType(text),
+    targetObjectType,
     reason: 'workflow_unresolved'
   };
 }

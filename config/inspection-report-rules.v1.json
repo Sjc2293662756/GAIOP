@@ -1,0 +1,20 @@
+{
+  "schema": "openclaw_napm_inspection_rules.v1",
+  "timezone": "Asia/Shanghai",
+  "thresholds": {
+    "minOneMinuteRetentionDays": 7,
+    "packetDropsWarningGreaterThan": 0,
+    "packetDupRateWarningGreaterThan": null,
+    "diskUsageWarningPercent": 85,
+    "cpuUsageWarningPercent": 85,
+    "dataLagWarningMinutes": 30,
+    "defaultBusinessGroupCount": 4,
+    "minPacketStorageDays": null,
+    "trafficSpikeRatio": 3,
+    "trafficZeroSegmentWarningGreaterThan": 0,
+    "businessSlowRatioWarningGreaterThan": 0,
+    "businessSlowCountWarningGreaterThan": 0,
+    "businessHttp400WarningGreaterThan": 0,
+    "businessHttp500WarningGreaterThan": 0
+  }
+}

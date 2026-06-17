@@ -15,6 +15,7 @@ const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
 const WorkflowClassifierService = require('./WorkflowClassifierService');
+const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 
 // 深拷贝 spec 等 JSON 兼容对象，避免解析阶段修改共享配置。
 function cloneJson(value) {
@@ -237,11 +238,14 @@ function inferDirection(prompt = '') {
 
 // 基于 resolution spec 中的指标别名表识别指标。
 function inferMetric(prompt = '', spec = {}) {
-  const match = findAliasMatch(prompt, spec?.metrics?.aliases || {});
-  if (match) {
+  const semantic = MetricSemanticNormalizerService.resolveMetricSemantic(prompt, {
+    specMetricAliases: spec?.metrics?.aliases || {}
+  });
+  if (semantic) {
     return {
-      metric: match.id,
-      matchedAlias: match.alias
+      metric: semantic.metric,
+      matchedAlias: semantic.matchedAlias,
+      semantic
     };
   }
 
@@ -377,6 +381,11 @@ function isDrilldownCatalogPrompt(prompt = '') {
 }
 
 function isRankingPrompt(prompt = '') {
+  const text = normalizeText(prompt);
+  if (/(最大|最高|最多|最少|最低|最小|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个|有哪些|哪些|有哪几个|列出|查看|查询)/i.test(text)) {
+    return true;
+  }
+
   return includesAny(prompt, [
     '最大',
     '最高',
@@ -392,6 +401,59 @@ function isRankingPrompt(prompt = '') {
     '哪个',
     '哪一个'
   ]);
+}
+
+function inferMetricTargetGroups(prompt = '', baseGroupType = 'IPAddress') {
+  const text = normalizeText(prompt);
+  const lower = normalizeLower(text);
+  const base = baseGroupType || 'IPAddress';
+  const webApplicationArgument = inferWebApplicationArgument(text);
+
+  const wantsPageFamily = /页面|页面族|PageFamily|page\s*family|page/i.test(text);
+  if (wantsPageFamily) {
+    const root = { type: 'WebApplication' };
+    if (webApplicationArgument) {
+      root.argument = webApplicationArgument;
+    }
+    return {
+      groups: [
+        root,
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      targetObjectType: 'PageFamily',
+      pathPlanning: {
+        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily'],
+        plannedGroups: [
+          root,
+          { type: 'PageFamilies', argument: null },
+          { type: 'PageFamily', argument: null }
+        ],
+        reason: 'metric_target_page_family',
+        confidence: 0.95
+      }
+    };
+  }
+
+  return {
+    groups: [{ type: base }],
+    targetObjectType: base,
+    pathPlanning: null
+  };
+}
+
+function inferWebApplicationArgument(prompt = '') {
+  const text = normalizeText(prompt);
+  if (/其他\s*web\s*应用|其他Web应用|其它\s*web\s*应用|其它Web应用|Other\s*Web\s*Application/i.test(text)) {
+    return '其他Web应用';
+  }
+
+  const quoted = text.match(/[“"']([^”"']{1,80})[”"']/);
+  if (quoted && /(web|业务|站点|网站|WebApplication)/i.test(text)) {
+    return quoted[1].trim();
+  }
+
+  return '';
 }
 
 // 构造统一 diagnostics 结构，便于上层知道该结果来自哪个解析器。
@@ -464,6 +526,13 @@ function buildMetadataResolvedQuery(prompt, service, groupType, operation) {
  */
 function resolveMetadataPrompt(prompt = '', spec = {}) {
   const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
+  if (workflow.workflowType && ![
+    'drilldown_catalog',
+    'metric_inventory',
+    'object_inventory'
+  ].includes(workflow.workflowType)) {
+    return null;
+  }
   const groupMatch = inferGroup(prompt, spec, { defaultGroup: 'WebApplication' });
   const groupType = groupMatch?.group || 'WebApplication';
 
@@ -578,8 +647,10 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     );
   }
 
+  const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
   const groupMatch = inferGroup(prompt, spec, { defaultGroup: 'IPAddress' });
-  const groupType = groupMatch?.group || 'IPAddress';
+  const groupType = workflow.targetObjectType || groupMatch?.group || 'IPAddress';
+  const targetGroups = inferMetricTargetGroups(prompt, groupType);
   const nowSeconds = options.nowSeconds || Math.floor(Date.now() / 1000);
   const timeRange = inferTimeRange(prompt, nowSeconds);
   const direction = inferDirection(prompt);
@@ -591,7 +662,7 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     metric: metricMatch.metric,
     metrics: [metricMatch.metric],
     topMetric: metricMatch.metric,
-    groups: [{ type: groupType }],
+    groups: targetGroups.groups,
     topCount,
     start: timeRange.start,
     end: timeRange.end,
@@ -603,7 +674,13 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     userRequirement: normalizeText(prompt),
     semanticConstraints: {
       operation: direction === 'asc' ? 'rank_bottom' : 'rank_top',
-      direction
+      direction,
+      targetObjectType: targetGroups.targetObjectType,
+      workflowType: 'metric_topn'
+    },
+    ...(targetGroups.pathPlanning ? { pathPlanning: targetGroups.pathPlanning } : {}),
+    executionOptions: {
+      allowPathRepair: true
     },
     resolutionHints: {
       constructedBy: 'openclaw_mainflow_resolver',
@@ -625,7 +702,7 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
       service: 'topValues',
       operation: resolvedQuery.semanticConstraints.operation,
       metric: metricMatch.metric,
-      groupType,
+      groupType: targetGroups.targetObjectType,
       topCount
     },
     resolvedQuery,

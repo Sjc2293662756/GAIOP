@@ -1,0 +1,67 @@
+{
+  "schema": "openclaw_napm_inspection_narrative_rules.v1",
+  "groups": {
+    "traffic.summary": [
+      {
+        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.missingPointCount > 0",
+        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.missingPointCount}} 个疑似缺失点，应结合采集状态和镜像链路进行核查。"
+      },
+      {
+        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.zeroSegmentCount > 0",
+        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.zeroSegmentCount}} 个零流量点，应确认该时段是否存在采集停顿或业务空窗。"
+      },
+      {
+        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.spikeCount > 0",
+        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.spikeCount}} 个疑似尖峰，建议关注对应时间点的业务突增或异常流量。"
+      },
+      {
+        "when": "inspection.trafficAnalysis.recentDay.dataset.stats.missingPointCount > 0",
+        "text": "最近1天总流量趋势存在 {{inspection.trafficAnalysis.recentDay.dataset.stats.missingPointCount}} 个疑似缺失点，应进一步确认历史采集连续性。"
+      },
+      {
+        "when": "inspection.trafficAnalysis.status == ok",
+        "text": "最近1小时和最近1天总流量趋势连续，未发现明显中断、零流量片段或异常尖峰。"
+      },
+      {
+        "when": "default",
+        "text": "本次巡检未获取到完整流量趋势结论，请以查询证据和趋势样本表为准继续核实。"
+      }
+    ],
+    "business.summary": [
+      {
+        "when": "inspection.businessPerformance.slowAccess.length > 0",
+        "text": "最近7日业务性能查询发现 {{inspection.businessPerformance.slowAccess.0.businessName}} 慢访问占比为 {{inspection.businessPerformance.slowAccess.0.ratio}}，慢访问次数为 {{inspection.businessPerformance.slowAccess.0.slowCount}}。"
+      },
+      {
+        "when": "inspection.businessPerformance.httpErrors.length > 0",
+        "text": "最近7日业务性能查询发现存在 HTTP 400/500 报错业务，需结合应用日志和访问路径进一步定位。"
+      },
+      {
+        "when": "inspection.businessPerformance.status == ok",
+        "text": "最近7日业务慢访问和 HTTP 400/500 报错未发现明显异常。"
+      },
+      {
+        "when": "default",
+        "text": "本次巡检未获取到完整业务性能结论，请以业务性能查询证据为准继续核实。"
+      }
+    ],
+    "summary.conclusion": [
+      {
+        "when": "inspection.summary.conclusion exists",
+        "text": "{{inspection.summary.conclusion}}"
+      },
+      {
+        "when": "inspection.summary.overallStatus == warning",
+        "text": "本次巡检发现部分指标需要关注，建议优先处理巡检表中列出的异常项。"
+      },
+      {
+        "when": "inspection.summary.overallStatus == ok",
+        "text": "本次巡检未发现明显异常，系统整体运行状态正常。"
+      },
+      {
+        "when": "default",
+        "text": "本次巡检已完成，未形成明确总体结论。"
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "openclaw_napm_inspection_field_map.v1",
+  "applianceInfo": {
+    "systemName": ["properties.hostname", "properties.BoxName", "boxName"],
+    "ipAddress": ["properties.ipAddress", "properties.IpAddress", "address"],
+    "serialNumber": ["properties.SerialNumber", "properties.serialNumber", "serialNumber"],
+    "applianceTime": ["properties.appliance_time"],
+    "uptime": ["properties.uptime"],
+    "packetPerSecond": ["properties.packetPerSecond"],
+    "connPerSecond": ["properties.connPerSecond"],
+    "ipsPerMinute": ["properties.ipsPerMinute"],
+    "packetDrops": ["properties.packetDrops"],
+    "packetDupRate": ["properties.packetDupRate"],
+    "diskusage": ["properties.diskusage"],
+    "cpuUsage": ["properties.cpuUsage"],
+    "datainfo": ["properties.datainfo"],
+    "applicationCnt": ["properties.applicationCnt"],
+    "applStandardCnt": ["properties.applStandardCnt"],
+    "applServerCnt": ["properties.applServerCnt"],
+    "applWebCnt": ["properties.applWebCnt"],
+    "applUrlCnt": ["properties.applUrlCnt"],
+    "busGroupCnt": ["properties.busGroupCnt"]
+  },
+  "aboutPage": {
+    "softwareVersion": "#sysVersion"
+  },
+  "packetsInfo": {
+    "packetStorageStart": "rbRange[0]",
+    "packetStorageEnd": "rbRange[1]"
+  }
+}

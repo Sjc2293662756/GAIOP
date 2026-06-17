@@ -89,6 +89,68 @@ function isPacketSourceResult(result = {}) {
     || Boolean(result.preview || result.download || result.analysis);
 }
 
+function isInspectionSourceResult(result = {}) {
+  if (!isPlainObject(result)) {
+    return false;
+  }
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  return String(result?.reportData?.reportType || '').trim() === 'inspection_report'
+    || String(result.schema || '').trim() === 'openclaw_napm_inspection_result.v1'
+    || String(narrationInput.schema || '').trim() === 'openclaw_napm_inspection.v1'
+    || isPlainObject(result.inspection);
+}
+
+function buildInspectionReportData(result = {}, options = {}) {
+  if (!isInspectionSourceResult(result)) {
+    return null;
+  }
+  if (isPlainObject(result.reportData)) {
+    return {
+      ...result.reportData,
+      format: normalizeFormat(options.format || result.reportData.format || result.reportData.defaultFormat)
+    };
+  }
+
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  const inspection = isPlainObject(result.inspection)
+    ? result.inspection
+    : (isPlainObject(narrationInput.inspection) ? narrationInput.inspection : result);
+  const title = String(
+    options.title
+    || result.title
+    || result.summary?.title
+    || `${inspection.customerName ? `${inspection.customerName}` : ''}NAPM 巡检报告`
+  ).trim() || 'NAPM 巡检报告';
+
+  return {
+    schema: 'openclaw_napm_report_data.v1',
+    reportType: 'inspection_report',
+    templateId: 'napm_traffic_health_inspection_v1',
+    format: normalizeFormat(options.format || result.format || 'docx'),
+    defaultFormat: 'docx',
+    title,
+    sourceQuestion: String(options.sourceQuestion || options.prompt || result.sourceQuestion || '').trim() || undefined,
+    dataSource: {
+      system: 'NAPM',
+      sourceSkill: 'openclaw-napm-inspection',
+      queryService: 'inspectionSnapshot'
+    },
+    inspection,
+    sections: [
+      {
+        type: 'inspection',
+        title: '巡检报告',
+        dataPath: 'inspection'
+      }
+    ],
+    audit: {
+      sourceSkill: 'openclaw-napm-inspection',
+      sourceSchema: String(result.schema || narrationInput.schema || inspection.schema || '').trim() || undefined,
+      reportInputSource: isPlainObject(result.inspection) ? 'sourceResult.inspection' : 'inspection'
+    }
+  };
+}
+
 function buildPacketReportData(result = {}, options = {}) {
   if (!isPacketSourceResult(result)) {
     return null;
@@ -260,6 +322,16 @@ function normalizeReportInput(input = {}, options = {}) {
     : (payload.reportType && Array.isArray(payload.sections) ? payload : null);
   const sourceReportData = explicitReportData
     || (isPlainObject(sourceResult?.reportData) ? sourceResult.reportData : null)
+    || buildInspectionReportData(
+      sourceResult || (isPlainObject(payload.inspection) ? payload : null),
+      {
+        ...options,
+        prompt: payload.prompt || payload.exportPrompt,
+        format: payload.format || options.format,
+        title: payload.title || options.title,
+        sourceQuestion: payload.sourceQuestion || options.sourceQuestion
+      }
+    )
     || buildPacketReportData(sourceResult, {
       ...options,
       prompt: payload.prompt || payload.exportPrompt,
@@ -303,7 +375,9 @@ function normalizeReportInput(input = {}, options = {}) {
 module.exports = {
   normalizeReportInput,
   buildPacketReportData,
+  buildInspectionReportData,
   isPacketSourceResult,
+  isInspectionSourceResult,
   normalizeFormat,
   __test__: {
     compactJson,

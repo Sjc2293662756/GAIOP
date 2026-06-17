@@ -146,7 +146,7 @@ packetQuery(criteria.businessName)
   -> NetInside topValues(WebApplication)
   -> NetInside topValues(WebApplication + PageFamilies + PageFamily)
   -> parse pageFamilyId from selected row groupPath
-  -> NetInside pageViews(csv=true, pageFamilyId)
+  -> NetInside pageViews(json=true, pageFamilyId)
   -> read pageFamilyDetailId from selected page visit row
   -> DownServlet(moduleKey=Ipv, groupId=45, rtClickId=5, instanceId=PATH1/{pageFamilyDetailId})
   -> if analysis requested: tshark
@@ -158,6 +158,8 @@ Rules for business packet flow:
 
 - Do not route business packet tasks to `openclaw-napm-query` just because the resolver uses `topValues` internally. Those `topValues` calls are implementation steps inside this packet skill.
 - `DownServlet` has no `packetsPreview` equivalent. Do not call `packetsPreview` for the resolved `DownServlet` URL.
+- When the user asks to preview a business page packet before choosing a peer IP, use `pageViews(json=true)` and return `businessResolution.pageViewsPreview.rows`.
+- The pageViews preview rows are user-selectable candidates; do not auto-select the first row when `mode=preview_only`.
 - If no row can be selected at any step, return `CLARIFICATION_REQUIRED` with the executed `businessResolution.steps`; do not invent an `instanceId`.
 - The default page-family ranking metric is `PGHTTP500`, matching the v3 packet-download document.
 - The default business ranking metric is `PGNPGE`, matching the v3 packet-download document.

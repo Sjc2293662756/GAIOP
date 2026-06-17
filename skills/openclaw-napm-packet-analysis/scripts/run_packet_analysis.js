@@ -74,6 +74,37 @@ async function main() {
   if (task.needsBusinessInstanceResolution) {
     const businessResolution = await resolveBusinessPacketInstance(task);
     task.businessResolution = businessResolution;
+    if (businessResolution.previewOnly) {
+      const result = {
+        ok: businessResolution.ok,
+        mode: task.mode,
+        downloadType: task.downloadType,
+        startedAt,
+        criteria: task.criteria,
+        urls: {},
+        explanation: null,
+        preview: null,
+        download: null,
+        analysis: null,
+        businessResolution,
+        error: businessResolution.ok ? null : businessResolution.error,
+        decision: businessResolution.ok
+          ? {
+            next_action: 'SELECT_PAGE_VIEW',
+            reason: 'BUSINESS_PAGE_VIEWS_PREVIEW_READY',
+            message: '请选择一个页面访问明细的 clientIp 或 pageViewIndex，再继续构造或下载业务数据包。',
+          }
+          : {
+            next_action: 'CLARIFICATION_REQUIRED',
+            reason: businessResolution.error && businessResolution.error.code,
+            message: businessResolution.error && businessResolution.error.message,
+          },
+      };
+      result.summary = buildSummary(result);
+      result.narrationInput = buildNarrationInput(result);
+      writeJson(result);
+      return;
+    }
     if (!businessResolution.ok) {
       writeJson({
         ok: false,
@@ -520,15 +551,36 @@ async function resolveBusinessPacketInstance(task) {
 
   const pageViewsUrl = buildPageViewsUrl(task.host, criteria, pageFamilyId);
   const pageViewsResult = await requestNetInsideJson(pageViewsUrl, 'page_views');
+  const pageViewsPreview = buildPageViewsPreview(pageViewsResult.rows, {
+    pageFamilyId,
+    businessName,
+    url: publicPacketUrl(pageViewsUrl, task.showFullUrls),
+  });
   steps.push({
     name: 'page_views',
     url: publicPacketUrl(pageViewsUrl, task.showFullUrls),
     ok: pageViewsResult.ok,
     rowCount: pageViewsResult.rows.length,
     pageFamilyId,
+    previewRows: pageViewsPreview.rows,
   });
   if (!pageViewsResult.ok) {
     return businessResolveFailure('BUSINESS_PACKET_PAGE_VIEWS_QUERY_FAILED', pageViewsResult.message, steps);
+  }
+
+  if (task.mode === 'preview_only' || criteria.businessPageViewsPreviewOnly) {
+    return {
+      ok: pageViewsPreview.rows.length > 0,
+      previewOnly: true,
+      businessName,
+      pageFamilyId,
+      pageViewsPreview,
+      steps,
+      error: pageViewsPreview.rows.length > 0 ? null : {
+        code: 'BUSINESS_PACKET_PAGE_VIEW_NOT_FOUND',
+        message: 'pageViews 未返回页面访问明细，无法预览可选的业务数据包访问实例。',
+      },
+    };
   }
 
   const selectedPageView = selectPageViewRow(pageViewsResult.rows, criteria);
@@ -565,6 +617,49 @@ function businessResolveFailure(code, message, steps = []) {
     ok: false,
     error: { code, message },
     steps,
+  };
+}
+
+function buildPageViewsPreview(rows = [], context = {}) {
+  const normalizedRows = rows
+    .map((row, index) => normalizePageViewPreviewRow(row, index))
+    .filter((row) => row.pageFamilyDetailId);
+  const uniqueClientIps = Array.from(new Set(normalizedRows.map((row) => row.clientIp).filter(Boolean)));
+  const statusCounts = {};
+  for (const row of normalizedRows) {
+    const key = row.httpStatus != null ? String(row.httpStatus) : 'unknown';
+    statusCounts[key] = (statusCounts[key] || 0) + 1;
+  }
+  return {
+    pageFamilyId: context.pageFamilyId || null,
+    businessName: context.businessName || null,
+    url: context.url || null,
+    rowCount: normalizedRows.length,
+    uniqueClientIps,
+    statusCounts,
+    rows: normalizedRows.slice(0, 50),
+    selectionHint: '选择 clientIp 或 pageViewIndex 后，可继续构造 DownServlet 下载链接。',
+  };
+}
+
+function normalizePageViewPreviewRow(row, index) {
+  const detailId = extractPageFamilyDetailId(row);
+  return {
+    index,
+    startTime: row && (row.startTime || row.StartTime || row.time || row.timestamp) || null,
+    page: row && (row.page || row.Page || row.url || row.uri) || null,
+    clientIp: row && (row.clientIp || row.clientIP || row.ClientIp || row.client || row.originatingIp) || null,
+    serverIp: row && (row.serverIp || row.serverIP || row.ServerIp || row.server) || null,
+    originatingIp: row && (row.originatingIp || row.OriginatingIp) || null,
+    httpStatus: row && (row.httpStatus || row.HttpStatus || row.status || row.responseCode) || null,
+    http400S: row && (row.http400S || row.Http400S) || 0,
+    http500S: row && (row.http500S || row.Http500S) || 0,
+    pageTime: row && (row.pageTime || row.PageTime) || null,
+    pageTraffic: row && (row.pageTraffic || row.PageTraffic) || null,
+    requestTraffic: row && (row.requestTraffic || row.RequestTraffic) || null,
+    userAgent: row && (row.userAgent || row.UserAgent) || null,
+    pageFamilyDetailId: detailId,
+    instanceId: detailId ? normalizeInstanceId(detailId) : null,
   };
 }
 
@@ -607,7 +702,7 @@ function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
   url.searchParams.set('type', 'pageViews');
   url.searchParams.set('start', String(criteria.start));
   url.searchParams.set('end', String(criteria.end));
-  url.searchParams.set('csv', 'true');
+  url.searchParams.set('json', 'true');
   url.searchParams.set('pageFamilyId', String(pageFamilyId));
   url.searchParams.set('maxLimit', String(criteria.maxLimit == null ? 'undefined' : criteria.maxLimit));
   return url.toString();
@@ -1818,8 +1913,13 @@ function buildSummary(result) {
   const highlights = [];
   if (result.urls && result.urls.preview) highlights.push(`预览 URL 已生成：${result.urls.preview}`);
   if (result.urls && result.urls.download) highlights.push(`下载 URL 已生成：${result.urls.download}`);
-  if (result.businessResolution && result.businessResolution.ok) {
+  if (result.businessResolution && result.businessResolution.ok && !result.businessResolution.previewOnly) {
     highlights.push(`业务数据包实例已解析：pageFamilyId=${result.businessResolution.pageFamilyId}，pageFamilyDetailId=${result.businessResolution.pageFamilyDetailId}`);
+  }
+  if (result.businessResolution && result.businessResolution.previewOnly && result.businessResolution.pageViewsPreview) {
+    const preview = result.businessResolution.pageViewsPreview;
+    const ips = (preview.uniqueClientIps || []).slice(0, 5).join('、') || '无';
+    highlights.push(`业务页面访问明细预览：${preview.rowCount} 条，可选对端 IP：${ips}。`);
   }
   if (result.explanation) highlights.push(result.explanation.meaning);
   if (result.preview) highlights.push(formatPreviewSummary(result.preview));
@@ -1875,10 +1975,12 @@ function summarizeBusinessResolution(businessResolution) {
   if (!businessResolution) return null;
   return {
     ok: businessResolution.ok,
+    previewOnly: businessResolution.previewOnly || false,
     businessName: businessResolution.businessName,
     pageFamilyId: businessResolution.pageFamilyId,
     pageFamilyDetailId: businessResolution.pageFamilyDetailId,
     instanceId: businessResolution.instanceId,
+    pageViewsPreview: businessResolution.pageViewsPreview || null,
     steps: Array.isArray(businessResolution.steps)
       ? businessResolution.steps.map((step) => ({
         name: step.name,
@@ -1891,6 +1993,7 @@ function summarizeBusinessResolution(businessResolution) {
         selectedPageFamilyDetailId: step.selectedPageFamilyDetailId,
         selectedClientIp: step.selectedClientIp,
         selectedHttpStatus: step.selectedHttpStatus,
+        previewRows: step.previewRows,
       }))
       : [],
     error: businessResolution.error,
@@ -2128,6 +2231,7 @@ module.exports = {
   buildBusinessTopValuesUrl,
   buildPageFamilyTopValuesUrl,
   buildPageViewsUrl,
+  buildPageViewsPreview,
   shouldResolveBusinessPacketInstance,
   extractBusinessName,
   extractPageFamilyId,

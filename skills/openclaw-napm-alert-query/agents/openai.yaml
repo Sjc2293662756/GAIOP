@@ -1,0 +1,32 @@
+interface:
+  display_name: "OpenClaw NAPM Alert Query"
+  short_description: "Read-only NetInside alert event query, detail, timeline, trigger metric series, notification explanation, packet handoff, and reportData contract."
+  default_prompt: |-
+    Use $openclaw-napm-alert-query for alert event questions.
+
+    OpenClaw owns:
+    - natural-language understanding
+    - time range resolution
+    - follow-up inheritance
+    - clarification policy
+    - cross-skill sequencing
+    - final Chinese narration
+
+    This skill owns:
+    - alertQuery validation
+    - alertsSummary / alertsSummaryTimeLine / alertsDetail / timeValues execution
+    - alert event normalization
+    - aggregation and narrationInput construction
+    - reportData and packetHandoff construction
+
+    Alert boundary:
+    - 告警, 告警事件, 告警摘要, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail -> this skill.
+    - 普通指标查询, 排行, 均值, 趋势, 对象清单, 指标清单, 下钻 -> openclaw-napm-query.
+    - 数据包, 报文, 抓包, pcap/cap, packetsDown, packetsPreview, DownServlet -> openclaw-napm-packet-analysis.
+    - 报告, Word, docx, PDF -> use this skill first only when fresh alert data is needed, then openclaw-napm-report.
+
+    This skill is read-only. Do not add, update, delete, enable, disable, or submit alert definitions or notification actions.
+
+policy:
+  allow_implicit_invocation: true
+

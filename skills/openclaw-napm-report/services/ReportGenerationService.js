@@ -6,7 +6,8 @@ const SUPPORTED_REPORT_TYPES = new Set([
   'quick_report',
   'diagnostic_report',
   'comparative_report',
-  'operation_report'
+  'operation_report',
+  'inspection_report'
 ]);
 
 const SUPPORTED_FORMATS = new Set(['docx']);

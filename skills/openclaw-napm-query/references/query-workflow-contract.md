@@ -392,3 +392,37 @@ For failures:
 - Distinguish no data from execution error.
 - Distinguish validation error from southbound API rejection.
 - Do not invent successful data when execution failed.
+
+## Metric-Condition Arbitration Addendum
+
+Inventory words such as `有哪些`, `哪些`, `列出`, or `查看` do not always mean metadata inventory.
+
+If the same question contains metric/error/quality evidence such as `400`, `500`, `4xx`, `5xx`, `错误`, `报错`, `异常`, `失败`, `慢`, `响应时间`, `丢包`, `重传`, `吞吐`, or `流量`, classify it as an executable metric query. Metric evidence has higher priority than inventory wording.
+
+Example:
+
+```text
+在其他web应用中，有哪些页面出现400错误？
+```
+
+Correct resolvedQuery shape:
+
+```json
+{
+  "service": "topValues",
+  "metric": "PGHTTP400",
+  "metrics": ["PGHTTP400"],
+  "topMetric": "PGHTTP400",
+  "groups": [
+    { "type": "WebApplication", "argument": "其他Web应用" },
+    { "type": "PageFamilies" },
+    { "type": "PageFamily" }
+  ],
+  "semanticConstraints": {
+    "workflowType": "metric_topn",
+    "targetObjectType": "PageFamily"
+  }
+}
+```
+
+Do not answer this kind of question by trying `groups` metadata first and then probing alternative paths. The resolvedQuery must encode the target metric, scope, and terminal object path before execution.

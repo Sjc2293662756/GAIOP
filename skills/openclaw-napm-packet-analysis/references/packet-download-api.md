@@ -137,10 +137,23 @@ page\s+(\d+)/
 Step 3, query page visit details:
 
 ```text
-GET https://{host}/webservice/NetInside?UserName={userName}&Password={password}&type=pageViews&start={start}&end={end}&csv=true&pageFamilyId={pageFamilyId}&maxLimit=undefined
+GET https://{host}/webservice/NetInside?UserName={userName}&Password={password}&type=pageViews&start={start}&end={end}&json=true&pageFamilyId={pageFamilyId}&maxLimit=undefined
 ```
 
-Although `csv=true` is used, the endpoint may return JSON arrays in this workflow. Select a page visit row and read `pageFamilyDetailId`.
+Use `json=true` for skill execution. The endpoint returns a JSON array of page visit rows. Render these rows as a business page visit preview when the user asks to preview before download.
+
+Important page visit fields:
+
+| Field | Meaning |
+|---|---|
+| `startTime` | Page visit timestamp. |
+| `page` | Page URL. |
+| `clientIp` / `originatingIp` | Peer/client IP to show for user selection. |
+| `serverIp` | Web server IP. |
+| `httpStatus` | HTTP status such as `404`. |
+| `pageFamilyDetailId` | The value used to build `instanceId=PATH1/{pageFamilyDetailId}`. |
+
+After the user selects a row, use its `pageFamilyDetailId`.
 
 Step 4, build the direct download URL:
 

@@ -321,4 +321,39 @@ describe('NapmResolvedQueryResolverService', () => {
       }
     });
   });
+
+  test('should resolve page HTTP 400 question under WebApplication scope as PageFamily topValues', () => {
+    const result = ResolverService.resolvePrompt('\u5728\u5176\u4ed6web\u5e94\u7528\u4e2d\uff0c\u6709\u54ea\u4e9b\u9875\u9762\u51fa\u73b0400\u9519\u8bef\uff1f', {
+      nowSeconds: 1781491260
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.intent).toMatchObject({
+      category: 'data_query',
+      service: 'topValues',
+      metric: 'PGHTTP400',
+      groupType: 'PageFamily'
+    });
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metric: 'PGHTTP400',
+      metrics: ['PGHTTP400'],
+      topMetric: 'PGHTTP400',
+      groups: [
+        { type: 'WebApplication', argument: '其他Web应用' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      semanticConstraints: {
+        workflowType: 'metric_topn',
+        targetObjectType: 'PageFamily'
+      },
+      executionOptions: {
+        allowPathRepair: true
+      }
+    });
+    expect(result.resolvedQuery.start).toBe(1781487660);
+    expect(result.resolvedQuery.end).toBe(1781491260);
+  });
 });

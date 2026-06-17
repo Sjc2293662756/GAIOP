@@ -20,7 +20,9 @@
     "tools": [
       "napm-skill-query",
       "napm-report-export",
-      "napm-packet-analysis"
+      "napm-packet-analysis",
+      "napm-alert-query",
+      "napm-inspection-snapshot"
     ]
   }
 }

@@ -57,9 +57,44 @@ describe('openclaw-napm-packet-analysis business DownServlet flow', () => {
 
     const pageViewsUrl = new URL(packet.buildPageViewsUrl(host, criteria, '8573007'));
     expect(pageViewsUrl.searchParams.get('type')).toBe('pageViews');
-    expect(pageViewsUrl.searchParams.get('csv')).toBe('true');
+    expect(pageViewsUrl.searchParams.get('json')).toBe('true');
     expect(pageViewsUrl.searchParams.get('pageFamilyId')).toBe('8573007');
     expect(pageViewsUrl.searchParams.get('maxLimit')).toBe('undefined');
+  });
+
+  test('should build pageViews preview rows for business packet selection', () => {
+    const preview = packet.buildPageViewsPreview([
+      {
+        clientIp: '31.59.160.12',
+        serverIp: '101.254.114.238',
+        httpStatus: 404,
+        page: 'http://101.254.114.238/SDK/webLanguage',
+        startTime: '2026-06-15 10:39:30.7',
+        pageFamilyDetailId: '43425979-1781491140---1781491170.721124-1781491170.873562-31.59.160.12'
+      },
+      {
+        clientIp: '204.76.203.219',
+        serverIp: '101.254.114.238',
+        httpStatus: 404,
+        page: 'http://101.254.114.238/SDK/webLanguage',
+        startTime: '2026-06-15 10:32:26.1',
+        pageFamilyDetailId: '43425974-1781490720---1781490746.135020-1781490746.296289-204.76.203.219'
+      }
+    ], {
+      businessName: '其他Web应用',
+      pageFamilyId: '8574581'
+    });
+
+    expect(preview.rowCount).toBe(2);
+    expect(preview.uniqueClientIps).toEqual(['31.59.160.12', '204.76.203.219']);
+    expect(preview.statusCounts).toEqual({ '404': 2 });
+    expect(preview.rows[0]).toMatchObject({
+      index: 0,
+      clientIp: '31.59.160.12',
+      serverIp: '101.254.114.238',
+      httpStatus: 404,
+      instanceId: 'PATH1/43425979-1781491140---1781491170.721124-1781491170.873562-31.59.160.12'
+    });
   });
 
   test('should build DownServlet URL with fixed groupId and rtClickId for resolved instance', () => {
