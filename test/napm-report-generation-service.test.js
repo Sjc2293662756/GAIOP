@@ -65,10 +65,12 @@ describe('openclaw-napm-report generation service', () => {
     const result = await service.generate(makeReportPayload());
 
     expect(result.ok).toBe(true);
-    expect(result.reportId).toMatch(/^napm-diagnostic_report-\d{8}-\d{6}-[a-z0-9]{6}$/);
+    // 诊断报告： {faultName}_故障分析报告_{YYYYMMDD}_{HHmmss}
+    expect(result.reportId).toMatch(/_故障分析报告_\d{8}_\d{6}$/);
     expect(result.format).toBe('docx');
     expect(result.filePath).toMatch(/\.docx$/);
-    expect(result.downloadUrl).toMatch(/^\/reports\/napm-diagnostic_report-/);
+    expect(result.downloadUrl).toMatch(/^\/reports\//);
+    expect(result.fileName).toMatch(/_故障分析报告_\d{8}_\d{6}\.docx$/);
     expect(fs.existsSync(result.filePath)).toBe(true);
     expect(fs.existsSync(result.auditPath)).toBe(true);
 
@@ -110,6 +112,85 @@ describe('openclaw-napm-report generation service', () => {
   });
 
   test('should sanitize file segments for report id parts', () => {
-    expect(storageTest.sanitizeFileSegment('diag/report:*?')).toBe('diag-report');
+    expect(storageTest.sanitizeFileSegment('diag/report:*?')).toBe('diag_report');
+  });
+
+  test('should generate human-readable filename: {SystemName}_{TypeCN}_{timestamp} for regular reports', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    // inspection_report with explicit systemName
+    const inspResult = await service.generate(makeReportPayload({
+      reportType: 'inspection_report',
+      systemName: 'Netlnside流量分析系统',
+      title: 'Netlnside流量分析系统巡检报告',
+      sections: [{ type: 'summary', title: '测试', content: '内容' }]
+    }));
+    expect(inspResult.ok).toBe(true);
+    expect(inspResult.reportId).toMatch(/^Netlnside流量分析系统_巡检报告_\d{8}_\d{6}$/);
+
+    // quick_report with systemName from dataSource
+    const quickResult = await service.generate(makeReportPayload({
+      reportType: 'quick_report',
+      systemName: 'NAPM',
+      title: '快速报告',
+      sections: [{ type: 'summary', title: '摘要', content: '内容' }]
+    }));
+    expect(quickResult.ok).toBe(true);
+    expect(quickResult.reportId).toMatch(/^NAPM_快速报告_\d{8}_\d{6}$/);
+  });
+
+  test('should generate human-readable filename: {FaultName}_故障分析报告_{timestamp} for diagnostic reports', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    // diagnostic_report with explicit faultName
+    const diagResult = await service.generate(makeReportPayload({
+      reportType: 'diagnostic_report',
+      faultName: '核心交换机端口故障',
+      title: '核心交换机端口故障分析报告',
+      sections: [{ type: 'summary', title: '核心结论', content: '端口异常。' }]
+    }));
+    expect(diagResult.ok).toBe(true);
+    expect(diagResult.reportId).toMatch(/^核心交换机端口故障_故障分析报告_\d{8}_\d{6}$/);
+    expect(diagResult.faultName).toBe('核心交换机端口故障');
+  });
+
+  test('should derive faultName from title when not explicitly set', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    const result = await service.generate(makeReportPayload({
+      reportType: 'diagnostic_report',
+      title: '192.168.1.1丢包严重分析',
+      sections: [{ type: 'summary', title: '结论', content: '丢包严重。' }]
+    }));
+    expect(result.ok).toBe(true);
+    // faultName derived from title: sanitize('192.168.1.1丢包严重分析')
+    expect(result.reportId).toContain('_故障分析报告_');
+    expect(result.reportId).toMatch(/^192\.168\.1\.1丢包严重分析_故障分析报告_\d{8}_\d{6}$/);
+  });
+
+  test('should include systemName in return value', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    const result = await service.generate(makeReportPayload({
+      reportType: 'inspection_report',
+      systemName: '网深科技流量分析系统',
+      sections: [{ type: 'summary', title: '摘要', content: '内容' }]
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.systemName).toBe('网深科技流量分析系统');
+    expect(result.fileName).toContain('网深科技流量分析系统_巡检报告_');
+  });
+
+  test('should handle future report types via fallback CN name', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    const result = await service.generate(makeReportPayload({
+      reportType: 'summary_report',
+      systemName: 'Netlnside流量分析系统',
+      title: '综述报告',
+      sections: [{ type: 'summary', title: '摘要', content: '内容' }]
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.reportId).toMatch(/^Netlnside流量分析系统_综述报告_\d{8}_\d{6}$/);
   });
 });

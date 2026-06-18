@@ -55,10 +55,12 @@ describe('openclaw-napm-report input contract', () => {
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'diagnostic_report',
       format: 'docx',
+      systemName: 'NAPM',
       dataSource: {
         sourceSkill: 'openclaw-napm-packet-analysis'
       }
     });
+    expect(reportData.faultName).toBeTruthy();
     expect(reportData.sections.some((section) => section.title === 'Top 对端')).toBe(true);
     expect(reportData.sections.some((section) => section.title === 'Top 会话')).toBe(true);
   });

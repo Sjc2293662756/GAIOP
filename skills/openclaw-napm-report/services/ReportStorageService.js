@@ -11,7 +11,7 @@ function formatTimestampForId(date = new Date()) {
     pad(date.getMonth() + 1),
     pad(date.getDate())
   ].join('')
-    + '-'
+    + '_'
     + [
       pad(date.getHours()),
       pad(date.getMinutes()),
@@ -19,14 +19,43 @@ function formatTimestampForId(date = new Date()) {
     ].join('');
 }
 
+/**
+ * 报告类型 → 中文名称映射。
+ * 新增报告类型时在此追加映射即可。
+ */
+const REPORT_TYPE_CN = {
+  quick_report: '快速报告',
+  diagnostic_report: '故障分析报告',
+  comparative_report: '对比报告',
+  operation_report: '运维报告',
+  inspection_report: '巡检报告',
+  summary_report: '综述报告'
+};
+
 function sanitizeFileSegment(value = '') {
   return String(value || '')
     .trim()
-    .replace(/[\\/:*?"<>|]+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
     .slice(0, 80);
+}
+
+function resolveSystemName(report = {}) {
+  return sanitizeFileSegment(
+    report.systemName
+    || (report.dataSource && report.dataSource.system)
+    || 'NAPM'
+  ) || 'NAPM';
+}
+
+function resolveFaultName(report = {}) {
+  return sanitizeFileSegment(
+    report.faultName
+    || report.title
+    || '未命名故障'
+  ) || '未命名故障';
 }
 
 class ReportStorageService {
@@ -48,11 +77,27 @@ class ReportStorageService {
     fs.mkdirSync(this.outputDir, { recursive: true });
   }
 
+  /**
+   * 生成人可读的报告文件名（不含扩展名）。
+   *
+   * 常规报告： {SystemName}_{类型中文}_{YYYYMMDD}_{HHmmss}
+   *   示例： Netlnside流量分析系统_巡检报告_20260618_143052
+   *
+   * 故障分析报告： {FaultName}_故障分析报告_{YYYYMMDD}_{HHmmss}
+   *   示例： 核心交换机端口故障_故障分析报告_20260618_143052
+   */
   createReportId(report = {}, date = new Date()) {
     const timestamp = formatTimestampForId(date);
-    const suffix = Math.random().toString(36).slice(2, 8);
-    const type = sanitizeFileSegment(report.reportType || 'report') || 'report';
-    return `napm-${type}-${timestamp}-${suffix}`;
+    const reportType = String(report.reportType || 'report').trim();
+    const typeCN = REPORT_TYPE_CN[reportType] || '报告';
+
+    if (reportType === 'diagnostic_report') {
+      const faultName = resolveFaultName(report);
+      return `${faultName}_${typeCN}_${timestamp}`;
+    }
+
+    const systemName = resolveSystemName(report);
+    return `${systemName}_${typeCN}_${timestamp}`;
   }
 
   buildPaths(reportId, format) {
@@ -80,5 +125,8 @@ class ReportStorageService {
 module.exports = ReportStorageService;
 module.exports.__test__ = {
   formatTimestampForId,
-  sanitizeFileSegment
+  sanitizeFileSegment,
+  REPORT_TYPE_CN,
+  resolveSystemName,
+  resolveFaultName
 };

@@ -122,6 +122,13 @@ function buildInspectionReportData(result = {}, options = {}) {
     || `${inspection.customerName ? `${inspection.customerName}` : ''}NAPM 巡检报告`
   ).trim() || 'NAPM 巡检报告';
 
+  const systemName = String(
+    options.systemName
+    || result.systemName
+    || inspection.customerName
+    || '网深科技流量分析系统'
+  ).trim() || '网深科技流量分析系统';
+
   return {
     schema: 'openclaw_napm_report_data.v1',
     reportType: 'inspection_report',
@@ -129,9 +136,10 @@ function buildInspectionReportData(result = {}, options = {}) {
     format: normalizeFormat(options.format || result.format || 'docx'),
     defaultFormat: 'docx',
     title,
+    systemName,
     sourceQuestion: String(options.sourceQuestion || options.prompt || result.sourceQuestion || '').trim() || undefined,
     dataSource: {
-      system: 'NAPM',
+      system: systemName,
       sourceSkill: 'openclaw-napm-inspection',
       queryService: 'inspectionSnapshot'
     },
@@ -269,12 +277,30 @@ function buildPacketReportData(result = {}, options = {}) {
     }
   }
 
+  const systemName = String(
+    options.systemName
+    || result.systemName
+    || 'NAPM'
+  ).trim() || 'NAPM';
+
+  const title = String(options.title || summary.title || 'NAPM 数据包分析报告').trim() || 'NAPM 数据包分析报告';
+
+  const faultName = String(
+    options.faultName
+    || result.faultName
+    || summary.faultName
+    || criteria.faultDescription
+    || title
+  ).trim() || '未命名故障';
+
   return {
     schema: 'openclaw_napm_report_data.v1',
     reportType: 'diagnostic_report',
     format: normalizeFormat(options.format || 'docx'),
     defaultFormat: 'docx',
-    title: String(options.title || summary.title || 'NAPM 数据包分析报告').trim() || 'NAPM 数据包分析报告',
+    title,
+    systemName,
+    faultName,
     sourceQuestion: String(options.sourceQuestion || options.prompt || '').trim() || undefined,
     timeRange: {
       start: Number(criteria.start) || undefined,
@@ -282,7 +308,7 @@ function buildPacketReportData(result = {}, options = {}) {
       displayText: criteria.start || criteria.end ? `${criteria.start || '-'} ~ ${criteria.end || '-'}` : undefined
     },
     dataSource: {
-      system: 'NAPM',
+      system: systemName,
       sourceSkill: 'openclaw-napm-packet-analysis',
       queryService: 'packet-analysis',
       mode: String(result.mode || narrationInput.mode || '').trim() || undefined,
@@ -345,14 +371,24 @@ function normalizeReportInput(input = {}, options = {}) {
       ...payload,
       reportType: payload.reportType || 'diagnostic_report',
       format: normalizeFormat(payload.format || options.format),
+      systemName: String(payload.systemName || options.systemName || '').trim() || undefined,
+      faultName: String(payload.faultName || options.faultName || '').trim() || undefined,
       sections: Array.isArray(payload.sections) ? payload.sections : []
     };
   }
 
   const format = normalizeFormat(payload.format || options.format || sourceReportData.format || sourceReportData.defaultFormat);
+  const systemName = String(
+    payload.systemName || options.systemName || sourceReportData.systemName || ''
+  ).trim() || undefined;
+  const faultName = String(
+    payload.faultName || options.faultName || sourceReportData.faultName || ''
+  ).trim() || undefined;
   return {
     ...sourceReportData,
     format,
+    systemName: systemName || sourceReportData.systemName,
+    faultName: faultName || sourceReportData.faultName,
     title: String(payload.title || options.title || sourceReportData.title || '').trim() || sourceReportData.title,
     sourceQuestion: String(
       payload.sourceQuestion

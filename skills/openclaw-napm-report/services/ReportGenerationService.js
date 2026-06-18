@@ -7,7 +7,8 @@ const SUPPORTED_REPORT_TYPES = new Set([
   'diagnostic_report',
   'comparative_report',
   'operation_report',
-  'inspection_report'
+  'inspection_report',
+  'summary_report'
 ]);
 
 const SUPPORTED_FORMATS = new Set(['docx']);
@@ -116,10 +117,13 @@ class ReportGenerationService {
         reportId,
         title: reportWithMeta.title,
         format: normalized.format,
+        fileName: paths.fileName,
         filePath: paths.filePath,
         auditPath: paths.auditPath,
         downloadUrl: paths.downloadUrl,
-        generatedAt
+        generatedAt,
+        systemName: reportWithMeta.systemName || undefined,
+        faultName: reportWithMeta.faultName || undefined
       };
     } catch (error) {
       return {

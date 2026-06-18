@@ -112,7 +112,7 @@ describe('inspection report template', () => {
     const result = await service.generate(makeReportData());
 
     expect(result.ok).toBe(true);
-    expect(result.reportId).toMatch(/^napm-inspection_report-/);
+    expect(result.reportId).toMatch(/_巡检报告_\d{8}_\d{6}$/);
     expect(result.filePath).toMatch(/\.docx$/);
     expect(fs.existsSync(result.filePath)).toBe(true);
     expect(fs.readFileSync(result.filePath).subarray(0, 2).toString('utf8')).toBe('PK');
@@ -133,6 +133,7 @@ describe('inspection report template', () => {
     expect(reportData.sections[0]).toMatchObject({ type: 'inspection', dataPath: 'inspection' });
     expect(isInspectionSourceResult({ inspection: makeInspection() })).toBe(true);
     expect(buildInspectionReportData({ inspection: makeInspection() }).title).toContain('北京烟草');
+    expect(buildInspectionReportData({ inspection: makeInspection() }).systemName).toBe('北京烟草');
   });
 
   test('builds table rows from inspection traffic and business data', () => {
