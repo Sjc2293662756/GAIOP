@@ -64,7 +64,44 @@ function readTimestamp(row = {}) {
 function normalizeTimeSeriesDataset(raw = {}, options = {}) {
   const timezone = options.timezone || 'Asia/Shanghai';
   const metrics = (options.metrics || ['TPIO', 'TPI', 'TPO']).map((item) => String(item).toUpperCase());
-  const rows = extractRows(raw);
+
+  // Handle column-based metricValues format from NAPM API
+  let rows = extractRows(raw);
+  if (rows.length === 0 && Array.isArray(raw.metricValues)) {
+    // Transpose column-based data to row-based
+    // Input:  { metricValues: [{ metric:{id:"TPIO"}, values:[v1,v2,...] }, ...] }
+    // Output: [{ TPIO: v1, TPI: v1, TPO: v1 }, { TPIO: v2, ... }, ...]
+    const granularity = Number(raw.granularity || options.granularity || 60);
+    const startTime = raw.interval?.start || 0;
+
+    const valueArrays = raw.metricValues.map((mv) => ({
+      id: String((mv.metric?.id || mv.metric || '').toUpperCase()),
+      values: Array.isArray(mv.values) ? mv.values : [],
+      valids: Array.isArray(mv.valids) ? mv.valids : []
+    })).filter((col) => col.id && col.values.length > 0);
+
+    if (valueArrays.length > 0) {
+      const rowCount = Math.max(...valueArrays.map((col) => col.values.length));
+      rows = [];
+      for (let i = 0; i < rowCount; i++) {
+        const point = {
+          index: i + 1,
+          timestamp: startTime + i * granularity,
+          time: formatTimestamp(startTime + i * granularity, timezone)
+        };
+        for (const col of valueArrays) {
+          point[col.id] = col.values[i];
+        }
+        // Only include if at least one metric has a valid value
+        const hasValid = valueArrays.some((col) => {
+          const v = col.values[i];
+          return v !== undefined && v !== null && (col.valids.length === 0 || col.valids[i] === true);
+        });
+        if (hasValid) rows.push(point);
+      }
+    }
+  }
+
   const points = rows.map((row, index) => {
     const timestamp = readTimestamp(row);
     const point = {

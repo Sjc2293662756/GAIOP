@@ -35,6 +35,10 @@ const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/open
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
 const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
+const {
+  validateTimeRangeFreshness,
+  autoCorrectTimestampIfStale
+} = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolvedQueryTimeRangeService'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -468,6 +472,24 @@ function normalizeResolvedQueryTimeRange(query = {}) {
   }
   if (Number.isFinite(Number(query.end)) && Number(query.end) > 0) {
     query.end = floorToMinute(query.end);
+  }
+  // 时间戳年份校验：防止 LLM 自行计算时间戳时出现年份错误（如 2025 vs 2026）
+  if (Number.isFinite(Number(query.start)) && Number.isFinite(Number(query.end))) {
+    const freshness = validateTimeRangeFreshness(query.start, query.end);
+    if (!freshness.ok) {
+      const correctedStart = autoCorrectTimestampIfStale(query.start);
+      const correctedEnd = autoCorrectTimestampIfStale(query.end);
+      logAudit('napm_skill_time_range_stale_corrected', {
+        originalStart: query.start,
+        originalEnd: query.end,
+        correctedStart,
+        correctedEnd,
+        issues: freshness.issues,
+        serverTime: freshness.nowSeconds
+      });
+      query.start = correctedStart;
+      query.end = correctedEnd;
+    }
   }
   if (query.timeRange && typeof query.timeRange === 'object' && !Array.isArray(query.timeRange)) {
     delete query.timeRange.start;

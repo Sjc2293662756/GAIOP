@@ -779,7 +779,7 @@ skills/openclaw-napm-report/assets/inspection/
 4 巡检总结
 ```
 
-后续如果要求自动页码，可研究 docx field code 或模板占位填充方案。
+当前已采用 Word 原生 TOC 字段实现真实页码：目录由 `Heading 1` / `Heading 2` 自动生成，文档写入 `updateFields` 并将 TOC 字段标记为 dirty，打开 Word 后按真实分页刷新页码。
 
 ### 9.3 检查项说明
 

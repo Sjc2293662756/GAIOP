@@ -1,0 +1,60 @@
+{
+  "schema": "openclaw_napm_summary_chart_specs.v1",
+  "charts": [
+    {
+      "id": "alert.timeline",
+      "title": "告警趋势图",
+      "chartType": "line",
+      "scopes": ["*"],
+      "datasetPath": "summary.alertSummary.timeline",
+      "xField": "bucketStart",
+      "xLabel": "时间",
+      "series": [
+        { "field": "critical_total", "name": "紧急" },
+        { "field": "major_total", "name": "重大" },
+        { "field": "minor_total", "name": "轻微" }
+      ]
+    },
+    {
+      "id": "traffic.trend",
+      "title": "流量趋势图",
+      "chartType": "line",
+      "scopes": ["global", "network", "webApplication", "application", "businessGroup"],
+      "datasetPath": "summary.trafficSummary.trend.dataset",
+      "xField": "time",
+      "xLabel": "时间",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "summary.trafficSummary.trend.dataset.unit"
+    },
+    {
+      "id": "business.slowAccess",
+      "title": "慢访问业务 Top",
+      "chartType": "bar",
+      "scopes": ["global", "webApplication"],
+      "datasetPath": "summary.businessSummary.slowAccess",
+      "xField": "businessName",
+      "xLabel": "业务/接口名称",
+      "series": [
+        { "field": "slowCount", "name": "慢访问次数" },
+        { "field": "avgPageDelayMs", "name": "平均页面时延(ms)" }
+      ]
+    },
+    {
+      "id": "business.httpErrors",
+      "title": "HTTP 错误业务 Top",
+      "chartType": "bar",
+      "scopes": ["global", "webApplication"],
+      "datasetPath": "summary.businessSummary.httpErrors",
+      "xField": "businessName",
+      "xLabel": "业务/接口名称",
+      "series": [
+        { "field": "http400", "name": "HTTP 400" },
+        { "field": "http500", "name": "HTTP 500" }
+      ]
+    }
+  ]
+}

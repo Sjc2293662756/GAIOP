@@ -85,6 +85,10 @@ class ReportStorageService {
    *
    * 故障分析报告： {FaultName}_故障分析报告_{YYYYMMDD}_{HHmmss}
    *   示例： 核心交换机端口故障_故障分析报告_20260618_143052
+   *
+   * 综述报告：
+   *   全局： {SystemName}_全局综述报告_{YYYYMMDD}_{HHmmss}
+   *   分类： {TargetLabel}_{ScopeLabel}综述报告_{YYYYMMDD}_{HHmmss}
    */
   createReportId(report = {}, date = new Date()) {
     const timestamp = formatTimestampForId(date);
@@ -94,6 +98,19 @@ class ReportStorageService {
     if (reportType === 'diagnostic_report') {
       const faultName = resolveFaultName(report);
       return `${faultName}_${typeCN}_${timestamp}`;
+    }
+
+    if (reportType === 'summary_report') {
+      const scope = report.scope || {};
+      const scopeType = scope.type || 'global';
+      const scopeLabel = scope.label || '全局';
+      const hasTarget = scope.target && (scope.target.groupArgument || scope.target.groupLabel);
+      if (scopeType === 'global' || !hasTarget) {
+        const systemName = resolveSystemName(report);
+        return `${systemName}_${scopeLabel}综述报告_${timestamp}`;
+      }
+      const targetLabel = sanitizeFileSegment(scope.target.groupLabel || scope.target.groupArgument || '未知对象');
+      return `${targetLabel}_${scopeLabel}综述报告_${timestamp}`;
     }
 
     const systemName = resolveSystemName(report);

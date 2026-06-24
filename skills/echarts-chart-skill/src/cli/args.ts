@@ -91,6 +91,17 @@ export async function writeTextOutput(content: string, defaultFileName?: string)
   return outputPath;
 }
 
+export async function writeBinaryOutput(content: Buffer, defaultFileName?: string): Promise<string | undefined> {
+  const outputPath = await resolveOutputPath(defaultFileName);
+  if (!outputPath) {
+    process.stdout.write(content);
+    return undefined;
+  }
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, content);
+  return outputPath;
+}
+
 export function getNumberArg(flag: string, fallback: number): number {
   const raw = getArg(flag);
   if (!raw) {

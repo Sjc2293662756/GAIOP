@@ -199,6 +199,14 @@ High-priority reminders:
 - `已定义应用` maps to `DefinedApp`.
 - Packet-capture wording belongs to `openclaw-napm-packet-analysis`.
 - Report-export wording belongs to `openclaw-napm-report`.
+- `报错` / `错误` / `异常` / `失败` (without explicit HTTP/connection context):
+  - On `WebApplication` / `业务` → default to `PGHTTP400` + `PGHTTP500` (HTTP error codes). **Never map to `PLI`/`PLO`.**
+  - On `BusinessGroup` / `业务组` → default to `RFCI` + `RFCO` (TCP connection failures).
+  - On `IPAddress` / `Prefix24` → default to `RFCI` + `RFCO`.
+- `丢包` / `packet loss` → `PLI` / `PLO`. Only use these when the user explicitly mentions packet loss.
+- `连接失败` / `connection failure` → `RFCI` / `RFCO`.
+- `HTTP错误` / `4xx` / `5xx` / `400` / `500` → `PGHTTP400` / `PGHTTP500`.
+- For metric disambiguation beyond these explicit guardrails, consult `references/chinese-semantic-metric-mapping.md` — the comprehensive forward-lookup table organized by Chinese semantic domain (报错/慢/流量/丢包/重传/连接/访问/用户体验), with object-context sensitivity and common mapping mistakes to avoid.
 
 ## Important Query Examples
 
@@ -228,6 +236,14 @@ High-priority reminders:
 - Metric: `TRTI`
 - Group argument: IP address `101.254.114.238`
 - Do not map this wording to `RTTI`
+
+`现在哪个业务报错最多？`
+
+- Service mode: ranking (topValues)
+- Object: `WebApplication`（"业务" → WebApplication, not BusinessGroup）
+- Metric: `PGHTTP400` + `PGHTTP500`（HTTP error codes, **not PLI/PLO**）
+- topMetric: `PGHTTP400`
+- `"报错"` on WebApplication defaults to HTTP error status codes. Do not map to `PLI`/`PLO` (packet loss) or `RFCI`/`RFCO` (connection failures) unless the user explicitly mentions those.
 
 ## Output Contract
 
@@ -320,6 +336,7 @@ Use the `references/` directory progressively. Read only the minimum file needed
 - [references/runtime-lookup-notes.md](./references/runtime-lookup-notes.md): runtime lookup constraints
 - [references/openclaw-integration.md](./references/openclaw-integration.md): OpenClaw invocation notes
 - [references/capability-mapping.md](./references/capability-mapping.md): historical capability mapping; ignore any old gateway wording when it conflicts with this direct-skill policy
+- [references/chinese-semantic-metric-mapping.md](./references/chinese-semantic-metric-mapping.md): **Chinese semantic keyword → metric code forward-lookup table**; consult this when the user's Chinese wording does not match an explicit guardrail in `agents/openai.yaml`
 
 ## Anti-Patterns
 

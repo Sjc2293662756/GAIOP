@@ -1,0 +1,8 @@
+- [deploy-push-config](memory/deploy-push-config.md) — 远端部署推送配置（服务器地址、认证、pscp 推送方式）
+- [summary-report-implementation](memory/summary-report-implementation.md) — 综述报告完整实现状态（模板、渲染、聚合、6种scope、61个测试通过）
+- [summary-report-final](docs/2026-06-22-综述报告实现落地与元数据共享说明.md) — 综述报告最终落地文档（scope矩阵、元数据共享架构、NAP API格式适配、CLI使用）
+- [napm-query-chinese-metric-mapping](memory/2026-06-23-napm-query-metric-mapping-fix.md) — NAPM query skill 中文语义→指标映射系统性修复（报错→PLI误映射根因+两轮修复+8语义域正向查表）
+- [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（SSH连接、日志位置、命令模板、时间线分析模板、字段解读）
+- [query-latency-optimization](docs/2026-06-23-查询耗时优化与时间戳年份Bug修复.md) — 查询耗时优化（19s→5-8s）：时间戳年份Bug修复（2025→2026自动修正）+ Memory子系统故障修复（禁用embeddings节省7s）
+- [llm-inference-bottleneck](docs/2026-06-23-LLM推理耗时根因分析.md) — LLM推理是唯一瓶颈的硬数据分析：审计日志精确时间线证明DeepSeek Chat占96%耗时(16.8s)，规则引擎仅需9ms，NAP API仅682ms
+- [hybrid-query-architecture](docs/2026-06-23-混合查询架构设计方案.md) — 混合查询架构设计方案：LLM轻量实体提取(~1s) + 规则引擎精确构造(9ms) + 三级回退(Level1正则直通/Level2实体提取/Level3 LLM兜底)，预期17s→5.6s

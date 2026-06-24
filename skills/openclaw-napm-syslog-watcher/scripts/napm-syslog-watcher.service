@@ -1,0 +1,29 @@
+[Unit]
+Description=NAPM Syslog Alert Watcher
+After=network-online.target rsyslog.service
+Wants=network-online.target rsyslog.service
+
+[Service]
+Type=simple
+User=netinside
+Group=netinside
+WorkingDirectory=/home/netinside/.openclaw/workspace/skills/openclaw-napm-syslog-watcher
+ExecStart=/usr/local/bin/node /home/netinside/.openclaw/workspace/skills/openclaw-napm-syslog-watcher/scripts/run_syslog_watcher.js /home/netinside/.openclaw/workspace/skills/openclaw-napm-syslog-watcher/config/watcher.config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=napm-syslog-watcher
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/log/netinside
+ReadOnlyPaths=/home/netinside/.openclaw/workspace/skills/openclaw-napm-syslog-watcher
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

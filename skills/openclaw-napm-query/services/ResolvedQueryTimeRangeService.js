@@ -168,6 +168,44 @@ function resolveTimeRange(input = '', options = {}) {
   };
 }
 
+// 时间戳年份合理性校验：防止 LLM 自行计算时间戳时出现年份错误（如 2025 vs 2026）。
+const MAX_TIMESTAMP_AGE_SECONDS = 400 * 24 * 60 * 60; // ~1.1 年容差
+function isTimestampFresh(timestamp, nowSeconds = DEFAULT_NOW_SECONDS()) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value) || value <= 0) {
+    return false;
+  }
+  return Math.abs(nowSeconds - value) <= MAX_TIMESTAMP_AGE_SECONDS;
+}
+
+function validateTimeRangeFreshness(start, end, nowSeconds = DEFAULT_NOW_SECONDS()) {
+  const issues = [];
+  if (!isTimestampFresh(start, nowSeconds)) {
+    const year = new Date(Number(start) * 1000).getFullYear();
+    issues.push(`start timestamp year=${year} is too far from current server time (off by >1 year)`);
+  }
+  if (!isTimestampFresh(end, nowSeconds)) {
+    const year = new Date(Number(end) * 1000).getFullYear();
+    issues.push(`end timestamp year=${year} is too far from current server time (off by >1 year)`);
+  }
+  return {
+    ok: issues.length === 0,
+    issues,
+    nowSeconds
+  };
+}
+
+function autoCorrectTimestampIfStale(timestamp, nowSeconds = DEFAULT_NOW_SECONDS()) {
+  if (isTimestampFresh(timestamp, nowSeconds)) {
+    return Number(timestamp);
+  }
+  // 尝试保留 HH:MM:SS 部分，替换年份到当前年份
+  const date = new Date(Number(timestamp) * 1000);
+  const now = new Date(nowSeconds * 1000);
+  date.setFullYear(now.getFullYear());
+  return alignToMinute(Math.floor(date.getTime() / 1000));
+}
+
 module.exports = {
   alignToMinute,
   buildRelativeTimeRange,
@@ -178,5 +216,8 @@ module.exports = {
   buildYesterdayTimeRange,
   inferTimeRangeKeyFromPrompt,
   resolveKnownTimeRangeKey,
-  resolveTimeRange
+  resolveTimeRange,
+  isTimestampFresh,
+  validateTimeRangeFreshness,
+  autoCorrectTimestampIfStale
 };

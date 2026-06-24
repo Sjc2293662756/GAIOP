@@ -43,3 +43,9 @@ export async function renderSvg(option: ChartOption, width: number, height: numb
   chart.dispose();
   return svg;
 }
+
+export async function renderPng(option: ChartOption, width: number, height: number): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const svg = await renderSvg(option, width, height);
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}

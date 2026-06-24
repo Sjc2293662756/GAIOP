@@ -1,0 +1,498 @@
+{
+  "reportType": "diagnostic_report",
+  "templateId": "napm_fault_diagnosis_v1",
+  "format": "docx",
+  "title": "核心交换机端口故障_故障分析报告",
+  "systemName": "Netlnside流量分析系统",
+  "faultName": "核心交换机G0-1端口流量突发中断",
+  "timeRange": {
+    "start": 1780000000,
+    "end": 1780007200,
+    "displayText": "2026-06-20 14:00 ~ 16:00",
+    "baselineStart": 1779913600,
+    "baselineEnd": 1780000000
+  },
+  "dataSource": {
+    "system": "Netlnside流量分析系统",
+    "sourceSkill": "openclaw-napm-fault-diagnosis"
+  },
+  "fault": {
+    "description": "核心交换机G0/1端口在14:05突发流量中断，上行流量从1.2Gbps骤降至350Mbps，降幅达71%",
+    "affectedObjects": [
+      "10.1.1.0/24",
+      "web-app-01",
+      "web-app-02"
+    ],
+    "severity": "critical",
+    "timeline": [
+      {
+        "time": "14:05",
+        "event": "G0/1端口流量开始急剧下降",
+        "type": "trigger"
+      },
+      {
+        "time": "14:08",
+        "event": "NAPM触发告警：端口流量大幅下降",
+        "type": "alert"
+      },
+      {
+        "time": "14:12",
+        "event": "web-app-01 业务慢访问率从2%飙升至15%",
+        "type": "impact"
+      },
+      {
+        "time": "14:15",
+        "event": "监控系统确认故障：端口光模块信号丢失",
+        "type": "impact"
+      },
+      {
+        "time": "15:30",
+        "event": "更换光模块后流量逐步恢复",
+        "type": "recovery"
+      }
+    ],
+    "recommendations": [
+      "立即更换G0/1端口故障光模块（已完成）",
+      "对所有核心交换机端口光模块进行健康状态普查",
+      "配置光模块光功率衰减趋势监控告警，阈值设为-5dBm",
+      "建立备品备件库，确保关键模块有冗余库存"
+    ],
+    "prevention": [
+      "将光模块健康检查纳入周度巡检项",
+      "对超过3年服役期的光模块安排预防性更换计划",
+      "优化告警策略：将端口流量突降阈值从50%调整为30%，提前预警"
+    ]
+  },
+  "alertAnalysis": {
+    "overallStatus": "critical",
+    "summary": {
+      "total": 12,
+      "critical": 3,
+      "major": 5,
+      "minor": 4,
+      "byCategory": [
+        {
+          "category": "networkAlerts",
+          "categoryLabel": "网络性能告警",
+          "total": 2,
+          "critical": 0,
+          "major": 2,
+          "minor": 0
+        },
+        {
+          "category": "networkIssueAlerts",
+          "categoryLabel": "网络异常告警",
+          "total": 7,
+          "critical": 3,
+          "major": 3,
+          "minor": 1
+        },
+        {
+          "category": "appAlerts",
+          "categoryLabel": "应用性能告警",
+          "total": 2,
+          "critical": 0,
+          "major": 0,
+          "minor": 2
+        },
+        {
+          "category": "userAlerts",
+          "categoryLabel": "用户体验告警",
+          "total": 1,
+          "critical": 0,
+          "major": 0,
+          "minor": 1
+        }
+      ],
+      "topObjects": [
+        {
+          "group": "10.1.1.1",
+          "groupType": "IPAddress",
+          "total": 5,
+          "critical": 2,
+          "major": 2,
+          "minor": 1
+        },
+        {
+          "group": "10.1.1.2",
+          "groupType": "IPAddress",
+          "total": 3,
+          "critical": 1,
+          "major": 1,
+          "minor": 1
+        }
+      ],
+      "unresolvedAlerts": [
+        {
+          "id": "evt-20260620-001",
+          "name": "核心交换机端口流量突降 > 50%",
+          "severity": 4,
+          "severityLabel": "紧急",
+          "categoryLabel": "网络异常告警",
+          "group": "10.1.1.1",
+          "start": 1780000400
+        },
+        {
+          "id": "evt-20260620-002",
+          "name": "光模块发送光功率过低",
+          "severity": 4,
+          "severityLabel": "紧急",
+          "categoryLabel": "网络异常告警",
+          "group": "10.1.1.1",
+          "start": 1780000600
+        },
+        {
+          "id": "evt-20260620-003",
+          "name": "web-app-01 应用响应时间 > 3s",
+          "severity": 2,
+          "severityLabel": "轻微",
+          "categoryLabel": "应用性能告警",
+          "group": "web-app-01",
+          "start": 1780001100
+        }
+      ]
+    },
+    "timeline": [
+      {
+        "bucketStart": 1780000000,
+        "critical_total": 0,
+        "major_total": 1,
+        "minor_total": 1
+      },
+      {
+        "bucketStart": 1780000300,
+        "critical_total": 1,
+        "major_total": 2,
+        "minor_total": 0
+      },
+      {
+        "bucketStart": 1780000600,
+        "critical_total": 1,
+        "major_total": 1,
+        "minor_total": 0
+      },
+      {
+        "bucketStart": 1780000900,
+        "critical_total": 1,
+        "major_total": 0,
+        "minor_total": 1
+      },
+      {
+        "bucketStart": 1780001200,
+        "critical_total": 0,
+        "major_total": 1,
+        "minor_total": 0
+      },
+      {
+        "bucketStart": 1780001500,
+        "critical_total": 0,
+        "major_total": 0,
+        "minor_total": 1
+      },
+      {
+        "bucketStart": 1780001800,
+        "critical_total": 0,
+        "major_total": 0,
+        "minor_total": 1
+      }
+    ]
+  },
+  "trafficAnalysis": {
+    "trend": {
+      "dataset": {
+        "unit": "kb/s",
+        "metrics": [
+          "TPIO",
+          "TPI",
+          "TPO"
+        ],
+        "points": [
+          {
+            "time": "14:00",
+            "TPIO": 1200000,
+            "TPI": 750000,
+            "TPO": 450000
+          },
+          {
+            "time": "14:05",
+            "TPIO": 850000,
+            "TPI": 500000,
+            "TPO": 350000
+          },
+          {
+            "time": "14:10",
+            "TPIO": 350000,
+            "TPI": 200000,
+            "TPO": 150000
+          },
+          {
+            "time": "14:15",
+            "TPIO": 320000,
+            "TPI": 180000,
+            "TPO": 140000
+          },
+          {
+            "time": "14:20",
+            "TPIO": 310000,
+            "TPI": 175000,
+            "TPO": 135000
+          },
+          {
+            "time": "14:30",
+            "TPIO": 300000,
+            "TPI": 170000,
+            "TPO": 130000
+          },
+          {
+            "time": "14:45",
+            "TPIO": 310000,
+            "TPI": 175000,
+            "TPO": 135000
+          },
+          {
+            "time": "15:00",
+            "TPIO": 305000,
+            "TPI": 172000,
+            "TPO": 133000
+          },
+          {
+            "time": "15:15",
+            "TPIO": 308000,
+            "TPI": 173000,
+            "TPO": 135000
+          },
+          {
+            "time": "15:30",
+            "TPIO": 600000,
+            "TPI": 380000,
+            "TPO": 220000
+          },
+          {
+            "time": "15:35",
+            "TPIO": 1150000,
+            "TPI": 720000,
+            "TPO": 430000
+          },
+          {
+            "time": "15:40",
+            "TPIO": 1220000,
+            "TPI": 760000,
+            "TPO": 460000
+          }
+        ],
+        "stats": {
+          "max": 1220000,
+          "min": 300000,
+          "avg": 635000,
+          "missingPointCount": 3,
+          "zeroSegmentCount": 0,
+          "spikeCount": 0
+        }
+      }
+    },
+    "topIPs": [
+      {
+        "key": "10.1.1.100",
+        "TPIO": 450000,
+        "TPI": 280000,
+        "TPO": 170000
+      },
+      {
+        "key": "10.1.1.101",
+        "TPIO": 320000,
+        "TPI": 200000,
+        "TPO": 120000
+      },
+      {
+        "key": "10.1.1.102",
+        "TPIO": 280000,
+        "TPI": 180000,
+        "TPO": 100000
+      },
+      {
+        "key": "10.1.2.50",
+        "TPIO": 250000,
+        "TPI": 150000,
+        "TPO": 100000
+      },
+      {
+        "key": "10.1.2.51",
+        "TPIO": 220000,
+        "TPI": 130000,
+        "TPO": 90000
+      }
+    ],
+    "anomalies": [
+      {
+        "time": "14:05",
+        "metric": "TPIO",
+        "description": "端口总流量从1.2Gbps骤降至350Mbps，降幅71%，与光模块故障时间吻合",
+        "severity": "critical"
+      },
+      {
+        "time": "14:10-14:15",
+        "metric": "TPI/TPO",
+        "description": "入流量和出流量同步下降，确认非单向故障",
+        "severity": "major"
+      },
+      {
+        "time": "14:05-15:30",
+        "metric": "TPIO",
+        "description": "故障窗口持续约85分钟，期间流量维持在基线30%水平",
+        "severity": "major"
+      }
+    ]
+  },
+  "businessAnalysis": {
+    "slowAccess": [
+      {
+        "businessName": "web-app-01/login",
+        "slowCount": 230,
+        "ratio": "15.3%",
+        "avgPageDelayMs": 3200
+      },
+      {
+        "businessName": "web-app-01/api/data",
+        "slowCount": 180,
+        "ratio": "12.1%",
+        "avgPageDelayMs": 2800
+      },
+      {
+        "businessName": "web-app-02/home",
+        "slowCount": 95,
+        "ratio": "8.5%",
+        "avgPageDelayMs": 2100
+      }
+    ],
+    "httpErrors": [
+      {
+        "businessName": "web-app-01/api/data",
+        "http400": 45,
+        "http500": 120
+      },
+      {
+        "businessName": "web-app-01/login",
+        "http400": 20,
+        "http500": 85
+      },
+      {
+        "businessName": "web-app-02/api",
+        "http400": 15,
+        "http500": 30
+      }
+    ]
+  },
+  "packetAnalysis": {
+    "protocolHierarchy": [
+      {
+        "protocol": "TCP",
+        "frames": 45000,
+        "bytes": 38000000
+      },
+      {
+        "protocol": "TLS",
+        "frames": 12000,
+        "bytes": 15000000
+      },
+      {
+        "protocol": "HTTP",
+        "frames": 8500,
+        "bytes": 9200000
+      },
+      {
+        "protocol": "DNS",
+        "frames": 1200,
+        "bytes": 340000
+      },
+      {
+        "protocol": "ICMP",
+        "frames": 450,
+        "bytes": 28000
+      }
+    ],
+    "endpoints": [
+      {
+        "address": "10.1.1.100",
+        "packets": 25000,
+        "bytes": 22000000
+      },
+      {
+        "address": "10.1.1.1",
+        "packets": 18000,
+        "bytes": 15000000
+      },
+      {
+        "address": "10.1.2.50",
+        "packets": 12000,
+        "bytes": 9800000
+      }
+    ],
+    "conversations": [
+      {
+        "source": "10.1.1.100",
+        "destination": "10.1.2.50",
+        "packets": 15000,
+        "bytes": 12000000
+      },
+      {
+        "source": "10.1.1.101",
+        "destination": "10.1.2.51",
+        "packets": 8000,
+        "bytes": 6500000
+      }
+    ],
+    "highlights": [
+      "发现大量TCP重传，重传率高达23%（正常应<2%），表明链路质量严重劣化",
+      "TLS握手失败率增至8%，DNS解析平均延迟达520ms（正常<50ms）",
+      "光模块发送光功率从-3.2dBm骤降至-28dBm，确认硬件故障"
+    ]
+  },
+  "audit": {
+    "sourceSkill": "openclaw-napm-fault-diagnosis",
+    "sourceSchema": "openclaw_napm_fault_diagnosis_result.v1",
+    "queryEvidence": [
+      {
+        "id": "q-001",
+        "service": "alertsSummary",
+        "groups": [
+          {
+            "type": "networkIssueAlerts"
+          }
+        ],
+        "metrics": [
+          "total",
+          "critical",
+          "major",
+          "minor"
+        ],
+        "start": 1780000000,
+        "end": 1780007200
+      },
+      {
+        "id": "q-002",
+        "service": "timeValues",
+        "groups": [
+          {
+            "type": "IPAddress"
+          },
+          {
+            "type": "TotalTraffic"
+          }
+        ],
+        "metrics": [
+          "TPIO",
+          "TPI",
+          "TPO"
+        ],
+        "start": 1780000000,
+        "end": 1780007200,
+        "granularity": 300
+      }
+    ]
+  },
+  "sections": [],
+  "generatedAt": "2026-06-22T06:36:51.965Z",
+  "reportId": "核心交换机G0-1端口流量突发中断_故障分析报告_20260622_143651",
+  "filePath": "G:\\my_file\\项目测试\\观枢·智维平台-GAIOP\\project_3\\NAPM_skill\\skills\\openclaw-napm-report\\output\\核心交换机G0-1端口流量突发中断_故障分析报告_20260622_143651.docx",
+  "downloadUrl": "/reports/%E6%A0%B8%E5%BF%83%E4%BA%A4%E6%8D%A2%E6%9C%BAG0-1%E7%AB%AF%E5%8F%A3%E6%B5%81%E9%87%8F%E7%AA%81%E5%8F%91%E4%B8%AD%E6%96%AD_%E6%95%85%E9%9A%9C%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A_20260622_143651.docx"
+}

@@ -399,7 +399,25 @@ Inventory words such as `有哪些`, `哪些`, `列出`, or `查看` do not alwa
 
 If the same question contains metric/error/quality evidence such as `400`, `500`, `4xx`, `5xx`, `错误`, `报错`, `异常`, `失败`, `慢`, `响应时间`, `丢包`, `重传`, `吞吐`, or `流量`, classify it as an executable metric query. Metric evidence has higher priority than inventory wording.
 
-Example:
+### Metric Disambiguation for Error/报错 Terms
+
+When the user uses `报错` / `错误` / `异常` / `失败` / `error` / `failure` without an explicit HTTP status code, the metric must be resolved according to the object scope:
+
+| Object scope | User wording | Default error metrics |
+|---|---|---|
+| WebApplication / PageFamily | 业务、业务系统、网站、web应用 | `PGHTTP400` + `PGHTTP500` |
+| BusinessGroup / IPAddress / Prefix24 | 业务组、工作组、IP、网段 | `RFCI` + `RFCO` |
+| DefinedApp / OtherApp | 已定义应用、未知应用 | `RFCI` + `PGHTTP400` |
+
+Hard rules:
+
+1. **Explicit status-code**: `400`/`400错误` → `PGHTTP400`; `500`/`500错误` → `PGHTTP500`; `4xx`/`5xx` → both.
+2. **Explicit connection-failure**: `连接失败`/`TCP失败` → `RFCI` (server-side) or `RFCO` (client-side).
+3. **Ambiguous 报错 on WebApplication/业务**: default to `PGHTTP400` + `PGHTTP500` (HTTP errors). **Never default to PLI/PLO.**
+4. **Ambiguous 报错 on BusinessGroup/业务组**: default to `RFCI` + `RFCO` (connection failures).
+5. **PLI/PLO** are packet-loss metrics. Only use them when the user explicitly says `丢包` / `packet loss`.
+
+### Example 1 — explicit HTTP status code
 
 ```text
 在其他web应用中，有哪些页面出现400错误？
@@ -424,5 +442,32 @@ Correct resolvedQuery shape:
   }
 }
 ```
+
+### Example 2 — ambiguous "报错" on business scope
+
+```text
+现在哪个业务报错最多？
+```
+
+Correct resolvedQuery shape:
+
+```json
+{
+  "service": "topValues",
+  "metric": "PGHTTP400",
+  "metrics": ["PGHTTP400", "PGHTTP500"],
+  "topMetric": "PGHTTP400",
+  "topCount": 10,
+  "groups": [
+    { "type": "WebApplication" }
+  ],
+  "semanticConstraints": {
+    "workflowType": "metric_topn",
+    "targetObjectType": "WebApplication"
+  }
+}
+```
+
+Note: `业务` maps to `WebApplication`. On `WebApplication`, ambiguous `报错` defaults to HTTP error metrics (`PGHTTP400` + `PGHTTP500`), **not PLI/PLO**. The sort metric is `PGHTTP400` unless `500` is explicitly requested.
 
 Do not answer this kind of question by trying `groups` metadata first and then probing alternative paths. The resolvedQuery must encode the target metric, scope, and terminal object path before execution.

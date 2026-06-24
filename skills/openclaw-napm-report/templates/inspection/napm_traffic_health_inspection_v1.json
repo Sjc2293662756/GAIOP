@@ -4,182 +4,391 @@
   "version": "1.0.0",
   "titlePath": "title",
   "description": "NAPM 流量分析系统巡检报告固定模板。章节、表格、图表槽位和叙述槽位固定，运行时只更新数据、图表数据绑定和规则叙述。",
+  "page": {
+    "margin": {
+      "top": 1000,
+      "right": 900,
+      "bottom": 1000,
+      "left": 900,
+      "header": 450,
+      "footer": 450
+    },
+    "header": {
+      "leftImage": {
+        "path": "templates/inspection/company-logo.png",
+        "width": 110,
+        "height": 32,
+        "alt": "网深科技流量分析系统"
+      },
+      "left": "网深科技流量分析系统",
+      "right": "{{inspection.customerName}}{{inspection.projectName}}巡检报告"
+    },
+    "footer": {
+      "center": "第 {{pageNumber}} 页 / 共 {{totalPages}} 页",
+      "right": "{{inspection.reportDate}}"
+    }
+  },
   "sections": [
     {
       "id": "cover",
       "type": "cover",
-      "title": "{{title}}",
-      "subtitle": "流量分析系统巡检报告"
+      "title": "网深科技流量分析系统",
+      "subtitle": "健康检查报告"
     },
     {
-      "id": "basic_info",
-      "type": "keyValueTable",
-      "title": "报告基础信息",
-      "columns": ["项目", "内容"],
-      "rows": [
-        { "label": "客户名称", "valuePath": "inspection.customerName" },
-        { "label": "项目名称", "valuePath": "inspection.projectName" },
-        { "label": "巡检日期", "valuePath": "inspection.reportDate" },
-        { "label": "报告类型", "valuePath": "reportType" },
-        { "label": "模板编号", "valuePath": "templateId" },
-        { "label": "数据来源", "valuePath": "dataSource.sourceSkill" },
-        { "label": "总体状态", "valuePath": "inspection.summary.overallStatus", "transform": "status" }
+      "id": "cover_date",
+      "type": "paragraphs",
+      "alignment": "center",
+      "size": 22,
+      "paragraphs": [
+        "{{inspection.reportDate}}"
       ]
     },
     {
-      "id": "inspection_result_heading",
+      "id": "cover_break",
+      "type": "pageBreak"
+    },
+    {
+      "id": "toc",
+      "type": "toc",
+      "title": "目录",
+      "alias": "Inspection Report TOC",
+      "headingStyleRange": "1-2",
+      "hyperlink": true,
+      "updateMode": "wordField"
+    },
+    {
+      "id": "toc_break",
+      "type": "pageBreak"
+    },
+    {
+      "id": "document_description_heading",
       "type": "heading",
-      "title": "六、巡检结果",
+      "title": "1 文档说明",
       "level": 1
+    },
+    {
+      "id": "check_items_heading",
+      "type": "heading",
+      "title": "1.1 流量分析系统检查项说明",
+      "level": 2
+    },
+    {
+      "id": "check_items_table",
+      "type": "staticTable",
+      "columns": [
+        "检查项目",
+        "检查项",
+        "检查内容"
+      ],
+      "rows": [
+        [
+          "基本信息",
+          "基本信息",
+          "收集所有 NetInside 流量分析系统的名称、管理地址、软件版本、序列号、启动时长等信息。"
+        ],
+        [
+          "巡检信息汇总",
+          "性能状况",
+          "检测系统每秒数据包个数、每秒连接数、每分钟IP地址个数、丢包数、数据包重复率、磁盘使用情况、CPU使用率状况，如有异常需要流量策略调整和优化。"
+        ],
+        [
+          "巡检信息汇总",
+          "数据信息",
+          "检测分析数据存储粒度状况，如果1分钟粒度数据小于7天（或根据用户需求天数），需要检测流量策略调整。"
+        ],
+        [
+          "巡检信息汇总",
+          "配置信息",
+          "检测系统配置数据，包括应用数量、URL数量及工作组数量。如果异常需要在检查结果中说明。"
+        ],
+        [
+          "巡检信息汇总",
+          "数据包存储信息",
+          "检测系统原始数据包存储时间长度信息。如果保存时间较短，需要在检查结果中说明。"
+        ],
+        [
+          "巡检信息汇总",
+          "流量分析状况",
+          "检测系统流量分析信息，给出最近1小时、最近1天的流量分布趋势图。如果流量图中有明显的中断或少量高峰现象，需要在检查结果中说明。"
+        ],
+        [
+          "巡检信息汇总",
+          "业务性能状况",
+          "检测业务性能状况，重点包括慢访问和 HTTP 500 报错信息。如果出现高比例慢访问百分比和大量 HTTP 500 报错信息，需要在检查结果中说明。"
+        ],
+        [
+          "巡检总结",
+          "巡检总结",
+          "对本次巡检情况总结，列出异常信息，提出合理解决办法。"
+        ]
+      ]
+    },
+    {
+      "id": "basic_info_heading",
+      "type": "heading",
+      "title": "2 基本信息",
+      "level": 1
+    },
+    {
+      "id": "basic_info_intro",
+      "type": "paragraphs",
+      "paragraphs": [
+        "本次服务共计检查 {{inspection.devices.length}} 台 NetInside 流量分析系统，具体设备信息如下："
+      ]
     },
     {
       "id": "devices",
       "type": "table",
-      "title": "6.1 设备基本信息",
-      "caption": "设备清单",
-      "rowBuilder": "devices",
-      "columns": ["序号", "系统名称", "IP地址", "软件版本", "序列号", "设备时间", "运行时长"]
+      "rowBuilder": "basicDevices",
+      "columns": [
+        "编号",
+        "系统名称",
+        "IP地址",
+        "软件版本",
+        "序列号",
+        "启动时长"
+      ]
+    },
+    {
+      "id": "inspection_summary_heading",
+      "type": "heading",
+      "title": "3 巡检信息汇总",
+      "level": 1
+    },
+    {
+      "id": "performance_requirement",
+      "type": "paragraphs",
+      "title": "3.1 性能状况",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测系统性能数据，系统每秒数据包个数、每秒连接数、每分钟IP地址个数、丢包数、数据包重复率、磁盘使用情况、CPU使用率状况等，如有异常需要流量策略调整和优化。",
+        "点击“设备管理-系统管理”，点击“性能数据”。"
+      ]
     },
     {
       "id": "performance_items",
       "type": "table",
-      "title": "6.2 性能状况",
-      "caption": "性能检查项",
       "rowBuilder": "sectionItems",
       "dataPath": "inspection.performance",
-      "columns": ["序号", "检查项", "检查值", "备注"]
+      "columns": [
+        "序列号",
+        "检测项",
+        "参数",
+        "备注"
+      ]
     },
     {
       "id": "performance_findings",
-      "type": "table",
-      "caption": "性能结论",
-      "rowBuilder": "findings",
+      "type": "dataParagraphs",
+      "label": "检查结果：",
       "dataPath": "inspection.performance.findings",
-      "columns": ["序号", "级别", "结论", "证据"]
+      "emptyText": "正常。"
+    },
+    {
+      "id": "data_retention_requirement",
+      "type": "paragraphs",
+      "title": "3.2 数据信息",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测系统数据存储状况，包括不同时间粒度的存储天数信息。",
+        "检测分析数据存储粒度状况，如果1分钟粒度数据小于7天（或根据用户需求天数），需要检测流量策略调整。",
+        "点击“设备管理-系统管理”，点击“数据信息”。"
+      ]
     },
     {
       "id": "data_retention",
       "type": "table",
-      "title": "6.3 数据信息",
-      "caption": "数据保留检查项",
       "rowBuilder": "sectionItems",
       "dataPath": "inspection.dataRetention",
-      "columns": ["序号", "检查项", "检查值", "备注"]
+      "columns": [
+        "序列号",
+        "检测项",
+        "参数",
+        "备注"
+      ]
+    },
+    {
+      "id": "data_retention_findings",
+      "type": "dataParagraphs",
+      "label": "检查结果：",
+      "dataPath": "inspection.dataRetention.findings",
+      "emptyText": "正常。"
+    },
+    {
+      "id": "configuration_requirement",
+      "type": "paragraphs",
+      "title": "3.3 配置信息",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测系统配置数据，包括应用数量、URL数量及工作组数量。",
+        "如果工作组数量为4，需要详细查看是否为默认的。如果是，需要在检查结果中说明。",
+        "点击“设备管理-系统管理”，点击“配置信息”。"
+      ]
     },
     {
       "id": "configuration",
       "type": "table",
-      "title": "6.4 配置信息",
-      "caption": "配置检查项",
       "rowBuilder": "sectionItems",
       "dataPath": "inspection.configuration",
-      "columns": ["序号", "检查项", "检查值", "备注"]
+      "columns": [
+        "序列号",
+        "检测项",
+        "参数",
+        "备注"
+      ]
+    },
+    {
+      "id": "configuration_findings",
+      "type": "dataParagraphs",
+      "label": "检查结果：",
+      "dataPath": "inspection.configuration.findings",
+      "emptyText": "正常。"
+    },
+    {
+      "id": "packet_storage_requirement",
+      "type": "paragraphs",
+      "title": "3.4 数据包存储信息",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测系统原始数据包存储时间长度信息。",
+        "如果保存时间较短，或无法满足客户期望时长或所在行业规定时长，需要在检查结果中说明。",
+        "点击“设备管理-系统管理”，点击“数据包存储信息”。"
+      ]
     },
     {
       "id": "packet_storage",
       "type": "table",
-      "title": "6.5 原始数据包存储",
-      "caption": "原始数据包存储检查项",
       "rowBuilder": "sectionItems",
       "dataPath": "inspection.packetStorage",
-      "columns": ["序号", "检查项", "检查值", "备注"]
+      "columns": [
+        "序列号",
+        "检测项",
+        "参数",
+        "备注"
+      ]
     },
     {
-      "id": "traffic_narrative",
-      "type": "narrative",
-      "title": "6.6 流量分析状况",
-      "ruleGroup": "traffic.summary",
-      "mode": "all"
+      "id": "packet_storage_findings",
+      "type": "dataParagraphs",
+      "label": "检查结果：",
+      "dataPath": "inspection.packetStorage.findings",
+      "emptyText": "正常。"
+    },
+    {
+      "id": "traffic_requirement",
+      "type": "paragraphs",
+      "title": "3.5 流量分析状况",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测系统流量分析信息，给出最近1小时、最近1天的流量分布趋势图。",
+        "如果流量图中有明显的中断或少量高峰现象，需要在检查结果中说明。",
+        "点击“网络回溯-总流量仪表板”。拖动总流量时序图变化情况曲线图右下角，调整图形显示大小。"
+      ]
     },
     {
       "id": "traffic_chart_recent_hour",
       "type": "chartSlot",
-      "title": "图 6.6-1 最近1小时总流量趋势图",
+      "title": "最近1小时流量分布状况",
       "chartId": "traffic.recentHour.total"
     },
     {
       "id": "traffic_chart_recent_day",
       "type": "chartSlot",
-      "title": "图 6.6-2 最近1天总流量趋势图",
+      "title": "最近1天流量分布状况",
       "chartId": "traffic.recentDay.total"
     },
     {
-      "id": "traffic_stats",
-      "type": "table",
-      "caption": "流量趋势统计",
-      "rowBuilder": "trafficStats",
-      "columns": ["窗口", "名称", "数据点", "最大值", "最小值", "平均值", "缺失点", "零流量点", "尖峰点"]
+      "id": "traffic_result_label",
+      "type": "paragraphs",
+      "bold": true,
+      "paragraphs": [
+        "检查结果："
+      ]
     },
     {
-      "id": "traffic_recent_hour_samples",
-      "type": "table",
-      "caption": "最近1小时趋势样本",
-      "rowBuilder": "trafficSamples",
-      "dataPath": "inspection.trafficAnalysis.recentHour",
-      "maxRows": 12
-    },
-    {
-      "id": "traffic_recent_day_samples",
-      "type": "table",
-      "caption": "最近1天趋势样本",
-      "rowBuilder": "trafficSamples",
-      "dataPath": "inspection.trafficAnalysis.recentDay",
-      "maxRows": 12
-    },
-    {
-      "id": "traffic_findings",
-      "type": "table",
-      "caption": "流量分析结论",
-      "rowBuilder": "findings",
-      "dataPath": "inspection.trafficAnalysis.findings",
-      "columns": ["序号", "级别", "结论", "证据"]
-    },
-    {
-      "id": "business_narrative",
+      "id": "traffic_narrative",
       "type": "narrative",
-      "title": "6.7 业务性能状况",
-      "ruleGroup": "business.summary",
+      "ruleGroup": "traffic.summary",
       "mode": "all"
+    },
+    {
+      "id": "business_requirement",
+      "type": "paragraphs",
+      "title": "3.6 业务性能状况",
+      "level": 2,
+      "paragraphs": [
+        "检查要求：",
+        "检测业务性能状况，重点包括慢访问和 HTTP 500 报错信息。",
+        "如果出现高比例慢访问百分比和大量 HTTP 500 报错信息，需要在检查结果中说明。",
+        "点击“业务监控-综合性能”。"
+      ]
     },
     {
       "id": "business_slow_chart",
       "type": "chartSlot",
-      "title": "图 6.7-1 慢访问业务 Top 图",
+      "title": "最近七日业务健康状况",
       "chartId": "business.slowAccess.top"
     },
     {
       "id": "business_error_chart",
       "type": "chartSlot",
-      "title": "图 6.7-2 HTTP 400/500 业务 Top 图",
+      "title": "HTTP 400/500 业务健康状况",
       "chartId": "business.httpErrors.top"
     },
     {
-      "id": "business_slow",
-      "type": "table",
-      "caption": "慢访问业务",
-      "rowBuilder": "businessSlow",
-      "columns": ["序号", "业务", "慢访问占比", "慢访问次数", "平均页面时延(ms)", "证据"]
+      "id": "business_result_label",
+      "type": "paragraphs",
+      "bold": true,
+      "paragraphs": [
+        "检查结果："
+      ]
     },
     {
-      "id": "business_errors",
-      "type": "table",
-      "caption": "HTTP 400/500 业务",
-      "rowBuilder": "businessErrors",
-      "columns": ["序号", "业务", "HTTP 400", "HTTP 500", "证据"]
+      "id": "business_narrative",
+      "type": "narrative",
+      "ruleGroup": "business.summary",
+      "mode": "all"
     },
     {
-      "id": "business_findings",
-      "type": "table",
-      "caption": "业务性能结论",
-      "rowBuilder": "findings",
-      "dataPath": "inspection.businessPerformance.findings",
-      "columns": ["序号", "级别", "结论", "证据"]
+      "id": "business_recommendations",
+      "type": "dataParagraphs",
+      "label": "建议：",
+      "dataPath": "inspection.businessPerformance.recommendations",
+      "emptyText": "无。"
     },
     {
       "id": "summary_heading",
       "type": "heading",
-      "title": "七、巡检总结",
+      "title": "4 巡检总结",
       "level": 1
+    },
+    {
+      "id": "summary_devices",
+      "type": "table",
+      "rowBuilder": "summaryDevicesTemplate",
+      "columns": [
+        "设备命名",
+        "CPU利用率",
+        "磁盘容量",
+        "丢包数",
+        "系统健康",
+        "备注"
+      ]
+    },
+    {
+      "id": "summary_items_intro",
+      "type": "paragraphs",
+      "paragraphs": [
+        "巡检项目包括：",
+        "基本信息、性能状况、数据信息、配置信息、数据包存储信息、流量分析状况、业务性能状况。",
+        "巡检项目结果："
+      ]
     },
     {
       "id": "summary_narrative",
@@ -188,26 +397,14 @@
       "mode": "first"
     },
     {
-      "id": "summary_devices",
-      "type": "table",
-      "caption": "设备健康汇总",
-      "rowBuilder": "summaryDevices",
-      "columns": ["序号", "设备", "CPU使用", "磁盘使用", "丢包数", "健康状态", "备注"]
-    },
-    {
       "id": "summary_abnormal_items",
       "type": "table",
       "caption": "需关注事项",
       "rowBuilder": "abnormalItems",
-      "columns": ["序号", "事项"]
-    },
-    {
-      "id": "query_evidence",
-      "type": "table",
-      "title": "附录：查询证据",
-      "caption": "查询证据",
-      "rowBuilder": "evidence",
-      "columns": ["序号", "ID", "服务", "分组", "指标", "排序/粒度", "时间范围", "请求URL(已打码)"]
+      "columns": [
+        "序号",
+        "事项"
+      ]
     }
   ]
 }

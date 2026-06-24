@@ -18,6 +18,8 @@ const NAPM_ALERT_EXECUTOR = process.env.NAPM_ALERT_EXECUTOR
   || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-alert-query/scripts/run_alert_query.js');
 const NAPM_INSPECTION_EXECUTOR = process.env.NAPM_INSPECTION_EXECUTOR
   || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-inspection/scripts/run_inspection_snapshot.js');
+const NAPM_SUMMARY_EXECUTOR = process.env.NAPM_SUMMARY_EXECUTOR
+  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-summary/scripts/run_summary.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmDebugApiByPrompt = new Map();
@@ -41,7 +43,7 @@ const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
-const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot']);
+const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot', 'napm-summary']);
 const ALERT_CATEGORY_LABELS = {
   networkAlerts: '网络性能告警',
   networkIssueAlerts: '网络异常告警',
@@ -360,6 +362,29 @@ function isAlertSkillMetaFollowUpPrompt(prompt = '', previousState = null) {
   );
 }
 
+function isSummaryPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) return false;
+
+  // Direct mentions of summary report types — always a summary report request
+  if (/(?:综述报告|全局综述|业务综述|应用综述|业务组综述|网络综述|告警综述|summary\s*report|overview\s*report)/i.test(text)) {
+    return true;
+  }
+
+  // Daily/weekly/monthly 报告 — always a report request
+  if (/(?:日报|周报|月报)/i.test(text)) {
+    return true;
+  }
+
+  // "报告" + time context = report request (not overview query)
+  // "最近X天的报告", "最近24小时的报告" etc.
+  if (/报告/.test(text) && /(?:最近|今天|昨天|本周|本月|过去)/i.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
 function looksLikeNapmBypassProcessText(text = '') {
   const content = String(text || '').trim();
   if (!content) {
@@ -416,7 +441,11 @@ function isMeaningfulText(value = '') {
 }
 
 function normalizePromptKey(prompt) {
-  return String(prompt || '').trim().toLowerCase();
+  return String(prompt || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s　]+/g, '')
+    .replace(/[?？!！。；;，,、：:]+$/g, '');
 }
 
 function buildPromptScopeKey(prompt = '', conversationKey = '') {
@@ -1391,6 +1420,11 @@ function normalizeGranularity(value) {
 }
 
 function isOverviewPrompt(prompt = '') {
+  // Summary report requests must NOT be treated as overview queries.
+  // "综述报告/日报/周报" → napm-summary (docx), not napm-skill-query overview (text).
+  if (isSummaryPrompt(prompt)) {
+    return false;
+  }
   return getPromptRoutingService().isOverviewPrompt(prompt);
 }
 
@@ -2160,7 +2194,8 @@ function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState 
   ];
 
   const alertFollowUp = Boolean(
-    isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
+    isAlertEventPrompt(activePrompt)
+    || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
     || conversationState?.alertRelated
     || guardState?.alertRelated
   );
@@ -2748,6 +2783,43 @@ async function runInspectionExecutor(args = {}) {
   }
 }
 
+function buildSummaryReply(result = {}) {
+  const lines = [];
+  if (!result?.ok) {
+    lines.push('综述报告生成失败：' + (result?.error?.message || '未知错误'));
+    return lines.join('\n');
+  }
+  const summary = isPlainObject(result.summary) ? result.summary : {};
+  const scope = isPlainObject(result.scope) ? result.scope : {};
+  const scopeLabel = scope.label || '全局';
+  const overallStatus = summary.overallStatus || 'ok';
+  const alertTotal = summary.alertSummary?.total ?? 0;
+  const alertCritical = summary.alertSummary?.critical ?? 0;
+  const alertMajor = summary.alertSummary?.major ?? 0;
+
+  const statusEmoji = overallStatus === 'critical' ? '🔴' : overallStatus === 'warning' ? '🟡' : '🟢';
+  const statusText = overallStatus === 'critical' ? '紧急' : overallStatus === 'warning' ? '需关注' : '正常';
+
+  lines.push(`${scopeLabel}综述报告数据已采集完成。`);
+  lines.push(`${statusEmoji} 整体状态：${statusText}`);
+  lines.push(`📊 告警总数：${alertTotal}（紧急 ${alertCritical}、重大 ${alertMajor}）`);
+
+  const trafficPoints = summary.trafficSummary?.trend?.dataset?.points?.length || summary.trafficSummary?.trend?.dataset?.time?.length || 0;
+  if (trafficPoints > 0) {
+    lines.push(`📈 流量采样点：${trafficPoints}`);
+  }
+
+  if (Array.isArray(summary.recommendations) && summary.recommendations.length > 0) {
+    lines.push(`📋 建议事项：${summary.recommendations.length} 条`);
+  }
+
+  if (result.reportData) {
+    lines.push('');
+    lines.push('如需 Word 文件，请继续调用 napm-report-export 消费本次 reportData。');
+  }
+  return lines.join('\n');
+}
+
 function buildInspectionSnapshotReply(result = {}) {
   if (!result?.ok) {
     return String(
@@ -2796,6 +2868,106 @@ function buildAlertExecutorPayload(args = {}) {
     sessionState: isPlainObject(args.sessionState) ? args.sessionState : undefined,
     traceId: normalizeTraceId(args.traceId) || undefined
   };
+}
+
+function buildSummaryExecutorPayload(args = {}) {
+  const scope = isPlainObject(args.scope) ? args.scope : { type: 'global', label: '全局' };
+  const timeRange = isPlainObject(args.timeRange)
+    ? args.timeRange
+    : (Number(args.start) || Number(args.end)
+      ? { start: Number(args.start), end: Number(args.end), displayText: args.displayText || '' }
+      : {});
+
+  // Force-correct scope based on user prompt intent.
+  // AI may pass wrong scope.type; the prompt is the ground truth.
+  const prompt = normalizePrompt(args) || '';
+  const SCOPE_INTENT_MAP = [
+    { re: /业务(?!组)/, type: 'webApplication', label: '业务' },
+    { re: /业务组|工作组/, type: 'businessGroup', label: '工作组' },
+    { re: /网络|流量/, type: 'network', label: '网络' },
+    { re: /应用(?!性能|告)/, type: 'application', label: '应用' },
+    { re: /告警/, type: 'alert', label: '告警' },
+    { re: /全局|系统|NAPM|综(?:述|合)(?!.*(?:业务|网络|应用|告警))/, type: 'global', label: '全局' }
+  ];
+  const matched = SCOPE_INTENT_MAP.find((m) => m.re.test(prompt));
+  if (matched && scope.type !== matched.type) {
+    scope.type = matched.type;
+    scope.label = matched.label;
+  }
+
+  return {
+    scope,
+    timeRange,
+    format: args.format || 'docx',
+    title: args.title || undefined,
+    systemName: args.systemName || undefined,
+    sourceQuestion: args.sourceQuestion || normalizePrompt(args) || undefined
+  };
+}
+
+async function runSummaryExecutor(args = {}) {
+  const traceId = String(args.traceId || `napm-summary-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  const payload = buildSummaryExecutorPayload(args);
+  appendPluginAuditEvent('napm_summary_invoked', {
+    traceId,
+    prompt: normalizePrompt(args),
+    scopeType: String(payload.scope?.type || '').trim() || null,
+    scopeLabel: String(payload.scope?.label || '').trim() || null
+  });
+
+  let tempInputDir = null;
+  try {
+    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-summary-input-'));
+    const tempInputPath = path.join(tempInputDir, 'summary.json');
+    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
+    const { stdout, stderr } = await execFileAsync('node', [
+      NAPM_SUMMARY_EXECUTOR,
+      '--queryFile',
+      tempInputPath
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      env: {
+        ...process.env,
+        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        FORCE_COLOR: '0',
+        NO_COLOR: '1'
+      }
+    });
+
+    const result = extractSkillJson(stdout);
+    if (stderr && String(stderr).trim()) {
+      result.executorStderr = String(stderr).trim();
+    }
+    appendPluginAuditEvent(result?.ok ? 'napm_summary_completed' : 'napm_summary_failed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      ok: Boolean(result?.ok),
+      scopeType: String(result?.scope?.type || '').trim() || null,
+      overallStatus: String(result?.summary?.overallStatus || '').trim() || null,
+      alertTotal: Number(result?.summary?.alertSummary?.total) || null,
+      errorCode: result?.error?.code || result?.errorCode || null
+    });
+    return result;
+  } catch (error) {
+    const result = {
+      ok: false,
+      error: {
+        code: 'SUMMARY_EXECUTOR_CRASH',
+        message: error.message
+      }
+    };
+    appendPluginAuditEvent('napm_summary_crashed', {
+      traceId,
+      prompt: normalizePrompt(args),
+      errorMessage: error.message.slice(0, 500)
+    });
+    return result;
+  } finally {
+    if (tempInputDir) {
+      try { fs.rmSync(tempInputDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  }
 }
 
 async function runAlertExecutor(args = {}) {
@@ -2884,19 +3056,23 @@ function buildAlertQueryReply(result = {}) {
   }
 
   const lines = [];
-  const timeRange = result.timeRange || {};
-  const timeText = timeRange.displayText
-    || (timeRange.start && timeRange.end ? `${timeRange.start} 至 ${timeRange.end}` : '');
-  if (timeText) {
-    lines.push(`${timeText}告警概况：`);
-    lines.push('');
-  }
-
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
   const bySeverity = result.summary?.bySeverity || {};
   const shouldGroupByCategory = shouldRenderAlertCategorySections(result);
+  const timeRange = result.timeRange || {};
+  const timeText = timeRange.displayText
+    || (timeRange.start && timeRange.end ? `${timeRange.start} 至 ${timeRange.end}` : '');
+  if (timeText) {
+    if (shouldGroupByCategory && result.summary?.total != null) {
+      lines.push(`${timeText}告警汇总：共 ${result.summary.total} 条`);
+    } else {
+      lines.push(`${timeText}告警概况：`);
+    }
+    lines.push('');
+  }
+
   if (result.summary?.total != null) {
     if (shouldGroupByCategory) {
       if (Number(result.summary.total || 0) > 0) {
@@ -2970,29 +3146,23 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
     : buildAlertCategoryDetailsFromEvents(fallbackEvents);
   const lines = [];
 
-  for (const detail of details.filter((item) => Number(item?.total || 0) > 0)) {
+  for (const [index, detail] of details.filter((item) => Number(item?.total || 0) > 0).entries()) {
     const bySeverity = detail.bySeverity || {};
-    lines.push(`${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)}：`);
-    lines.push(`共 ${detail.total || 0} 个告警：`);
-    lines.push(`紧急告警 ${bySeverity.critical || 0} 个`);
-    lines.push(`重大告警 ${bySeverity.major || 0} 个`);
-    lines.push(`轻微告警 ${bySeverity.minor || 0} 个`);
-    if (Number(bySeverity.unknown || 0) > 0) {
-      lines.push(`未知级别告警 ${bySeverity.unknown || 0} 个`);
-    }
-    lines.push('告警概览：');
-
     const overviewEvents = Array.isArray(detail.overviewEvents) ? detail.overviewEvents.slice(0, 3) : [];
+    lines.push(`${formatCategoryIndex(index + 1)} ${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)} — ${detail.total || 0} 条`);
+    lines.push(formatAlertSeveritySummaryLine(bySeverity));
+    const focusText = buildAlertCategoryFocusText(overviewEvents);
+    if (focusText) {
+      lines.push(focusText);
+    }
+    if (Number(bySeverity.unknown || 0) > 0) {
+      lines.push(`未知级别 ${bySeverity.unknown || 0} 条`);
+    }
+
+    lines.push('告警概览：');
     if (overviewEvents.length > 0) {
-      lines.push('| 级别 | 对象 | 描述 |');
-      lines.push('| --- | --- | --- |');
       for (const event of overviewEvents) {
-        const cells = [
-          escapeMarkdownTableCell(`${formatSeverityBadge(event.severity)} ${event.severityLabel || event.severity || '-'}`),
-          escapeMarkdownTableCell(event.group || '-'),
-          escapeMarkdownTableCell(event.name || '-')
-        ];
-        lines.push(`| ${cells.join(' | ')} |`);
+        lines.push(`- ${formatSeverityBadge(event.severity)} ${buildAlertOverviewSentence(event)}`);
       }
     } else {
       lines.push('暂无可展示明细。');
@@ -3001,6 +3171,38 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
   }
 
   return lines;
+}
+
+function formatCategoryIndex(index) {
+  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
+  return symbols[index - 1] || `${index}.`;
+}
+
+function formatAlertSeveritySummaryLine(bySeverity = {}) {
+  const items = [
+    [4, '紧急', bySeverity.critical || 0],
+    [3, '重大', bySeverity.major || 0],
+    [2, '轻微', bySeverity.minor || 0]
+  ].filter(([, , count]) => Number(count || 0) > 0);
+
+  if (items.length === 0) {
+    return '暂无紧急/重大/轻微告警';
+  }
+  return items
+    .map(([severity, label, count]) => `${formatSeverityBadge(severity)} ${label} ${count} 条`)
+    .join(' | ');
+}
+
+function buildAlertCategoryFocusText(events = []) {
+  const groups = [...new Set(events.map((event) => String(event.group || '').trim()).filter(Boolean))].slice(0, 5);
+  const names = [...new Set(events.map((event) => String(event.name || '').trim()).filter(Boolean))].slice(0, 2);
+  if (groups.length === 0 && names.length === 0) {
+    return '';
+  }
+  const label = groups.length > 1 ? '主要对象' : '对象';
+  const groupText = groups.length > 0 ? groups.join('、') : '未知对象';
+  const nameText = names.length > 0 ? `（${names.join('、')}）` : '';
+  return `${label}：${groupText}${nameText}`;
 }
 
 function buildAlertCategoryDetailsFromEvents(events = []) {
@@ -3030,6 +3232,73 @@ function buildAlertCategoryDetailsFromEvents(events = []) {
 function formatAlertCategorySectionTitle(label = '') {
   const text = String(label || '').trim();
   return ALERT_CATEGORY_LABELS[text] || text || '未知告警';
+}
+
+function buildAlertOverviewSentence(event = {}) {
+  const name = String(event.name || '告警').trim();
+  const group = String(event.group || '未知对象').trim();
+  const triggerCount = Number.isFinite(Number(event.triggerCount)) && Number(event.triggerCount) > 0
+    ? Number(event.triggerCount)
+    : 1;
+  const durationText = formatAlertDuration(event);
+  const startText = formatAlertTimestamp(event.start || event.firstStart);
+  return `${name}触发：对象 ${group} 触发了 ${triggerCount} 次告警，持续时长为 ${durationText}，开始时间为 ${startText}。`;
+}
+
+function formatAlertDuration(event = {}) {
+  const seconds = resolveAlertDurationSeconds(event);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return '未知';
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)} 秒`;
+  }
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} 分钟`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return remainMinutes > 0 ? `${hours} 小时 ${remainMinutes} 分钟` : `${hours} 小时`;
+}
+
+function resolveAlertDurationSeconds(event = {}) {
+  const period = Number(event.period);
+  const start = Number(event.start || event.firstStart);
+  const end = Number(event.end || event.lastEnd);
+  const rangeSeconds = Number.isFinite(start) && Number.isFinite(end) && end > start
+    ? end - start
+    : null;
+
+  if (Number.isFinite(period) && period > 0) {
+    if (period < 60) {
+      return period * 60;
+    }
+    if (rangeSeconds && Math.abs(rangeSeconds - period * 60) <= 60) {
+      return period * 60;
+    }
+    return period;
+  }
+  return rangeSeconds;
+}
+
+function formatAlertTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '未知';
+  }
+  const milliseconds = timestamp > 1000000000000 ? timestamp : timestamp * 1000;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(milliseconds));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
 }
 
 function formatSeverityBadge(severity) {
@@ -4202,15 +4471,29 @@ function createAlertQueryToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await runAlertExecutor(args || {});
+      const renderedText = buildAlertQueryReply(result);
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
+        text: renderedText,
         content: [
           {
             type: 'text',
-            text: buildAlertQueryReply(result)
+            text: renderedText
           }
         ],
-        details: result
+        finalAnswer: renderedText,
+        renderedText,
+        renderPolicy: {
+          mode: 'verbatim_final_answer',
+          instruction: 'Return finalAnswer exactly as-is to the user. Do not summarize, reorganize, translate, add bullets, or add a separate focus section.'
+        },
+        metadata: {
+          ok: Boolean(result?.ok),
+          mode: result?.mode || null,
+          service: result?.service || null,
+          total: result?.summary?.total ?? null,
+          requestUrl: result?.requestUrl || result?.requestUrls?.[0] || null
+        }
       };
     }
   };
@@ -4247,6 +4530,68 @@ function createInspectionSnapshotToolDefinition() {
           {
             type: 'text',
             text: buildInspectionSnapshotReply(result)
+          }
+        ],
+        details: result
+      };
+    }
+  };
+}
+
+function createSummaryToolDefinition() {
+  return {
+    label: 'NAPM Summary',
+    name: 'napm-summary',
+    description: 'Generate a NAPM summary/overview report aggregating alerts, traffic trends, and business performance data across a configurable time range and scope. Use this for 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report, daily/weekly/monthly report. The tool queries NAPM APIs in parallel and returns structured reportData for napm-report-export.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
+        scope: {
+          type: 'object',
+          description: 'Summary scope definition.',
+          properties: {
+            type: { type: 'string', enum: ['global', 'webApplication', 'application', 'businessGroup', 'network', 'alert'], description: 'Scope type: global=全局综述, webApplication=业务综述, application=应用综述, businessGroup=业务组综述, network=网络综述, alert=告警综述.' },
+            label: { type: 'string', description: 'Human-readable scope label, e.g. 全局, 业务, 应用, 业务组, 网络, 告警.' },
+            target: {
+              type: 'object',
+              description: 'Required for non-global scopes. The specific NAPM object to focus on.',
+              properties: {
+                groupType: { type: 'string', description: 'NAPM group type, e.g. WebApplication, Application, BusinessGroup, IPAddress.' },
+                groupArgument: { type: 'string', description: 'NAPM group argument value, e.g. 239web.' },
+                groupLabel: { type: 'string', description: 'Display label for the target object.' }
+              },
+              additionalProperties: true
+            }
+          },
+          additionalProperties: false
+        },
+        timeRange: {
+          type: 'object',
+          description: 'Time range for the summary. If omitted, defaults to last 24 hours.',
+          properties: {
+            start: { type: 'number', description: 'Unix seconds start.' },
+            end: { type: 'number', description: 'Unix seconds end.' },
+            displayText: { type: 'string', description: 'Human-readable time range.' }
+          },
+          additionalProperties: false
+        },
+        format: { type: 'string', enum: ['docx', 'word'], description: 'Output format. Defaults to docx.' },
+        title: { type: 'string', description: 'Optional custom report title.' },
+        systemName: { type: 'string', description: 'Optional system name override.' },
+        sourceQuestion: { type: 'string', description: 'Original user question for traceability.' },
+        traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
+      },
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => {
+      const result = await runSummaryExecutor(args || {});
+      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      return {
+        content: [
+          {
+            type: 'text',
+            text: buildSummaryReply(result)
           }
         ],
         details: result
@@ -4534,8 +4879,10 @@ function buildNapmRoutingSystemContext() {
     : 'payload.resolvedQuery';
 
   return [
+    'CRITICAL ROUTING RULE: When the user asks for 综述报告, 日报, 周报, 月报 or any summary REPORT, you MUST call `napm-summary` first with scope+timeRange, then IMMEDIATELY call `napm-report-export`. Do NOT use `napm-skill-query` for report requests.',
+    'Scope mapping — set scope.type based on user wording: 全局/系统/NAPM 综述 → scope.type="global", scope.label="全局"; 业务 综述 → scope.type="webApplication", scope.label="业务"; 网络/流量 综述 → scope.type="network", scope.label="网络"; 工作组/业务组 综述 → scope.type="businessGroup", scope.label="工作组"; 应用 综述 → scope.type="application", scope.label="应用"; 告警 综述 → scope.type="alert", scope.label="告警". If user did NOT specify a target object, omit scope.target for an overall dimension review.',
     'You are not a general-purpose assistant in this deployment. Only handle system monitoring, performance analysis, NAPM query, anomaly diagnosis, and result interpretation requests.',
-    'When the user asks a NAPM question, call `napm-skill-query` only after OpenClaw upstream has produced a complete structured `resolvedQuery`.',
+    'When the user asks a NAPM question (NOT a report request), call `napm-skill-query` only after OpenClaw upstream has produced a complete structured `resolvedQuery`.',
     '`napm-resolve-query` and `napm-mainflow-query` are diagnostic-only tools and are not production query paths. Do not choose them unless they are explicitly enabled for development diagnostics.',
     `The accepted structured input channel is: ${acceptedInputs}. Do not rely on raw prompt only when the request is a data query, metadata inventory query, ranking, average, trend, or overview request.`,
     'OpenClaw upstream is the owner of resolvedQuery construction. The NAPM plugin only forwards structured queries, and the NAPM skill only executes them.',
@@ -4544,11 +4891,15 @@ function buildNapmRoutingSystemContext() {
     '`timeRange` is declarative metadata only, such as `{key:"last24hours", displayText:"最近24小时"}`. Never use `timeRange.start` or `timeRange.end` as the only executable timestamps.',
     'Bad resolvedQuery example: `{service:"topValues", timeRange:{start:1779638400,end:1779724799}}`. Good example: `{service:"topValues", start:1779638400, end:1779724740, timeRange:{key:"today"}}`.',
     'Query-specific construction rules for inventory, metric ownership, drilldown, time wording, follow-up inheritance, and object vocabulary now live in `skills/openclaw-napm-query/references/query-workflow-contract.md`. Use that skill contract instead of treating this plugin context as the semantic rule source.',
-    'High-level query boundary: metric, ranking, average, trend, overview, inventory, metric-list, and drilldown questions belong to `openclaw-napm-query` with a complete `resolvedQuery`.',
+    'High-level query boundary: metric, ranking, average, trend, overview, inventory, metric-list, and drilldown questions belong to `openclaw-napm-query` with a complete `resolvedQuery`. IMPORTANT: if the user asks for a 综述报告, 全局综述, or any summary/overview REPORT (not a query), use `napm-summary` instead — see Summary boundary below.',
     'Alert boundary: alert event questions such as 告警, 告警事件, 告警摘要, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog 告警通知字段解释 must call `napm-alert-query` with a structured `alertQuery`.',
     'Alert tool contract: use `napm-alert-query` with mode=`summary` for alert lists, mode=`timeline` for alert count trends, mode=`detail` for event IDs, mode=`detail_with_timeseries` for trigger metric analysis, and mode=`explain_notification` for notification field explanations. This alert tool is read-only and must not add/update/delete alert definitions.',
+    'Alert final-answer contract: when `napm-alert-query` returns `finalAnswer`, `renderedText`, or text content, output that text verbatim as the final user-visible answer. Do not paraphrase it, do not regroup by severity, do not add "Let me" or "当前最需要关注", and do not change the alert category order/template.',
+    'Generic alert summary template requirement: if the user did not specify an alert category, the final visible answer must be grouped by alert category with lines like `① 应用性能告警 — N 条`, severity counts on one line, `主要对象/对象`, and `告警概览` trigger sentences. Never answer generic alert summaries primarily by `紧急/重大/轻微` sections.',
     'Inspection boundary: inspection report requests such as 巡检, 巡检报告, 健康检查报告, 流量分析系统巡检, 设备健康巡检, 流量分析状况, 业务性能状况 must call `napm-inspection-snapshot` first. It queries NAPM, returns `inspection` and `reportData`, and then `napm-report-export` may render Word/docx.',
     'Inspection tool contract: `napm-inspection-snapshot` owns live data collection for applianceInfo, packetsInfo, TotalTraffic timeValues, and WebApplication business performance topValues. `napm-report-export` must only render the returned reportData and must not query NAPM.',
+    'Summary boundary: summary/overview report requests such as 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report must call `napm-summary` first. It queries alert/traffic/business APIs in parallel, aggregates the data, returns `reportData`. After `napm-summary` succeeds, immediately call `napm-report-export` with the returned `reportData` to render and deliver the Word/docx file. Do NOT use `napm-skill-query` for summary/overview reports — use `napm-summary` instead. Do NOT ask the user whether they want a Word file after a summary report request — always auto-export.',
+    'Summary tool contract: `napm-summary` takes a `scope` (type + optional target) and a `timeRange` (start/end Unix seconds). For global summaries, use scope.type=`global`. For per-application summaries, use scope.type=`webApplication` with target.groupType=`WebApplication` and target.groupArgument (e.g. `239web`). After calling `napm-summary`, ALWAYS call `napm-report-export` in the same turn — the user expects the Word file directly without an extra prompt. `napm-report-export` must consume `reportData` returned by `napm-summary` and must not query NAPM independently.',
     'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis`. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
     'Packet tool contract: use `napm-packet-analysis` with a structured packet query. For link-only requests use mode=`build_url_only`; for large time ranges use mode=`preview_only` first; for safe packet analysis use mode=`preview_download_analyze`.',
     'Business page packet preview contract: if the user provides a Web page URL/path and asks 数据包预览/分析, call `napm-packet-analysis` with `downloadType:"DownServlet"`, `mode:"preview_only"`, and `criteria.page` or `criteria.pageUrl`. If prior query context contains pageFamilyId/businessName for that page, include it. This preview means `pageViews` candidate rows, not ordinary `packetsPreview`.',
@@ -4576,6 +4927,7 @@ const skillTool = createSkillToolDefinition();
 const reportExportTool = createReportExportToolDefinition();
 const alertQueryTool = createAlertQueryToolDefinition();
 const inspectionSnapshotTool = createInspectionSnapshotToolDefinition();
+const summaryTool = createSummaryToolDefinition();
 const packetAnalysisTool = createPacketAnalysisToolDefinition();
 const resolverTool = createResolvedQueryResolverToolDefinition();
 const mainflowTool = createMainflowQueryToolDefinition();
@@ -4604,6 +4956,7 @@ const plugin = {
     api.registerTool(reportExportTool);
     api.registerTool(alertQueryTool);
     api.registerTool(inspectionSnapshotTool);
+    api.registerTool(summaryTool);
     api.registerTool(packetAnalysisTool);
 
     registerNapmHook(
@@ -4720,6 +5073,7 @@ const plugin = {
           || isAlertSkillMetaFollowUpPrompt(activePrompt, activePromptState)
           || Boolean(activePromptState?.alertRelated)
         );
+        const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
 
         if (isDirectNapmTool(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
@@ -4758,6 +5112,30 @@ const plugin = {
         }
 
         if (toolName === 'napm-alert-query' && activeAlertPrompt) {
+          setGuardState(ctx, {
+            ...activePromptState,
+            turnNapmToolUsed: true,
+            updatedAt: Date.now()
+          });
+          return undefined;
+        }
+
+        // Summary report guard: block napm-skill-query for summary prompts → redirect to napm-summary
+        if (toolName === 'napm-skill-query' && activeSummaryPrompt) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query for summary prompt: prompt=${activePrompt.slice(0, 120)}`);
+          appendPluginAuditEvent('napm_plugin_summary_prompt_wrong_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            expectedTool: 'napm-summary',
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'Summary/overview report requests must use napm-summary, not napm-skill-query. Call napm-summary with scope and timeRange to aggregate alert/traffic/business data, then napm-report-export to deliver the Word file.'
+          };
+        }
+
+        if (toolName === 'napm-summary' && activeSummaryPrompt) {
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
@@ -5265,6 +5643,12 @@ const plugin = {
       endpoint: 'local://napm.inspection.snapshot'
     });
 
+    registerCommand(api, {
+      name: 'napm-summary',
+      description: 'Generate a NAPM summary report aggregating alerts, traffic, and business performance.',
+      endpoint: 'local://napm.summary'
+    });
+
     if (shouldEnableDevResolverTools()) {
       registerCommand(api, {
         name: 'napm-resolve-query',
@@ -5313,13 +5697,17 @@ module.exports.__test__ = {
   createReportExportToolDefinition,
   createAlertQueryToolDefinition,
   createInspectionSnapshotToolDefinition,
+  createSummaryToolDefinition,
   createPacketAnalysisToolDefinition,
   runInspectionExecutor,
+  runSummaryExecutor,
   buildInspectionExecutorPayload,
   buildInspectionSnapshotReply,
+  buildSummaryReply,
   runAlertExecutor,
   buildAlertExecutorPayload,
   buildAlertQueryReply,
+  buildNapmRoutingSystemContext,
   runPacketExecutor,
   buildPacketExecutorPayload,
   buildPacketAnalysisReply,
@@ -5340,6 +5728,7 @@ module.exports.__test__ = {
   isBusinessObjectInventoryPrompt,
   isHierarchyCatalogPrompt,
   isAlertEventPrompt,
+  isSummaryPrompt,
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,
   buildAlertSkillRequiredReply,

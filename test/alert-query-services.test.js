@@ -146,7 +146,8 @@ describe('openclaw-napm-alert-query services', () => {
     const events = normalizeSummary({
       networkAlerts: {
         '192.168.1.16': [
-          { id: 1, severity: 4, categoryType: 3, metrics: ['TPIO'], name: '吞吐过高' },
+          { id: 1, severity: 4, categoryType: 3, metrics: ['TPIO'], name: '吞吐过高', period: 60, start: 1781680980 },
+          { id: 4, severity: 4, categoryType: 3, metrics: ['TPIO'], name: '吞吐过高', period: 60, start: 1781681040 },
           { id: 2, severity: 2, categoryType: 3, metrics: ['RTTI'], name: '时延异常' }
         ]
       },
@@ -163,12 +164,17 @@ describe('openclaw-napm-alert-query services', () => {
       expect.objectContaining({
         category: 'networkAlerts',
         categoryLabel: '网络性能告警',
-        total: 2,
+        total: 3,
         bySeverity: expect.objectContaining({
-          critical: 1,
+          critical: 2,
           minor: 1
         }),
-        overviewEvents: [expect.objectContaining({ id: '1' })]
+        overviewEvents: [expect.objectContaining({
+          id: '1',
+          triggerCount: 2,
+          period: 120,
+          start: 1781680980
+        })]
       }),
       expect.objectContaining({
         category: 'appAlerts',

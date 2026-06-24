@@ -79,6 +79,17 @@ function makeCriteriaSummary(criteria = {}) {
   return parts.join('; ');
 }
 
+function isSummarySourceResult(result = {}) {
+  if (!isPlainObject(result)) {
+    return false;
+  }
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  return String(result?.reportData?.reportType || '').trim() === 'summary_report'
+    || String(result.schema || '').trim() === 'openclaw_napm_summary_result.v1'
+    || String(narrationInput.schema || '').trim() === 'openclaw_napm_summary.v1'
+    || (isPlainObject(result.summary) && String(result.summary?.overallStatus || ''));
+}
+
 function isPacketSourceResult(result = {}) {
   if (!isPlainObject(result)) {
     return false;
@@ -87,6 +98,18 @@ function isPacketSourceResult(result = {}) {
   return String(narrationInput.schema || result.schema || '').trim() === 'openclaw_napm_packet_analysis.v1'
     || Boolean(result.urls && (result.urls.preview || result.urls.download))
     || Boolean(result.preview || result.download || result.analysis);
+}
+
+function isFaultDiagnosisSourceResult(result = {}) {
+  if (!isPlainObject(result)) {
+    return false;
+  }
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  return String(result?.reportData?.reportType || '').trim() === 'diagnostic_report'
+    && String(result?.reportData?.templateId || '').trim() === 'napm_fault_diagnosis_v1'
+    || String(result.schema || '').trim() === 'openclaw_napm_fault_diagnosis_result.v1'
+    || String(narrationInput.schema || '').trim() === 'openclaw_napm_fault_diagnosis.v1'
+    || (isPlainObject(result.alertAnalysis) && isPlainObject(result.trafficAnalysis));
 }
 
 function isInspectionSourceResult(result = {}) {
@@ -98,6 +121,91 @@ function isInspectionSourceResult(result = {}) {
     || String(result.schema || '').trim() === 'openclaw_napm_inspection_result.v1'
     || String(narrationInput.schema || '').trim() === 'openclaw_napm_inspection.v1'
     || isPlainObject(result.inspection);
+}
+
+function buildFaultDiagnosisReportData(result = {}, options = {}) {
+  if (!isFaultDiagnosisSourceResult(result)) {
+    return null;
+  }
+  if (isPlainObject(result.reportData)) {
+    return {
+      ...result.reportData,
+      format: normalizeFormat(options.format || result.reportData.format || result.reportData.defaultFormat)
+    };
+  }
+
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  const fault = isPlainObject(result.fault)
+    ? result.fault
+    : (isPlainObject(narrationInput.fault) ? narrationInput.fault : {});
+  const alertAnalysis = isPlainObject(result.alertAnalysis)
+    ? result.alertAnalysis
+    : (isPlainObject(narrationInput.alertAnalysis) ? narrationInput.alertAnalysis : {});
+  const trafficAnalysis = isPlainObject(result.trafficAnalysis)
+    ? result.trafficAnalysis
+    : (isPlainObject(narrationInput.trafficAnalysis) ? narrationInput.trafficAnalysis : {});
+  const businessAnalysis = isPlainObject(result.businessAnalysis)
+    ? result.businessAnalysis
+    : (isPlainObject(narrationInput.businessAnalysis) ? narrationInput.businessAnalysis : {});
+  const packetAnalysis = isPlainObject(result.packetAnalysis)
+    ? result.packetAnalysis
+    : (isPlainObject(narrationInput.packetAnalysis) ? narrationInput.packetAnalysis : null);
+
+  const timeRange = isPlainObject(result.timeRange) ? result.timeRange : {};
+  const flatTimeRange = {
+    start: timeRange.faultWindow?.start || timeRange.start,
+    end: timeRange.faultWindow?.end || timeRange.end,
+    displayText: timeRange.displayText || '',
+    baselineStart: timeRange.baselineWindow?.start || undefined,
+    baselineEnd: timeRange.baselineWindow?.end || undefined
+  };
+
+  const faultName = String(
+    options.faultName
+    || result.faultName
+    || fault.description
+    || '未命名故障'
+  ).trim() || '未命名故障';
+
+  const systemName = String(
+    options.systemName
+    || result.systemName
+    || result.deviceInfo?.systemName
+    || 'Netlnside流量分析系统'
+  ).trim() || 'Netlnside流量分析系统';
+
+  const title = String(
+    options.title || result.title || `${faultName}_故障分析报告`
+  ).trim() || `${faultName}_故障分析报告`;
+
+  return {
+    schema: 'openclaw_napm_report_data.v1',
+    reportType: 'diagnostic_report',
+    templateId: 'napm_fault_diagnosis_v1',
+    format: normalizeFormat(options.format || result.format || 'docx'),
+    defaultFormat: 'docx',
+    title,
+    systemName,
+    faultName,
+    sourceQuestion: String(options.sourceQuestion || options.prompt || result.sourceQuestion || '').trim() || undefined,
+    timeRange: flatTimeRange,
+    dataSource: {
+      system: systemName,
+      sourceSkill: result.audit?.sourceSkill || result.dataSource?.sourceSkill || 'openclaw-napm-summary',
+      queryService: 'faultDiagnosis'
+    },
+    fault,
+    alertAnalysis,
+    trafficAnalysis,
+    businessAnalysis,
+    packetAnalysis,
+    audit: {
+      sourceSkill: result.audit?.sourceSkill || 'openclaw-napm-summary',
+      sourceSchema: String(result.schema || narrationInput.schema || '').trim() || undefined,
+      requestHistory: result.audit?.requestHistory || [],
+      queriesPerformed: result.audit?.queriesPerformed || []
+    }
+  };
 }
 
 function buildInspectionReportData(result = {}, options = {}) {
@@ -126,8 +234,8 @@ function buildInspectionReportData(result = {}, options = {}) {
     options.systemName
     || result.systemName
     || inspection.customerName
-    || '网深科技流量分析系统'
-  ).trim() || '网深科技流量分析系统';
+    || 'Netlnside流量分析系统'
+  ).trim() || 'Netlnside流量分析系统';
 
   return {
     schema: 'openclaw_napm_report_data.v1',
@@ -324,6 +432,77 @@ function buildPacketReportData(result = {}, options = {}) {
   };
 }
 
+function buildSummaryReportData(result = {}, options = {}) {
+  if (!isSummarySourceResult(result)) {
+    return null;
+  }
+  if (isPlainObject(result.reportData)) {
+    return {
+      ...result.reportData,
+      format: normalizeFormat(options.format || result.reportData.format || result.reportData.defaultFormat)
+    };
+  }
+
+  const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  const summary = isPlainObject(result.summary)
+    ? result.summary
+    : (isPlainObject(narrationInput.summary) ? narrationInput.summary : result);
+  const scope = isPlainObject(result.scope)
+    ? result.scope
+    : (isPlainObject(narrationInput.scope) ? narrationInput.scope : { type: 'global', label: '全局' });
+
+  const scopeLabel = scope.label || '全局';
+  const scopeTarget = isPlainObject(scope.target) ? scope.target : null;
+  const scopeTargetLabel = scopeTarget?.groupLabel || '';
+
+  // Title: scope-aware
+  const defaultTitle = scope.type === 'global'
+    ? 'Netlnside流量分析系统_全局综述报告'
+    : `${scopeTargetLabel}_${scopeLabel}综述报告`;
+  const title = String(
+    options.title || result.title || defaultTitle
+  ).trim() || defaultTitle;
+
+  const systemName = String(
+    options.systemName
+    || result.systemName
+    || summary.deviceInfo?.systemName
+    || 'Netlnside流量分析系统'
+  ).trim() || 'Netlnside流量分析系统';
+
+  return {
+    schema: 'openclaw_napm_report_data.v1',
+    reportType: 'summary_report',
+    templateId: 'napm_summary_overview_v1',
+    format: normalizeFormat(options.format || result.format || 'docx'),
+    defaultFormat: 'docx',
+    title,
+    systemName,
+    sourceQuestion: String(options.sourceQuestion || options.prompt || result.sourceQuestion || '').trim() || undefined,
+    timeRange: {
+      start: Number(result.timeRange?.start || summary.timeRange?.start || 0) || undefined,
+      end: Number(result.timeRange?.end || summary.timeRange?.end || 0) || undefined,
+      displayText: result.timeRange?.displayText || summary.timeRange?.displayText || ''
+    },
+    scope: {
+      type: scope.type || 'global',
+      label: scopeLabel,
+      target: scopeTarget
+    },
+    dataSource: {
+      system: systemName,
+      sourceSkill: result.dataSource?.sourceSkill || 'openclaw-napm-summary',
+      queryService: result.dataSource?.queryService || 'summaryAggregation'
+    },
+    summary,
+    audit: {
+      sourceSkill: 'openclaw-napm-summary',
+      sourceSchema: String(result.schema || narrationInput.schema || '').trim() || undefined,
+      reportInputSource: isPlainObject(result.summary) ? 'sourceResult.summary' : 'summary'
+    }
+  };
+}
+
 function extractSourceResult(input = {}) {
   if (isPlainObject(input.sourceResult)) {
     return input.sourceResult;
@@ -358,6 +537,23 @@ function normalizeReportInput(input = {}, options = {}) {
         sourceQuestion: payload.sourceQuestion || options.sourceQuestion
       }
     )
+    || buildSummaryReportData(
+      sourceResult || (isPlainObject(payload.summary) ? payload : null),
+      {
+        ...options,
+        prompt: payload.prompt || payload.exportPrompt,
+        format: payload.format || options.format,
+        title: payload.title || options.title,
+        sourceQuestion: payload.sourceQuestion || options.sourceQuestion
+      }
+    )
+    || buildFaultDiagnosisReportData(sourceResult, {
+      ...options,
+      prompt: payload.prompt || payload.exportPrompt,
+      format: payload.format || options.format,
+      title: payload.title || options.title,
+      sourceQuestion: payload.sourceQuestion || options.sourceQuestion
+    })
     || buildPacketReportData(sourceResult, {
       ...options,
       prompt: payload.prompt || payload.exportPrompt,
@@ -378,8 +574,11 @@ function normalizeReportInput(input = {}, options = {}) {
   }
 
   const format = normalizeFormat(payload.format || options.format || sourceReportData.format || sourceReportData.defaultFormat);
+  const defaultSystemName = sourceReportData.reportType === 'inspection_report'
+    ? 'Netlnside流量分析系统'
+    : undefined;
   const systemName = String(
-    payload.systemName || options.systemName || sourceReportData.systemName || ''
+    payload.systemName || options.systemName || sourceReportData.systemName || defaultSystemName || ''
   ).trim() || undefined;
   const faultName = String(
     payload.faultName || options.faultName || sourceReportData.faultName || ''
@@ -412,8 +611,12 @@ module.exports = {
   normalizeReportInput,
   buildPacketReportData,
   buildInspectionReportData,
+  buildSummaryReportData,
+  buildFaultDiagnosisReportData,
   isPacketSourceResult,
   isInspectionSourceResult,
+  isSummarySourceResult,
+  isFaultDiagnosisSourceResult,
   normalizeFormat,
   __test__: {
     compactJson,

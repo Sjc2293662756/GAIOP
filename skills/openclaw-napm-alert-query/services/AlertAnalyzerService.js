@@ -104,7 +104,7 @@ function buildCategoryDetails(map = {}, categoryOverviewLimit = 3) {
       categoryLabel: detail.categoryLabel,
       total: detail.total,
       bySeverity: detail.bySeverity,
-      overviewEvents: detail.events.slice(0, categoryOverviewLimit),
+      overviewEvents: buildOverviewEvents(detail.events, categoryOverviewLimit),
     }))
     .sort((left, right) => {
       const leftSeverity = severityScore(left.bySeverity);
@@ -113,6 +113,46 @@ function buildCategoryDetails(map = {}, categoryOverviewLimit = 3) {
       if (right.total !== left.total) return right.total - left.total;
       return String(left.categoryLabel || left.category).localeCompare(String(right.categoryLabel || right.category), 'zh-Hans-CN');
     });
+}
+
+function buildOverviewEvents(events = [], limit = 3) {
+  const map = new Map();
+  for (const event of events) {
+    const key = [
+      event.group || '',
+      event.name || '',
+      event.severity || '',
+    ].join('\u0000');
+    if (!map.has(key)) {
+      map.set(key, {
+        ...event,
+        triggerCount: 0,
+        firstStart: event.start || null,
+        lastEnd: event.end || null,
+        totalPeriod: 0,
+      });
+    }
+    const item = map.get(key);
+    item.triggerCount += 1;
+    if (event.start && (!item.firstStart || Number(event.start) < Number(item.firstStart))) {
+      item.firstStart = event.start;
+    }
+    if (event.end && (!item.lastEnd || Number(event.end) > Number(item.lastEnd))) {
+      item.lastEnd = event.end;
+    }
+    if (Number(event.period || 0) > 0) {
+      item.totalPeriod += Number(event.period || 0);
+    }
+  }
+
+  return Array.from(map.values())
+    .map((item) => ({
+      ...item,
+      start: item.firstStart || item.start,
+      end: item.lastEnd || item.end,
+      period: item.totalPeriod > 0 ? item.totalPeriod : item.period,
+    }))
+    .slice(0, limit);
 }
 
 function severityScore(bySeverity = {}) {
@@ -148,4 +188,5 @@ module.exports = {
   analyzeEvents,
   analyzeTimeline,
   buildCategoryDetails,
+  buildOverviewEvents,
 };

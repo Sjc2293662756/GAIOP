@@ -12,7 +12,8 @@
     "test": "npm run check && npm run build"
   },
   "dependencies": {
-    "echarts": "^5.5.0"
+    "echarts": "^5.5.0",
+    "sharp": "^0.33.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",

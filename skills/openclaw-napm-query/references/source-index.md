@@ -70,6 +70,19 @@
 - `NetInside NAPM Web Services接口描述20201218.pdf`：提供官方服务说明。
 - `api查询.docx`：提供现网对象、groupArguments 样本和运行时候选思路。:contentReference[oaicite:112]{index=112}
 
+### 2.9 chinese-semantic-metric-mapping.md
+主要来源：
+- 项目现有实现：`src/constants/objectMetricOwnership.js`、`src/constants/metricDomains.js`、`src/constants/objectDimensions.js`
+- 项目配置：`config/object-ontology.v1.json`、`config/metrics-config.yml`
+- 历史映射错误案例与纠正经验
+
+用途：
+
+- 作为 LLM 构造 `resolvedQuery` 时的**正向查表工具**
+- 按用户中文语义域（报错/慢/流量/丢包/重传/连接/访问/用户体验）直接定位正确 metric code
+- 提供对象上下文敏感的映射规则和常见错误抑制
+- 不替代运行时 `metricsForGroup` 校验
+
 ---
 
 ## 3. 原始材料清单
@@ -98,5 +111,6 @@
 - 若要回答“该走哪种服务”，优先查 `service-modes.md`
 - 若要构造查询，优先查 `query-construction.md`
 - 若要确认现网是否支持或存在，优先查 `runtime-lookup-notes.md`
+- 若要将用户的中文问法精确映射为 NAPM metric code，优先查 `chinese-semantic-metric-mapping.md`
 
 静态 references 用于解释与通用规则；运行时元数据服务用于现网确认与执行前校验。

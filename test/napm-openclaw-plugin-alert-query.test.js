@@ -93,6 +93,18 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(tool.name).toBe('napm-alert-query');
     expect(tool.parameters.properties.mode.enum).toContain('detail_with_timeseries');
     expect(tool.description).toContain('read-only');
+    expect(String(tool.execute)).toContain('finalAnswer');
+    expect(String(tool.execute)).toContain('verbatim_final_answer');
+    expect(String(tool.execute)).not.toContain('details:');
+  });
+
+  test('should instruct model to output alert finalAnswer verbatim', () => {
+    const context = plugin.__test__.buildNapmRoutingSystemContext();
+
+    expect(context).toContain('Alert final-answer contract');
+    expect(context).toContain('output that text verbatim');
+    expect(context).toContain('do not regroup by severity');
+    expect(context).toContain('① 应用性能告警 — N 条');
   });
 
   test('should render fixed alert summary table reply', () => {
@@ -163,7 +175,10 @@ describe('napm-openclaw-plugin alert query integration', () => {
                 severityLabel: '紧急',
                 severity: 4,
                 group: '192.168.1.16',
-                name: '吞吐过高'
+                name: '吞吐过高',
+                triggerCount: 2,
+                period: 120,
+                start: 1781680980
               }
             ]
           },
@@ -178,7 +193,10 @@ describe('napm-openclaw-plugin alert query integration', () => {
                 severityLabel: '重大',
                 severity: 3,
                 group: 'HTTPS',
-                name: '外部应用性能下降'
+                name: '外部应用性能下降',
+                triggerCount: 1,
+                period: 1,
+                start: 1781680980
               }
             ]
           }
@@ -187,16 +205,16 @@ describe('napm-openclaw-plugin alert query integration', () => {
       events: []
     });
 
-    expect(text).toContain('最近一小时告警概况：');
-    expect(text).toContain('网络性能告警：');
-    expect(text).toContain('共 2 个告警：');
-    expect(text).toContain('紧急告警 1 个');
-    expect(text).toContain('重大告警 0 个');
-    expect(text).toContain('轻微告警 1 个');
-    expect(text).toContain('应用性能告警：');
-    expect(text).toContain('| 级别 | 对象 | 描述 |');
-    expect(text).toContain('| 🔴 紧急 | 192.168.1.16 | 吞吐过高 |');
-    expect(text).toContain('| 🟠 重大 | HTTPS | 外部应用性能下降 |');
+    expect(text).toContain('最近一小时告警汇总：共 3 条');
+    expect(text).toContain('① 网络性能告警 — 2 条');
+    expect(text).toContain('🔴 紧急 1 条 | 🟢 轻微 1 条');
+    expect(text).toContain('对象：192.168.1.16（吞吐过高）');
+    expect(text).toContain('② 应用性能告警 — 1 条');
+    expect(text).toContain('🟠 重大 1 条');
+    expect(text).toContain('- 🔴 吞吐过高触发：对象 192.168.1.16 触发了 2 次告警，持续时长为 2 分钟，开始时间为 2026-06-17 15:23。');
+    expect(text).toContain('- 🟠 外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
+    expect(text).toContain('吞吐过高触发：对象 192.168.1.16 触发了 2 次告警，持续时长为 2 分钟，开始时间为 2026-06-17 15:23。');
+    expect(text).toContain('外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
     expect(text).not.toContain('告警总数：3 条');
   });
 
@@ -304,7 +322,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(result.content).not.toContain('告警总数为 0');
   });
 
-  test('should rewrite alert summary final answer to fixed table from remembered result', async () => {
+  test('should rewrite generic alert summary final answer to grouped category template from remembered result', async () => {
     const { hooks } = createApiHarness();
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
@@ -332,7 +350,10 @@ describe('napm-openclaw-plugin alert query integration', () => {
           severityLabel: '紧急',
           categoryLabel: '应用性能告警',
           group: 'HTTPS',
-          name: '外部应用性能下降'
+          name: '外部应用性能下降',
+          triggerCount: 1,
+          period: 60,
+          start: 1781680980
         },
         {
           id: '2',
@@ -340,7 +361,10 @@ describe('napm-openclaw-plugin alert query integration', () => {
           severityLabel: '重大',
           categoryLabel: '网络异常告警',
           group: '101.254.114.237',
-          name: '数据库上传数据异常监控'
+          name: '数据库上传数据异常监控',
+          triggerCount: 1,
+          period: 60,
+          start: 1781680980
         }
       ]
     }, '');
@@ -350,8 +374,171 @@ describe('napm-openclaw-plugin alert query integration', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.content).toContain('| 级别 | 类型 | 对象 | 描述 |');
-    expect(result.content).toContain('| 🔴 紧急 | 应用性能 | HTTPS | 外部应用性能下降 |');
+    expect(result.content).toContain('① 应用性能告警 — 1 条');
+    expect(result.content).toContain('② 网络异常告警 — 1 条');
+    expect(result.content).toContain('- 🔴 外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).toContain('外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
     expect(result.content).not.toContain('建议进一步排查。');
+  });
+
+  test('should rewrite severity-grouped freeform alert answer when prompt punctuation differs', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const ctx = createWeComCtx('alert-punctuation-normalized');
+    const prompt = '最近一小时有哪些告警';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+
+    plugin.__test__.rememberSkillResult('最近一小时有哪些告警？', {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      criteria: { start: 1781677500, end: 1781681100, categories: [] },
+      narrationInput: { schema: 'openclaw_napm_alert.v1' },
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 3,
+        bySeverity: { critical: 1, major: 1, minor: 1 },
+        byCategoryDetail: [
+          {
+            category: 'appAlerts',
+            categoryLabel: '应用性能告警',
+            total: 2,
+            bySeverity: { critical: 1, major: 1, minor: 0 },
+            overviewEvents: [
+              {
+                severity: 4,
+                severityLabel: '紧急',
+                group: 'HTTP',
+                name: '内部应用性能下降',
+                triggerCount: 1,
+                period: 1,
+                start: 1781680980
+              }
+            ]
+          },
+          {
+            category: 'securityAlerts',
+            categoryLabel: '安全事件告警',
+            total: 1,
+            bySeverity: { critical: 0, major: 0, minor: 1 },
+            overviewEvents: [
+              {
+                severity: 2,
+                severityLabel: '轻微',
+                group: '101.254.114.242',
+                name: '服务器疑似遭受攻击',
+                triggerCount: 1,
+                period: 1,
+                start: 1781680980
+              }
+            ]
+          }
+        ]
+      },
+      events: []
+    }, '');
+
+    const result = await messageSending({
+      content: [
+        '最近一小时（15:25 ~ 16:25）共触发 32 个告警，分布如下：',
+        '🔴 紧急告警（6个）',
+        'HTTP — 内部应用性能下降（16:07）',
+        '🟠 重大告警（11个）',
+        '另有8个应用性能重大告警',
+        '🟢 轻微告警（15个）'
+      ].join('\n')
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('① 应用性能告警 — 2 条');
+    expect(result.content).toContain('② 安全事件告警 — 1 条');
+    expect(result.content).toContain('🔴 紧急 1 条 | 🟠 重大 1 条');
+    expect(result.content).toContain('🟢 轻微 1 条');
+    expect(result.content).toContain('服务器疑似遭受攻击触发：对象 101.254.114.242 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).not.toContain('🔴 紧急告警（6个）');
+  });
+
+  test('should rewrite freeform alert summary from latest alert record when prompt key misses', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const ctx = createWeComCtx('alert-latest-fallback');
+    const prompt = '最近一小时有哪些告警';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+
+    plugin.__test__.rememberSkillResult('tool-generated-alert-summary-prompt', {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      criteria: { categories: [] },
+      narrationInput: { schema: 'openclaw_napm_alert.v1' },
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 2,
+        bySeverity: { critical: 1, major: 1, minor: 0 },
+        byCategoryDetail: [
+          {
+            category: 'appAlerts',
+            categoryLabel: '应用性能告警',
+            total: 1,
+            bySeverity: { critical: 1, major: 0, minor: 0 },
+            overviewEvents: [
+              {
+                severity: 4,
+                severityLabel: '紧急',
+                group: 'HTTP',
+                name: '内部应用性能下降',
+                triggerCount: 1,
+                period: 1,
+                start: 1781680980
+              }
+            ]
+          },
+          {
+            category: 'networkIssueAlerts',
+            categoryLabel: '网络异常告警',
+            total: 1,
+            bySeverity: { critical: 0, major: 1, minor: 0 },
+            overviewEvents: [
+              {
+                severity: 3,
+                severityLabel: '重大',
+                group: '101.254.114.237',
+                name: '数据库上传数据异常监控',
+                triggerCount: 1,
+                period: 5,
+                start: 1781680980
+              }
+            ]
+          }
+        ]
+      },
+      events: []
+    }, '');
+
+    const result = await messageSending({
+      content: [
+        'Now: Wed Jun 17 17:02 CST 2026 -> start≈16:02, end≈17:02. 最近一小时共触发 30 条告警，分布如下：',
+        '① 应用性能告警 — 21 条（最多）',
+        '🔴 紧急 1 条 | 🟠 重大 7 条 | 🟢 轻微 13 条',
+        '当前最需要关注：',
+        'HTTPS 外部应用性能下降持续13分钟'
+      ].join('\n')
+    }, ctx);
+
+    expect(result).toBeTruthy();
+    expect(result.content).toContain('最近一小时告警汇总：共 2 条');
+    expect(result.content).toContain('① 应用性能告警 — 1 条');
+    expect(result.content).toContain('② 网络异常告警 — 1 条');
+    expect(result.content).toContain('数据库上传数据异常监控触发：对象 101.254.114.237 触发了 1 次告警，持续时长为 5 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).not.toContain('Now: Wed');
+    expect(result.content).not.toContain('当前最需要关注');
   });
 });

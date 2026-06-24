@@ -83,10 +83,10 @@ describe('openclaw-napm-report generation service', () => {
     expect(audit.reportId).toBe(result.reportId);
   });
 
-  test('should reject missing sections instead of generating empty report', async () => {
+  test('should reject missing sections for non-fixed-template reports', async () => {
     const service = new ReportGenerationService({ outputDir });
 
-    const result = await service.generate(makeReportPayload({ sections: [] }));
+    const result = await service.generate(makeReportPayload({ reportType: 'quick_report', sections: [] }));
 
     expect(result).toMatchObject({
       ok: false,
@@ -181,16 +181,29 @@ describe('openclaw-napm-report generation service', () => {
     expect(result.fileName).toContain('网深科技流量分析系统_巡检报告_');
   });
 
-  test('should handle future report types via fallback CN name', async () => {
+  test('should generate summary report with scope-aware filename', async () => {
     const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
 
-    const result = await service.generate(makeReportPayload({
+    // Global scope: no scope field, defaults to global
+    const resultGlobal = await service.generate(makeReportPayload({
       reportType: 'summary_report',
       systemName: 'Netlnside流量分析系统',
       title: '综述报告',
+      scope: { type: 'global', label: '全局' },
       sections: [{ type: 'summary', title: '摘要', content: '内容' }]
     }));
-    expect(result.ok).toBe(true);
-    expect(result.reportId).toMatch(/^Netlnside流量分析系统_综述报告_\d{8}_\d{6}$/);
+    expect(resultGlobal.ok).toBe(true);
+    expect(resultGlobal.reportId).toMatch(/^Netlnside流量分析系统_全局综述报告_\d{8}_\d{6}$/);
+
+    // Scoped: webApplication with target
+    const resultScoped = await service.generate(makeReportPayload({
+      reportType: 'summary_report',
+      systemName: 'Netlnside流量分析系统',
+      title: '239web 业务综述报告',
+      scope: { type: 'webApplication', label: '业务', target: { groupType: 'WebApplication', groupArgument: '239web', groupLabel: '239web' } },
+      sections: [{ type: 'summary', title: '摘要', content: '内容' }]
+    }));
+    expect(resultScoped.ok).toBe(true);
+    expect(resultScoped.reportId).toMatch(/^239web_业务综述报告_\d{8}_\d{6}$/);
   });
 });

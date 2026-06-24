@@ -62,19 +62,27 @@ class ReportGenerationService {
       });
     }
 
-    if (!Array.isArray(report.sections) || report.sections.length === 0) {
+    // Fixed-template reports (inspection, summary) define sections in the template JSON,
+    // not in the reportData. Skip the sections array check for these types.
+    const usesFixedTemplate = reportType === 'inspection_report' || reportType === 'summary_report' || reportType === 'diagnostic_report';
+    if (!usesFixedTemplate && (!Array.isArray(report.sections) || report.sections.length === 0)) {
       throw makeError('REPORT_DATA_INVALID', '报告生成失败：缺少 sections 或查询结果为空。');
     }
 
-    for (const [index, section] of report.sections.entries()) {
-      if (!section || typeof section !== 'object' || Array.isArray(section)) {
-        throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}] 必须是对象。`);
-      }
-      if (!section.type) {
-        throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}].type 缺失。`);
-      }
-      if (section.type === 'table' && !Array.isArray(section.rows)) {
-        throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}].rows 必须是数组。`);
+    if (!usesFixedTemplate) {
+      for (const [index, section] of (report.sections || []).entries()) {
+        if (!section || typeof section !== 'object' || Array.isArray(section)) {
+          throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}] 必须是对象。`);
+        }
+        if (!section.type) {
+          throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}].type 缺失。`);
+        }
+        if (section.type === 'table' && !Array.isArray(section.rows)) {
+          throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}].rows 必须是数组。`);
+        }
+        if (section.type === 'chart' && !section.chartId && !section.chartOption) {
+          throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}] type=chart 需要 chartId 或 chartOption。`);
+        }
       }
     }
 

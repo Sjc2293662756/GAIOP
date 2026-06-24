@@ -1,0 +1,69 @@
+{
+  "schema": "openclaw_napm_fault_diagnosis_chart_specs.v1",
+  "charts": [
+    {
+      "id": "alert.timeline",
+      "title": "告警时序图",
+      "chartType": "line",
+      "datasetPath": "alertAnalysis.timeline",
+      "xField": "bucketStart",
+      "xLabel": "时间",
+      "series": [
+        { "field": "critical_total", "name": "紧急" },
+        { "field": "major_total", "name": "重大" },
+        { "field": "minor_total", "name": "轻微" }
+      ]
+    },
+    {
+      "id": "traffic.trend",
+      "title": "故障时段流量趋势图",
+      "chartType": "line",
+      "datasetPath": "trafficAnalysis.trend.dataset",
+      "xField": "time",
+      "xLabel": "时间",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "trafficAnalysis.trend.dataset.unit"
+    },
+    {
+      "id": "traffic.topIPs",
+      "title": "Top 受影响 IP 流量分布",
+      "chartType": "bar",
+      "datasetPath": "trafficAnalysis.topIPs",
+      "xField": "key",
+      "xLabel": "IP地址",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ]
+    },
+    {
+      "id": "business.slowAccess",
+      "title": "慢访问业务（故障时段）",
+      "chartType": "bar",
+      "datasetPath": "businessAnalysis.slowAccess",
+      "xField": "businessName",
+      "xLabel": "业务/接口名称",
+      "series": [
+        { "field": "slowCount", "name": "慢访问次数" },
+        { "field": "avgPageDelayMs", "name": "平均页面时延(ms)" }
+      ]
+    },
+    {
+      "id": "business.httpErrors",
+      "title": "HTTP 错误业务（故障时段）",
+      "chartType": "bar",
+      "datasetPath": "businessAnalysis.httpErrors",
+      "xField": "businessName",
+      "xLabel": "业务/接口名称",
+      "series": [
+        { "field": "http400", "name": "HTTP 400" },
+        { "field": "http500", "name": "HTTP 500" }
+      ]
+    }
+  ]
+}

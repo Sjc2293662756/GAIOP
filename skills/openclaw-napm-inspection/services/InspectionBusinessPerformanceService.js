@@ -22,16 +22,14 @@ function extractRows(raw = {}) {
 }
 
 function readObjectName(row = {}) {
-  return String(
-    row.object
-    || row.group
-    || row.name
-    || row.label
-    || row.BusinessName
-    || row.WebApplication
-    || row.argument
-    || ''
-  ).trim();
+  const candidate = row.object || row.group || row.name || row.label || row.BusinessName || row.WebApplication || row.argument || '';
+  // Handle NAPM API returning object as nested object
+  // topValues: group = { argument: "回溯238web", label: "WEB应用", key: "WebApplication", ... }
+  // timeValues/applianceInfo: object/name may also be objects
+  if (candidate && typeof candidate === 'object') {
+    return String(candidate.argument || candidate.name || candidate.id || candidate.label || candidate.webApplication || '').trim();
+  }
+  return String(candidate).trim();
 }
 
 function readMetric(row = {}, metric = '') {

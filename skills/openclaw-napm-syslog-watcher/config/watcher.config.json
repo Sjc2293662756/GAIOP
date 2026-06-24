@@ -1,0 +1,32 @@
+{
+  "syslog": {
+    "path": "/var/log/netinside/syslog.log",
+    "encoding": "utf-8"
+  },
+  "napm": {
+    "baseUrl": "https://101.254.114.238/webservice/NetInside",
+    "username": "GAIOP",
+    "password": "GAIOP123",
+    "tlsInsecure": true,
+    "requestTimeoutMs": 15000
+  },
+  "wecom": {
+    "_comment": "企业微信群机器人 Webhook URL",
+    "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=6ab0fb17-01a5-4c88-815e-46164cf3c392",
+    "secret": "",
+    "mentionedList": [],
+    "mentionedMobileList": [],
+    "_routing_comment": "可选：按严重级别路由到不同的群。格式: { '紧急': { 'webhookUrl': '...', 'mentionedMobileList': ['138...'] } }",
+    "routing": {}
+  },
+  "dedup": {
+    "_comment": "同一 alertId 在 windowSeconds 秒内不重复推送",
+    "windowSeconds": 0,
+    "maxCacheSize": 500
+  },
+  "watcher": {
+    "_comment": "maxRetries: API 调用最大重试次数; retryDelayMs: 重试间隔毫秒",
+    "maxRetries": 3,
+    "retryDelayMs": 5000
+  }
+}

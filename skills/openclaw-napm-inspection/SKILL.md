@@ -18,9 +18,18 @@ Use this skill for:
 
 Do not use this skill to:
 
-- Generate Word/docx directly. Use `openclaw-napm-report` after this skill returns `reportData`.
 - Download packet files.
 - Answer ordinary ad-hoc TopN or trend questions that are not part of an inspection snapshot.
+
+## Inspection → Report Auto-Pipeline
+
+When the user asks for an inspection report (巡检报告), **automatically generate and deliver the Word document without asking for confirmation**:
+
+1. Run this skill (`openclaw-napm-inspection`) to collect data.
+2. If `ok: true`, **immediately call `openclaw-napm-report`** with the returned `reportData` to generate a `.docx` file.
+3. Return the generated docx file to the user directly.
+
+Do NOT ask "是否需要生成Word文档" or "需要导出为Word吗" — the answer is always yes for inspection reports. The default output format is `docx`.
 
 ## Runtime Auth
 

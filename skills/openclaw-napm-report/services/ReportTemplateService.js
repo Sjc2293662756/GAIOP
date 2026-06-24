@@ -3,6 +3,7 @@ const {
   BorderStyle,
   Document,
   HeadingLevel,
+  ImageRun,
   Packer,
   Paragraph,
   Table,
@@ -12,6 +13,9 @@ const {
   WidthType
 } = require('docx');
 const InspectionFixedTemplateService = require('./InspectionFixedTemplateService');
+const SummaryFixedTemplateService = require('./SummaryFixedTemplateService');
+const DiagnosticFixedTemplateService = require('./DiagnosticFixedTemplateService');
+const { buildEChartsOption, renderChartPngBuffer } = require('./InspectionFixedTemplateService').__test__;
 
 function asText(value) {
   if (value === null || value === undefined) {
@@ -451,11 +455,45 @@ function buildInspectionChildren(report = {}) {
 class ReportTemplateService {
   constructor(options = {}) {
     this.inspectionFixedTemplate = options.inspectionFixedTemplate || new InspectionFixedTemplateService(options);
+    this.summaryFixedTemplate = options.summaryFixedTemplate || new SummaryFixedTemplateService(options);
+    this.diagnosticFixedTemplate = options.diagnosticFixedTemplate || new DiagnosticFixedTemplateService(options);
   }
 
   async renderDocx(report = {}) {
     if (report.reportType === 'inspection_report' || report.templateId === 'napm_traffic_health_inspection_v1') {
       return this.renderInspectionDocx(report);
+    }
+    if (report.reportType === 'summary_report' || report.templateId === 'napm_summary_overview_v1') {
+      return this.renderSummaryDocx(report);
+    }
+    if (report.reportType === 'diagnostic_report' || report.templateId === 'napm_fault_diagnosis_v1') {
+      return this.renderDiagnosticDocx(report);
+    }
+
+    // Pre-render chart sections to PNG buffers
+    const chartSections = (report.sections || []).filter((s) => s.type === 'chart');
+    const chartBuffers = new Map();
+    if (chartSections.length > 0) {
+      const chartSpecs = (report.chartSpecs && Array.isArray(report.chartSpecs.charts))
+        ? report.chartSpecs
+        : this.inspectionFixedTemplate.loadChartSpecs();
+      for (const section of chartSections) {
+        try {
+          let option;
+          if (section.chartOption) {
+            option = section.chartOption;
+          } else {
+            const chart = (chartSpecs.charts || []).find((c) => c.id === section.chartId) || {};
+            option = buildEChartsOption(chart, report);
+          }
+          const width = Number(section.width) || 620;
+          const height = Number(section.height) || 360;
+          const buffer = await renderChartPngBuffer(option, width, height);
+          chartBuffers.set(section.title || section.chartId, { buffer, width, height });
+        } catch (err) {
+          console.error(`[ReportTemplate] Failed to render chart "${section.title || section.chartId}":`, err.message);
+        }
+      }
     }
 
     const children = [
@@ -512,6 +550,28 @@ class ReportTemplateService {
       if (section.type === 'table') {
         children.push(buildTable(section));
         children.push(buildParagraph('', { after: 120 }));
+      } else if (section.type === 'chart') {
+        const cached = chartBuffers.get(section.title || section.chartId);
+        if (cached && cached.buffer) {
+          children.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 120 },
+            children: [
+              new ImageRun({
+                type: 'png',
+                data: cached.buffer,
+                transformation: { width: cached.width || 620, height: cached.height || 360 },
+                altText: {
+                  title: section.title || 'chart',
+                  description: section.title || 'chart'
+                }
+              })
+            ]
+          }));
+        } else {
+          children.push(buildParagraph(`图表「${section.title || section.chartId || '-'}」暂不可用。`, { size: 20 }));
+        }
+        children.push(buildParagraph('', { after: 120 }));
       } else if (Array.isArray(section.items)) {
         children.push(...buildList(section.items));
       } else {
@@ -543,8 +603,16 @@ class ReportTemplateService {
     return Packer.toBuffer(doc);
   }
 
+  async renderDiagnosticDocx(report = {}) {
+    return this.diagnosticFixedTemplate.renderDocx(report);
+  }
+
   async renderInspectionDocx(report = {}) {
     return this.inspectionFixedTemplate.renderDocx(report);
+  }
+
+  async renderSummaryDocx(report = {}) {
+    return this.summaryFixedTemplate.renderDocx(report);
   }
 }
 

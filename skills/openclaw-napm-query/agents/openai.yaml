@@ -37,11 +37,19 @@ interface:
     - server response time => TRTI, not RTTI
     - RTT / latency / delay => RTT-family latency metrics
     - web visits / page visits => PGNPGE
+    - When the user says 报错 / 错误请求 / 异常请求 / 失败请求 / error / failure / HTTP错误 without a specific HTTP status code (400/500/4xx/5xx):
+      - If the object scope is WebApplication / PageFamily / 业务 / 业务系统 / 网站 / web应用 => the default error metrics are PGHTTP400 and PGHTTP500 (HTTP error status codes).
+      - If the object scope is BusinessGroup / IPAddress / Prefix24 / 业务组 / 工作组 / IP / 网段 => the default error metrics are RFCI and RFCO (TCP connection failures).
+      - If the user explicitly mentions HTTP / 4xx / 5xx / 400 / 500 / 状态码 => use the corresponding PGHTTP400 / PGHTTP500 metric.
+      - If the user explicitly mentions 连接失败 / connection failure / TCP失败 => use RFCI / RFCO.
+      - Never map 报错 / 错误请求 (without packet loss wording) to PLI / PLO. PLI/PLO are packet-loss metrics, not general error metrics.
+    - For metric disambiguation beyond the explicit guardrails above, consult the comprehensive Chinese semantic → metric code mapping file at `references/chinese-semantic-metric-mapping.md`. This reference provides forward-lookup tables organized by user-facing Chinese terms, with object-context sensitivity, correct metric codes, and common mapping mistakes to avoid.
 
     Ranking guardrails:
     - When the user asks who has the highest packet loss or loss rate, keep the semantic metric and sort metric aligned to PLI or PLO unless the user explicitly asks to rank by throughput, bandwidth, byte volume, or another named metric.
     - Do not silently rewrite packet-loss ranking into TPIO sorting.
     - Singular ranking asks such as “谁 / 哪个 / 最高的是谁” should usually prefer topCount=1.
+    - For 报错 / 错误 / 异常 ranking asks on WebApplication, the discovery metric must be PGHTTP400 or PGHTTP500, not PLI/PLO or TPIO.
 
     Composite analysis guardrails:
     - Requests such as “先找最…的对象，再分析它”, “找到失败最多的地址，然后综合分析”, or “对最高/最多的对象做深度分析” are not a single averageValues or timeValues query.

@@ -1,5 +1,7 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const JSZip = require('jszip');
 
 const InspectionFixedTemplateService = require('../skills/openclaw-napm-report/services/InspectionFixedTemplateService');
 const { __test__ } = require('../skills/openclaw-napm-report/services/InspectionFixedTemplateService');
@@ -120,13 +122,36 @@ describe('InspectionFixedTemplateService', () => {
     const template = service.loadTemplate('napm_traffic_health_inspection_v1');
 
     expect(template.templateId).toBe('napm_traffic_health_inspection_v1');
+    expect(template.page.header.leftImage.path).toBe('templates/inspection/company-logo.png');
+    expect(template.page.header.left).toBe('网深科技流量分析系统');
+    expect(template.page.footer.center).toContain('{{pageNumber}}');
+    const tocSection = template.sections.find((section) => section.id === 'toc');
+    expect(tocSection.headingStyleRange).toBe('1-2');
+    expect(tocSection.hyperlink).toBe(true);
+    expect(tocSection.items).toBeUndefined();
     expect(template.sections.map((section) => section.id)).toEqual(expect.arrayContaining([
+      'toc',
+      'document_description_heading',
+      'check_items_table',
+      'basic_info_heading',
+      'inspection_summary_heading',
+      'performance_requirement',
       'traffic_narrative',
       'traffic_chart_recent_hour',
       'business_narrative',
-      'business_slow_chart',
-      'query_evidence'
+      'business_slow_chart'
     ]));
+    expect(template.sections.map((section) => section.id)).not.toContain('query_evidence');
+    expect(template.sections.map((section) => section.title)).toEqual(expect.arrayContaining([
+      '1 文档说明',
+      '1.1 流量分析系统检查项说明',
+      '2 基本信息',
+      '3 巡检信息汇总',
+      '3.1 性能状况',
+      '3.6 业务性能状况',
+      '4 巡检总结'
+    ]));
+    expect(template.sections.map((section) => section.title)).not.toContain('六、巡检结果');
   });
 
   test('builds rule-based narration from inspection data', () => {
@@ -175,6 +200,57 @@ describe('InspectionFixedTemplateService', () => {
 
     expect(buffer.subarray(0, 2).toString('utf8')).toBe('PK');
     expect(buffer.length).toBeGreaterThan(1000);
+  });
+
+  test('renders configured header and footer into docx package', async () => {
+    const service = new InspectionFixedTemplateService();
+    const buffer = await service.renderDocx(makeReportData());
+    const zip = await JSZip.loadAsync(buffer);
+    const documentXml = await zip.file('word/document.xml').async('string');
+    const headerXml = await zip.file('word/header1.xml').async('string');
+    const footerXml = await zip.file('word/footer1.xml').async('string');
+    const settingsXml = await zip.file('word/settings.xml').async('string');
+    const stylesXml = await zip.file('word/styles.xml').async('string');
+    const reportXml = [documentXml, headerXml, footerXml, stylesXml].join('\n');
+
+    expect(headerXml).toContain('网深科技流量分析系统');
+    expect(headerXml).toContain('北京烟草');
+    expect(footerXml).toContain('2026-06-16');
+    expect(footerXml).toContain('PAGE');
+    expect(footerXml).toContain('NUMPAGES');
+    expect(documentXml).toContain('TOC \\h \\o &quot;1-2&quot;');
+    expect(settingsXml).toContain('w:updateFields');
+    expect(stylesXml).toContain('w:styleId="TOC1"');
+    expect(stylesXml).toContain('w:styleId="TOC2"');
+    expect(reportXml).toContain('Microsoft YaHei');
+    expect(reportXml).toContain('w:val="000000"');
+    expect(reportXml).toContain('1 文档说明');
+    expect(reportXml).toContain('2 基本信息');
+    expect(reportXml).toContain('3.1 性能状况');
+    expect(reportXml).toContain('4 巡检总结');
+    expect(reportXml).not.toContain('六、巡检结果');
+    for (const oldColor of ['0F766E', '334155', '111827', '374151', '64748B', '1F2937']) {
+      expect(reportXml).not.toContain(`w:val="${oldColor}"`);
+    }
+  });
+
+  test('embeds configured header logo when asset exists', async () => {
+    const assetRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-report-assets-'));
+    const logoDir = path.join(assetRoot, 'templates', 'inspection');
+    fs.mkdirSync(logoDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logoDir, 'company-logo.png'),
+      Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l3mD2QAAAABJRU5ErkJggg==', 'base64')
+    );
+    const service = new InspectionFixedTemplateService({ assetRoot });
+    const buffer = await service.renderDocx(makeReportData());
+    const zip = await JSZip.loadAsync(buffer);
+    const mediaFiles = Object.keys(zip.files).filter((fileName) => fileName.startsWith('word/media/'));
+    const headerXml = await zip.file('word/header1.xml').async('string');
+
+    expect(mediaFiles.some((fileName) => fileName.endsWith('.png'))).toBe(true);
+    expect(headerXml).toContain('a:blip');
+    expect(headerXml).not.toContain('<w:t xml:space="preserve">网深科技流量分析系统</w:t>');
   });
 
   test('template json files are valid', () => {
