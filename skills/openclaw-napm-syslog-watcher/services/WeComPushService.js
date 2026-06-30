@@ -24,6 +24,17 @@ const SEVERITY_LABEL = {
   '轻微': '轻微',
 };
 
+// 告警类别 → 中文标签
+const CATEGORY_LABEL = {
+  'networkAlerts': '网络性能告警',
+  'networkIssueAlerts': '网络异常告警',
+  'appAlerts': '应用性能告警',
+  'busAlerts': '业务故障告警',
+  'userAlerts': '用户体验告警',
+  'securityAlerts': '安全事件告警',
+  'AIAlerts': '智能分析告警',
+};
+
 class WeComPushService {
   /**
    * @param {object} config - watcher 配置对象
@@ -31,6 +42,7 @@ class WeComPushService {
    */
   constructor(config) {
     const wecom = config.wecom || {};
+    const napm = config.napm || {};
 
     // 主 webhook URL
     this.defaultWebhookUrl = wecom.webhookUrl || '';
@@ -44,6 +56,10 @@ class WeComPushService {
     // 默认 @ 人员列表
     this.mentionedList = wecom.mentionedList || [];
     this.mentionedMobileList = wecom.mentionedMobileList || [];
+
+    // NAPM 控制台地址（用于生成告警详情链接）
+    const napmRaw = napm.host || napm.baseUrl || '';
+    this.napmConsoleUrl = this._extractOrigin(napmRaw);
   }
 
   // ---- 公开方法 ----
@@ -75,10 +91,9 @@ class WeComPushService {
         timeout: 10000,
       });
 
-      const errcode = response.data?.errcode;
-      if (errcode !== 0) {
+      if (response.data?.errcode !== 0) {
         console.error(
-          `[WeComPush] 推送失败: errcode=${errcode}, errmsg=${response.data?.errmsg || 'unknown'}`
+          `[WeComPush] 推送失败: errcode=${response.data?.errcode}, errmsg=${response.data?.errmsg || 'unknown'}`
         );
         return false;
       }
@@ -155,25 +170,54 @@ class WeComPushService {
 
   /**
    * 构建企业微信 Markdown 消息体。
+   *
+   * 卡片结构：
+   *   标题 + 基本字段（名称/级别/类别/时间）
+   *   详情区（触发条件 / 监控对象 / 指标）
+   *   标识区（alertId / elogid）
+   *   操作区（NAPM 控制台链接）
    */
   _buildMarkdownMessage(alert, mentionedMobileList) {
-    // NAPM 业务告警级别优先
     const severity = alert.alertSeverity || alert.severity || '';
     const sevDisplay = SEVERITY_LABEL[severity] || severity;
 
     let md = '## ⚠️ NAPM 告警通知\n';
 
+    // ---- 基本信息 ----
     md += `> **告警名称**：${this._escapeMd(alert.alertName || alert.name || '-')}\n`;
     md += `> **严重级别**：${sevDisplay}\n`;
 
     if (alert.category) {
-      md += `> **告警类别**：${this._escapeMd(alert.category)}\n`;
+      const catLabel = CATEGORY_LABEL[alert.category] || alert.category;
+      md += `> **告警类别**：${this._escapeMd(catLabel)}\n`;
     }
     if (alert.timestamp) {
-      md += `> **告警时间**：${this._escapeMd(alert.timestamp)}\n`;
+      // 截断微秒，只保留秒级
+      const ts = alert.timestamp.replace(/\.\d+/, '');
+      md += `> **告警时间**：${this._escapeMd(ts)}\n`;
     }
-    if (alert.fromHost) {
-      md += `> **来源主机**：${this._escapeMd(alert.fromHost)}\n`;
+
+    // ---- 详情区 ----
+    // 触发条件（syslog 里就有，或从 API 补充）
+    let condition = alert.extra?.condition || alert.detail?.condition || alert.detail?.triggerCondition || '';
+    if (condition) {
+      // 替换英文告警级别为中文
+      condition = condition
+        .replace(/\bCritical\b/g, '紧急')
+        .replace(/\bMajor\b/g, '重大')
+        .replace(/\bMinor\b/g, '轻微')
+        .replace(/\bNone\b/g, '无');
+      md += `> **触发条件**：${this._escapeMd(condition)}\n`;
+    }
+
+    // 监控对象（syslog canongrouppath 比 API objectName 更直观）
+    const object =
+      alert.extra?.canongrouppath ||
+      alert.detail?.objectName ||
+      alert.detail?.group ||
+      '';
+    if (object) {
+      md += `> **监控对象**：${this._escapeMd(object)}\n`;
     }
 
     // 指标列表
@@ -185,20 +229,35 @@ class WeComPushService {
       }
     }
 
-    // API 补充的详细信息
-    const detail = alert.detail;
-    if (detail) {
-      if (detail.triggerCondition) {
-        md += `> **触发条件**：${this._escapeMd(detail.triggerCondition)}\n`;
+    // ---- 标识区 ----
+    md += '\n';
+    md += `> Alert ID: **${alert.alertId || '-'}**`;
+    if (alert.extra?.elogid) {
+      md += ` | Event ID: **${this._escapeMd(alert.extra.elogid)}**`;
+    }
+    md += '\n';
+
+    // 告警窗口时间（endtime 可能为 0，表示告警仍在持续）
+    const rawStart = parseInt(alert.extra?.starttime, 10) || 0;
+    const rawEnd = parseInt(alert.extra?.endtime, 10) || 0;
+    const hasStart = rawStart > 0;
+    const hasEnd = rawEnd > 0;
+    if (hasStart) {
+      const st = this._formatTimestamp(rawStart);
+      if (hasEnd) {
+        md += `> ⏱ 告警窗口: ${st} ~ ${this._formatTimestamp(rawEnd)}\n`;
+      } else {
+        md += `> ⏱ 告警开始: ${st}（持续中）\n`;
       }
-      if (detail.description) {
-        md += `> **描述**：${this._escapeMd(detail.description)}\n`;
-      }
-      if (detail.objectName) {
-        md += `> **监控对象**：${this._escapeMd(detail.objectName)}\n`;
-      }
-      if (detail.status) {
-        md += `> **状态**：${this._escapeMd(detail.status)}\n`;
+      // 快捷查询指令 — 灰色代码块
+      if (alert.extra?.elogid) {
+        const qStart = hasEnd
+          ? Math.floor(rawStart / 60) * 60 - 1800
+          : Math.floor(rawStart / 60) * 60 - 3600;
+        const qEnd = hasEnd
+          ? Math.floor(rawEnd / 60) * 60 + 1800
+          : Math.floor(rawStart / 60) * 60 + 3600;
+        md += `\n> 💬 深入分析\n\n\`\`\`\n分析这个告警数据包 ${alert.extra.elogid} ${qStart} ${qEnd}\n\`\`\`\n`;
       }
     }
 
@@ -207,13 +266,37 @@ class WeComPushService {
     md += `\n> 📅 接收时间：${now}`;
 
     return {
-      msgtype: 'markdown',
-      markdown: {
+      msgtype: 'markdown_v2',
+      markdown_v2: {
         content: md,
-        mentioned_list: this.mentionedList,
-        mentioned_mobile_list: mentionedMobileList,
       },
     };
+  }
+
+  /**
+   * 从 NAPM host 配置中提取控制台根地址。
+   * "https://101.254.114.238/webservice/NetInside" → "https://101.254.114.238"
+   */
+  _extractOrigin(raw) {
+    if (!raw) return '';
+    try {
+      const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      const url = new URL(withProtocol);
+      return url.origin;
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  /**
+   * Unix 秒级时间戳 → 可读时间字符串（北京时间）。
+   */
+  _formatTimestamp(sec) {
+    if (!sec) return '';
+    const n = parseInt(sec, 10);
+    if (isNaN(n)) return '';
+    const d = new Date(n * 1000);
+    return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
   }
 
   /**

@@ -21,11 +21,13 @@ const {
   buildPacketHandoff,
   buildNarrationInput,
   buildReportData,
+  extractIndirectDiscoveryEvents,
 } = require('../services/AlertNarrationContractService');
 const {
   explainNotification,
   explainEventFields,
 } = require('../services/AlertNotificationExplainerService');
+const { discoverForEvents } = require('../services/AlertIndirectPacketDiscoveryService');
 
 if (require.main === module) {
   main().catch((error) => {
@@ -138,6 +140,28 @@ async function executeAlertQuery(payload = {}, options = {}) {
   const packetSourceEvents = result.details.length > 0 ? result.details : result.events;
   if (query.options.packetHandoff) {
     result.packetHandoff = buildPacketHandoff(packetSourceEvents, query.criteria);
+  }
+
+  // 间接数据包发现：业务/应用/工作组告警 → 查询嫌疑 IP 会话
+  if (query.options.packetHandoff && query.options.discoveryEnabled) {
+    const indirectEvents = extractIndirectDiscoveryEvents(result.packetHandoff);
+    if (indirectEvents.length > 0) {
+      try {
+        const discoveryResult = await discoverForEvents(api, indirectEvents, query.options);
+        result.packetHandoff = mergeIndirectDiscoveryResult(result.packetHandoff, discoveryResult);
+        if (discoveryResult && discoveryResult.available) {
+          result.warnings.push({
+            code: 'ALERT_INDIRECT_DISCOVERY_PERFORMED',
+            message: `已对 ${indirectEvents.length} 个业务/应用/工作组告警执行间接数据包发现。`,
+          });
+        }
+      } catch (discoveryError) {
+        result.warnings.push({
+          code: 'ALERT_INDIRECT_DISCOVERY_FAILED',
+          message: `间接数据包发现执行失败：${discoveryError.message || String(discoveryError)}`,
+        });
+      }
+    }
   }
 
   if (!result.summary && result.events.length === 0 && result.details.length > 0) {
@@ -330,6 +354,73 @@ function parseChineseNumber(value = '') {
       return tens * 10 + ones;
     }
   }
+  return null;
+}
+
+/**
+ * 将间接发现结果合并回 packetHandoff 结构中。
+ *
+ * 逻辑：
+ *   - 单个 PENDING 候选 → 替换为 discovery 结果
+ *   - MULTIPLE 候选 → 替换 PENDING 标记，保留直接候选
+ *   - 无 PENDING 候选 → 原样返回
+ */
+function mergeIndirectDiscoveryResult(packetHandoff, discoveryResult) {
+  if (!packetHandoff) {
+    if (!discoveryResult) return null;
+    return discoveryResult;
+  }
+
+  // 单个 PENDING 候选 → 直接替换
+  if (packetHandoff.needsDiscovery) {
+    return discoveryResult || null;
+  }
+
+  // MULTIPLE_ALERT_PACKET_CANDIDATES → 逐个处理
+  if (packetHandoff.reason === 'MULTIPLE_ALERT_PACKET_CANDIDATES'
+      && Array.isArray(packetHandoff.candidates)) {
+    const resolved = packetHandoff.candidates.map((candidate) => {
+      if (candidate && candidate.needsDiscovery && candidate.discoveryEvent) {
+        // 从 discovery 结果中找匹配的
+        const match = findDiscoveryMatch(candidate.discoveryEvent, discoveryResult);
+        return match || candidate; // 没找到匹配则保留原标记
+      }
+      return candidate;
+    }).filter(Boolean);
+
+    if (resolved.length === 0) return null;
+    if (resolved.length === 1) return resolved[0];
+    return {
+      available: true,
+      reason: 'MULTIPLE_ALERT_PACKET_CANDIDATES',
+      candidates: resolved,
+    };
+  }
+
+  return packetHandoff;
+}
+
+/**
+ * 在聚合的 discovery 结果中查找匹配指定 eventId 的结果。
+ */
+function findDiscoveryMatch(event, discoveryResult) {
+  if (!discoveryResult || !event) return null;
+
+  // 单个结果 → 直接匹配 eventId
+  if (discoveryResult.eventId && String(discoveryResult.eventId) === String(event.id)) {
+    return discoveryResult;
+  }
+
+  // 聚合多事件结果 → 在 groups 中查找
+  if (discoveryResult.reason === 'ALERT_INDIRECT_PACKET_VIA_DISCOVERY_MULTI'
+      && Array.isArray(discoveryResult.groups)) {
+    for (const group of discoveryResult.groups) {
+      if (String(group.eventId) === String(event.id)) {
+        return group;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -553,4 +644,6 @@ module.exports = {
   serviceForMode,
   enrichDetailsFromSummaryIfNeeded,
   fetchMetricSeries,
+  mergeIndirectDiscoveryResult,
+  findDiscoveryMatch,
 };

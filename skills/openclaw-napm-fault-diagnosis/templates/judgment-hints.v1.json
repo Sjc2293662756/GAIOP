@@ -1,0 +1,110 @@
+{
+  "schema": "openclaw_napm_fault_diagnosis_judgment_hints.v1",
+
+  "network_slow": {
+    "step1_traffic_trend": {
+      "hints": [
+        {"when": "totalBytesIncreased AND faultTimeMatch", "text": "总吞吐量和总字节数明显升高，可能存在带宽占用、大流量业务或异常流量"},
+        {"when": "inboundAbnormal", "text": "流入方向异常升高，可能是下载、外部访问、服务器响应、攻击流量"},
+        {"when": "outboundAbnormal", "text": "流出方向异常升高，可能是上传、备份、同步、主动外连或异常外发"},
+        {"when": "lowBytesHighPps", "text": "字节数不高但每秒数据包数很高，可能是扫描、小包异常、ARP/ICMP异常、失败连接"},
+        {"when": "trafficNormal", "text": "总流量正常但用户仍反馈慢，不应判断为带宽问题，应继续分析丢包、延时、重传和应用响应"}
+      ]
+    },
+    "step2_top_objects": {
+      "hints": [
+        {"when": "appDominant", "text": "某应用流量异常高，判断该应用是否为正常业务；如用户反馈该业务慢，转入应用分析"},
+        {"when": "hostDominant", "text": "某主机流量异常高，分析该主机流入/流出方向、连接目标、失败数"},
+        {"when": "groupDominant", "text": "某工作组流量异常高，分析工作组成员主机，定位具体异常主机"},
+        {"when": "sessionDominant", "text": "某会话流量异常高，记录五元组，判断是否需要下载数据包"},
+        {"when": "scattered", "text": "Top对象不集中，继续分析网络质量指标和失败连接指标"}
+      ]
+    },
+    "step3_network_quality": {
+      "hints": [
+        {"when": "highTrafficAndLoss", "text": "总流量高，同时丢包、往返时间、重传率升高，倾向拥塞导致网络质量下降"},
+        {"when": "normalTrafficButLoss", "text": "总流量正常，但丢包、往返时间、重传率升高，转入网络质量专项分析"},
+        {"when": "lossOnGroup", "text": "丢包集中在某工作组，分析该工作组对应的区域链路"},
+        {"when": "lossOnHost", "text": "丢包集中在某主机或服务器，分析主机、服务器、网卡、端口或服务器侧链路"},
+        {"when": "highFailureRate", "text": "失败数、失败率升高，继续判断是连接失败问题还是安全异常问题"},
+        {"when": "highRequestLowSuccess", "text": "请求数高但成功数低，重点分析失败对象、端口、应用和会话"}
+      ]
+    },
+    "step4_connection_failure": {
+      "hints": [
+        {"when": "singleHostManyTargets", "text": "单主机对大量目标失败，疑似扫描、病毒、蠕虫、错误配置"},
+        {"when": "manyHostsSameTarget", "text": "多主机访问同一目标失败，目标服务异常、策略阻断或统一业务失败"},
+        {"when": "portFailureConcentrated", "text": "某端口失败集中，检查服务端口、策略或扫描行为"},
+        {"when": "clientMultipleFailures", "text": "某客户端访问多个目标失败，检查客户端、接入链路或异常程序"}
+      ],
+      "packetTriggers": [
+        {"when": "retransRateHigh", "text": "重传率或包重传率异常高，建议下载数据包确认TCP重传、ACK、丢包方向"},
+        {"when": "failureRateHigh", "text": "失败数或失败率异常高，建议下载数据包确认SYN、RST、ICMP、超时等失败过程"},
+        {"when": "lowBytesHighPps", "text": "每秒数据包数异常高但字节数不高，建议下载数据包确认是否为扫描、ARP、ICMP、小包异常"},
+        {"when": "unknownAppSuspected", "text": "系统指标提示主动外连或未知应用，建议下载数据包确认外连目标、端口、Payload、通信周期"},
+        {"when": "cannotDistinguish", "text": "系统指标无法区分应用慢还是网络慢，建议通过数据包分析确认请求到达和响应时间"}
+      ]
+    }
+  },
+
+  "bs_app_slow": {
+    "step1_4xx_5xx_overview": {
+      "hints": [
+        {"when": "http400Up", "text": "HTTP 400数量/比例升高，分析请求、参数、权限、URL问题"},
+        {"when": "http500Up", "text": "HTTP 500数量/比例升高，分析服务端、数据库、中间件、后端接口问题"},
+        {"when": "http400And500Up", "text": "HTTP 400和500同时升高，可能存在应用层全面异常，需结合页面级数据定位具体URL"},
+        {"when": "errorNormal", "text": "4xx/5xx报错数量正常，如果用户仍反馈慢，进入页面级分析查看各页面访问量和响应情况"}
+      ]
+    },
+    "step2_page_error_analysis": {
+      "hints": [
+        {"when": "page400Dominant", "text": "某页面400错误突出，客户端请求、参数、权限问题概率高，建议对该页面进行状态码详情分析"},
+        {"when": "page500Dominant", "text": "某页面500错误突出，服务端或后端依赖问题概率高，建议对该页面进行状态码详情分析"},
+        {"when": "pageSlowDominant", "text": "某页面慢页面率高但错误少，可能是服务端处理慢或响应体大，需结合页面延时判断"},
+        {"when": "topPageHighVisits", "text": "访问数最高的页面同时出现大量错误，影响面广，优先排查该页面"},
+        {"when": "errorsScattered", "text": "错误分散在多个页面，可能是应用整体问题（数据库、中间件、公共组件），而非单页面问题"}
+      ],
+      "packetTriggers": [
+        {"when": "page500NeedContent", "text": "某页面500错误集中且需要查看具体响应内容，建议下载数据包查看HTTP响应体"},
+        {"when": "page400NeedContent", "text": "某页面400错误集中且需要确认请求参数，建议下载数据包查看HTTP请求内容"},
+        {"when": "pageSlowNetworkTimeHigh", "text": "某页面慢且网络时间/传输时间高，建议下载数据包验证是否存在TCP重传或响应体过大"}
+      ]
+    },
+    "step3_page_status_detail": {
+      "hints": [
+        {"when": "singlePageAllErrors", "text": "单个页面集中了大部分错误，根因大概率在该页面的后端接口或数据库查询"},
+        {"when": "multiPage500", "text": "多个页面同时500，可能是公共组件故障（数据库连接池、缓存、中间件、网关）"},
+        {"when": "multiPage400", "text": "多个页面同时400，可能是认证/鉴权服务异常、网关参数校验规则变更、客户端统一sdk异常"},
+        {"when": "accessVsErrorMismatch", "text": "访问量低的页面错误率高，可能是低频接口存在隐藏bug；访问量高的页面错误数大，影响面广"}
+      ]
+    }
+  },
+
+  "cs_app_slow": {
+    "step1_app_overview": {
+      "hints": [
+        {"when": "failureRateUp", "text": "失败数或失败率升高，转入连接失败流程"},
+        {"when": "connSetupTimeHigh", "text": "连接建立时间升高，判断建连慢，必要时下载包看握手"},
+        {"when": "serverResponseHigh", "text": "服务器响应时间升高，倾向服务端处理慢"},
+        {"when": "transferTimeHigh", "text": "数据传输时间升高，判断传输慢、响应体大或网络质量问题"},
+        {"when": "retransRateHigh", "text": "重传率/包重传率升高，转入网络质量专项"},
+        {"when": "userExpHigh", "text": "用户体验时间升高，继续拆分连接、响应、传输、重传"}
+      ]
+    },
+    "step2_time_breakdown": {
+      "hints": [
+        {"when": "connSetupHigh", "text": "建连时间长，网络路径、策略设备、防火墙、服务端连接处理慢"},
+        {"when": "serverRespHigh", "text": "服务器响应时间长，应用服务端、数据库、中间件、后端处理慢"},
+        {"when": "dataTransferHigh", "text": "数据传输时间长，带宽、窗口、传输效率、响应数据量大"},
+        {"when": "retransHigh", "text": "重传时间长，链路丢包、设备问题、网络质量差"}
+      ],
+      "packetTriggers": [
+        {"when": "connSetupHigh", "text": "连接建立时间高，建议下载数据包确认TCP握手是否慢、是否重传、是否有SYN无响应"},
+        {"when": "failureRateHigh", "text": "失败率高，建议下载数据包确认失败类型：RST、无响应、ICMP、超时"},
+        {"when": "retransRateHigh", "text": "重传率高，建议下载数据包确认重传方向、ACK行为、丢包表现"},
+        {"when": "serverRespHighUnclear", "text": "服务器响应时间高且原因不清，建议下载数据包确认请求到达后服务端响应等待"},
+        {"when": "transferTimeHigh", "text": "数据传输时间高，建议下载数据包确认传输过程是否有重传、窗口问题、大响应"}
+      ]
+    }
+  }
+}

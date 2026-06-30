@@ -3,72 +3,77 @@
 /**
  * AlertEnrichmentService — 调 NAPM WebService API 获取告警详细信息。
  *
- * NAPM API 是 GET 请求，参数通过 URL query string 传递：
- *   https://{host}/webservice/NetInside?UserName=xxx&Password=xxx&type=alertsDetail&eventids=113&start=...&end=...&json=true
+ * 直接复用现有 openclaw-napm-alert-query 技能中成熟的 AlertApiService，
+ * 不重复造轮子。AlertApiService 已经处理好了：
+ *   - GET 请求 + URL query string 传参
+ *   - 认证（UserName / Password）
+ *   - TLS 自签证书
+ *   - 时间戳对齐
  *
- * 在 Syslog 中只能拿到 alertId 和基本字段（名称、严重级别等）。
- * 本服务通过 NAPM 的 alertsDetail 接口补充触发条件、监控对象、
- * 告警描述、恢复状态等详细字段，使企业微信推送内容更完整。
+ * 本服务只做两件事：
+ *   1. 根据 Syslog 告警时间戳确定 API 查询窗口（±1 天）
+ *   2. 调用 AlertApiService.getDetail() 并返回第一条告警详情
  */
 
-const axios = require('axios');
-const https = require('https');
-const { URL, URLSearchParams } = require('url');
+const AlertApiService = require('../../openclaw-napm-alert-query/services/AlertApiService');
 
 class AlertEnrichmentService {
   /**
    * @param {object} config - watcher 配置对象
    * @param {object} config.napm - NAPM API 连接配置
-   * @param {string} config.napm.host - NAPM 主机地址
-   * @param {string} config.napm.username - NAPM 用户名
-   * @param {string} config.napm.password - NAPM 密码
-   * @param {boolean} config.napm.tlsInsecure - 是否跳过 TLS 证书验证
-   * @param {number} config.napm.requestTimeoutMs - 请求超时（毫秒）
    */
   constructor(config) {
     const napm = config.napm || {};
 
-    // 主机地址：支持带或不带协议前缀、带或不带 /webservice/NetInside 路径
-    this.host = this._normalizeHost(napm.host || napm.baseUrl || 'https://101.254.114.238/webservice/NetInside');
-    this.username = napm.username || 'GAIOP';
-    this.password = napm.password || '';
-    this.tlsInsecure = napm.tlsInsecure === true;
-    this.requestTimeoutMs = napm.requestTimeoutMs || 15000;
-
-    this.client = axios.create({
-      timeout: this.requestTimeoutMs,
-      httpsAgent: this.host && String(this.host).startsWith('https://')
-        ? new https.Agent({ rejectUnauthorized: !this.tlsInsecure })
-        : undefined,
-      headers: {
-        Accept: 'application/json,text/plain,*/*',
-      },
+    // 将 watcher 配置转换为 AlertApiService 所需的 options
+    this.api = new AlertApiService({
+      host: napm.host || napm.baseUrl || 'https://101.254.114.238/webservice/NetInside',
+      username: napm.username || 'GAIOP',
+      password: napm.password || '',
+      tlsInsecure: napm.tlsInsecure === true,
+      timeoutMs: napm.requestTimeoutMs || 15000,
     });
-
-    // 记录最后一次请求 URL（脱敏），便于调试
-    this.lastRequestUrl = '';
   }
 
   /**
-   * 根据 alertId 和告警类别获取告警详细信息。
+   * 根据 elogid 或 alertId 获取告警详细信息。
    *
-   * 使用 syslog 中告警时间戳 ± 1 天作为查询窗口。
+   * NAPM 中 alertid 是告警规则 ID（一对多），elogid 才是事件唯一标识。
+   * 优先使用 elogid 查询。Syslog 中 `starttime`/`endtime` 是告警触发窗口，
+   * 比从时间戳推算的窗口更准确。
    *
-   * @param {number} alertId - NAPM 告警事件 ID
-   * @param {string} category - 告警类别，如 "userAlerts"
-   * @param {string} [alertTimestamp] - Syslog 中的告警时间（ISO 8601），用于确定查询窗口
+   * @param {object} opts
+   * @param {number} opts.alertId - NAPM 告警规则 ID（fallback）
+   * @param {string} [opts.elogid] - NAPM 事件日志 ID（优先使用）
+   * @param {string} [opts.alertTimestamp] - Syslog 告警时间（ISO 8601），兜底用
+   * @param {number} [opts.starttime] - Syslog 中的告警开始时间戳（秒）
+   * @param {number} [opts.endtime] - Syslog 中的告警结束时间戳（秒）
    * @returns {object|null} 告警详情对象，失败时返回 null
    */
-  async getAlertDetail(alertId, category, alertTimestamp) {
+  async getAlertDetail(opts = {}) {
+    const { alertId, elogid, alertTimestamp, starttime, endtime } = opts;
+
+    // 优先用 elogid，fallback 用 alertId
+    const eventIds = elogid ? [elogid] : (alertId ? [alertId] : []);
+
+    if (eventIds.length === 0) return null;
+
     try {
-      // 以告警时间戳为中心，前后各 1 天作为查询窗口
-      // NAPM API 要求时间戳对齐到分钟（60 的整数倍）
+      // 确定查询窗口：优先用 syslog 中的 starttime/endtime（精确）
+      // 注意：endtime 可能为 0（NAPM 表示告警仍在持续）
       let start, end;
-      if (alertTimestamp) {
+      const hasStart = typeof starttime === 'number' && starttime > 0;
+      const hasEnd = typeof endtime === 'number' && endtime > 0;
+      if (hasStart) {
+        start = Math.floor(starttime / 60) * 60 - 1800;
+        end = hasEnd
+          ? Math.floor(endtime / 60) * 60 + 1800
+          : Math.floor(starttime / 60) * 60 + 3600;  // endtime=0 时兜底：start + 1h
+      } else if (alertTimestamp) {
         const ts = new Date(alertTimestamp).getTime();
         if (!isNaN(ts)) {
-          end = Math.floor(ts / 1000 / 60) * 60 + 86400;   // 对齐分钟 + 1 天
-          start = Math.floor(ts / 1000 / 60) * 60 - 86400;  // 对齐分钟 - 1 天
+          end = Math.floor(ts / 1000 / 60) * 60 + 86400;
+          start = Math.floor(ts / 1000 / 60) * 60 - 86400;
         }
       }
       // 兜底：最近 7 天
@@ -77,43 +82,21 @@ class AlertEnrichmentService {
         start = end - 7 * 86400;
       }
 
-      const url = this._buildUrl('alertsDetail', {
-        eventids: String(alertId),
+      // 复用现有 AlertApiService（成熟稳定的实现）
+      const detailResult = await this.api.getDetail({
+        eventIds,
         start,
         end,
-        json: 'true',
       });
 
-      this.lastRequestUrl = this._maskUrl(url);
-      console.log(`[AlertEnrichment] 请求 URL: ${this.lastRequestUrl}`);
+      // 记录请求 URL（脱敏）便于调试
+      console.log(`[AlertEnrichment] 请求 URL: ${this.api.getLastRequestUrl()}`);
 
-      const response = await this.client.get(url);
-      const data = response.data;
-
-      // NAPM alertsDetail 返回格式：可能是对象或字符串（json=true 时自动解析）
-      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-
-      // 尝试多种可能的返回结构
-      const alerts =
-        parsed?.data?.alerts ||
-        parsed?.alerts ||
-        (Array.isArray(parsed?.data) ? parsed.data : null) ||
-        (Array.isArray(parsed) ? parsed : null);
-
-      if (alerts && alerts.length > 0) {
-        return alerts[0];
-      }
-      return null;
+      // 从返回结果中提取告警详情
+      // getDetail 返回 JSON 解析后的对象，结构取决于 NAPM API
+      return this._extractAlert(detailResult, alertId);
     } catch (err) {
-      if (err.response) {
-        console.error(
-          `[AlertEnrichment] NAPM API 返回错误 alertId=${alertId}:`,
-          err.response.status,
-          JSON.stringify(err.response.data).slice(0, 300)
-        );
-      } else {
-        console.error(`[AlertEnrichment] 请求失败 alertId=${alertId}:`, err.message);
-      }
+      console.error(`[AlertEnrichment] 请求失败 eventIds=${eventIds.join(',')}:`, err.message);
       return null;
     }
   }
@@ -122,75 +105,42 @@ class AlertEnrichmentService {
    * 获取最后一次请求的 URL（密码已脱敏），供调试使用。
    */
   getLastRequestUrl() {
-    return this.lastRequestUrl;
+    return this.api.getLastRequestUrl();
   }
 
   // ---- 私有方法 ----
 
   /**
-   * 规范化主机地址。
-   * 输入："101.254.114.238" 或 "https://101.254.114.238/webservice/NetInside"
-   * 输出："https://101.254.114.238/webservice/NetInside"（无尾部斜杠）
+   * 从 NAPM API 返回的嵌套结构中提取第一条告警详情。
+   * NAPM 返回结构：{ category: { "groupName": [alert1, alert2, ...] } }
    */
-  _normalizeHost(raw) {
-    const str = String(raw || '').trim();
-    if (!str) return '';
+  _extractAlert(result, alertId) {
+    if (!result) return null;
 
-    // 确保有协议前缀
-    const withProtocol = /^https?:\/\//i.test(str) ? str : `https://${str}`;
-
-    try {
-      const url = new URL(withProtocol);
-      // 清除已有的用户名密码
-      url.username = '';
-      url.password = '';
-      // 确保路径是 /webservice/NetInside
-      if (!/\/webservice\/NetInside\/?$/i.test(url.pathname)) {
-        url.pathname = '/webservice/NetInside';
+    // 标准结构：{ "userAlerts": { "group1": [{...}, ...] } }
+    if (typeof result === 'object' && !Array.isArray(result)) {
+      for (const category of Object.values(result)) {
+        if (typeof category === 'object' && !Array.isArray(category)) {
+          for (const alerts of Object.values(category)) {
+            if (Array.isArray(alerts) && alerts.length > 0) {
+              const match = alerts.find(
+                (a) => String(a.id || a.alertId || '') === String(alertId)
+              );
+              if (match) return match;
+              // 没精确匹配就返回第一条
+              return alerts[0];
+            }
+          }
+        }
       }
-      return url.toString().replace(/\/$/, '');
-    } catch (_err) {
-      return withProtocol;
-    }
-  }
-
-  /**
-   * 构建 NAPM API URL（GET 请求，参数在 query string 中）。
-   */
-  _buildUrl(type, params = {}) {
-    const base = new URL(this.host);
-    const searchParams = new URLSearchParams();
-
-    // 认证参数
-    if (this.username) searchParams.set('UserName', this.username);
-    if (this.password) searchParams.set('Password', this.password);
-
-    // API 类型
-    searchParams.set('type', type);
-
-    // 业务参数
-    for (const [key, value] of Object.entries(params)) {
-      if (value === undefined || value === null || value === '') continue;
-      searchParams.set(key, String(value));
     }
 
-    base.search = searchParams.toString();
-    return base.toString();
-  }
-
-  /**
-   * 对 URL 中的密码进行脱敏，用于日志输出。
-   */
-  _maskUrl(url) {
-    try {
-      const u = new URL(url);
-      if (u.searchParams.has('Password')) {
-        u.searchParams.set('Password', '***');
-      }
-      return u.toString();
-    } catch (_err) {
-      return url;
+    // 扁平结构：[{...}, {...}]
+    if (Array.isArray(result) && result.length > 0) {
+      return result[0];
     }
+
+    return null;
   }
 }
 

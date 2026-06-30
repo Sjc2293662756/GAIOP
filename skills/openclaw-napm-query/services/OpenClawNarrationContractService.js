@@ -440,7 +440,8 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
   const sortMetricId = extractSortMetricId(payload);
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
-  const items = rows.slice(0, 10).map((row, index) => {
+  const displayLimit = Math.max(Number(payload?.resolvedQuery?.topCount) || 10, rows.length > 0 ? Math.min(rows.length, 50) : 10);
+  const items = rows.slice(0, displayLimit).map((row, index) => {
     const rawValue = extractMetricValue(row, metricId);
     const unit = extractMetricUnit(row, metricId);
     return {

@@ -169,10 +169,16 @@ function resolveTimeRange(input = '', options = {}) {
 }
 
 // 时间戳年份合理性校验：防止 LLM 自行计算时间戳时出现年份错误（如 2025 vs 2026）。
-const MAX_TIMESTAMP_AGE_SECONDS = 400 * 24 * 60 * 60; // ~1.1 年容差
+const MAX_TIMESTAMP_AGE_SECONDS = 400 * 24 * 60 * 60; // ~1.1 年容差（用于非年份错的情况）
 function isTimestampFresh(timestamp, nowSeconds = DEFAULT_NOW_SECONDS()) {
   const value = Number(timestamp);
   if (!Number.isFinite(value) || value <= 0) {
+    return false;
+  }
+  // 年份不匹配 → 直接判定为错误，不管距离多远
+  const tsYear = new Date(value * 1000).getFullYear();
+  const nowYear = new Date(nowSeconds * 1000).getFullYear();
+  if (tsYear !== nowYear) {
     return false;
   }
   return Math.abs(nowSeconds - value) <= MAX_TIMESTAMP_AGE_SECONDS;
@@ -196,14 +202,19 @@ function validateTimeRangeFreshness(start, end, nowSeconds = DEFAULT_NOW_SECONDS
 }
 
 function autoCorrectTimestampIfStale(timestamp, nowSeconds = DEFAULT_NOW_SECONDS()) {
+  // 年份不匹配 → 直接修正
+  const tsDate = new Date(Number(timestamp) * 1000);
+  const nowDate = new Date(nowSeconds * 1000);
+  if (tsDate.getFullYear() !== nowDate.getFullYear()) {
+    tsDate.setFullYear(nowDate.getFullYear());
+    return alignToMinute(Math.floor(tsDate.getTime() / 1000));
+  }
   if (isTimestampFresh(timestamp, nowSeconds)) {
     return Number(timestamp);
   }
-  // 尝试保留 HH:MM:SS 部分，替换年份到当前年份
-  const date = new Date(Number(timestamp) * 1000);
-  const now = new Date(nowSeconds * 1000);
-  date.setFullYear(now.getFullYear());
-  return alignToMinute(Math.floor(date.getTime() / 1000));
+  // 距离太远（>400天且同年）→ 仍然修正
+  tsDate.setFullYear(nowDate.getFullYear());
+  return alignToMinute(Math.floor(tsDate.getTime() / 1000));
 }
 
 module.exports = {

@@ -35,6 +35,10 @@ Alert to packet:
 
 - `linkType=2`: hand off `criteria.id=<eventId>`.
 - `linkType=1`: if the alert group is an IP, hand off `criteria.ips=[group]`.
+- **Indirect discovery**: if `linkType=1` but the alert group is a business/application/group name (not an IP), the skill automatically performs indirect packet discovery:
+  1. Queries `topValues` with the alert's categoryType group chain to find suspicious IP conversations
+  2. Returns `ALERT_INDIRECT_PACKET_VIA_DISCOVERY` with candidates containing `suggestedPacketQuery`
+  3. Each candidate includes IP(s), metric values, and ±bufferSeconds packet download URL
 
 Alert to report:
 
@@ -42,4 +46,33 @@ Alert to report:
 - `openclaw-napm-report` consumes `reportData`.
 
 This skill must not download packets or generate docx files.
+
+## Indirect Packet Discovery Contract
+
+### Trigger conditions
+
+- Alert `linkType` is not 2 (not event-ID-linked)
+- Alert `group` is not an IP address
+- Alert `categoryType` ∈ {14, 25, 63, 68} (BusinessGroup, Application, PageFamily, WebApplication)
+
+### Discovery flow
+
+```
+alert event → shouldDiscover() → buildDiscoveryParams() → api.getJsonByParams('topValues')
+  → parseTopValuesResult() → buildIndirectCandidates()
+  → { available, reason: "ALERT_INDIRECT_PACKET_VIA_DISCOVERY", candidates: [...] }
+```
+
+### Packet time window
+
+```
+packetStart = alert.start - packetBufferSeconds (default 120)
+packetEnd   = alert.end   + packetBufferSeconds (default 120)
+```
+
+### Options
+
+- `discoveryEnabled` (default `true`): enable/disable indirect discovery
+- `discoveryTopCount` (default `10`): number of suspicious IPs to return
+- `packetBufferSeconds` (default `120`): seconds to expand before/after alert time for packet download
 

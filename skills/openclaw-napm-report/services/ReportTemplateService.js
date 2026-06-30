@@ -466,7 +466,7 @@ class ReportTemplateService {
     if (report.reportType === 'summary_report' || report.templateId === 'napm_summary_overview_v1') {
       return this.renderSummaryDocx(report);
     }
-    if (report.reportType === 'diagnostic_report' || report.templateId === 'napm_fault_diagnosis_v1') {
+    if (report.reportType === 'diagnostic_report' && report.templateId === 'napm_fault_diagnosis_v1') {
       return this.renderDiagnosticDocx(report);
     }
 

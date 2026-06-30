@@ -178,6 +178,14 @@ class SyslogWatcherService {
     const alert = this.parser.parse(line);
     if (!alert) return; // 非 NAPM 告警行，静默跳过
 
+    // 若指标值为 N/D，表示告警已恢复/结束，跳过不推送
+    if (alert.metrics && alert.metrics.length > 0 && alert.metrics.every(m => m.value === 'N/D')) {
+      console.log(
+        `[SyslogWatcher] 跳过已恢复告警: name="${alert.alertName}" id=${alert.alertId} (指标值均为 N/D)`
+      );
+      return;
+    }
+
     this.stats.parsedAlerts++;
     console.log(
       `[SyslogWatcher] 发现告警: name="${alert.alertName}" id=${alert.alertId} severity=${alert.alertSeverity} category=${alert.category}`
@@ -201,7 +209,13 @@ class SyslogWatcherService {
     let retries = 0;
     while (retries < this.maxRetries) {
       try {
-        alert.detail = await this.enrichment.getAlertDetail(alert.alertId, alert.category, alert.timestamp);
+        alert.detail = await this.enrichment.getAlertDetail({
+          alertId: alert.alertId,
+          elogid: alert.extra?.elogid,
+          alertTimestamp: alert.timestamp,
+          starttime: alert.extra?.starttime ? parseInt(alert.extra.starttime, 10) : undefined,
+          endtime: alert.extra?.endtime ? parseInt(alert.extra.endtime, 10) : undefined,
+        });
         break;
       } catch (_err) {
         retries++;

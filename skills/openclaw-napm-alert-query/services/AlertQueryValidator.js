@@ -93,6 +93,10 @@ function normalizeOptions(options = {}) {
     packetHandoff: source.packetHandoff !== false,
     topObjectsLimit: Number.isFinite(Number(source.topObjectsLimit)) ? Number(source.topObjectsLimit) : 10,
     maxEvents: Number.isFinite(Number(source.maxEvents)) ? Number(source.maxEvents) : 200,
+    // 间接数据包发现配置
+    discoveryEnabled: source.discoveryEnabled !== false,
+    discoveryTopCount: Number.isFinite(Number(source.discoveryTopCount)) ? Number(source.discoveryTopCount) : 5,
+    packetBufferSeconds: Number.isFinite(Number(source.packetBufferSeconds)) ? Number(source.packetBufferSeconds) : 120,
   };
 }
 

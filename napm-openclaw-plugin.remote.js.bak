@@ -5094,7 +5094,6 @@ function buildNapmRoutingSystemContext() {
     'Summary boundary: summary/overview report requests such as 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report must call `napm-summary` first. It queries alert/traffic/business APIs in parallel, aggregates the data, returns `reportData`. After `napm-summary` succeeds, immediately call `napm-report-export` with the returned `reportData` to render and deliver the Word/docx file. Do NOT use `napm-skill-query` for summary/overview reports — use `napm-summary` instead. Do NOT ask the user whether they want a Word file after a summary report request — always auto-export.',
     'Summary tool contract: `napm-summary` takes a `scope` (type + optional target) and a `timeRange` (start/end Unix seconds). For global summaries, use scope.type=`global`. For per-application summaries, use scope.type=`webApplication` with target.groupType=`WebApplication` and target.groupArgument (e.g. `239web`). After calling `napm-summary`, ALWAYS call `napm-report-export` in the same turn — the user expects the Word file directly without an extra prompt. `napm-report-export` must consume `reportData` returned by `napm-summary` and must not query NAPM independently.',
     'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis`. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
-    '⚠️ Alert-packet sequencing ("告警数据包"): when the user says "告警数据包 <eventId>" or "分析告警的数据包" (alert event ID combined with packet intent), call `napm-alert-query` FIRST (mode=detail) to obtain alert details and packetHandoff. The alert-query skill performs automatic indirect IP discovery for business/app/group alerts and returns packetHandoff with download candidates. Only AFTER alert-query returns should you call `napm-packet-analysis` with the suggestedPacketQuery from the candidates. Do NOT call `napm-packet-analysis` directly with criteria.id for alert-packet requests.',
     'Packet tool contract: use `napm-packet-analysis` with a structured packet query. For link-only requests use mode=`build_url_only`; for large time ranges use mode=`preview_only` first; for safe packet analysis use mode=`preview_download_analyze`.',
     'Business page packet preview contract: if the user provides a Web page URL/path and asks 数据包预览/分析, call `napm-packet-analysis` with `downloadType:"DownServlet"`, `mode:"preview_only"`, and `criteria.page` or `criteria.pageUrl`. If prior query context contains pageFamilyId/businessName for that page, include it. This preview means `pageViews` candidate rows, not ordinary `packetsPreview`.',
     'Never downgrade a business page packet preview to IP-based `packetsPreview` merely because the URL contains an IP address. IP-based packetsPreview is allowed only when the user explicitly asks 按IP/IP数据包 or provides only an IP target.',
@@ -5269,7 +5268,6 @@ const plugin = {
           || isAlertSkillMetaFollowUpPrompt(activePrompt, activePromptState)
           || Boolean(activePromptState?.alertRelated)
         );
-        const activeAlertPacketPrompt = activePacketPrompt && activeAlertPrompt;
         const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
 
         if (isDirectNapmTool(toolName)) {
@@ -5496,7 +5494,7 @@ const plugin = {
           }
         }
 
-        if (activePacketPrompt && toolName !== 'napm-packet-analysis' && !(activeAlertPacketPrompt && (toolName === 'napm-alert-query' || toolName === 'napm-skill-query'))) {
+        if (activePacketPrompt && toolName !== 'napm-packet-analysis') {
           api.logger.warn(`[napm-openclaw-plugin] blocked non-packet tool for packet prompt: tool=${toolName}`);
           return {
             block: true,

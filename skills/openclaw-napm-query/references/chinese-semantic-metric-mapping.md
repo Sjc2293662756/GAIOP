@@ -91,11 +91,10 @@ NAPM 指标有严格的方向区分，不可混用：
 
 | 用户问法 | 对象上下文 | ✅ 正确指标 | 说明 |
 |---------|-----------|------------|------|
-| 流量、带宽、速率 | 任意 | `TPIO`, `TPI`, `TPO` | 吞吐量，速率型（Kbps），适合"带宽""速率" |
-| 流量大小、传输量、数据量 | 任意 | `BYTIO`, `BYTI`, `BYTO` | 数据量型（data），适合"总共传了多少""累计流量" |
+| 流量(默认)、流量大小、传输量、数据量、流量最大的XX | 任意 | `BYTIO`, `BYTI`, `BYTO` | **总字节数（data）**，适合"总共传了多少""累计流量""流量最大" |
+| 带宽、速率、吞吐、吞吐量 | 任意 | `TPIO`, `TPI`, `TPO` | **吞吐速率（Kbps）**，适合"带宽""速率""吞吐" |
 | 数据包数量、包量 | 任意 | `PKIO`, `PKI`, `PKO` | 数据包个数 |
 | 包速率 | 任意 | `PKTIO`, `PKTI`, `PKTO` | 包速率（pkt/s） |
-| 吞吐、吞吐量 | 任意 | `TPIO` | 默认用吞吐量 |
 | 有效吞吐 | 任意 | `GPI`, `GPO` | 有效吞吐，区别于总吞吐 |
 | 利用率 | Interface、MonInterfaceGroup、VLAN | `UTI`, `UTO` | 接口/链路利用率 |
 | 页面流量 | WebApplication | `PGBYTI`, `PGBYTO` | 业务网络使用（请求/页面流量） |
@@ -167,15 +166,15 @@ NAPM 指标有严格的方向区分，不可混用：
 
 | 对象类型 | 报错/失败 | 慢/延迟 | 流量/带宽 | 连接 | 访问 |
 |---------|----------|---------|----------|------|------|
-| WebApplication | PGHTTP400, PGHTTP500 | PGTME | PGBYTI (页面流量), TPIO | — | PGNPGE |
+| WebApplication | PGHTTP400, PGHTTP500 | PGTME | PGBYTI (页面流量), BYTIO | — | PGNPGE |
 | PageFamily | PGHTTP400, PGHTTP500 | PGTME | — | — | PGNPGE |
-| BusinessGroup | RFCI, RFCO | TRTI, RTTI | TPIO, BYTIO | CONI, CCNI, RFCI | TRNI |
-| IPAddress | RFCI, RFCO | RTTI, TRTI | TPIO, BYTIO | CONI, CCNI, RFCI | TRNI |
-| Prefix24 | RFCI, RFCO | RTTI | TPIO, BYTIO | CONI | TRNI |
-| DefinedApp | RFCI, PGHTTP400 | TRTI, CSTI | TPIO, BYTIO | CONI, CCNI, RFCI | TRNI |
-| OtherApp | RFCI, PGHTTP400 | TRTI | TPIO | RFCI | TRNI |
-| TotalTraffic | — | — | TPIO | — | — |
-| IPConversation | RFCI | RTTI, TRTI | TPIO | CONI, RFCI | TRNI |
+| BusinessGroup | RFCI, RFCO | TRTI, RTTI | BYTIO, TPIO | CONI, CCNI, RFCI | TRNI |
+| IPAddress | RFCI, RFCO | RTTI, TRTI | BYTIO, TPIO | CONI, CCNI, RFCI | TRNI |
+| Prefix24 | RFCI, RFCO | RTTI | BYTIO, TPIO | CONI | TRNI |
+| DefinedApp | RFCI, PGHTTP400 | TRTI, CSTI | BYTIO, TPIO | CONI, CCNI, RFCI | TRNI |
+| OtherApp | RFCI, PGHTTP400 | TRTI | BYTIO | RFCI | TRNI |
+| TotalTraffic | — | — | BYTIO | — | — |
+| IPConversation | RFCI | RTTI, TRTI | BYTIO | CONI, RFCI | TRNI |
 
 ---
 
@@ -202,7 +201,7 @@ NAPM 指标有严格的方向区分，不可混用：
 | 哪个业务报错最多 | PLI | PGHTTP400, PGHTTP500 | 业务 = WebApplication，报错 = HTTP 错误码 |
 | 服务器响应时间 | RTTI | TRTI | SKILL.md 明确规则 |
 | 数据包数量最多的应用 | 吞吐量 TPIO | PKIO | 数据包 = PKIO，不是吞吐 |
-| 流量最大的 IP | BYTIO (数据量) | TPIO (速率) | "最大"暗示峰值速率，不是累计量 |
+| 流量最大的 IP | TPIO (速率) | BYTIO (数据量) | "流量最大"默认指总传输量，不是峰值速率 |
 | 连接数最多的地址 | CCNI (成功连接) | CONI (连接请求) | 连接数通常指总请求数 |
 | 最慢的页面 | RTTI | PGTME | 页面慢 = 页面延时，不是 RTT |
 | 访问其他web应用次数 | TRNI | PGNPGE | WebApplication 用页面访问指标 |

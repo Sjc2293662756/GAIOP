@@ -5,4 +5,6 @@
 - [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（SSH连接、日志位置、命令模板、时间线分析模板、字段解读）
 - [query-latency-optimization](docs/2026-06-23-查询耗时优化与时间戳年份Bug修复.md) — 查询耗时优化（19s→5-8s）：时间戳年份Bug修复（2025→2026自动修正）+ Memory子系统故障修复（禁用embeddings节省7s）
 - [llm-inference-bottleneck](docs/2026-06-23-LLM推理耗时根因分析.md) — LLM推理是唯一瓶颈的硬数据分析：审计日志精确时间线证明DeepSeek Chat占96%耗时(16.8s)，规则引擎仅需9ms，NAP API仅682ms
-- [hybrid-query-architecture](docs/2026-06-23-混合查询架构设计方案.md) — 混合查询架构设计方案：LLM轻量实体提取(~1s) + 规则引擎精确构造(9ms) + 三级回退(Level1正则直通/Level2实体提取/Level3 LLM兜底)，预期17s→5.6s
+- [hybrid-query-architecture](docs/2026-06-23-混合查询架构设计方案.md) — 混合查询架构设计方案：LLM轻量实体提取(~1s) + 规则引擎精确构造(9ms) + 三级回退
+- [query-latency-status](docs/2026-06-24-查询耗时问题现状与求助.md) — 查询耗时问题现状
+- [final-architecture-tag-mapping](docs/2026-06-24-最终架构设计-语义标签映射.md) — 最终架构设计：LLM提取语义标签（中文描述，~2s）+ 规则引擎标签→resolvedQuery精确映射（9ms）+ 复杂查询needsConstruction回退

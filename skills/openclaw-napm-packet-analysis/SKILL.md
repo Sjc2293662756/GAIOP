@@ -1,6 +1,6 @@
 ---
 name: openclaw-napm-packet-analysis
-description: Standalone OpenClaw skill for NetInside / NAPM packet download and packet-file analysis. Use when OpenClaw needs to preview downloadable packets, build or explain packetsDown URLs, download packets by IP/IP range/event ID/top condition, explain or use DownServlet URLs, analyze local pcap/cap files, or summarize packet-level evidence with tshark/capinfos. Packet endpoints may require UserName and Password query parameters from runtime credentials; final replies must keep UserName visible when present and redact Password and other secrets.
+description: Standalone OpenClaw skill for NetInside / NAPM packet download and packet-file analysis. Use when OpenClaw needs to preview downloadable packets, build or explain packetsDown URLs, download packets by IP/IP range/event ID/top condition, explain or use DownServlet URLs, analyze local pcap/cap files, or summarize packet-level evidence with tshark/capinfos. ⚠️ ROUTING GUARD: If the user provides an alert event ID and asks for packet analysis ("告警数据包 <id>"), do NOT use this skill directly. Route to openclaw-napm-alert-query FIRST — it performs automatic IP discovery for business/app/group alerts and returns packetHandoff candidates. Only use this skill AFTER alert-query returns candidates with suggestedPacketQuery. Packet endpoints may require UserName and Password query parameters from runtime credentials; final replies must keep UserName visible when present and redact Password and other secrets.
 ---
 
 # OpenClaw NAPM Packet Analysis

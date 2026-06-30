@@ -1,5 +1,7 @@
 'use strict';
 
+const { shouldDiscover } = require('./AlertIndirectPacketDiscoveryService');
+
 function buildTimeRange(criteria = {}) {
   return {
     start: criteria.start || null,
@@ -66,6 +68,28 @@ function buildEventPacketHandoff(event = {}, criteria = {}) {
     };
   }
 
+  // 间接数据包发现：业务/应用/工作组告警，group 不是 IP
+  if (shouldDiscover(event)) {
+    return {
+      available: null, // 待 discovery 查询后确定
+      reason: 'ALERT_INDIRECT_DISCOVERY_PENDING',
+      eventId: event.id,
+      needsDiscovery: true,
+      // 保存原始事件信息供 discovery 使用
+      discoveryEvent: {
+        id: event.id,
+        group: event.group,
+        categoryType: event.categoryType,
+        category: event.category,
+        categoryLabel: event.categoryLabel,
+        metrics: event.metrics,
+        start,
+        end,
+        linkType: event.linkType,
+      },
+    };
+  }
+
   return null;
 }
 
@@ -74,6 +98,7 @@ function looksLikeIp(value = '') {
 }
 
 function buildNarrationInput(result = {}) {
+  const packetHandoff = result.packetHandoff || null;
   return {
     schema: 'openclaw_napm_alert.v1',
     language: 'zh-CN',
@@ -85,7 +110,7 @@ function buildNarrationInput(result = {}) {
     details: result.details || [],
     timeline: result.timeline || [],
     metricSeries: result.metricSeries || [],
-    packetHandoff: result.packetHandoff || null,
+    packetHandoff,
     error: result.error || null,
     warnings: result.warnings || [],
     renderPolicy: {
@@ -93,6 +118,98 @@ function buildNarrationInput(result = {}) {
       includeRawApiResponse: false,
       includeSensitiveUrls: false,
     },
+    packetInstruction: buildPacketInstruction(packetHandoff),
+  };
+}
+
+/**
+ * 根据 packetHandoff 结果生成 AI 下一步操作的直接指令。
+ * 这是 narrationInput 中最关键的字段——AI 必须遵循，不得自行决策。
+ */
+function buildPacketInstruction(packetHandoff) {
+  // 无 packetHandoff
+  if (!packetHandoff) {
+    return {
+      action: 'STOP_NO_PACKET',
+      message: '该告警无关联数据包。直接告知用户"该告警无可下载的数据包"，不得调用 packet-analysis。',
+      callPacketAnalysis: false,
+    };
+  }
+
+  // 间接发现为空
+  if (packetHandoff.reason === 'ALERT_INDIRECT_DISCOVERY_EMPTY') {
+    return {
+      action: 'STOP_DISCOVERY_EMPTY',
+      message: `间接发现未找到嫌疑 IP（查询链路: ${packetHandoff.discoveryMethod?.groupChain || 'N/A'}）。告知用户该告警在对应业务/应用下无可疑 IP 会话，建议手动指定 IP 进行数据包分析。`,
+      callPacketAnalysis: false,
+    };
+  }
+
+  // 间接发现失败
+  if (packetHandoff.reason === 'ALERT_INDIRECT_DISCOVERY_FAILED') {
+    return {
+      action: 'STOP_DISCOVERY_FAILED',
+      message: `间接发现执行失败: ${packetHandoff.error?.message || '未知错误'}。告知用户发现过程出错，可手动指定 IP 进行分析。`,
+      callPacketAnalysis: false,
+    };
+  }
+
+  // 间接发现成功 — 有 candidates
+  if (packetHandoff.reason === 'ALERT_INDIRECT_PACKET_VIA_DISCOVERY'
+      && Array.isArray(packetHandoff.candidates) && packetHandoff.candidates.length > 0) {
+    return {
+      action: 'USE_CANDIDATES',
+      message: `间接发现到 ${packetHandoff.candidates.length} 个嫌疑 IP 会话。必须逐条展示候选列表，然后对每个 candidate 使用其 suggestedPacketQuery（原样传递 mode 和 criteria）调用 openclaw-napm-packet-analysis。禁止自己构造 packetQuery，禁止直接用 eventId 查询。`,
+      callPacketAnalysis: true,
+      candidates: packetHandoff.candidates.map((c) => ({
+        rank: c.rank,
+        ips: c.ips,
+        ipPair: c.ipPair || null,
+        ip: c.ip || null,
+        metricValue: c.metricValue,
+        suggestedPacketQuery: c.suggestedPacketQuery,
+      })),
+    };
+  }
+
+  // 直接路径 — linkType=2 或 IP
+  if (packetHandoff.available && packetHandoff.suggestedPacketQuery) {
+    return {
+      action: 'USE_DIRECT_QUERY',
+      message: '告警有直接数据包关联。使用 suggestedPacketQuery 调用 openclaw-napm-packet-analysis。',
+      callPacketAnalysis: true,
+      suggestedPacketQuery: packetHandoff.suggestedPacketQuery,
+    };
+  }
+
+  // 多候选
+  if (packetHandoff.reason === 'MULTIPLE_ALERT_PACKET_CANDIDATES'
+      && Array.isArray(packetHandoff.candidates)) {
+    const indirectCandidates = packetHandoff.candidates
+      .filter((c) => c && c.available && Array.isArray(c.candidates))
+      .flatMap((c) => c.candidates);
+    if (indirectCandidates.length > 0) {
+      return {
+        action: 'USE_CANDIDATES',
+        message: `多个告警的间接发现共找到 ${indirectCandidates.length} 个嫌疑 IP 会话。逐条展示并按 suggestedPacketQuery 调用 packet-analysis。`,
+        callPacketAnalysis: true,
+        candidates: indirectCandidates.slice(0, 10).map((c) => ({
+          rank: c.rank,
+          ips: c.ips,
+          ipPair: c.ipPair || null,
+          ip: c.ip || null,
+          metricValue: c.metricValue,
+          suggestedPacketQuery: c.suggestedPacketQuery,
+        })),
+      };
+    }
+  }
+
+  // 默认 — 无可用数据包
+  return {
+    action: 'STOP_NO_PACKET',
+    message: '该告警无可用的数据包关联。直接告知用户。',
+    callPacketAnalysis: false,
   };
 }
 
@@ -141,12 +258,40 @@ function buildReportData(result = {}, sourceQuestion = '') {
   };
 }
 
+/**
+ * 从 packetHandoff 中提取所有需要间接发现的候选事件。
+ * @returns {Array} discoveryEvent 列表
+ */
+function extractIndirectDiscoveryEvents(packetHandoff) {
+  if (!packetHandoff) return [];
+
+  const collect = (candidate) => {
+    if (candidate && candidate.needsDiscovery && candidate.discoveryEvent) {
+      return [candidate.discoveryEvent];
+    }
+    return [];
+  };
+
+  if (packetHandoff.needsDiscovery && packetHandoff.discoveryEvent) {
+    return [packetHandoff.discoveryEvent];
+  }
+
+  if (packetHandoff.reason === 'MULTIPLE_ALERT_PACKET_CANDIDATES'
+      && Array.isArray(packetHandoff.candidates)) {
+    return packetHandoff.candidates.flatMap(collect);
+  }
+
+  return [];
+}
+
 module.exports = {
   buildTimeRange,
   buildPacketHandoff,
   buildEventPacketHandoff,
   buildNarrationInput,
   buildReportData,
+  buildPacketInstruction,
+  extractIndirectDiscoveryEvents,
   looksLikeIp,
 };
 

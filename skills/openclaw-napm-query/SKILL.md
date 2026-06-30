@@ -21,10 +21,11 @@ Use this skill for NAPM metric, metadata, inventory, hierarchy, and result-inter
 - 某对象支持哪些指标、某对象支持哪些下钻路径。
 - 对 NAPM 查询结果进行中文解释和诊断。
 
-Do not use this skill for packet-capture or report-export tasks:
+Do not use this skill for packet-capture, fault-report-generation, or report-export tasks:
 
 - 数据包、报文、抓包、原始包、pcap、cap、packetsPreview、packetsDown、DownServlet -> use `openclaw-napm-packet-analysis`.
 - 生成报告、导出 Word/docx/PDF、将以上整理成文档 -> use `openclaw-napm-report`.
+- **给指定业务/应用出故障诊断报告（如"分析XXweb的故障情况，给出故障报告"） → use `openclaw-napm-fault-diagnosis`.** 它会自动执行完整的标准化诊断流程（4xx/5xx → 页面错误Top20 → 状态码详情），然后配合 `napm-report-export` 出 Word。注意：单个报错查询（如"哪个业务报错最多""XX业务的400数量"）仍然用本 skill —— 只有"分析故障+出报告"这个组合意图才需要 fault-diagnosis。
 
 Do not reinterpret packet wording as `topValues`, `timeValues`, `averageValues`, `overview`, `BusinessGroup`, or `DefinedApp` metric queries. For example, `分析 101.254.114.238 最近一天的数据包 数据情况` is not a metric query; it belongs to `openclaw-napm-packet-analysis`.
 
@@ -201,6 +202,7 @@ High-priority reminders:
 - Report-export wording belongs to `openclaw-napm-report`.
 - `报错` / `错误` / `异常` / `失败` (without explicit HTTP/connection context):
   - On `WebApplication` / `业务` → default to `PGHTTP400` + `PGHTTP500` (HTTP error codes). **Never map to `PLI`/`PLO`.**
+  - **例外：如果用户意图是"出故障分析报告"（如"分析XXweb的故障情况，给出故障报告"），不要把意图拆成多次单指标查询来拼报告——应使用 `openclaw-napm-fault-diagnosis` 一次性完成。单个报错查询不受影响。**
   - On `BusinessGroup` / `业务组` → default to `RFCI` + `RFCO` (TCP connection failures).
   - On `IPAddress` / `Prefix24` → default to `RFCI` + `RFCO`.
 - `丢包` / `packet loss` → `PLI` / `PLO`. Only use these when the user explicitly mentions packet loss.
