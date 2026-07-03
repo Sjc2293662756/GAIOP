@@ -423,7 +423,7 @@ class FaultDiagnosisService {
 
     // averageValues response: [{metricValues: [{metric:{id:'PGNPGE'},value:531},...]}] — extract flat values
     const rawData = raw.businessOverview;
-    const flat = _extractMetricValues(rawData);
+    const flat = this._extractMetricValues(rawData);
     if (flat && Object.keys(flat).length > 0) {
       const visits = Number(flat.PGNPGE) || 0;
       const total400 = Number(flat.PGHTTP400) || 0;
