@@ -192,16 +192,6 @@ class SummaryClient {
     return this.request('timeValues', params);
   }
 
-  async getAverageValues(start, end, metrics, groups) {
-    const groupParams = this._buildGroupParams(groups);
-    const params = {
-      ...groupParams,
-      metrics: Array.isArray(metrics) ? metrics.join(',') : metrics,
-      start, end
-    };
-    return this.request('averageValues', params);
-  }
-
   async getTopValues(start, end, metrics, topMetric, topCount, groups) {
     // NAPM requires specific parameter order: numGroups/group* must come before metrics/start/end
     const groupParams = this._buildGroupParams(groups);

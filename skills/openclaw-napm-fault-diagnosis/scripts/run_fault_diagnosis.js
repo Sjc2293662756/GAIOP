@@ -3,12 +3,11 @@
 /**
  * NAPM Fault Diagnosis CLI entry point.
  *
+ * Runs the diagnostic flow only. Report generation is handled separately
+ * by napm-report-export in the plugin pipeline.
+ *
  * Usage:
  *   node run_fault_diagnosis.js --queryFile <path-to-json>
- *   node run_fault_diagnosis.js --queryJson '<json-string>'
- *
- * Input JSON shape:
- *   { description, flowType, timeRange, target, fault }
  *
  * Output: JSON to stdout with { ok, reportReady, reportData, steps }
  */
@@ -19,7 +18,6 @@ const FaultDiagnosisService = require('../services/FaultDiagnosisService');
 async function main() {
   const args = process.argv.slice(2);
 
-  // Parse input
   let payload = null;
   const queryFileIdx = args.indexOf('--queryFile');
   if (queryFileIdx >= 0 && args[queryFileIdx + 1]) {
@@ -31,29 +29,8 @@ async function main() {
     payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   }
 
-  const queryJsonIdx = args.indexOf('--queryJson');
-  if (queryJsonIdx >= 0 && args[queryJsonIdx + 1]) {
-    payload = JSON.parse(args[queryJsonIdx + 1]);
-  }
-
   if (!payload) {
-    payload = { description: '未命名故障', flowType: 'network_slow' };
-  }
-
-  // Read from stdin if piped
-  if (process.stdin && !process.stdin.isTTY) {
-    try {
-      const chunks = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(chunk);
-      }
-      const stdinStr = Buffer.concat(chunks).toString('utf8').trim();
-      if (stdinStr) {
-        payload = JSON.parse(stdinStr);
-      }
-    } catch (_) {
-      // Keep payload as-is
-    }
+    payload = { description: '未命名故障', flowType: 'bs_app_slow' };
   }
 
   try {

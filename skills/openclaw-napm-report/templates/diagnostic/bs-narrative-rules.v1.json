@@ -1,0 +1,27 @@
+{
+  "schema": "openclaw_napm_bs_fault_narrative_rules.v1",
+  "groups": {
+    "bs.root_cause": [
+      {
+        "when": "diagnosis.step1.http500Total > 0 AND diagnosis.step1.http400Total > 100",
+        "text": "综合判断：结合整体状态码、页面级统计和访问明细来看，业务 {{diagnosis.targetLabel}} 同时存在 HTTP 400（{{diagnosis.step1.http400Total}} 次）和 HTTP 500（{{diagnosis.step1.http500Total}} 次）错误。HTTP 500 表明服务端存在异常，HTTP 400 表明客户端请求存在问题。建议优先排查服务端日志和应用状态，同时对 HTTP 400 集中的页面路径进行下钻，结合客户端来源判断是否为参数、权限或访问方式异常。"
+      },
+      {
+        "when": "diagnosis.step1.http400Total > 0 AND diagnosis.step1.http500Total == 0",
+        "text": "综合判断：结合整体状态码、页面级统计和访问明细来看，本次异常更偏向请求侧或访问路径层面。业务 {{diagnosis.targetLabel}} 在分析窗口内产生 {{diagnosis.step1.http400Total}} 次 HTTP 400 错误，占比 {{diagnosis.step1.http400Pct}}，而 HTTP 500 服务端错误为零，通常说明后端服务整体可用性未呈现明显异常，问题更可能与请求参数格式、访问路径不存在、权限校验失败、代理/缓存分发异常，或非业务扫描流量有关。建议继续结合页面级数据和客户端来源确认高频异常 URL，并视情况补充应用日志或数据包证据进行验证。"
+      },
+      {
+        "when": "diagnosis.step1.http500Total > 0",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 存在 HTTP 500 服务端错误（{{diagnosis.step1.http500Total}} 次），需重点关注服务端健康状态。建议检查应用日志、数据库连接和中间件状态，并结合页面级数据判断是否集中在特定 URL 或后端接口。"
+      },
+      {
+        "when": "diagnosis.step1.http400Total == 0 AND diagnosis.step1.http500Total == 0",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 在分析窗口内未发现 HTTP 400/500 错误。如果用户仍反馈异常，建议扩大时间范围或从网络层、连接层进一步排查。"
+      },
+      {
+        "when": "default",
+        "text": "综合判断：已完成业务 {{diagnosis.targetLabel}} 的标准化故障分析流程，各维度数据请参阅以上章节。建议结合页面级数据做进一步定位。"
+      }
+    ]
+  }
+}

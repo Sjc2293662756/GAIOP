@@ -22,6 +22,8 @@ const s = j.summary || {};
 
 console.log('reportType:', j.reportType);
 console.log('scope:', j.scope?.type, j.scope?.label);
+console.log('scope.target:', JSON.stringify(j.scope?.target));
+console.log('timeRange:', JSON.stringify(j.timeRange));
 console.log('');
 console.log('=== alertSummary ===');
 console.log('total:', s.alertSummary?.total);

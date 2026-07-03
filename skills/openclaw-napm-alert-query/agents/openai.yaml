@@ -29,6 +29,17 @@ interface:
       "分析这个告警数据包 <eventId>", or any request that combines an alert event ID
       with packet analysis intent, OpenClaw MUST call THIS skill FIRST (mode=detail or
       mode=detail_with_timeseries) to obtain alert details and packetHandoff.
+    - ⚠️ TRIGGER CAUSE ANALYSIS: Do NOT dismiss alerts as "just test alerts" based on
+      alert name (e.g. "告警推送应用测试1"). Even if the name sounds like a test,
+      the alert has REAL trigger metrics (UEII, TPIO, etc.) and REAL values that
+      crossed thresholds. In the packet analysis report, you MUST explain:
+        1. What metric triggered the alert (from triggerInfo.metrics)
+        2. The threshold condition (from triggerInfo.condition)
+        3. The actual metric value at trigger time (from triggerInfo.value)
+        4. How the observed packet traffic explains the metric anomaly
+           (e.g. SSH scans → high connection count → high UEII)
+      The triggerInfo section in the alert-query output contains this data.
+      Do NOT skip this analysis even for alerts with "测试" in the name.
     - packetHandoff may contain:
         * Direct candidates (linkType=2 or IP-based) for immediate packet download
         * Indirect discovery candidates (business/app/group alerts where the skill

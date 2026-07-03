@@ -252,11 +252,11 @@ class WeComPushService {
       // 快捷查询指令 — 灰色代码块
       if (alert.extra?.elogid) {
         const qStart = hasEnd
-          ? Math.floor(rawStart / 60) * 60 - 1800
-          : Math.floor(rawStart / 60) * 60 - 3600;
+          ? Math.floor(rawStart / 60) * 60 - 60
+          : Math.floor(rawStart / 60) * 60 - 120;
         const qEnd = hasEnd
-          ? Math.floor(rawEnd / 60) * 60 + 1800
-          : Math.floor(rawStart / 60) * 60 + 3600;
+          ? Math.floor(rawEnd / 60) * 60 + 60
+          : Math.floor(rawStart / 60) * 60 + 120;
         md += `\n> 💬 深入分析\n\n\`\`\`\n分析这个告警数据包 ${alert.extra.elogid} ${qStart} ${qEnd}\n\`\`\`\n`;
       }
     }

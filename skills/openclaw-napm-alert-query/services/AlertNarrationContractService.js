@@ -28,10 +28,34 @@ function buildPacketHandoff(events = [], criteria = {}) {
       };
 }
 
+/**
+ * 解析告警的实际时间窗口。
+ *
+ * NAPM Syslog/alertsDetail 对未恢复的告警返回 endtime=0，
+ * 此时用 period（告警持续时长）或默认值计算结束时间，
+ * 确保间接发现和数据包下载有合理的时间窗口。
+ */
+function resolveAlertTimeWindow(event = {}, criteria = {}) {
+  const start = event.start || criteria.start;
+  if (!start) return { start: null, end: null };
+
+  let end = event.end || criteria.end;
+  if (!end) {
+    // endtime=0 表示告警未恢复，尝试 period 或默认窗口
+    const period = Number(event.period);
+    if (period > 0) {
+      end = start + period;
+    } else {
+      end = start + 300; // 默认 5 分钟
+    }
+  }
+
+  return { start, end };
+}
+
 function buildEventPacketHandoff(event = {}, criteria = {}) {
   if (!event || !event.id) return null;
-  const start = event.start || criteria.start;
-  const end = event.end || criteria.end;
+  const { start, end } = resolveAlertTimeWindow(event, criteria);
   if (!start || !end) return null;
 
   if (Number(event.linkType) === 2) {
@@ -80,12 +104,16 @@ function buildEventPacketHandoff(event = {}, criteria = {}) {
         id: event.id,
         group: event.group,
         categoryType: event.categoryType,
+        groupType: event.groupType,
         category: event.category,
         categoryLabel: event.categoryLabel,
         metrics: event.metrics,
         start,
         end,
         linkType: event.linkType,
+        // 用户提供的宽时间范围（discovery 用这个，不用告警的窄窗口）
+        criteriaStart: criteria.start || null,
+        criteriaEnd: criteria.end || null,
       },
     };
   }
@@ -99,6 +127,8 @@ function looksLikeIp(value = '') {
 
 function buildNarrationInput(result = {}) {
   const packetHandoff = result.packetHandoff || null;
+  const triggerInfo = buildTriggerInfo(result);
+
   return {
     schema: 'openclaw_napm_alert.v1',
     language: 'zh-CN',
@@ -111,6 +141,7 @@ function buildNarrationInput(result = {}) {
     timeline: result.timeline || [],
     metricSeries: result.metricSeries || [],
     packetHandoff,
+    triggerInfo,
     error: result.error || null,
     warnings: result.warnings || [],
     renderPolicy: {
@@ -118,15 +149,41 @@ function buildNarrationInput(result = {}) {
       includeRawApiResponse: false,
       includeSensitiveUrls: false,
     },
-    packetInstruction: buildPacketInstruction(packetHandoff),
+    packetInstruction: buildPacketInstruction(packetHandoff, triggerInfo),
   };
+}
+
+/**
+ * 从告警详情中提取触发条件信息，供 AI 在数据包分析报告中解释告警原因。
+ */
+function buildTriggerInfo(result = {}) {
+  const events = result.details && result.details.length > 0
+    ? result.details
+    : (Array.isArray(result.events) ? result.events : []);
+  if (events.length === 0) return null;
+
+  return events.map((e) => ({
+    eventId: e.id,
+    name: e.name || null,
+    group: e.group || null,
+    severity: e.severity || null,
+    severityLabel: e.severityLabel || null,
+    metrics: e.metrics || [],
+    condition: e.condition || null,
+    value: e.value || [],
+    baseline: e.baseline || [],
+    unit: e.unit || [],
+    start: e.start || null,
+    end: e.end || null,
+    period: e.period || null,
+  }));
 }
 
 /**
  * 根据 packetHandoff 结果生成 AI 下一步操作的直接指令。
  * 这是 narrationInput 中最关键的字段——AI 必须遵循，不得自行决策。
  */
-function buildPacketInstruction(packetHandoff) {
+function buildPacketInstruction(packetHandoff, triggerInfo = null) {
   // 无 packetHandoff
   if (!packetHandoff) {
     return {
@@ -159,7 +216,10 @@ function buildPacketInstruction(packetHandoff) {
       && Array.isArray(packetHandoff.candidates) && packetHandoff.candidates.length > 0) {
     return {
       action: 'USE_CANDIDATES',
-      message: `间接发现到 ${packetHandoff.candidates.length} 个嫌疑 IP 会话。必须逐条展示候选列表，然后对每个 candidate 使用其 suggestedPacketQuery（原样传递 mode 和 criteria）调用 openclaw-napm-packet-analysis。禁止自己构造 packetQuery，禁止直接用 eventId 查询。`,
+      message: `间接发现到 ${packetHandoff.candidates.length} 个嫌疑 IP 会话。必须逐条展示候选列表，然后对每个 candidate 使用其 suggestedPacketQuery（原样传递 mode 和 criteria）调用 openclaw-napm-packet-analysis。禁止自己构造 packetQuery，禁止直接用 eventId 查询。` + (
+        triggerInfo && triggerInfo.length > 0
+          ? ` 【重要】数据包分析报告中必须包含告警触发原因分析：指标(${(triggerInfo[0].metrics||[]).join(',')})、触发条件(${triggerInfo[0].condition || 'N/A'})、实际值(${(triggerInfo[0].value||[]).join(',')})，结合数据包内容解释为什么指标异常。`
+          : ''),
       callPacketAnalysis: true,
       candidates: packetHandoff.candidates.map((c) => ({
         rank: c.rank,
@@ -292,6 +352,7 @@ module.exports = {
   buildReportData,
   buildPacketInstruction,
   extractIndirectDiscoveryEvents,
+  resolveAlertTimeWindow,
   looksLikeIp,
 };
 

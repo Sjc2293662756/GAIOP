@@ -10,7 +10,6 @@ description: 生成 NAPM 综述报告——按指定范围（全局/网络/业�
 Use this skill for:
 - 用户要求生成"综述报告"或"全局报告"或"summary report"
 - 用户要求查看某个业务/应用/业务组的整体状况（如"生成239web的业务综述"）
-- 用户要求生成业务整体、应用整体、网络整体、业务组整体的维度综述（未指定具体对象）
 - 用户要求生成日报、周报、月报形式的全局态势总览
 - 用户要求"看看最近一周的整体情况"
 
@@ -61,29 +60,16 @@ OpenClaw user request
 }
 ```
 
-说明：
-- `scope.target` 为可选。
-- 不带 `scope.target` 表示该维度的整体综述（overview 模式），例如"业务整体综述"、"应用整体综述"。
-- 带 `scope.target` 表示单对象综述，例如"239web 的业务综述"、"HTTP 的应用综述"。
-
 ### scope.type 说明
 
-| type | 含义 | 不带 target | 带 target |
-|------|------|------------|------------|
-| `global` | 全局综述（所有维度） | 全局综述 | 不适用 |
-| `webApplication` | 业务综述（WebApplication 维度） | 业务整体综述 | 指定 Web 应用综述 |
-| `application` | 应用综述（端口/协议应用维度） | 应用整体综述 | 指定应用综述 |
-| `businessGroup` | 业务组综述 | 业务组整体综述 | 指定业务组综述 |
-| `network` | 网络综述（IP/接口/会话维度） | 网络整体综述 | 指定 IP/接口/会话综述 |
-| `alert` | 告警综述 | 告警综述 | 可选扩展过滤 |
-
-### 整体综述与单对象综述
-
-- `scope.type = "webApplication"` 且省略 `target`：生成业务整体综述。
-- `scope.type = "application"` 且省略 `target`：生成应用整体综述。
-- `scope.type = "network"` 且省略 `target`：生成网络整体综述。
-- `scope.type = "businessGroup"` 且省略 `target`：生成业务组整体综述。
-- 只有在需要聚焦某个具体对象时，才传入 `scope.target`。
+| type | 含义 | target 必填 |
+|------|------|------------|
+| `global` | 全局综述（所有维度） | 否 |
+| `webApplication` | 业务综述（指定Web应用） | 是 |
+| `application` | 应用综述（指定端口级应用） | 是 |
+| `businessGroup` | 业务组综述 | 是 |
+| `network` | 网络综述（IP/接口/会话） | 是 |
+| `alert` | 告警综述 | 否 |
 
 ## CLI
 
@@ -91,12 +77,6 @@ OpenClaw user request
 node skills/openclaw-napm-summary/scripts/run_summary.js --payload '{"scope":{"type":"global","label":"全局"},"timeRange":{"start":1780882620,"end":1780969020}}'
 
 node skills/openclaw-napm-summary/scripts/run_summary.js --queryFile ./summary-query.json
-
-# 生成业务整体综述（无 target）
-node skills/openclaw-napm-summary/scripts/run_summary.js --queryJson '{"scope":{"type":"webApplication","label":"业务"},"timeRange":{"start":1780272000,"end":1780876800}}'
-
-# 生成应用整体综述（无 target）
-node skills/openclaw-napm-summary/scripts/run_summary.js --queryJson '{"scope":{"type":"application","label":"应用"},"timeRange":{"start":1780272000,"end":1780876800}}'
 
 # 生成 239web 的 7 天业务综述
 node skills/openclaw-napm-summary/scripts/run_summary.js --queryJson '{"scope":{"type":"webApplication","label":"业务","target":{"groupType":"WebApplication","groupArgument":"239web","groupLabel":"239web"}},"timeRange":{"start":1780272000,"end":1780876800}}'
@@ -168,5 +148,4 @@ node skills/openclaw-napm-summary/scripts/run_summary.js --queryJson '{"scope":{
 ## References
 
 - `docs/2026-06-18-综述报告设计方案.md` — 完整设计方案
-- `docs/2026-07-01-综述报告整体综述追问问题修复说明.md` — 整体综述无需 target 的问题与修复说明
 - `references/summary-api-contract.md` — API 契约详情（待补充）

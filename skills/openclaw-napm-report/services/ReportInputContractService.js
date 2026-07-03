@@ -106,7 +106,7 @@ function isFaultDiagnosisSourceResult(result = {}) {
   }
   const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
   return String(result?.reportData?.reportType || '').trim() === 'diagnostic_report'
-    && String(result?.reportData?.templateId || '').trim() === 'napm_fault_diagnosis_v1'
+    && String(result?.reportData?.templateId || '').trim() === 'napm_bs_fault_diagnosis_v2'
     || String(result.schema || '').trim() === 'openclaw_napm_fault_diagnosis_result.v1'
     || String(narrationInput.schema || '').trim() === 'openclaw_napm_fault_diagnosis.v1'
     || (isPlainObject(result.alertAnalysis) && isPlainObject(result.trafficAnalysis));
@@ -181,7 +181,7 @@ function buildFaultDiagnosisReportData(result = {}, options = {}) {
   return {
     schema: 'openclaw_napm_report_data.v1',
     reportType: 'diagnostic_report',
-    templateId: 'napm_fault_diagnosis_v1',
+    templateId: 'napm_bs_fault_diagnosis_v2',
     format: normalizeFormat(options.format || result.format || 'docx'),
     defaultFormat: 'docx',
     title,

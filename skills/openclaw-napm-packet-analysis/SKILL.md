@@ -1,6 +1,6 @@
 ---
 name: openclaw-napm-packet-analysis
-description: Standalone OpenClaw skill for NetInside / NAPM packet download and packet-file analysis. Use when OpenClaw needs to preview downloadable packets, build or explain packetsDown URLs, download packets by IP/IP range/event ID/top condition, explain or use DownServlet URLs, analyze local pcap/cap files, or summarize packet-level evidence with tshark/capinfos. ⚠️ ROUTING GUARD: If the user provides an alert event ID and asks for packet analysis ("告警数据包 <id>"), do NOT use this skill directly. Route to openclaw-napm-alert-query FIRST — it performs automatic IP discovery for business/app/group alerts and returns packetHandoff candidates. Only use this skill AFTER alert-query returns candidates with suggestedPacketQuery. Packet endpoints may require UserName and Password query parameters from runtime credentials; final replies must keep UserName visible when present and redact Password and other secrets.
+description: Standalone OpenClaw skill for NetInside / NAPM packet download and packet-file analysis. Use when OpenClaw needs to preview downloadable packets, build or explain packetsDown URLs, download packets by IP/IP range/linkType=2 event ID/top condition, explain or use DownServlet URLs, analyze local pcap/cap files, or summarize packet-level evidence with tshark/capinfos. ⚠️ ROUTING GUARD: If the user provides an alert event ID and asks for packet analysis ("告警数据包 <id>"), do NOT use this skill directly. Route to openclaw-napm-alert-query FIRST — it performs automatic IP discovery for business/app/group alerts and returns packetHandoff candidates. Only use this skill AFTER alert-query returns candidates with suggestedPacketQuery. Packet endpoints may require UserName and Password query parameters from runtime credentials; final replies must keep UserName visible when present and redact Password and other secrets.
 ---
 
 # OpenClaw NAPM Packet Analysis
@@ -47,7 +47,7 @@ If the requested time range is larger than `PACKET_MAX_TIME_RANGE_SECONDS`, ask 
 Core structured packet-query contract:
 
 - Live preview/download requires root-level `criteria.start` and `criteria.end`.
-- Live preview/download requires one of `criteria.ips`, `criteria.ipRanges`, `criteria.id`, `criteria.top`, `criteria.instanceId`, `criteria.businessName`, `criteria.pageFamilyId`, or `criteria.pageFamilyDetailId`.
+- Live preview/download requires one of `criteria.ips`, `criteria.ipRanges`, `criteria.id` (linkType=2 event IDs only — do NOT use for alert event IDs), `criteria.top`, `criteria.instanceId`, `criteria.businessName`, `criteria.pageFamilyId`, or `criteria.pageFamilyDetailId`.
 - `build_url_only` is the safe default for link-only requests.
 - `preview_only` is preferred for large or uncertain windows.
 - `preview_download` and `preview_download_analyze` must pass the preview gate by default.
@@ -146,7 +146,7 @@ Use `--queryFile` to avoid shell quoting problems:
 }
 ```
 
-For event packet download:
+For event packet download (linkType=2 events ONLY — alert events must go through openclaw-napm-alert-query first):
 
 ```json
 {

@@ -55,6 +55,32 @@
         { "field": "http400", "name": "HTTP 400" },
         { "field": "http500", "name": "HTTP 500" }
       ]
+    },
+    {
+      "id": "webapp.accessSlow",
+      "title": "访问量与慢业务趋势",
+      "chartType": "line",
+      "scopes": ["webApplication"],
+      "datasetPath": "summary.businessSummary.accessTrend.dataset",
+      "xField": "time",
+      "xLabel": "时间",
+      "series": [
+        { "field": "PGNPGE", "name": "访问数" },
+        { "field": "PGNSLPGE", "name": "慢访问数" }
+      ]
+    },
+    {
+      "id": "webapp.requestResponse",
+      "title": "请求/响应流量趋势",
+      "chartType": "line",
+      "scopes": ["webApplication"],
+      "datasetPath": "summary.businessSummary.trafficTrend.dataset",
+      "xField": "time",
+      "xLabel": "时间",
+      "series": [
+        { "field": "PGBYTI", "name": "请求流量" },
+        { "field": "PGBYTO", "name": "响应流量" }
+      ]
     }
   ]
 }

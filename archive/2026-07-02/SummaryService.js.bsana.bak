@@ -16,16 +16,13 @@ function asArray(v) {
 /**
  * Compute overallStatus from aggregated data.
  */
-function computeOverallStatus(alertSummary = {}, trafficTrend = {}, businessSummary = {}, singleBusinessAnalysis = {}) {
+function computeOverallStatus(alertSummary = {}, trafficTrend = {}, businessSummary = {}) {
   if ((alertSummary.critical || 0) > 0) return 'critical';
   if ((alertSummary.major || 0) > 0) return 'warning';
   if ((trafficTrend.stats?.missingPointCount || 0) > 0) return 'warning';
   if ((trafficTrend.stats?.spikeCount || 0) > 0) return 'warning';
   if (asArray(businessSummary.slowAccess).length > 0) return 'warning';
   if (asArray(businessSummary.httpErrors).length > 0) return 'warning';
-  if ((singleBusinessAnalysis.overview?.slowVisitCount || 0) > 0) return 'warning';
-  if ((singleBusinessAnalysis.httpCodeSummary?.http400 || 0) > 0) return 'warning';
-  if ((singleBusinessAnalysis.httpCodeSummary?.http500 || 0) > 0) return 'warning';
   return 'ok';
 }
 
@@ -146,88 +143,6 @@ function normalizeTimeSeries(raw, metrics) {
 }
 
 /**
- * Normalize averageValues response into a flat metric object.
- *
- * Supported input shapes:
- * 1. { metricValues: [{ metric:{id}, value, unit }] }
- * 2. [{ metricValues: [...] }]
- * 3. [{ PGNPGE: 123, PGNSLPGE: 4, ... }]
- * 4. CSV text
- */
-function normalizeAverageValues(raw, metrics) {
-  const metricList = Array.isArray(metrics)
-    ? metrics
-    : String(metrics || '').split(',').map((item) => item.trim()).filter(Boolean);
-
-  const result = { units: {} };
-  const assignValue = (metricId, value, unit) => {
-    const numeric = Number(value);
-    result[metricId] = Number.isFinite(numeric) ? numeric : value;
-    if (unit) result.units[metricId] = unit;
-  };
-
-  if (!raw) return result;
-
-  if (isPlainObject(raw) && Array.isArray(raw.metricValues)) {
-    for (const item of raw.metricValues) {
-      const metricId = item?.metric?.id;
-      if (!metricId) continue;
-      assignValue(metricId, item.value, item.unit || item?.metric?.unit);
-    }
-    return result;
-  }
-
-  if (Array.isArray(raw) && raw.length > 0 && Array.isArray(raw[0]?.metricValues)) {
-    for (const item of raw[0].metricValues) {
-      const metricId = item?.metric?.id;
-      if (!metricId) continue;
-      assignValue(metricId, item.value, item.unit || item?.metric?.unit);
-    }
-    return result;
-  }
-
-  const rows = parseMetricData(raw, metrics);
-  const firstRow = Array.isArray(rows) && rows.length > 0 ? rows[0] : (isPlainObject(raw) ? raw : null);
-  if (!firstRow) return result;
-
-  const keys = metricList.length > 0
-    ? metricList
-    : Object.keys(firstRow).filter((key) => !['key', 'keyLabel', 'group', 'groupPath', 'time', 'timestamp', 'unit', 'units'].includes(key));
-
-  for (const metricId of keys) {
-    if (!Object.prototype.hasOwnProperty.call(firstRow, metricId)) continue;
-    assignValue(metricId, firstRow[metricId], firstRow?.units?.[metricId] || firstRow?.unit);
-  }
-  return result;
-}
-
-function buildTrendSummary(ts = {}, primaryMetricId) {
-  const primaryValues = asArray(ts[primaryMetricId]).map(Number);
-  const stats = {
-    ...computeStats(primaryValues),
-    ...detectAnomalies(primaryValues, ts.time)
-  };
-
-  const metricKeys = Object.keys(ts).filter((k) => k !== 'time' && k !== 'unit');
-  const points = asArray(ts.time).map((t, i) => {
-    const point = { time: t };
-    metricKeys.forEach((metricKey) => {
-      point[metricKey] = ts[metricKey]?.[i];
-    });
-    return point;
-  });
-
-  return {
-    dataset: {
-      points,
-      metrics: metricKeys,
-      unit: ts.unit || ''
-    },
-    stats
-  };
-}
-
-/**
  * Normalize topValues response into an array of labeled objects.
  *
  * NAPM topValues API returns a structured object:
@@ -270,47 +185,6 @@ function normalizeTopValues(raw, keyField) {
  *
  * We flatten to: { key: "192.168.1.100", keyLabel: "192.168.1.100", TPIO: 123, TPI: 456, ... }
  */
-/**
- * Parse NAPM averageValues response into a key-value metrics map.
- * Response can be JSON array [{metric:...,value:...}] or object with metricValues.
- */
-function parseAverageValues(raw) {
-  const map = {};
-  if (!raw) return map;
-
-  // JSON array with metricValues: [{metricValues:[{metric:{id:"PGNPGE"},value:123}]}]
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const mvList = Array.isArray(item.metricValues) ? item.metricValues : [];
-      for (const mv of mvList) {
-        if (mv.metric?.id) map[mv.metric.id] = mv.value;
-      }
-    }
-    return map;
-  }
-
-  // Single object with metricValues
-  if (raw.metricValues) {
-    for (const mv of raw.metricValues) {
-      if (mv.metric?.id) map[mv.metric.id] = mv.value;
-    }
-    return map;
-  }
-
-  return map;
-}
-
-/**
- * Convert parallel-array timeSeries to points[] format for chart rendering.
- */
-function buildTimePoints(ts, metricKeys) {
-  return (ts.time || []).map((t, i) => {
-    const pt = { time: t };
-    metricKeys.forEach((mk) => { pt[mk] = ts[mk]?.[i]; });
-    return pt;
-  });
-}
-
 function flattenTopValuesItems(items) {
   const list = asArray(items);
   if (list.length === 0) return [];
@@ -414,8 +288,7 @@ class SummaryService {
     summary.overallStatus = computeOverallStatus(
       summary.alertSummary || {},
       summary.trafficSummary?.trend || {},
-      summary.businessSummary || {},
-      summary.singleBusinessAnalysis || {}
+      summary.businessSummary || {}
     );
 
     summary.reportDate = this._formatReportDate();
@@ -498,30 +371,13 @@ class SummaryService {
   _planWebApplicationTarget(scope, start, end, granularity) {
     const target = scope.target || {};
     const groupArg = target.groupArgument || '';
-    const groups = [{ type: 'WebApplication', argument: groupArg }];
-    const clientIpGroups = [
-      { type: 'WebApplication', argument: groupArg },
-      { type: 'ClientIPs' },
-      { type: 'IPAddress' }
-    ];
-    const clientBusinessGroups = [
-      { type: 'WebApplication', argument: groupArg },
-      { type: 'ClientBusinessGroupLabel' },
-      { type: 'ClientBusinessGroup' }
-    ];
-
     return [
       { label: 'alertsSummary', fn: () => this.client.getAlertsSummary(start, end) },
       { label: 'alertsTimeline', fn: () => this.client.getAlertsTimeline(start, end) },
-      { label: 'businessOverview', groupType: 'WebApplication', metrics: ['PGNPGE', 'PGNSLPGE', 'PGSLPCT', 'PGSLRT', 'PGTME'], fn: () => this.client.getAverageValues(start, end, 'PGNPGE,PGNSLPGE,PGSLPCT,PGSLRT,PGTME', groups) },
-      { label: 'accessSlowTrend', groupType: 'WebApplication', metrics: ['PGNPGE', 'PGNSLPGE'], fn: () => this.client.getTimeValues(start, end, 'PGNPGE,PGNSLPGE', groups, granularity) },
-      { label: 'nodeDistribution', groupType: 'WebApplication', metrics: ['PGNPGE', 'PGNSLPGE'], fn: () => this.client.getTopValues(start, end, 'PGNPGE,PGNSLPGE', 'PGNPGE', 5, clientBusinessGroups) },
-      { label: 'resourceSummary', groupType: 'WebApplication', metrics: ['PGBYTI', 'PGSIZEI', 'PGSIZEO', 'PGBYTO', 'PGNOBJE'], fn: () => this.client.getAverageValues(start, end, 'PGBYTI,PGSIZEI,PGSIZEO,PGBYTO,PGNOBJE', groups) },
-      { label: 'requestResponseTrend', groupType: 'WebApplication', metrics: ['PGBYTI', 'PGBYTO'], fn: () => this.client.getTimeValues(start, end, 'PGBYTI,PGBYTO', groups, granularity) },
-      { label: 'slowClients', groupType: 'WebApplication', metrics: ['PGTME'], fn: () => this.client.getTopValues(start, end, 'PGTME', 'PGNPGE', 5, clientIpGroups) },
-      { label: 'httpCodeSummary', groupType: 'WebApplication', metrics: ['PGHTTP100', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500'], fn: () => this.client.getAverageValues(start, end, 'PGHTTP100,PGHTTP200,PGHTTP300,PGHTTP400,PGHTTP500', groups) },
-      { label: 'http400Clients', groupType: 'WebApplication', metrics: ['PGHTTP400'], fn: () => this.client.getTopValues(start, end, 'PGHTTP400', 'PGHTTP400', 5, clientIpGroups) },
-      { label: 'http500Clients', groupType: 'WebApplication', metrics: ['PGHTTP500'], fn: () => this.client.getTopValues(start, end, 'PGHTTP500', 'PGHTTP500', 5, clientIpGroups) },
+      { label: 'trafficTrend', fn: () => this.client.getTimeValues(start, end, 'TPIO,TPI,TPO,PGSLPCT,PGTME,PGHTTP400,PGHTTP500', [{ type: 'WebApplication', argument: groupArg }], granularity) },
+      { label: 'drillDown', fn: () => this.client.getTopValues(start, end, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'WebApplication', argument: groupArg }, { type: 'ClientIPs' }, { type: 'IPAddress' }]) },
+      { label: 'slowAccess', fn: () => this.client.getTopValues(start, end, 'PGSLPCT,PGNSLPGE,PGTME', 'PGSLPCT', 10, [{ type: 'WebApplication', argument: groupArg }]) },
+      { label: 'httpErrors', fn: () => this.client.getTopValues(start, end, 'PGHTTP400,PGHTTP500', 'PGHTTP500', 10, [{ type: 'WebApplication', argument: groupArg }]) },
       { label: 'applianceInfo', fn: () => this.client.getApplianceInfo() }
     ];
   }
@@ -704,14 +560,10 @@ class SummaryService {
 
   aggregate(rawData = {}, scope = {}, timeRange = {}) {
     const scopeType = scope.type || 'global';
-    const hasTarget = !!(scope.target && scope.target.groupType && scope.target.groupArgument);
     const summary = {
       alertSummary: this._aggregateAlerts(rawData, scope),
-      trafficSummary: this._aggregateTraffic(rawData, scope),
-      businessSummary: this._aggregateBusiness(rawData, scope),
-      singleBusinessAnalysis: scopeType === 'webApplication' && hasTarget
-        ? this._aggregateSingleBusiness(rawData)
-        : null,
+      trafficSummary: this._aggregateTraffic(rawData, scopeType),
+      businessSummary: this._aggregateBusiness(rawData, scopeType),
       conclusion: null,
       recommendations: []
     };
@@ -734,29 +586,18 @@ class SummaryService {
     };
     const relevantCategories = scopeAlertCategories[scopeType] || null;
 
-    // For scoped with target: filter by object AND by relevant categories
+    // For scoped with target: filter by object
     if (scopeType !== 'global' && target.groupType && target.groupArgument) {
-      const unresolvedFiltered = (alertSummary.unresolvedAlerts || []).filter(
+      const filtered = (alertSummary.unresolvedAlerts || []).filter(
         (a) => a.group === target.groupArgument
       );
-      const result = {
+      return {
         ...alertSummary,
         topObjects: alertSummary.topObjects.filter(
           (o) => o.group === target.groupArgument
         ),
-        unresolvedAlerts: unresolvedFiltered
+        unresolvedAlerts: filtered
       };
-      // Also apply category filtering for the scope
-      if (relevantCategories) {
-        result.byCategory = alertSummary.byCategory.filter(
-          (c) => relevantCategories.includes(c.category)
-        );
-        result.total = result.byCategory.reduce((s, c) => s + c.count, 0);
-        result.critical = result.byCategory.reduce((s, c) => s + (c.critical || 0), 0);
-        result.major = result.byCategory.reduce((s, c) => s + (c.major || 0), 0);
-        result.minor = result.byCategory.reduce((s, c) => s + (c.minor || 0), 0);
-      }
-      return { ...result, timeline };
     }
 
     // For scoped without target (overview): filter by relevant alert categories
@@ -784,43 +625,68 @@ class SummaryService {
     return { ...alertSummary, timeline };
   }
 
-  _aggregateTraffic(rawData = {}, scope = {}) {
-    const scopeType = scope.type || 'global';
-    const hasTarget = !!(scope.target && scope.target.groupType && scope.target.groupArgument);
+  _aggregateTraffic(rawData = {}, scopeType = 'global') {
     const trafficSummary = { trend: null, topIPs: [], topApps: [], drillDown: null, appConnections: [], appFailures: [], appQuality: [] };
 
-    if (scopeType === 'webApplication' && hasTarget && rawData.requestResponseTrend) {
-      const ts = normalizeTimeSeries(rawData.requestResponseTrend, ['PGBYTI', 'PGBYTO']);
-      trafficSummary.trend = buildTrendSummary(ts, 'PGBYTI');
-    } else if (scopeType !== 'alert' && rawData.trafficTrend) {
+    // Traffic trend
+    if (scopeType !== 'alert' && rawData.trafficTrend) {
       const metrics = scopeType === 'global'
         ? ['TPIO', 'TPI', 'TPO']
         : ['TPIO', 'TPI', 'TPO', 'PLI', 'PLO', 'PGSLPCT', 'PGTME', 'PGHTTP400', 'PGHTTP500'];
       const ts = normalizeTimeSeries(rawData.trafficTrend, metrics);
-      trafficSummary.trend = buildTrendSummary(ts, 'TPIO');
+
+      // Collect all numeric values for stats (use TPIO as primary)
+      const tpioValues = ts.TPIO || [];
+      const stats = {
+        ...computeStats(tpioValues),
+        ...detectAnomalies(tpioValues, ts.time)
+      };
+
+      // Convert parallel arrays to points[] format for chart rendering
+      const metricKeys = Object.keys(ts).filter((k) => k !== 'time' && k !== 'unit');
+      const points = (ts.time || []).map((t, i) => {
+        const point = { time: t };
+        metricKeys.forEach((mk) => { point[mk] = ts[mk]?.[i]; });
+        return point;
+      });
+
+      trafficSummary.trend = {
+        dataset: {
+          points,
+          metrics: metricKeys,
+          unit: ts.unit || ''
+        },
+        stats
+      };
     }
 
+    // Top IPs (global + network overview)
     if ((scopeType === 'global' || scopeType === 'network') && rawData.topIPs) {
       trafficSummary.topIPs = normalizeTopValues(rawData.topIPs, 'IPAddress');
     }
 
+    // Top Apps (global + network overview: DefinedApp; webApplication overview: WebApplication)
     if (rawData.topApps) {
       const keyField = scopeType === 'webApplication' ? 'WebApplication' : 'DefinedApp';
       trafficSummary.topApps = normalizeTopValues(rawData.topApps, keyField);
     }
 
+    // Top Groups (businessGroup overview)
     if (scopeType === 'businessGroup' && rawData.topGroups) {
       trafficSummary.topApps = normalizeTopValues(rawData.topGroups, 'BusinessGroup');
     }
 
+    // Drill-down (scoped with target)
     if (rawData.drillDown) {
+      const targetGroupType = scopeType === 'webApplication' ? 'IPAddress' : 'IPAddress';
       trafficSummary.drillDown = {
-        groupType: 'IPAddress',
+        groupType: targetGroupType,
         label: '下级维度',
-        items: normalizeTopValues(rawData.drillDown, 'IPAddress')
+        items: normalizeTopValues(rawData.drillDown, targetGroupType)
       };
     }
 
+    // App connections (application overview)
     if (rawData.appConnections) {
       trafficSummary.appConnections = normalizeTopValues(rawData.appConnections, 'DefinedApp').map((row) => ({
         appName: row.key || row.keyLabel || '-',
@@ -829,6 +695,7 @@ class SummaryService {
       }));
     }
 
+    // App failures (application overview)
     if (rawData.appFailures) {
       trafficSummary.appFailures = normalizeTopValues(rawData.appFailures, 'DefinedApp').map((row) => ({
         appName: row.key || row.keyLabel || '-',
@@ -837,6 +704,7 @@ class SummaryService {
       }));
     }
 
+    // App quality (application overview: packet loss + RTT)
     if (rawData.appQuality) {
       trafficSummary.appQuality = normalizeTopValues(rawData.appQuality, 'DefinedApp').map((row) => ({
         appName: row.key || row.keyLabel || '-',
@@ -850,98 +718,11 @@ class SummaryService {
     return trafficSummary;
   }
 
-  _aggregateBusiness(rawData = {}, scope = {}) {
-    const scopeType = scope.type || 'global';
-    const hasTarget = !!(scope.target && scope.target.groupType && scope.target.groupArgument);
-    const businessSummary = {
-      // overview (no target)
-      slowAccess: [], httpErrors: [], pageTraffic: [], pageViews: [],
-      // targeted (has target) — business analysis
-      overview: null, accessTrend: null, nodeDist: [],
-      resource: null, trafficTrend: null, slowClients: [],
-      httpCodes: null, error400Clients: [], error500Clients: []
-    };
+  _aggregateBusiness(rawData = {}, scopeType = 'global') {
+    const businessSummary = { slowAccess: [], httpErrors: [], pageTraffic: [], pageViews: [] };
 
     if (scopeType !== 'global' && scopeType !== 'webApplication') return businessSummary;
 
-    // ── TARGETED: single web application analysis ──────────────
-    if (hasTarget) {
-      // Business overview (averageValues: PGNPGE,PGNSLPGE,PGSLPCT,PGSLRT,PGTME)
-      if (rawData.businessOverview) {
-        businessSummary.overview = parseAverageValues(rawData.businessOverview);
-      }
-
-      // Access + slow trend (timeValues)
-      if (rawData.accessSlowTrend) {
-        const ts = normalizeTimeSeries(rawData.accessSlowTrend, ['PGNPGE', 'PGNSLPGE']);
-        if (ts.time?.length > 0) {
-          businessSummary.accessTrend = {
-            dataset: { points: buildTimePoints(ts, ['PGNPGE', 'PGNSLPGE']), metrics: ['PGNPGE', 'PGNSLPGE'], unit: '' }
-          };
-        }
-      }
-
-      // Node distribution (topValues: PGNPGE,PGNSLPGE by ClientBusinessGroup)
-      if (rawData.nodeDistribution) {
-        businessSummary.nodeDist = normalizeTopValues(rawData.nodeDistribution, 'ClientBusinessGroup')
-          .map((row) => ({
-            nodeName: row.key || row.keyLabel || '-',
-            pageViews: Number(row.PGNPGE || 0),
-            slowViews: Number(row.PGNSLPGE || 0)
-          }));
-      }
-
-      // Resource summary (averageValues: PGBYTI,PGSIZEI,PGSIZEO,PGBYTO,PGNOBJE)
-      if (rawData.resourceSummary) {
-        businessSummary.resource = parseAverageValues(rawData.resourceSummary);
-      }
-
-      // Request/response traffic trend (timeValues)
-      if (rawData.requestResponseTrend) {
-        const ts = normalizeTimeSeries(rawData.requestResponseTrend, ['PGBYTI', 'PGBYTO']);
-        if (ts.time?.length > 0) {
-          businessSummary.trafficTrend = {
-            dataset: { points: buildTimePoints(ts, ['PGBYTI', 'PGBYTO']), metrics: ['PGBYTI', 'PGBYTO'], unit: '' }
-          };
-        }
-      }
-
-      // Slowest clients (topValues: PGTME by ClientIPs→IPAddress)
-      if (rawData.slowClients) {
-        businessSummary.slowClients = normalizeTopValues(rawData.slowClients, 'IPAddress')
-          .map((row) => ({
-            clientIp: row.key || row.keyLabel || '-',
-            avgDelayMs: Number(row.PGTME || 0)
-          }));
-      }
-
-      // HTTP code summary (averageValues: PGHTTP100-500)
-      if (rawData.httpCodeSummary) {
-        businessSummary.httpCodes = parseAverageValues(rawData.httpCodeSummary);
-      }
-
-      // 400 error clients (topValues by ClientIPs→IPAddress)
-      if (rawData.http400Clients) {
-        businessSummary.error400Clients = normalizeTopValues(rawData.http400Clients, 'IPAddress')
-          .map((row) => ({
-            clientIp: row.key || row.keyLabel || '-',
-            errorCount: Number(row.PGHTTP400 || 0)
-          }));
-      }
-
-      // 500 error clients (topValues by ClientIPs→IPAddress)
-      if (rawData.http500Clients) {
-        businessSummary.error500Clients = normalizeTopValues(rawData.http500Clients, 'IPAddress')
-          .map((row) => ({
-            clientIp: row.key || row.keyLabel || '-',
-            errorCount: Number(row.PGHTTP500 || 0)
-          }));
-      }
-
-      return businessSummary;
-    }
-
-    // ── OVERVIEW: all web applications ─────────────────────────
     // Slow access
     if (rawData.slowAccess) {
       businessSummary.slowAccess = normalizeTopValues(rawData.slowAccess, 'WebApplication').map((row) => {
@@ -956,7 +737,7 @@ class SummaryService {
       });
     }
 
-    // HTTP errors (overview)
+    // HTTP errors
     if (rawData.httpErrors) {
       businessSummary.httpErrors = normalizeTopValues(rawData.httpErrors, 'WebApplication').map((row) => ({
         businessName: row.WebApplication || row.keyLabel || row.key || '-',
@@ -965,7 +746,7 @@ class SummaryService {
       }));
     }
 
-    // Page traffic
+    // Page traffic (PGBYTI/PGBYTO — only for webApplication overview)
     if (rawData.pageTraffic) {
       businessSummary.pageTraffic = normalizeTopValues(rawData.pageTraffic, 'WebApplication').map((row) => ({
         businessName: row.WebApplication || row.keyLabel || row.key || '-',
@@ -974,7 +755,7 @@ class SummaryService {
       }));
     }
 
-    // Page views
+    // Page views (PGNPGE — only for webApplication overview)
     if (rawData.pageViews) {
       businessSummary.pageViews = normalizeTopValues(rawData.pageViews, 'WebApplication').map((row) => ({
         businessName: row.WebApplication || row.keyLabel || row.key || '-',
@@ -983,57 +764,6 @@ class SummaryService {
     }
 
     return businessSummary;
-  }
-
-  _aggregateSingleBusiness(rawData = {}) {
-    const overview = normalizeAverageValues(rawData.businessOverview, ['PGNPGE', 'PGNSLPGE', 'PGSLPCT', 'PGSLRT', 'PGTME']);
-    const accessSlowTrend = normalizeTimeSeries(rawData.accessSlowTrend, ['PGNPGE', 'PGNSLPGE']);
-    const resourceSummary = normalizeAverageValues(rawData.resourceSummary, ['PGBYTI', 'PGSIZEI', 'PGSIZEO', 'PGBYTO', 'PGNOBJE']);
-    const requestResponseTrend = normalizeTimeSeries(rawData.requestResponseTrend, ['PGBYTI', 'PGBYTO']);
-    const httpCodeSummary = normalizeAverageValues(rawData.httpCodeSummary, ['PGHTTP100', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500']);
-
-    return {
-      overview: {
-        visitCount: Number(overview.PGNPGE || 0),
-        slowVisitCount: Number(overview.PGNSLPGE || 0),
-        slowVisitPct: Number(overview.PGSLPCT || 0),
-        slowVisitRate: Number(overview.PGSLRT || 0),
-        avgResponseTimeSec: Number(overview.PGTME || 0)
-      },
-      accessSlowTrend: buildTrendSummary(accessSlowTrend, 'PGNPGE'),
-      nodeDistribution: normalizeTopValues(rawData.nodeDistribution, 'ClientBusinessGroup').map((row) => ({
-        nodeName: row.keyLabel || row.key || '-',
-        visitCount: Number(row.PGNPGE || 0),
-        slowVisitCount: Number(row.PGNSLPGE || 0)
-      })),
-      resourceSummary: {
-        requestTrafficMb: Number(resourceSummary.PGBYTI || 0),
-        requestSizeKb: Number(resourceSummary.PGSIZEI || 0),
-        pageSizeKb: Number(resourceSummary.PGSIZEO || 0),
-        responseTrafficMb: Number(resourceSummary.PGBYTO || 0),
-        httpResponseCount: Number(resourceSummary.PGNOBJE || 0)
-      },
-      requestResponseTrend: buildTrendSummary(requestResponseTrend, 'PGBYTI'),
-      slowClients: normalizeTopValues(rawData.slowClients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        avgResponseTimeSec: Number(row.PGTME || 0)
-      })),
-      httpCodeSummary: {
-        http100: Number(httpCodeSummary.PGHTTP100 || 0),
-        http200: Number(httpCodeSummary.PGHTTP200 || 0),
-        http300: Number(httpCodeSummary.PGHTTP300 || 0),
-        http400: Number(httpCodeSummary.PGHTTP400 || 0),
-        http500: Number(httpCodeSummary.PGHTTP500 || 0)
-      },
-      http400Clients: normalizeTopValues(rawData.http400Clients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        count: Number(row.PGHTTP400 || 0)
-      })),
-      http500Clients: normalizeTopValues(rawData.http500Clients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        count: Number(row.PGHTTP500 || 0)
-      }))
-    };
   }
 
   // ── Fault diagnosis aggregation ────────────────────────────
@@ -1350,18 +1080,8 @@ class SummaryService {
     }
 
     const now = Math.floor(Date.now() / 1000);
-    const MAX_PAST_SEC = 365 * 86400; // 1 year sanity bound
-
-    let start = Number(input.start) || 0;
-    let end = Number(input.end) || 0;
-
-    // Sanity check: reject timestamps more than 1 year in the past or 1 day in the future
-    if (!start || start < now - MAX_PAST_SEC || start > now + 86400) {
-      start = now - 86400;
-    }
-    if (!end || end < now - MAX_PAST_SEC || end > now + 86400) {
-      end = now;
-    }
+    const start = Number(input.start) || (now - 86400);
+    const end = Number(input.end) || now;
     const displayText = input.displayText || this._formatTimeRange(start, end);
     return { start, end, displayText };
   }

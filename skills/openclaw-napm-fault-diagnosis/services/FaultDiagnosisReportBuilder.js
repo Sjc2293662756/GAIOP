@@ -311,14 +311,17 @@ class FaultDiagnosisReportBuilder {
       const valCount = Array.isArray(firstMV.values) ? firstMV.values.length : 0;
       if (valCount === 0) return null;
 
-      const start = Number(data.interval?.start) || 0;
+      // Try multiple possible time sources
+      const start = Number(data.interval?.start) || Number(data.start) || 0;
       const granularity = Number(data.granularity) || 60;
       const columns = ['时间', ...data.metricValues.map((mv) => mv.metric?.id || 'value')];
       const rows = [];
 
       for (let i = 0; i < Math.min(valCount, 50); i++) {
-        const time = new Date((start + i * granularity) * 1000).toISOString().slice(11, 19);
-        const row = [time];
+        const ts = start > 1000000000
+          ? new Date((start + i * granularity) * 1000).toISOString().slice(11, 19)
+          : String(i + 1);
+        const row = [ts];
         for (const mv of data.metricValues) {
           row.push(Array.isArray(mv.values) ? (mv.values[i] ?? '-') : '-');
         }
@@ -333,9 +336,48 @@ class FaultDiagnosisReportBuilder {
       };
     }
 
-    // Simple array of objects
+    // NAPM format 3: array of objects with metricValues (no topValues wrapper)
+    // e.g. [{ group: {...}, groupPath: "...", metricValues: [...] }]
     if (Array.isArray(data) && data.length > 0 && isPlainObject(data[0])) {
-      const keys = Object.keys(data[0]);
+      const firstItem = data[0];
+      // Check if this is the metricValues format (not simple key-value objects)
+      if (Array.isArray(firstItem.metricValues) && firstItem.metricValues.length > 0) {
+        // Flatten each item: extract object label + metric values
+        const items = data.slice(0, 50).map((item) => {
+          const mvList = asArray(item.metricValues);
+          // Resolve label: try keyLabel, key, parse from groupPath, or use group.argument
+          let label = item.keyLabel || item.key || '';
+          if (!label && item.groupPath) {
+            // Extract page name from groupPath: "page 8573230/http://.../geoip/" → "geoip"
+            const parts = String(item.groupPath).split('/').filter((s) => s && s !== 'http:' && s !== 'https:');
+            const lastSegment = parts[parts.length - 1] || '';
+            label = lastSegment || item.group?.argument || '-';
+          }
+          if (!label) label = item.group?.argument || '-';
+          const row = { _label: label };
+          for (const mv of mvList) {
+            row[mv.metric?.id || 'value'] = mv.value ?? '-';
+          }
+          return row;
+        });
+
+        const allKeys = new Set();
+        for (const item of items) {
+          Object.keys(item).forEach((k) => allKeys.add(k));
+        }
+        const sortedKeys = ['_label', ...Array.from(allKeys).filter((k) => k !== '_label').sort()];
+
+        return {
+          type: 'table',
+          title: `查询结果: ${label}`,
+          columns: sortedKeys.map((c) => c === '_label' ? '对象' : c),
+          rows: items.map((item) => sortedKeys.map((c) => item[c] ?? '-'))
+        };
+      }
+
+      // Fallback: simple array of objects without metricValues
+      // Exclude the metricValues format we just handled above
+      const keys = Object.keys(firstItem);
       return {
         type: 'table',
         title: `查询结果: ${label}`,

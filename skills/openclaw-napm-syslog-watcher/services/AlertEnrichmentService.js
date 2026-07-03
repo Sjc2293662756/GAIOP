@@ -65,10 +65,10 @@ class AlertEnrichmentService {
       const hasStart = typeof starttime === 'number' && starttime > 0;
       const hasEnd = typeof endtime === 'number' && endtime > 0;
       if (hasStart) {
-        start = Math.floor(starttime / 60) * 60 - 1800;
+        start = Math.floor(starttime / 60) * 60 - 60;
         end = hasEnd
-          ? Math.floor(endtime / 60) * 60 + 1800
-          : Math.floor(starttime / 60) * 60 + 3600;  // endtime=0 时兜底：start + 1h
+          ? Math.floor(endtime / 60) * 60 + 60
+          : Math.floor(starttime / 60) * 60 + 120;  // endtime=0 时兜底：start + 2min
       } else if (alertTimestamp) {
         const ts = new Date(alertTimestamp).getTime();
         if (!isNaN(ts)) {

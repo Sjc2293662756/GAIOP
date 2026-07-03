@@ -14,7 +14,7 @@ const {
 } = require('docx');
 const InspectionFixedTemplateService = require('./InspectionFixedTemplateService');
 const SummaryFixedTemplateService = require('./SummaryFixedTemplateService');
-const DiagnosticFixedTemplateService = require('./DiagnosticFixedTemplateService');
+const BsFaultTemplateService = require('./BsFaultTemplateService');
 const { buildEChartsOption, renderChartPngBuffer } = require('./InspectionFixedTemplateService').__test__;
 
 function asText(value) {
@@ -456,155 +456,26 @@ class ReportTemplateService {
   constructor(options = {}) {
     this.inspectionFixedTemplate = options.inspectionFixedTemplate || new InspectionFixedTemplateService(options);
     this.summaryFixedTemplate = options.summaryFixedTemplate || new SummaryFixedTemplateService(options);
-    this.diagnosticFixedTemplate = options.diagnosticFixedTemplate || new DiagnosticFixedTemplateService(options);
+    this.bsFaultTemplate = options.bsFaultTemplate || new BsFaultTemplateService(options);
   }
 
   async renderDocx(report = {}) {
+    // DIAGNOSTIC: log templateId to audit log for debugging routing
+    try { require('fs').appendFileSync('/tmp/napm-render-debug.log',
+      JSON.stringify({ ts: new Date().toISOString(), reportType: report.reportType, templateId: report.templateId, sections: Array.isArray(report.sections) ? report.sections.length : 'none', hasDiagnosis: !!report.diagnosis }) + '\n'); } catch (_) {}
     if (report.reportType === 'inspection_report' || report.templateId === 'napm_traffic_health_inspection_v1') {
       return this.renderInspectionDocx(report);
     }
     if (report.reportType === 'summary_report' || report.templateId === 'napm_summary_overview_v1') {
       return this.renderSummaryDocx(report);
     }
-    if (report.reportType === 'diagnostic_report' && report.templateId === 'napm_fault_diagnosis_v1') {
-      return this.renderDiagnosticDocx(report);
+    // B/S fault diagnosis — fixed template rendering
+    if (report.reportType === 'diagnostic_report' && report.templateId === 'napm_bs_fault_diagnosis_v2') {
+      return this.bsFaultTemplate.renderDocx(report);
     }
 
-    // Pre-render chart sections to PNG buffers
-    const chartSections = (report.sections || []).filter((s) => s.type === 'chart');
-    const chartBuffers = new Map();
-    if (chartSections.length > 0) {
-      const chartSpecs = (report.chartSpecs && Array.isArray(report.chartSpecs.charts))
-        ? report.chartSpecs
-        : this.inspectionFixedTemplate.loadChartSpecs();
-      for (const section of chartSections) {
-        try {
-          let option;
-          if (section.chartOption) {
-            option = section.chartOption;
-          } else {
-            const chart = (chartSpecs.charts || []).find((c) => c.id === section.chartId) || {};
-            option = buildEChartsOption(chart, report);
-          }
-          const width = Number(section.width) || 620;
-          const height = Number(section.height) || 360;
-          const buffer = await renderChartPngBuffer(option, width, height);
-          chartBuffers.set(section.title || section.chartId, { buffer, width, height });
-        } catch (err) {
-          console.error(`[ReportTemplate] Failed to render chart "${section.title || section.chartId}":`, err.message);
-        }
-      }
-    }
-
-    const children = [
-      new Paragraph({
-        heading: HeadingLevel.TITLE,
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 260 },
-        children: [
-          new TextRun({
-            text: asText(report.title || 'NAPM 分析报告'),
-            bold: true,
-            size: 34,
-            color: '111827'
-          })
-        ]
-      }),
-      buildParagraph('报告基础信息', { bold: true, size: 26, color: '0F766E' }),
-      buildKeyValue('报告类型', report.reportType),
-      buildKeyValue('生成格式', report.format),
-      buildKeyValue('原始问题', report.sourceQuestion),
-      buildKeyValue('时间范围', report?.timeRange?.displayText),
-      buildKeyValue('开始时间戳', report?.timeRange?.start),
-      buildKeyValue('结束时间戳', report?.timeRange?.end),
-      buildKeyValue('数据来源', report?.dataSource?.system || 'NAPM'),
-      buildKeyValue('查询服务', report?.dataSource?.queryService),
-      buildKeyValue('对象类型', report?.dataSource?.objectType),
-      buildKeyValue('指标', Array.isArray(report?.dataSource?.metrics) ? report.dataSource.metrics.join(', ') : report?.dataSource?.metrics),
-      new Paragraph({
-        border: {
-          bottom: {
-            color: 'CBD5E1',
-            style: BorderStyle.SINGLE,
-            size: 6
-          }
-        },
-        spacing: { after: 240 }
-      })
-    ];
-
-    for (const section of report.sections || []) {
-      children.push(new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        spacing: { before: 120, after: 160 },
-        children: [
-          new TextRun({
-            text: asText(section.title || section.type || '报告章节'),
-            bold: true,
-            size: 27,
-            color: '0F766E'
-          })
-        ]
-      }));
-
-      if (section.type === 'table') {
-        children.push(buildTable(section));
-        children.push(buildParagraph('', { after: 120 }));
-      } else if (section.type === 'chart') {
-        const cached = chartBuffers.get(section.title || section.chartId);
-        if (cached && cached.buffer) {
-          children.push(new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 120 },
-            children: [
-              new ImageRun({
-                type: 'png',
-                data: cached.buffer,
-                transformation: { width: cached.width || 620, height: cached.height || 360 },
-                altText: {
-                  title: section.title || 'chart',
-                  description: section.title || 'chart'
-                }
-              })
-            ]
-          }));
-        } else {
-          children.push(buildParagraph(`图表「${section.title || section.chartId || '-'}」暂不可用。`, { size: 20 }));
-        }
-        children.push(buildParagraph('', { after: 120 }));
-      } else if (Array.isArray(section.items)) {
-        children.push(...buildList(section.items));
-      } else {
-        children.push(buildParagraph(section.content || '暂无内容。'));
-      }
-    }
-
-    if (report.audit && Object.keys(report.audit).length > 0) {
-      children.push(new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        spacing: { before: 180, after: 120 },
-        children: [new TextRun({ text: '审计信息', bold: true, size: 27, color: '0F766E' })]
-      }));
-      children.push(buildParagraph(JSON.stringify(report.audit, null, 2), { size: 18 }));
-    }
-
-    const doc = new Document({
-      creator: 'openclaw-napm-report',
-      title: asText(report.title || 'NAPM 分析报告'),
-      description: 'Generated by OpenClaw NAPM report skill',
-      sections: [
-        {
-          properties: {},
-          children
-        }
-      ]
-    });
-
-    return Packer.toBuffer(doc);
-  }
-
-  async renderDiagnosticDocx(report = {}) {
-    return this.diagnosticFixedTemplate.renderDocx(report);
+    // No more generic/fallback rendering. Every diagnostic_report must match a fixed template.
+    throw new Error(`REPORT_TEMPLATE_NOT_FOUND: No template matched for reportType=${report.reportType} templateId=${report.templateId}. Supported: napm_bs_fault_diagnosis_v2, napm_traffic_health_inspection_v1, napm_summary_overview_v1.`);
   }
 
   async renderInspectionDocx(report = {}) {

@@ -28,39 +28,59 @@ const { CATEGORY_TYPE_TO_GROUP_TYPE } = require('./AlertConstants');
 const DISCOVERY_GROUP_CHAIN_MAP = {
   // WebApplication → 查客户端 IP
   68: {
-    groupType1: 'WebApplication',
     groupType2: 'ClientIPs',
     groupType3: 'IPAddress',
     defaultTopMetric: 'PGNPGE',
     resultKeyFormat: 'ip',
-    description: 'WebApplication→ClientIPs→IPAddress',
   },
-  // Application → 查 IP 会话对
+  // Application/DefinedApp → 查 IP 会话对
   25: {
-    groupType1: 'DefinedApp',
     groupType2: 'IPConversations',
     groupType3: 'IPConversation',
     defaultTopMetric: 'TPIO',
     resultKeyFormat: 'ipPair',
-    description: 'DefinedApp→IPConversations→IPConversation',
   },
   // BusinessGroup → 查 IP 会话对
   14: {
-    groupType1: 'BusinessGroup',
     groupType2: 'IPConversations',
     groupType3: 'IPConversation',
     defaultTopMetric: 'TPIO',
     resultKeyFormat: 'ipPair',
-    description: 'BusinessGroup→IPConversations→IPConversation',
+  },
+  // OtherApp (categoryType=51) → 查 IP 会话对
+  51: {
+    groupType2: 'IPConversations',
+    groupType3: 'IPConversation',
+    defaultTopMetric: 'TPIO',
+    resultKeyFormat: 'ipPair',
+  },
+  // ConnectedBusinessGroup (categoryType=27) → 查 IP 会话对
+  27: {
+    groupType2: 'IPConversations',
+    groupType3: 'IPConversation',
+    defaultTopMetric: 'TPIO',
+    resultKeyFormat: 'ipPair',
+  },
+  // BusinessGroupLink (categoryType=29) → 查 IP 会话对
+  29: {
+    groupType2: 'IPConversations',
+    groupType3: 'IPConversation',
+    defaultTopMetric: 'TPIO',
+    resultKeyFormat: 'ipPair',
+  },
+  // OtherApp (categoryType=56) → 查 IP 会话对
+  56: {
+    groupType2: 'IPConversations',
+    groupType3: 'IPConversation',
+    defaultTopMetric: 'TPIO',
+    resultKeyFormat: 'ipPair',
   },
   // PageFamily → 查客户端 IP
   63: {
-    groupType1: 'PageFamily',
     groupType2: 'ClientIPs',
     groupType3: 'IPAddress',
     defaultTopMetric: 'PGNPGE',
     resultKeyFormat: 'ip',
-    description: 'PageFamily→ClientIPs→IPAddress',
   },
 };
 
@@ -105,6 +125,10 @@ function buildDiscoveryParams(event = {}, options = {}) {
   const chainConfig = DISCOVERY_GROUP_CHAIN_MAP[event.categoryType];
   if (!chainConfig) return null;
 
+  // groupType1 从 CATEGORY_TYPE_TO_GROUP_TYPE 映射表取，不写死
+  const groupType1 = event.groupType || CATEGORY_TYPE_TO_GROUP_TYPE[event.categoryType];
+  if (!groupType1) return null;
+
   const topCount = Number.isFinite(Number(options.discoveryTopCount))
     ? Number(options.discoveryTopCount)
     : 5;
@@ -115,21 +139,28 @@ function buildDiscoveryParams(event = {}, options = {}) {
     : [chainConfig.defaultTopMetric];
   const topMetric = eventMetrics[0] || chainConfig.defaultTopMetric;
 
+  // discovery 优先用用户提供的宽时间范围，确保 NAPM API 能返回数据
+  // 若用户未提供（如仅给 eventId），fallback 到告警自身窗口
+  const discoveryStart = event.criteriaStart || event.start;
+  const discoveryEnd = event.criteriaEnd || event.end;
+
   return {
     type: 'topValues',
-    start: event.start,
-    end: event.end,
+    start: discoveryStart,
+    end: discoveryEnd,
     metrics: eventMetrics.join(','),
     topMetric,
     topCount,
     numGroups: 3,
-    groupType1: chainConfig.groupType1,
+    groupType1,
     groupArgument1: event.group,
     groupType2: chainConfig.groupType2,
     groupType3: chainConfig.groupType3,
     json: 'true',
     _meta: {
-      chainConfig,
+      groupType1,
+      groupType2: chainConfig.groupType2,
+      groupType3: chainConfig.groupType3,
       topMetric,
       eventId: event.id,
     },
@@ -147,12 +178,14 @@ function parseTopValuesResult(rawData = {}, categoryType) {
   const chainConfig = DISCOVERY_GROUP_CHAIN_MAP[categoryType];
   const format = chainConfig ? chainConfig.resultKeyFormat : 'ip';
 
-  // NAPM topValues 响应结构：{ topValues: [{ key, metricValues }] }
-  // 或者：{ "IP": value, ... }（简化格式）
+  // NAPM topValues 响应结构可能有三种格式：
+  //   1. { topValues: [{ key, metricValues }] } — 标准 topValues
+  //   2. { "IP": value, ... } — 简化键值对
+  //   3. [{ group: { argument, key }, groupPath }] — 树形 drill-down 结果
   const entries = [];
 
   if (Array.isArray(rawData.topValues)) {
-    // 标准格式
+    // 格式 1：标准 topValues
     rawData.topValues.forEach((item) => {
       if (!item || item.key == null) return;
       const metricValues = {};
@@ -166,8 +199,16 @@ function parseTopValuesResult(rawData = {}, categoryType) {
       }
       entries.push({ key: String(item.key), metricValues });
     });
+  } else if (Array.isArray(rawData) && rawData.length > 0 && rawData[0].group) {
+    // 格式 3：树形 drill-down [{ group: { argument, key }, groupPath }]
+    rawData.forEach((item) => {
+      if (!item || !item.group) return;
+      const argument = String(item.group.argument || '').trim();
+      if (!argument) return;
+      entries.push({ key: argument, metricValues: {} });
+    });
   } else if (rawData && typeof rawData === 'object') {
-    // 简化格式：{ "10.1.1.5": 156, ... }
+    // 格式 2：简化键值对 { "10.1.1.5": 156, ... }
     for (const [key, value] of Object.entries(rawData)) {
       if (key === 'type' || key === 'interval' || key === 'topValues') continue;
       const numVal = Number(value);
@@ -217,9 +258,15 @@ async function discover(api, event = {}, options = {}) {
 
   const { _meta, ...queryParams } = params;
 
+  const groupChain = `${_meta.groupType1}→${_meta.groupType2}→${_meta.groupType3}`;
+
   try {
     const rawData = await api.getJsonByParams('topValues', queryParams);
     const candidates = parseTopValuesResult(rawData, event.categoryType);
+
+    const bufferSeconds = Number.isFinite(Number(options.packetBufferSeconds))
+      ? Number(options.packetBufferSeconds)
+      : 120;
 
     if (candidates.length === 0) {
       return {
@@ -228,17 +275,13 @@ async function discover(api, event = {}, options = {}) {
         eventId: event.id,
         discoveryMethod: {
           type: 'topValues',
-          groupChain: _meta.chainConfig.description,
+          groupChain,
           topMetric: _meta.topMetric,
         },
         candidates: [],
-        bufferSeconds: options.packetBufferSeconds || 120,
+        bufferSeconds,
       };
     }
-
-    const bufferSeconds = Number.isFinite(Number(options.packetBufferSeconds))
-      ? Number(options.packetBufferSeconds)
-      : 120;
 
     return {
       available: true,
@@ -246,7 +289,7 @@ async function discover(api, event = {}, options = {}) {
       eventId: event.id,
       discoveryMethod: {
         type: 'topValues',
-        groupChain: _meta.chainConfig.description,
+        groupChain,
         topMetric: _meta.topMetric,
         topCount: queryParams.topCount,
       },
@@ -264,6 +307,55 @@ async function discover(api, event = {}, options = {}) {
       bufferSeconds,
     };
   } catch (error) {
+    // 查询失败时尝试不带 groupArgument1 重试（常见原因：对象在 NAPM 中不存在）
+    if (queryParams && queryParams.groupArgument1) {
+      try {
+        const fallbackParams = { ...queryParams };
+        delete fallbackParams.groupArgument1;
+        delete fallbackParams.groupType2;
+        delete fallbackParams.groupType3;
+        fallbackParams.numGroups = 1;
+        fallbackParams.start = event.start;
+        fallbackParams.end = event.end;
+        const fallbackData = await api.getJsonByParams('topValues', fallbackParams);
+        // 树形格式 [{ group: { argument, label }, groupPath }]，argument 是对象名
+        const existingObjects = [];
+        if (Array.isArray(fallbackData)) {
+          for (const item of fallbackData) {
+            if (item && item.group) {
+              existingObjects.push({
+                name: item.group.argument || '',
+                label: item.group.label || '',
+                key: item.group.key || '',
+              });
+            }
+          }
+        }
+        if (existingObjects.length > 0) {
+          const matched = existingObjects.filter(
+            (o) => o.name === event.group || o.label === event.group
+          );
+          return {
+            available: false,
+            reason: 'ALERT_INDIRECT_DISCOVERY_OBJECT_NOT_FOUND',
+            eventId: event.id,
+            discoveryMethod: {
+              type: 'topValues',
+              groupChain: `${_meta.groupType1}（对象 "${event.group}" 不存在）`,
+              topMetric: _meta.topMetric,
+            },
+            hint: matched.length > 0
+              ? `对象 "${event.group}" 匹配到 ${matched[0].name}(${matched[0].label})，但下钻查询失败`
+              : `对象 "${event.group}" 在 NAPM ${_meta.groupType1} 中不存在。现有对象: ${existingObjects.slice(0, 5).map((o) => o.name).join(', ')}`,
+            candidates: [],
+            bufferSeconds: options.packetBufferSeconds || 120,
+          };
+        }
+      } catch (_fallbackError) {
+        // fallback 也失败，忽略
+      }
+    }
+
     return {
       available: false,
       reason: 'ALERT_INDIRECT_DISCOVERY_FAILED',

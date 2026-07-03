@@ -1,184 +1,93 @@
 ---
 name: openclaw-napm-fault-diagnosis
-description: NAPM 故障诊断分析 Skill。按公司标准故障分析流程，分步查询 NAPM 系统指标，提供判断提示，支持流程跳转，最终生成结构化故障分析报告。覆盖网络慢/网络运行异常、B/S业务慢、C/S应用慢三类流程。
+description: 【路由优先】当用户要求对一个业务/Web应用做故障分析并出报告时，这是唯一正确的 Skill。覆盖所有"分析XXweb的故障""XXweb报错分析""业务故障报告""Web应用4xx/5xx错误诊断""HTTP错误分析+出报告"场景。三步标准化流程：4xx/5xx报错→页面错误Top20→状态码详情，一次调用直接生成 .docx 报告。不要用 openclaw-napm-query 来拼故障报告——本 Skill 内部已封装全部 NAPM 查询和报告生成。
 ---
 
 # NAPM 故障诊断分析 Skill
 
-## 核心原则
+## 🚨 路由规则（必读）
 
-**系统先查指标，指标只能说明趋势、对象和异常方向；当需要确认报文级原因时，再下载数据包进行深入分析。**
+**以下用户说法，必须路由到本 Skill，禁止使用 openclaw-napm-query：**
+
+| 用户说法 | 正确路由 |
+|---------|---------|
+| "分析一下 业务 XXweb 的故障情况" | → `napm-fault-diagnosis` |
+| "分析XXweb的故障，给出故障报告" | → `napm-fault-diagnosis` |
+| "XXweb报错分析" | → `napm-fault-diagnosis` |
+| "XX业务 HTTP 400/500 错误诊断" | → `napm-fault-diagnosis` |
+| "给XXweb出故障报告" | → `napm-fault-diagnosis` |
+
+**只有当用户问的是单个指标查询（如"哪个业务报错最多""XX业务的HTTP 400数量""最近24小时TPIO趋势"）时，才用 openclaw-napm-query。**
 
 ## Skill Boundary
 
-Use this skill for:
-- 用户反馈网络慢、全网卡、访问多个系统都慢
-- 用户反馈 Web 系统 4xx/5xx 报错、HTTP 错误、页面级错误分析
-- 用户反馈客户端软件慢、数据库访问慢、非 Web 应用慢
-- 需要按标准化流程逐步诊断网络或应用故障
-- 需要生成结构化的故障分析报告
+**必须用本 Skill：**
+- 用户要求分析某个业务/Web应用/应用的故障情况 → B/S 业务慢流程（`bs_app_slow`）
+- 用户要求分析客户端软件/数据库/非Web应用的慢问题 → C/S 应用慢流程（`cs_app_slow`）
+- 用户要求分析全网慢/带宽占满/流量异常 → 网络慢流程（`network_slow`）
+- 用户说"分析XX故障，给出报告"——**直接走标准化流程，不要拆成多次查询**
 
-Do not use this skill for:
-- 单一指标查询 → use `openclaw-napm-query`
-- 综述报告 → use `openclaw-napm-summary`
-- 巡检报告 → use `openclaw-napm-inspection`
-- 数据包下载和分析 → use `openclaw-napm-packet-analysis`
-- 报告文件生成 → use `openclaw-napm-report`
+**不要用本 Skill：**
+- 单个指标查询（如"哪个业务报错最多"、"最近24小时TPIO"） → `openclaw-napm-query`
+- 综述报告/日报/周报 → `openclaw-napm-summary`
+- 巡检报告 → `openclaw-napm-inspection`
+- 数据包下载和分析 → `openclaw-napm-packet-analysis`
+- 报告文件生成（本 Skill 已内置） → 无需额外调 `openclaw-napm-report`
 
 ## 支持的故障分析流程
 
-| 流程 | flowType | 适用场景 |
-|------|---------|---------|
-| 网络慢/网络运行异常 | `network_slow` | 全网慢、整体卡顿、带宽疑似被占满、流量异常 |
-| B/S 架构业务慢 | `bs_app_slow` | Web 页面 4xx/5xx 报错、页面错误分析、状态码详情 |
-| C/S 架构应用慢 | `cs_app_slow` | 客户端软件慢、数据库访问慢、固定端口应用慢 |
+| 流程 | flowType | 模式 | 步骤 | 适用场景 |
+|------|---------|------|:--:|---------|
+| B/S 业务慢 | `bs_app_slow` | 标准化单次调用 | 3 步 | Web 页面 4xx/5xx 报错、页面错误分析、状态码详情 |
+| C/S 应用慢 | `cs_app_slow` | 标准化单次调用 | 2 步 | 客户端软件慢、数据库访问慢 |
+| 网络慢 | `network_slow` | 交互式多轮 | 4 步 | 全网慢、带宽占满、流量异常 |
 
-## 分层分析原则
+---
 
-```
-场景识别 → 系统指标查询 → 指标判断（趋势+对象+方向）
-  ├─ 指标足够 → 输出初步结论
-  └─ 触发数据包条件 → 建议下载数据包 → 包级验证 → 输出根因
-```
+## B/S 业务慢标准化流程（3 步）
 
-### 系统指标能回答的
-- 整体流量趋势、方向异常
-- Top 异常对象（应用/主机/工作组/会话）
-- 丢包/延时/重传率
-- 连接成功/失败数和分布
-- 业务慢访问、HTTP 错误统计
-- 耗时阶段拆分（建连/服务器响应/数据传输/重传）
-
-### 数据包才能回答的（系统指标不能直接判断）
-- RST 来源和方向
-- SYN 无响应原因
-- Zero Window / Window Full / Duplicate ACK
-- ARP 源 MAC、ICMP 不可达详情
-- HTTP 请求/响应具体内容
-
-### 数据包触发条件
-以下任一条件满足时，系统会提示"建议下载数据包"：
-- 重传率或包重传率异常高
-- 失败数/失败率异常高
-- 每秒数据包数异常高但字节数不高
-- 连接建立时间异常高
-- 系统指标无法区分应用慢还是网络慢
-
-## 调用模式
-
-### 标准化流程（B/S 业务慢、C/S 应用慢）— 单次调用
-
-标准化流程不需要多轮对话。OpenClaw 一次调用，系统自动执行全部步骤并返回报告。
+**这是最常用的流程。** 报告模板 `napm_bs_fault_diagnosis_v2`，封面→目录→§8 结构。
 
 ```
-OpenClaw 调用 run({ description, flowType, target, timeRange })
-  → 自动执行 Step1 → Step2 → ... → StepN
-  → 返回 { ok, reportReady, reportData, steps }
-  → OpenClaw 调 openclaw-napm-report 生成 docx
+Step 1 — 查询业务基本情况（averageValues，1 次 API 调用）
+  指标: PGNPGE, PGTME, PGNSLPGE, PGSLPCT, PGHTTP400, PGHTTP500, PGBYTI, PGBYTO
+  表格: 页面访问数 | HTTP 400 | 400 占比 | HTTP 500 | 500 占比
+
+Step 2 — 页面错误分析 Top 20（topValues 三层钻取，1 次 API 调用）
+  路径: WebApplication → PageFamilies → PageFamily
+  指标: PGNPGE, PGNOBJE, PGHTTP200, PGHTTP300, PGHTTP400, PGHTTP500
+  排序: PGHTTP500, Top 20
+  表格: 页面路径 | 访问数 | 响应数 | 200 | 300 | 400 | 500
+
+Step 3 — 页面状态码详情（pageViews，对 Step2 每个页面 1 次 API 调用）
+  参数: pageFamilyId（从 Step2 的 groupPath 中正则提取 /page\s+(\d+)/i）
+  表格: 页面路径 | 访问数 | 200 | 300 | 400 | 500 | 异常判断
 ```
 
-### 交互式流程（网络慢/网络运行异常）— 多轮调用
+### 报告结构（§8）
 
-网络慢流程需要用户在步骤间做判断和跳转决策。
+封面 → 目录 → 1 基本信息 → 2 分析过程（2.1/2.2/2.3 每步含表格+判断提示）→ 3 证据项 → 4 根因判断（条件叙述，AND/OR）→ 5 处置建议 → 6 验证方式
 
-```
-Turn 1: start({ description, timeRange })
-  → 返回 { ok, sessionJson, step: { data, hints, nextOptions } }
-  → OpenClaw 保存 sessionJson
+---
 
-Turn 2: start({ sessionJson, action: "继续下一步" })
-  → 返回 { ok, sessionJson, step: {...} }
-  → OpenClaw 更新 sessionJson
+## 调用方式
 
-Turn N: start({ sessionJson, action: "生成报告" })
-  → 返回 { ok, reportReady, reportData }
-```
-
-## Input Contract
-
-### 标准化流程（B/S、C/S）— run()
+**标准化流程（B/S、C/S）— 单次调用，一次拿到 .docx 文件路径：**
 
 ```json
 {
-  "description": "238web 页面大量 HTTP 400/500 报错",
+  "description": "回溯238web 页面大量 HTTP 400/500 报错",
   "flowType": "bs_app_slow",
   "target": {
     "groupType": "WebApplication",
-    "groupArgument": "238web",
-    "groupLabel": "238web"
+    "groupArgument": "回溯238web",
+    "groupLabel": "回溯238web"
   },
   "timeRange": {
-    "faultWindow": { "start": 1750000000, "end": 1750086400 }
+    "faultWindow": { "start": 1782805440, "end": 1782891840 }
   }
 }
 ```
 
-### 交互式流程（网络慢）— start()
-
-首次启动：
-```json
-{
-  "description": "全网慢，昨天下午2点到4点",
-  "timeRange": {
-    "faultWindow": { "start": 1780000000, "end": 1780007200 }
-  }
-}
-```
-
-继续/跳转/报告：
-```json
-{
-  "sessionJson": "<上一轮返回的>",
-  "action": "继续下一步"
-}
-```
-
-## Output Contract
-
-### 标准化流程 — run() 返回
-
-```json
-{
-  "ok": true,
-  "reportReady": true,
-  "reportData": {
-    "reportType": "diagnostic_report",
-    "templateId": "napm_fault_diagnosis_v2"
-  },
-  "flowType": "bs_app_slow",
-  "steps": [
-    {
-      "stepId": "step1_4xx_5xx_overview",
-      "description": "第一步：查询业务 4xx/5xx 报错情况",
-      "hints": [
-        { "type": "judgment", "text": "HTTP 400和500同时升高，可能存在应用层全面异常" }
-      ],
-      "analysisFlags": { "http400Up": true, "http500Up": true }
-    }
-  ]
-}
-```
-
-### 交互式流程 — start() 返回
-
-```json
-{
-  "ok": true,
-  "sessionJson": "<序列化后的 session，OpenClaw 必须透传>",
-  "step": {
-    "stepId": "step1_traffic_trend",
-    "description": "第一步：查看总流量趋势",
-    "data": {...},
-    "hints": [...],
-    "nextOptions": [...]
-  }
-}
-```
-
-## Environment Variables
-
-复用 openclaw-napm-summary 的环境变量：
-- `NETINSIDE_HOST` — NAPM API base URL
-- `NETINSIDE_USERNAME` — NAPM username
-- `NETINSIDE_PASSWORD` — NAPM password
-- `NETINSIDE_TLS_INSECURE` — Skip TLS verification
+**返回**：`{ ok: true, reportReady: true, filePath: "...", fileName: "...", downloadUrl: "..." }`
+文件已内置生成，不需要再调 `napm-report-export`。

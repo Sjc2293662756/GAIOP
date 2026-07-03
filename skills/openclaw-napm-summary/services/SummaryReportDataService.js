@@ -135,7 +135,7 @@ class SummaryReportDataService {
     return {
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'diagnostic_report',
-      templateId: 'napm_fault_diagnosis_v1',
+      templateId: 'napm_bs_fault_diagnosis_v2',
       format: this._normalizeFormat(options.format || result.format || 'docx'),
       defaultFormat: 'docx',
       title,

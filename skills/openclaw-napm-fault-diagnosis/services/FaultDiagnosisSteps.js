@@ -67,6 +67,15 @@ function evaluateHintCondition(condition = '', data = {}) {
   return false;
 }
 
+/**
+ * Resolve NAPM group argument from target object.
+ * Uses groupArgument first, falls back to groupLabel (OpenClaw may only pass label).
+ */
+function resolveGroupArg(target) {
+  if (!target || !isPlainObject(target)) return '';
+  return target.groupArgument || target.groupLabel || '';
+}
+
 // ── NAPM data extraction helpers ──────────────────────────────────────
 
 /**
@@ -125,16 +134,38 @@ function max(arr) {
  * Extract topValues items as a flat array of { key, keyLabel, ...metricValues }.
  */
 function extractTopItems(data) {
-  if (!isPlainObject(data)) return [];
-  const items = asArray(data.topValues);
-  return items.map((item) => {
-    const result = { key: item.key || '-', keyLabel: item.keyLabel || item.key || '-' };
-    const mvList = asArray(item.metricValues);
-    for (const mv of mvList) {
-      result[mv.metric?.id || 'unknown'] = Number(mv.value) || 0;
-    }
-    return result;
-  });
+  // Format A: { topValues: [...] }
+  if (isPlainObject(data) && Array.isArray(data.topValues)) {
+    return data.topValues.map((item) => flattenMetricItem(item));
+  }
+  // Format B: raw array of metric items
+  if (Array.isArray(data) && data.length > 0 && Array.isArray(data[0]?.metricValues)) {
+    return data.map((item) => flattenMetricItem(item));
+  }
+  return [];
+}
+
+/**
+ * Flatten a single NAPM metric item into { key, keyLabel, METRIC_ID: value, ... }.
+ * Handles multiple key sources: item.key, item.group.argument, item.groupPath.
+ */
+function flattenMetricItem(item) {
+  // Resolve key/label from multiple possible sources
+  let key = item.key || item.group?.argument || '';
+  let keyLabel = item.keyLabel || item.group?.argument || '';
+  // For PageFamily items, parse key from groupPath if not found
+  if (!key && item.groupPath) {
+    const match = String(item.groupPath).match(/page\s+(\d+)/i);
+    if (match) { key = match[1]; keyLabel = match[1]; }
+  }
+  if (!keyLabel && key) keyLabel = key;
+
+  const result = { key: String(key || '-'), keyLabel: String(keyLabel || key || '-') };
+  const mvList = asArray(item.metricValues);
+  for (const mv of mvList) {
+    result[mv.metric?.id || 'unknown'] = Number(mv.value) || 0;
+  }
+  return result;
 }
 
 // ── Step definitions ────────────────────────────────────────────────
@@ -336,31 +367,23 @@ class FaultDiagnosisSteps {
   // ═══════════════════════════════════════════════════════════════
 
   _bsStep1(ctx = {}) {
-    const { faultStart, faultEnd, target, granularity } = ctx;
-    const groupArg = target?.groupArgument || '';
+    const { faultStart, faultEnd, target } = ctx;
+    const groupArg = resolveGroupArg(target);
+    const groupType = target?.groupType || 'WebApplication';
     const groups = groupArg
-      ? [{ type: 'WebApplication', argument: groupArg }]
-      : [{ type: 'WebApplication' }];
+      ? [{ type: groupType, argument: groupArg }]
+      : [{ type: groupType }];
 
     return {
       label: 'step1_4xx_5xx_overview',
       description: '第一步：查询业务 4xx/5xx 报错情况',
       queries: [
         {
-          label: 'httpErrorsTrend',
-          fn: () => this.client.getTimeValues(
+          label: 'businessOverview',
+          fn: () => this.client.getAverageValues(
             faultStart, faultEnd,
-            'PGHTTP400,PGHTTP500,PGBYTI,PGBYTO',
-            groups, granularity || 60
-          )
-        },
-        {
-          label: 'httpErrorsTop',
-          fn: () => this.client.getTopValues(
-            faultStart, faultEnd,
-            'PGHTTP400,PGHTTP400PCT,PGHTTP500,PGHTTP500PCT',
-            'PGHTTP500', 10,
-            [{ type: 'WebApplication' }]
+            'PGNPGE,PGTME,PGNSLPGE,PGSLPCT,PGHTTP400,PGHTTP500,PGBYTI,PGBYTO',
+            groups
           )
         }
       ]
@@ -369,70 +392,34 @@ class FaultDiagnosisSteps {
 
   _analyzeBsStep1(raw = {}) {
     const flags = {};
+    const data = raw.businessOverview || {};
 
-    // ── Analyze timeValues (httpErrorsTrend) ──
-    if (raw.httpErrorsTrend) {
-      flags.hasErrorTrend = true;
-      const values400 = extractTimeSeries(raw.httpErrorsTrend, 'PGHTTP400');
-      const values500 = extractTimeSeries(raw.httpErrorsTrend, 'PGHTTP500');
-
-      const total400 = sum(values400);
-      const total500 = sum(values500);
-      const peak400 = max(values400);
-      const peak500 = max(values500);
-      const avg400 = avg(values400);
-      const avg500 = avg(values500);
-
-      // Store computed values for the report
-      flags._total400 = total400;
-      flags._total500 = total500;
-      flags._peak400 = peak400;
-      flags._peak500 = peak500;
-      flags._avg400 = Math.round(avg400);
-      flags._avg500 = Math.round(avg500);
-
-      // Judgment: any 400 with avg > 10/point → elevated
-      if (avg400 > 10 || peak400 > 100) {
-        flags.http400Up = true;
-      }
-      // Judgment: any 500 > 0 → elevated (500s are always concerning)
-      if (total500 > 0 || peak500 > 0) {
-        flags.http500Up = true;
-      }
-      // Judgment: both elevated
-      if (flags.http400Up && flags.http500Up) {
-        flags.http400And500Up = true;
-      }
-      // Judgment: both normal
-      if (!flags.http400Up && !flags.http500Up) {
-        flags.errorNormal = true;
-      }
+    if (!isPlainObject(data) || Object.keys(data).length === 0) {
+      flags.errorNormal = true;
+      return flags;
     }
 
-    // ── Analyze topValues (httpErrorsTop) ──
-    if (raw.httpErrorsTop) {
-      flags.hasErrorTop = true;
-      const topItems = extractTopItems(raw.httpErrorsTop);
-      let max400Pct = 0;
-      let max500Pct = 0;
-      for (const item of topItems) {
-        const pct400 = item.PGHTTP400PCT || 0;
-        const pct500 = item.PGHTTP500PCT || 0;
-        if (pct400 > max400Pct) max400Pct = pct400;
-        if (pct500 > max500Pct) max500Pct = pct500;
-      }
+    flags.hasOverview = true;
+    const total400 = Number(data.PGHTTP400) || 0;
+    const total500 = Number(data.PGHTTP500) || 0;
+    const totalVisits = Number(data.PGNPGE) || 1;
 
-      // If top item has >30% 400 rate → 400 is dominant
-      if (max400Pct > 30 && !flags.http400Up) flags.http400Up = true;
-      // If top item has >5% 500 rate → 500 is dominant
-      if (max500Pct > 5 && !flags.http500Up) flags.http500Up = true;
+    flags._total400 = total400;
+    flags._total500 = total500;
+    flags._totalVisits = totalVisits;
+    flags._slowRate = Number(data.PGSLPCT) || 0;
 
-      // Store for report
-      flags._topErrorItems = topItems.slice(0, 5);
+    // Simple threshold: any 400 > 50 or 400 rate > 5% → elevated
+    if (total400 > 50 || (totalVisits > 0 && total400 / totalVisits > 0.05)) {
+      flags.http400Up = true;
     }
-
-    // Fallback: if no data at all
-    if (!flags.hasErrorTrend && !flags.hasErrorTop) {
+    if (total500 > 0) {
+      flags.http500Up = true;
+    }
+    if (flags.http400Up && flags.http500Up) {
+      flags.http400And500Up = true;
+    }
+    if (!flags.http400Up && !flags.http500Up) {
       flags.errorNormal = true;
     }
 
@@ -444,11 +431,12 @@ class FaultDiagnosisSteps {
   // ═══════════════════════════════════════════════════════════════
 
   _bsStep2(ctx = {}) {
-    const { faultStart, faultEnd, target } = ctx;
-    const groupArg = target?.groupArgument || '';
-    const webAppGroup = groupArg
-      ? [{ type: 'WebApplication', argument: groupArg }]
-      : [{ type: 'WebApplication' }];
+    const { faultStart, faultEnd, target, granularity } = ctx;
+    const groupArg = resolveGroupArg(target);
+    const groupType = target?.groupType || 'WebApplication';
+    const baseGroup = groupArg
+      ? [{ type: groupType, argument: groupArg }]
+      : [{ type: groupType }];
 
     return {
       label: 'step2_page_error_analysis',
@@ -458,9 +446,9 @@ class FaultDiagnosisSteps {
           label: 'pageErrorAnalysis',
           fn: () => this.client.getTopValues(
             faultStart, faultEnd,
-            'PGNPGE,PGNOBJE,PGHTTP200,PGHTTP300,PGHTTP400,PGHTTP500,PGSLPCT,PGTME',
-            'PGNPGE', 20,
-            [...webAppGroup, { type: 'PageFamily' }]
+            'PGNPGE,PGNOBJE,PGHTTP200,PGHTTP300,PGHTTP400,PGHTTP500',
+            'PGHTTP500', 20,
+            [...baseGroup, { type: 'PageFamilies' }, { type: 'PageFamily' }]
           )
         }
       ]
@@ -564,63 +552,100 @@ class FaultDiagnosisSteps {
   // ═══════════════════════════════════════════════════════════════
 
   _bsStep3(ctx = {}) {
-    // Step 3 does not make new NAPM queries — it reuses Step 2's pageErrorAnalysis data
-    // to present each page's HTTP status code detail in table form.
+    const { faultStart, faultEnd } = ctx;
+    const prevRaw = ctx._prevStepRawData || {};
+    const pageData = prevRaw.pageErrorAnalysis;
+    let topItems = [];
+    if (Array.isArray(pageData?.topValues)) topItems = pageData.topValues;
+    else if (Array.isArray(pageData)) topItems = pageData;
+
+    const queries = [];
+    for (const item of topItems.slice(0, 20)) {
+      // pageFamilyId from groupPath: ">pages>page 8573230/http://..."
+      let pageFamilyId = '';
+      if (item.groupPath) {
+        const m = String(item.groupPath).match(/page\s+(\d+)/i);
+        if (m) pageFamilyId = m[1];
+      }
+      if (!pageFamilyId) pageFamilyId = item.group?.argument || item.key || '';
+      if (!pageFamilyId) continue;
+
+      queries.push({
+        label: `pageDetail_${pageFamilyId}`,
+        pageKey: item.keyLabel || item.group?.argument || pageFamilyId,
+        pageId: pageFamilyId,
+        fn: () => this.client.request('pageViews', {
+          start: faultStart,
+          end: faultEnd,
+          pageFamilyId
+        })
+      });
+    }
+
     return {
       label: 'step3_page_status_detail',
-      description: '第三步：对每个页面进行状态码详情分析（基于第二步数据展开）',
-      queries: []
+      description: `第三步：逐页访问明细分析（共 ${queries.length} 个页面）`,
+      queries
     };
   }
 
   _analyzeBsStep3(raw = {}) {
-    const flags = { isPresentationStep: true };
+    const flags = { hasPageViewData: true };
 
-    // Step 3 reuses Step 2 data. In a full implementation,
-    // FaultDiagnosisService would pass Step 2's rawData into Step 3's context.
-    // For now, if raw is empty, the report builder references the previous step's data.
+    // Count pages with pageViews data
+    const pageDetailKeys = Object.keys(raw).filter((k) => k.startsWith('pageDetail_'));
+    flags._pageDetailCount = pageDetailKeys.length;
 
-    // If we have data (from context injection), do page-level judgment
-    if (raw.pageErrorAnalysis) {
-      const pages = extractTopItems(raw.pageErrorAnalysis);
+    if (pageDetailKeys.length === 0) {
+      flags.isPresentationStep = true;
+      return flags;
+    }
 
-      let pagesWith500 = 0;
-      let pagesWith400 = 0;
+    // Analyze each page's pageViews data
+    let pagesWith500 = 0;
+    let pagesWith400 = 0;
+    let totalPages = 0;
 
-      for (const page of pages) {
-        if ((page.PGHTTP500 || 0) > 0) pagesWith500++;
-        if ((page.PGHTTP400 || 0) > 0) pagesWith400++;
-      }
+    for (const key of pageDetailKeys) {
+      const pageData = raw[key];
+      if (!pageData) continue;
+      totalPages++;
 
-      // Single page carries all errors
-      if (pagesWith500 === 1 && pagesWith400 === 1 && pages.length > 5) {
-        flags.singlePageAllErrors = true;
-      }
+      // pageViews response may contain status code distribution
+      const has500 = this._pageHasStatusCode(pageData, '500');
+      const has400 = this._pageHasStatusCode(pageData, '400');
 
-      // Multiple pages with 500
-      if (pagesWith500 > 3) {
-        flags.multiPage500 = true;
-      }
+      if (has500) pagesWith500++;
+      if (has400) pagesWith400++;
+    }
 
-      // Multiple pages with 400
-      if (pagesWith400 > 5) {
-        flags.multiPage400 = true;
-      }
-
-      // Low-visit pages with high error rate
-      for (const page of pages) {
-        const visits = page.PGNPGE || 0;
-        const errors = (page.PGHTTP400 || 0) + (page.PGHTTP500 || 0);
-        if (visits > 0 && visits < 50 && errors > visits * 0.3) {
-          flags.accessVsErrorMismatch = true;
-          break;
-        }
-      }
-
-      flags._pageDetails = pages;
+    if (totalPages === 1 && pagesWith500 + pagesWith400 > 0 && totalPages > 0) {
+      flags.singlePageAllErrors = true;
+    }
+    if (pagesWith500 > 2) {
+      flags.multiPage500 = true;
+    }
+    if (pagesWith400 > 4) {
+      flags.multiPage400 = true;
     }
 
     return flags;
+  }
+
+  /**
+   * Check if a pageViews response contains a specific HTTP status code.
+   */
+  _pageHasStatusCode(pageData, statusCode) {
+    if (!pageData) return false;
+    // pageViews response format: may contain rows with status code field
+    const rows = Array.isArray(pageData) ? pageData
+      : (Array.isArray(pageData?.rows) ? pageData.rows
+        : (Array.isArray(pageData?.data) ? pageData.data : []));
+    for (const row of rows) {
+      const code = String(row?.statusCode || row?.status || row?.code || '');
+      if (code.startsWith(statusCode)) return true;
+    }
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════

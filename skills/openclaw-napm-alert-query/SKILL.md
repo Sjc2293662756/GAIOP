@@ -82,7 +82,7 @@ OpenClaw user request
       "includeMetricSeries": false,
       "packetHandoff": true,
       "discoveryEnabled": true,
-      "discoveryTopCount": 10,
+      "discoveryTopCount": 5,
       "packetBufferSeconds": 120
     }
   }
@@ -101,21 +101,25 @@ Supported modes:
 
 ## Indirect Packet Discovery（间接数据包发现）
 
-当告警的 `categoryType` 属于业务(68)/应用(25)/工作组(14)/页面(63)时，告警的 `group` 是业务名而非 IP，无法直接下载数据包。此时 skill 自动执行 **indirect packet discovery**：
+当告警的 `categoryType` 在下表中时，告警的 `group` 是对象名而非 IP，无法直接下载数据包。此时 skill 自动执行 **indirect packet discovery**：
 
 1. 根据 `categoryType` 选择下钻路径
-2. 用告警的 trigger metric 作为排序指标
-3. 调用 `topValues` 查询告警时段内嫌疑 IP 会话 TopN
+2. 用告警的 trigger metric 作为排序指标（空时用默认 topMetric）
+3. 调用 `topValues` 查询告警时段内嫌疑 IP 会话 Top5
 4. 返回每个嫌疑 IP 的数据包下载链接（告警时间 ± bufferSeconds）
 
-### 下钻路径映射
+### 下钻路径映射（完整）
 
-| categoryType | group chain | 默认 topMetric | 结果格式 |
-|---|---|---|---|
-| 68 (WebApplication) | WebApplication→ClientIPs→IPAddress | PGNPGE | 单个 IP |
-| 25 (Application) | DefinedApp→IPConversations→IPConversation | TPIO | IP\|IP |
-| 14 (BusinessGroup) | BusinessGroup→IPConversations→IPConversation | TPIO | IP\|IP |
-| 63 (PageFamily) | PageFamily→ClientIPs→IPAddress | PGNPGE | 单个 IP |
+| categoryType | 对象类型 | group chain | 默认 topMetric | 结果格式 |
+|---|---|---|---|---|
+| 68 | WebApplication | WebApplication→ClientIPs→IPAddress | PGNPGE | 单个 IP |
+| 63 | PageFamily | PageFamily→ClientIPs→IPAddress | PGNPGE | 单个 IP |
+| 51 | DefinedApp (原OtherApp) | DefinedApp→IPConversations→IPConversation | TPIO | IP\|IP |
+| 25 | Application/DefinedApp | DefinedApp→IPConversations→IPConversation | TPIO | IP\|IP |
+| 56 | OtherApp | OtherApp→IPConversations→IPConversation | TPIO | IP\|IP |
+| 14 | BusinessGroup | BusinessGroup→IPConversations→IPConversation | TPIO | IP\|IP |
+| 27 | ConnectedBusinessGroup | ConnectedBusinessGroup→IPConversations→IPConversation | TPIO | IP\|IP |
+| 29 | BusinessGroupLink | BusinessGroupLink→IPConversations→IPConversation | TPIO | IP\|IP |
 
 ### 输出结构
 
@@ -128,7 +132,7 @@ Supported modes:
     "type": "topValues",
     "groupChain": "WebApplication→ClientIPs→IPAddress",
     "topMetric": "PGNPGE",
-    "topCount": 10
+    "topCount": 5
   },
   "candidates": [
     {
@@ -136,7 +140,7 @@ Supported modes:
       "ip": "10.1.1.5",
       "metricValue": { "PGNPGE": 1560 },
       "suggestedPacketQuery": {
-        "mode": "build_url_only",
+        "mode": "preview_download_analyze",
         "criteria": {
           "ips": ["10.1.1.5"],
           "start": 1782443940,
@@ -154,7 +158,7 @@ Supported modes:
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `options.discoveryEnabled` | `true` | 间接发现子开关 |
-| `options.discoveryTopCount` | `10` | 返回的 TopN 嫌疑 IP 数量 |
+| `options.discoveryTopCount` | `5` | 返回的 TopN 嫌疑 IP 数量 |
 | `options.packetBufferSeconds` | `120` | 数据包下载的前后扩展秒数 |
 
 ## CLI

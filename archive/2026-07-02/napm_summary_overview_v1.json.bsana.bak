@@ -80,7 +80,6 @@
       "id": "overview_scope_target",
       "type": "paragraphs",
       "scopes": ["webApplication", "application", "businessGroup", "network"],
-      "targetModes": ["withTarget"],
       "paragraphs": [
         "聚焦对象：{{scope.target.groupLabel}}（{{scope.target.groupType}}）"
       ]
@@ -222,224 +221,6 @@
       "type": "narrative",
       "ruleGroup": "alert.conclusion",
       "mode": "first"
-    },
-
-    {
-      "id": "webapp_target_access_heading",
-      "type": "heading",
-      "title": "3 单个业务访问分析",
-      "level": 1,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_access_requirement",
-      "type": "paragraphs",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "paragraphs": [
-        "以下内容按照前端单个业务分析（BsAna）口径生成，覆盖访问概要、访问趋势、节点分布、资源使用、客户端响应和 HTTP 响应码统计。"
-      ]
-    },
-    {
-      "id": "webapp_target_overview_heading",
-      "type": "heading",
-      "title": "业务分析概要",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_overview_table",
-      "type": "table",
-      "rowBuilder": "businessTargetOverview",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "columns": [
-        "指标",
-        "值"
-      ]
-    },
-    {
-      "id": "webapp_target_access_slow_heading",
-      "type": "heading",
-      "title": "访问量和慢业务趋势",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_access_slow_chart",
-      "type": "chartSlot",
-      "title": "访问量和慢业务趋势图",
-      "chartId": "webapp.target.accessSlowTrend",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_node_heading",
-      "type": "heading",
-      "title": "不同节点访问量和慢业务分布",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_node_table",
-      "type": "table",
-      "rowBuilder": "businessTargetNodeDistribution",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "caption": "Top 5 业务组节点",
-      "columns": [
-        "序号",
-        "业务组节点",
-        "访问数",
-        "慢访问数"
-      ]
-    },
-
-    {
-      "id": "webapp_target_resource_heading",
-      "type": "heading",
-      "title": "4 单个业务资源与 HTTP 分析",
-      "level": 1,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_resource_requirement",
-      "type": "paragraphs",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "paragraphs": [
-        "以下内容展示该业务的资源使用情况、请求/响应流量变化、慢客户端分布以及 HTTP 响应码与错误客户端统计。"
-      ]
-    },
-    {
-      "id": "webapp_target_resource_summary_heading",
-      "type": "heading",
-      "title": "业务资源使用统计",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_resource_summary_table",
-      "type": "table",
-      "rowBuilder": "businessTargetResourceSummary",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "columns": [
-        "指标",
-        "值"
-      ]
-    },
-    {
-      "id": "webapp_target_request_response_heading",
-      "type": "heading",
-      "title": "请求/响应流量趋势",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_request_response_chart",
-      "type": "chartSlot",
-      "title": "请求/响应流量趋势图",
-      "chartId": "webapp.target.requestResponseTrend",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_slow_clients_heading",
-      "type": "heading",
-      "title": "最慢客户端 Top N",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_slow_clients_table",
-      "type": "table",
-      "rowBuilder": "businessTargetSlowClients",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "caption": "Top 5 最慢客户端",
-      "columns": [
-        "序号",
-        "客户端IP",
-        "响应时间(秒)"
-      ]
-    },
-    {
-      "id": "webapp_target_http_code_heading",
-      "type": "heading",
-      "title": "HTTP 响应代码统计",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_http_code_table",
-      "type": "table",
-      "rowBuilder": "businessTargetHttpCodeSummary",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "columns": [
-        "响应代码",
-        "数量"
-      ]
-    },
-    {
-      "id": "webapp_target_http400_heading",
-      "type": "heading",
-      "title": "400 错误客户端 Top N",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_http400_table",
-      "type": "table",
-      "rowBuilder": "businessTargetHttp400Clients",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "caption": "Top 5 HTTP 400 客户端",
-      "columns": [
-        "序号",
-        "客户端IP",
-        "数量"
-      ]
-    },
-    {
-      "id": "webapp_target_http500_heading",
-      "type": "heading",
-      "title": "500 错误客户端 Top N",
-      "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
-    },
-    {
-      "id": "webapp_target_http500_table",
-      "type": "table",
-      "rowBuilder": "businessTargetHttp500Clients",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"],
-      "caption": "Top 5 HTTP 500 客户端",
-      "columns": [
-        "序号",
-        "客户端IP",
-        "数量"
-      ]
-    },
-    {
-      "id": "webapp_target_narrative",
-      "type": "narrative",
-      "ruleGroup": "business.target.conclusion",
-      "mode": "first",
-      "scopes": ["webApplication"],
-      "targetModes": ["withTarget"]
     },
 
     {
@@ -613,7 +394,7 @@
       "type": "narrative",
       "ruleGroup": "traffic.conclusion",
       "mode": "first",
-      "scopes": ["global", "network", "application", "businessGroup"]
+      "scopes": ["global", "network", "webApplication", "application", "businessGroup"]
     },
 
     {
@@ -621,14 +402,12 @@
       "type": "heading",
       "title": "4 业务性能总览",
       "level": 1,
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
     {
       "id": "business_requirement",
       "type": "paragraphs",
       "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"],
       "paragraphs": [
         "以下数据展示报告周期内业务性能状况，重点关注慢访问和 HTTP 错误。"
       ]
@@ -638,47 +417,41 @@
       "type": "heading",
       "title": "慢访问状况",
       "level": 2,
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
     {
       "id": "business_slow_chart",
       "type": "chartSlot",
       "title": "慢访问 Top",
       "chartId": "business.slowAccess",
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
     {
       "id": "business_error_heading",
       "type": "heading",
       "title": "HTTP 错误状况",
       "level": 2,
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
     {
       "id": "business_error_chart",
       "type": "chartSlot",
       "title": "HTTP 错误 Top",
       "chartId": "business.httpErrors",
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
     {
       "id": "business_page_traffic_heading",
       "type": "heading",
       "title": "页面流量排行",
       "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["webApplication"]
     },
     {
       "id": "business_page_traffic_table",
       "type": "table",
       "rowBuilder": "businessPageTraffic",
       "scopes": ["webApplication"],
-      "targetModes": ["withoutTarget"],
       "caption": "Top 10 页面流量",
       "columns": [
         "序号",
@@ -692,15 +465,13 @@
       "type": "heading",
       "title": "页面访问量排行",
       "level": 2,
-      "scopes": ["webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["webApplication"]
     },
     {
       "id": "business_page_views_table",
       "type": "table",
       "rowBuilder": "businessPageViews",
       "scopes": ["webApplication"],
-      "targetModes": ["withoutTarget"],
       "caption": "Top 10 页面访问量",
       "columns": [
         "序号",
@@ -713,8 +484,7 @@
       "type": "narrative",
       "ruleGroup": "business.conclusion",
       "mode": "first",
-      "scopes": ["global", "webApplication"],
-      "targetModes": ["withoutTarget"]
+      "scopes": ["global", "webApplication"]
     },
 
     {

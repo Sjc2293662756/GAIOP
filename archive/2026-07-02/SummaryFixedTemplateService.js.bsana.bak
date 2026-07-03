@@ -54,26 +54,6 @@ function scopeMatches(sectionScopes, scopeType) {
   return list.includes(resolved);
 }
 
-function hasScopeTarget(scope = {}) {
-  return Boolean(scope?.target?.groupType && scope?.target?.groupArgument);
-}
-
-function targetModeMatches(targetModes, scope = {}) {
-  if (!targetModes) return true;
-  const list = Array.isArray(targetModes) ? targetModes : [];
-  if (list.length === 0) return true;
-  const hasTarget = hasScopeTarget(scope);
-  if (list.includes('*')) return true;
-  if (list.includes('withTarget') && hasTarget) return true;
-  if (list.includes('withoutTarget') && !hasTarget) return true;
-  return false;
-}
-
-function sectionMatches(section = {}, context = {}) {
-  return scopeMatches(section.scopes, context.scope?.type || 'global')
-    && targetModeMatches(section.targetModes, context.scope || {});
-}
-
 // ── narrative condition evaluation (with AND/OR support) ─────────
 
 function existsValue(value) {
@@ -139,10 +119,7 @@ function buildNarrativeTexts(context = {}, rules = {}, groupId = '', mode = 'fir
   if (group.length === 0) return [];
 
   // Filter rules by scope
-  const scopedRules = group.filter((rule) =>
-    scopeMatches(rule.scopes, scopeType)
-    && targetModeMatches(rule.targetModes, context.scope || {})
-  );
+  const scopedRules = group.filter((rule) => scopeMatches(rule.scopes, scopeType));
 
   if (mode === 'all') {
     const matches = scopedRules
@@ -181,8 +158,6 @@ function buildSummaryDeviceTableRows(deviceInfo = {}) {
 function buildHealthSummaryRows(summary = {}, scope = {}) {
   const rows = [];
   const scopeType = scope.type || 'global';
-  const scopedTarget = hasScopeTarget(scope);
-  const singleBusiness = summary.singleBusinessAnalysis || {};
 
   const alertTotal = summary.alertSummary?.total ?? 0;
   const alertCritical = summary.alertSummary?.critical ?? 0;
@@ -207,21 +182,7 @@ function buildHealthSummaryRows(summary = {}, scope = {}) {
     }
   }
 
-  if (scopeType === 'webApplication' && scopedTarget) {
-    const slowVisitCount = singleBusiness.overview?.slowVisitCount ?? 0;
-    const slowVisitPct = Number(singleBusiness.overview?.slowVisitPct ?? 0);
-    const http400 = singleBusiness.httpCodeSummary?.http400 ?? 0;
-    const http500 = singleBusiness.httpCodeSummary?.http500 ?? 0;
-    if (slowVisitCount > 0 || http400 > 0 || http500 > 0) {
-      const issues = [];
-      if (slowVisitCount > 0) issues.push(`慢访问 ${slowVisitCount} 次（${slowVisitPct.toFixed(2)}%）`);
-      if (http400 > 0) issues.push(`HTTP 400 ${http400} 次`);
-      if (http500 > 0) issues.push(`HTTP 500 ${http500} 次`);
-      rows.push(['业务性能', '需关注', issues.join('，')]);
-    } else {
-      rows.push(['业务性能', '正常', '未发现明显慢访问或 HTTP 错误']);
-    }
-  } else if (scopeType === 'global' || scopeType === 'webApplication') {
+  if (scopeType === 'global' || scopeType === 'webApplication') {
     const slowCount = asArray(summary.businessSummary?.slowAccess).length;
     const errorCount = asArray(summary.businessSummary?.httpErrors).length;
     if (slowCount > 0 || errorCount > 0) {
@@ -336,46 +297,6 @@ function buildAppConnectionsRows(data = []) {
   ]);
 }
 
-// ── Targeted business analysis row builders ────────────────────
-
-function buildBusinessTargetOverview(data = {}) {
-  if (!data || !Object.keys(data).length) return [['暂无数据', '-']];
-  const labelMap = { PGNPGE: '访问数(个)', PGNSLPGE: '慢访问数(个)', PGSLPCT: '慢访问百分比(%)', PGSLRT: '慢访问率(个/分钟)', PGTME: '响应时间(秒)' };
-  return Object.entries(data).map(([key, value]) => [labelMap[key] || key, formatNumber(value)]);
-}
-
-function buildBusinessTargetNodeDist(data = []) {
-  return asArray(data).map((row, index) => [index + 1, row.nodeName || '-', row.pageViews != null ? String(row.pageViews) : '-', row.slowViews != null ? String(row.slowViews) : '-']);
-}
-
-function buildBusinessTargetResource(data = {}) {
-  if (!data || !Object.keys(data).length) return [['暂无数据', '-']];
-  const labelMap = { PGBYTI: '请求流量(MB)', PGSIZEI: '请求大小(KB)', PGSIZEO: '页面大小(KB)', PGBYTO: '页面流量(MB)', PGNOBJE: 'HTTP响应数(个)' };
-  return Object.entries(data).map(([key, value]) => [labelMap[key] || key, formatNumber(value)]);
-}
-
-function buildBusinessTargetSlowClients(data = []) {
-  return asArray(data).map((row, index) => [index + 1, row.clientIp || '-', formatNumber(row.avgDelayMs)]);
-}
-
-function buildBusinessTargetHttpCodes(data = {}) {
-  if (!data || !Object.keys(data).length) return [['暂无数据', '-']];
-  const labelMap = { PGHTTP100: 'HTTP 100', PGHTTP200: 'HTTP 200', PGHTTP300: 'HTTP 300', PGHTTP400: 'HTTP 400', PGHTTP500: 'HTTP 500' };
-  let total = Object.values(data).reduce((s, v) => s + (Number(v) || 0), 0);
-  return Object.entries(data).map(([key, value]) => {
-    const pct = total > 0 ? ((Number(value) || 0) / total * 100).toFixed(1) + '%' : '-';
-    return [labelMap[key] || key, value != null ? String(value) : '-', pct];
-  });
-}
-
-function buildBusinessTargetHttp400(data = []) {
-  return asArray(data).map((row, index) => [index + 1, row.clientIp || '-', row.errorCount != null ? String(row.errorCount) : '-']);
-}
-
-function buildBusinessTargetHttp500(data = []) {
-  return asArray(data).map((row, index) => [index + 1, row.clientIp || '-', row.errorCount != null ? String(row.errorCount) : '-']);
-}
-
 function buildAppQualityRows(data = []) {
   return asArray(data).map((row, index) => [
     index + 1,
@@ -411,61 +332,6 @@ function buildTrafficDrillDownRows(drillDown = {}) {
     formatNumber(row.TPIO),
     formatNumber(row.TPI),
     formatNumber(row.TPO)
-  ]);
-}
-
-function buildBusinessTargetOverviewRows(overview = {}) {
-  return [
-    ['访问数(个)', overview.visitCount != null ? String(overview.visitCount) : '-'],
-    ['慢访问数量(个)', overview.slowVisitCount != null ? String(overview.slowVisitCount) : '-'],
-    ['慢访问百分比(%)', overview.slowVisitPct != null ? Number(overview.slowVisitPct).toFixed(2) : '-'],
-    ['慢访问率(个/分钟)', overview.slowVisitRate != null ? Number(overview.slowVisitRate).toFixed(2) : '-'],
-    ['响应时间(秒)', overview.avgResponseTimeSec != null ? Number(overview.avgResponseTimeSec).toFixed(2) : '-']
-  ];
-}
-
-function buildBusinessTargetNodeRows(data = []) {
-  return asArray(data).map((row, index) => [
-    index + 1,
-    row.nodeName || '-',
-    row.visitCount != null ? String(row.visitCount) : '-',
-    row.slowVisitCount != null ? String(row.slowVisitCount) : '-'
-  ]);
-}
-
-function buildBusinessTargetResourceRows(resource = {}) {
-  return [
-    ['请求流量(MB)', resource.requestTrafficMb != null ? Number(resource.requestTrafficMb).toFixed(2) : '-'],
-    ['请求大小(KB)', resource.requestSizeKb != null ? Number(resource.requestSizeKb).toFixed(2) : '-'],
-    ['页面大小(KB)', resource.pageSizeKb != null ? Number(resource.pageSizeKb).toFixed(2) : '-'],
-    ['页面流量(MB)', resource.responseTrafficMb != null ? Number(resource.responseTrafficMb).toFixed(2) : '-'],
-    ['HTTP 响应数(个)', resource.httpResponseCount != null ? String(resource.httpResponseCount) : '-']
-  ];
-}
-
-function buildBusinessTargetSlowClientRows(data = []) {
-  return asArray(data).map((row, index) => [
-    index + 1,
-    row.clientIp || '-',
-    row.avgResponseTimeSec != null ? Number(row.avgResponseTimeSec).toFixed(2) : '-'
-  ]);
-}
-
-function buildBusinessTargetHttpCodeRows(summary = {}) {
-  return [
-    ['HTTP 100', summary.http100 != null ? String(summary.http100) : '-'],
-    ['HTTP 200', summary.http200 != null ? String(summary.http200) : '-'],
-    ['HTTP 300', summary.http300 != null ? String(summary.http300) : '-'],
-    ['HTTP 400', summary.http400 != null ? String(summary.http400) : '-'],
-    ['HTTP 500', summary.http500 != null ? String(summary.http500) : '-']
-  ];
-}
-
-function buildBusinessTargetHttpClientRows(data = []) {
-  return asArray(data).map((row, index) => [
-    index + 1,
-    row.clientIp || '-',
-    row.count != null ? String(row.count) : '-'
   ]);
 }
 
@@ -539,35 +405,6 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
         return { columns: section.columns, rows: buildAppFailuresRows(summary.trafficSummary?.appFailures || []) };
       case 'appQuality':
         return { columns: section.columns, rows: buildAppQualityRows(summary.trafficSummary?.appQuality || []) };
-      // ── Targeted business analysis ──────────────────────────
-      case 'businessTargetOverview':
-        return { columns: section.columns, rows: buildBusinessTargetOverview(summary.businessSummary?.overview || {}) };
-      case 'businessTargetNodeDistribution':
-        return { columns: section.columns, rows: buildBusinessTargetNodeDist(summary.businessSummary?.nodeDist || []) };
-      case 'businessTargetResourceSummary':
-        return { columns: section.columns, rows: buildBusinessTargetResource(summary.businessSummary?.resource || {}) };
-      case 'businessTargetSlowClients':
-        return { columns: section.columns, rows: buildBusinessTargetSlowClients(summary.businessSummary?.slowClients || []) };
-      case 'businessTargetHttpCodeSummary':
-        return { columns: section.columns, rows: buildBusinessTargetHttpCodes(summary.businessSummary?.httpCodes || {}) };
-      case 'businessTargetHttp400Clients':
-        return { columns: section.columns, rows: buildBusinessTargetHttp400(summary.businessSummary?.error400Clients || []) };
-      case 'businessTargetHttp500Clients':
-        return { columns: section.columns, rows: buildBusinessTargetHttp500(summary.businessSummary?.error500Clients || []) };
-      case 'businessTargetOverview':
-        return { columns: section.columns, rows: buildBusinessTargetOverviewRows(summary.singleBusinessAnalysis?.overview || {}) };
-      case 'businessTargetNodeDistribution':
-        return { columns: section.columns, rows: buildBusinessTargetNodeRows(summary.singleBusinessAnalysis?.nodeDistribution || []) };
-      case 'businessTargetResourceSummary':
-        return { columns: section.columns, rows: buildBusinessTargetResourceRows(summary.singleBusinessAnalysis?.resourceSummary || {}) };
-      case 'businessTargetSlowClients':
-        return { columns: section.columns, rows: buildBusinessTargetSlowClientRows(summary.singleBusinessAnalysis?.slowClients || []) };
-      case 'businessTargetHttpCodeSummary':
-        return { columns: section.columns, rows: buildBusinessTargetHttpCodeRows(summary.singleBusinessAnalysis?.httpCodeSummary || {}) };
-      case 'businessTargetHttp400Clients':
-        return { columns: section.columns, rows: buildBusinessTargetHttpClientRows(summary.singleBusinessAnalysis?.http400Clients || []) };
-      case 'businessTargetHttp500Clients':
-        return { columns: section.columns, rows: buildBusinessTargetHttpClientRows(summary.singleBusinessAnalysis?.http500Clients || []) };
       default:
         // Fallback to parent for shared builders (evidence, etc.)
         return super.buildRowsForSection(section, context);
@@ -616,25 +453,27 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
 
   // ── scope filtering for sections ────────────────────────────
 
-  _filteredSections(template = {}, context = {}) {
-    return asArray(template.sections).filter((section) => sectionMatches(section, context));
-  }
-
   buildChildren(report = {}, chartBuffers = null) {
     const { template, context } = this.buildTemplateContext(report);
-    return this._filteredSections(template, context)
-      .flatMap((section) => this.renderSection(section, context, chartBuffers));
+    const scopeType = this.getScopeType(report);
+
+    const filteredSections = asArray(template.sections).filter((section) =>
+      scopeMatches(section.scopes, scopeType)
+    );
+
+    return filteredSections.flatMap((section) => this.renderSection(section, context, chartBuffers));
   }
 
   // ── pre-render charts with scope filter ─────────────────────
 
   async preRenderCharts(template = {}, context = {}) {
     const chartSpecs = this.loadChartSpecs();
+    const scopeType = context.scope?.type || 'global';
     const chartBuffers = new Map();
 
     const chartSlots = asArray(template.sections)
       .filter((s) => s.type === 'chartSlot')
-      .filter((s) => sectionMatches(s, context));
+      .filter((s) => scopeMatches(s.scopes, scopeType));
 
     for (const slot of chartSlots) {
       const chart = asArray(chartSpecs.charts).find((c) => c.id === slot.chartId) || {};
@@ -642,10 +481,10 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
       const dataPoints = Array.isArray(dataset)
         ? dataset.length
         : (Array.isArray(dataset?.points) ? dataset.points.length : 0);
-      console.log(`[SummaryFixedTemplate] chart "${slot.id}" (${chart.chartType}): datasetPath=${chart.datasetPath}, dataPoints=${dataPoints}`);
+      console.error(`[SummaryFixedTemplate] chart "${slot.id}" (${chart.chartType}): datasetPath=${chart.datasetPath}, dataPoints=${dataPoints}`);
 
       if (dataPoints === 0) {
-        console.log(`[SummaryFixedTemplate] chart "${slot.id}" has NO DATA`);
+        console.error(`[SummaryFixedTemplate] chart "${slot.id}" has NO DATA`);
         continue;
       }
 
@@ -674,10 +513,15 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
     const header = buildDocumentHeader(template, context, { assetRoot: this.assetRoot });
     const footer = buildDocumentFooter(template, context, { assetRoot: this.assetRoot });
 
+    // Filter sections by scope and render
+    const scopeType = this.getScopeType(report);
+    const filteredSections = asArray(template.sections).filter((section) =>
+      scopeMatches(section.scopes, scopeType)
+    );
+
     const docSection = {
       properties: buildPageProperties(template),
-      children: this._filteredSections(template, context)
-        .flatMap((item) => this.renderSection(item, context, this._chartBuffers))
+      children: filteredSections.flatMap((item) => this.renderSection(item, context, this._chartBuffers))
     };
 
     if (header) docSection.headers = { default: header };
@@ -701,8 +545,6 @@ module.exports = SummaryFixedTemplateService;
 // Export internal helpers for testing
 module.exports.__test__ = {
   scopeMatches,
-  targetModeMatches,
-  sectionMatches,
   buildNarrativeTexts,
   evalCondition,
   buildSummaryDeviceRows,

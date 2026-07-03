@@ -2842,13 +2842,19 @@ async function runInspectionExecutor(args = {}) {
 
 function buildFaultDiagnosisReply(result = {}) {
   if (!result?.ok) {
-    return `故障分析执行失败：${result?.error?.message || '未知错误'}`;
+    return `故障分析执行失败：${result?.error?.message || result?.message || '未知错误'}`;
   }
   if (!result?.reportReady) {
     return `故障分析已启动，当前步骤：${result?.steps?.length || 0} 步已完成。`;
   }
   const steps = Array.isArray(result.steps) ? result.steps : [];
   const hintCount = steps.reduce((sum, s) => sum + (Array.isArray(s.hints) ? s.hints.length : 0), 0);
+  if (result.filePath) {
+    return [
+      `故障分析完成。流程类型：${result.flowLabel || '-'}，共执行 ${steps.length} 个分析步骤，产生 ${hintCount} 条判断提示。`,
+      `Word 报告已生成：${result.fileName || 'report.docx'}`
+    ].join('\n');
+  }
   return [
     `故障分析完成。流程类型：${result.flowLabel || '-'}，共执行 ${steps.length} 个分析步骤，产生 ${hintCount} 条判断提示。`,
     'reportData 已就绪，请调用 napm-report-export 生成 Word 文档。'
@@ -2925,14 +2931,21 @@ function buildAlertExecutorPayload(args = {}) {
   const alertQuery = isPlainObject(args.alertQuery)
     ? args.alertQuery
     : {};
+  const criteria = isPlainObject(args.criteria)
+    ? args.criteria
+    : (isPlainObject(alertQuery.criteria) ? alertQuery.criteria : {});
+  const hasEventIds = Array.isArray(criteria.eventIds) && criteria.eventIds.length > 0;
+  // 默认 mode: 有 eventIds 时用 detail（触发 indirect discovery），否则 summary
+  const defaultMode = hasEventIds ? 'detail' : 'summary';
+  const explicitMode = String(args.mode || alertQuery.mode || '').trim();
+  const mode = explicitMode || alertQuery.mode || defaultMode;
+
   return {
     prompt: normalizePrompt(args) || alertQuery.prompt || '',
     alertQuery: {
       ...alertQuery,
-      mode: String(args.mode || alertQuery.mode || '').trim() || alertQuery.mode,
-      criteria: isPlainObject(args.criteria)
-        ? args.criteria
-        : (isPlainObject(alertQuery.criteria) ? alertQuery.criteria : {}),
+      mode,
+      criteria,
       options: isPlainObject(args.options)
         ? args.options
         : (isPlainObject(alertQuery.options) ? alertQuery.options : undefined)
@@ -2953,18 +2966,37 @@ function buildSummaryExecutorPayload(args = {}) {
   // Force-correct scope based on user prompt intent.
   // AI may pass wrong scope.type; the prompt is the ground truth.
   const prompt = normalizePrompt(args) || '';
+  // Only correct scope when the prompt CLEARLY indicates a different intent.
+  // "综述" alone does NOT mean global — it's a generic term for all summary reports.
   const SCOPE_INTENT_MAP = [
     { re: /业务(?!组)/, type: 'webApplication', label: '业务' },
     { re: /业务组|工作组/, type: 'businessGroup', label: '工作组' },
-    { re: /网络|流量/, type: 'network', label: '网络' },
-    { re: /应用(?!性能|告)/, type: 'application', label: '应用' },
+    { re: /网络(?!性能|异常|告警)|流量整体/, type: 'network', label: '网络' },
+    { re: /应用(?!性能|告警)/, type: 'application', label: '应用' },
     { re: /告警/, type: 'alert', label: '告警' },
-    { re: /全局|系统|NAPM|综(?:述|合)(?!.*(?:业务|网络|应用|告警))/, type: 'global', label: '全局' }
+    { re: /^.*全局|系统整体/, type: 'global', label: '全局' }
   ];
   const matched = SCOPE_INTENT_MAP.find((m) => m.re.test(prompt));
   if (matched && scope.type !== matched.type) {
-    scope.type = matched.type;
-    scope.label = matched.label;
+    if (matched.type === 'global' && scope.type !== 'global' && scope.type !== undefined) {
+      // AI set a specific scope — trust it
+    } else {
+      scope.type = matched.type;
+      scope.label = matched.label;
+    }
+  }
+
+  // Fix truncated target names: AI often shortens "回溯238web" → "238web".
+  // If the prompt contains a longer name that includes the target as a substring, use it.
+  if (scope.target && scope.target.groupArgument && prompt) {
+    const shortName = scope.target.groupArgument;
+    // Look for a word boundary pattern around the short name in the prompt
+    const nameRe = new RegExp('([\\u4e00-\\u9fa5a-zA-Z0-9_-]*' + shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i');
+    const nameMatch = prompt.match(nameRe);
+    if (nameMatch && nameMatch[1].length > shortName.length) {
+      scope.target.groupArgument = nameMatch[1];
+      scope.target.groupLabel = nameMatch[1];
+    }
   }
 
   return {
@@ -3193,6 +3225,64 @@ function buildAlertQueryReply(result = {}) {
   }
 
   const lines = [];
+
+  const pi = result?.narrationInput?.packetInstruction;
+  const triggerInfo = result?.narrationInput?.triggerInfo;
+
+  // ═══════════════════════════════════════════════════════════════
+  // 当有 packetInstruction 时，输出这是主要指令，不混入长摘要
+  // ═══════════════════════════════════════════════════════════════
+  if (pi && pi.callPacketAnalysis && Array.isArray(pi.candidates) && pi.candidates.length > 0) {
+    // USE_CANDIDATES — 只输出指令和候选，AI 必须逐条调 packet-analysis
+    lines.push('═══════════════════════════════════════');
+    lines.push('⚠️ 数据包发现完成 — 请执行以下操作：');
+    lines.push('');
+    lines.push(`发现 ${pi.candidates.length} 个嫌疑 IP 会话，必须逐条调用 napm-packet-analysis：`);
+    lines.push('');
+    for (const c of pi.candidates) {
+      const label = c.ipPair || c.ip || c.ips?.join('↔') || '-';
+      const sq = c.suggestedPacketQuery || {};
+      const sqIps = (sq.criteria?.ips || c.ips || []).join(',');
+      const sqStart = sq.criteria?.start || '';
+      const sqEnd = sq.criteria?.end || '';
+      lines.push(`  ${c.rank}. ${label}`);
+      lines.push(`     → napm-packet-analysis mode=${sq.mode || 'preview_download_analyze'} ips=${sqIps} start=${sqStart} end=${sqEnd}`);
+    }
+    lines.push('');
+    // 触发条件
+    if (Array.isArray(triggerInfo) && triggerInfo.length > 0) {
+      const t = triggerInfo[0];
+      lines.push('⚠️ 报告中必须解释触发原因：');
+      lines.push(`  指标: ${(t.metrics||[]).join(', ') || 'N/A'}`);
+      lines.push(`  条件: ${t.condition || 'N/A'}`);
+      lines.push(`  实际值: ${(t.value||[]).join(', ') || 'N/A'}`);
+      lines.push('');
+    }
+    lines.push('═══════════════════════════════════════');
+    lines.push('');
+    // 告警基本信息
+    const events = Array.isArray(result.details) && result.details.length > 0
+      ? result.details
+      : (Array.isArray(result.events) ? result.events : []);
+    if (events.length > 0) {
+      const e = events[0];
+      lines.push(`告警: ${e.id} ${e.severityLabel||''} ${e.group||''} ${e.name||''}`);
+      lines.push(`时间: ${e.start||'-'} ~ ${e.end||'-'}`);
+      lines.push(`触发指标: ${(e.metrics||[]).join(', ') || '无'}`);
+    }
+    return lines.join('\n').trim();
+  }
+
+  if (pi && !pi.callPacketAnalysis) {
+    // STOP — 简洁告知不能继续
+    lines.push(`⚠️ 该告警无法进行数据包分析: ${pi.message}`);
+    lines.push(`原因: ${result.packetHandoff?.reason || 'N/A'}`);
+    if (result.packetHandoff?.hint) {
+      lines.push(`提示: ${result.packetHandoff.hint}`);
+    }
+    return lines.join('\n').trim();
+  }
+
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
@@ -3253,9 +3343,32 @@ function buildAlertQueryReply(result = {}) {
     lines.push('本时间范围内未查询到告警事件。');
   }
 
-  if (result.packetHandoff?.available) {
-    lines.push('');
-    lines.push('该告警结果包含可继续转数据包分析的 packetHandoff。');
+  if (result.packetHandoff) {
+    if (result.packetHandoff.available) {
+      lines.push('');
+      lines.push('---');
+      lines.push('[packetHandoff] 该告警可转数据包分析。');
+      if (result.packetHandoff.discoveryMethod) {
+        lines.push(`间接发现链路: ${result.packetHandoff.discoveryMethod.groupChain}`);
+        lines.push(`排序指标: ${result.packetHandoff.discoveryMethod.topMetric}`);
+      }
+      const candidates = result.packetHandoff.candidates || [];
+      if (candidates.length > 0) {
+        lines.push(`嫌疑 IP 会话 (Top${candidates.length}):`);
+        for (const c of candidates) {
+          const label = c.ipPair || c.ip || c.ips?.join('↔') || '-';
+          const metricStr = c.metricValue ? Object.entries(c.metricValue).map(([k,v]) => `${k}=${v}`).join(', ') : '';
+          lines.push(`  ${c.rank}. ${label} ${metricStr ? `(${metricStr})` : ''}`);
+        }
+      }
+    } else {
+      lines.push('');
+      lines.push('---');
+      lines.push(`[packetHandoff] 数据包转交不可用: ${result.packetHandoff.reason || 'N/A'}`);
+      if (result.packetHandoff.discoveryMethod) {
+        lines.push(`间接发现链路: ${result.packetHandoff.discoveryMethod.groupChain} (返回空)`);
+      }
+    }
   }
 
   lines.push('');
@@ -4594,27 +4707,48 @@ function createAlertQueryToolDefinition() {
     execute: async (_toolCallId, args = {}) => {
       const result = await runAlertExecutor(args || {});
       const renderedText = buildAlertQueryReply(result);
+      const pi = result?.narrationInput?.packetInstruction;
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+
+      // 有 packetInstruction 时：text=AI指令, finalAnswer=摘要, details=完整数据
+      if (pi && pi.callPacketAnalysis && Array.isArray(pi.candidates) && pi.candidates.length > 0) {
+        return {
+          text: renderedText,
+          details: result,
+          metadata: {
+            ok: Boolean(result?.ok),
+            mode: result?.mode || null,
+            total: result?.summary?.total ?? null,
+            packetHandoff: result?.packetHandoff || null,
+            packetInstruction: pi,
+            candidateCount: pi.candidates.length,
+            candidates: pi.candidates.map((c) => ({
+              rank: c.rank,
+              ipPair: c.ipPair || null,
+              ip: c.ip || null,
+              suggestedPacketQuery: c.suggestedPacketQuery,
+            })),
+          }
+        };
+      }
+
       return {
         text: renderedText,
-        content: [
-          {
-            type: 'text',
-            text: renderedText
-          }
-        ],
+        content: [{ type: 'text', text: renderedText }],
         finalAnswer: renderedText,
         renderedText,
         renderPolicy: {
           mode: 'verbatim_final_answer',
-          instruction: 'Return finalAnswer exactly as-is to the user. Do not summarize, reorganize, translate, add bullets, or add a separate focus section.'
+          instruction: 'Return finalAnswer exactly as-is to the user.'
         },
         metadata: {
           ok: Boolean(result?.ok),
           mode: result?.mode || null,
           service: result?.service || null,
           total: result?.summary?.total ?? null,
-          requestUrl: result?.requestUrl || result?.requestUrls?.[0] || null
+          requestUrl: result?.requestUrl || result?.requestUrls?.[0] || null,
+          packetHandoff: result?.packetHandoff || null,
+          packetInstruction: pi || null
         }
       };
     }
@@ -4798,7 +4932,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews, or packet-data analysis requests. If the user provides a Web page URL/path such as http://host/SDK/webLanguage and asks 数据包预览/分析, use DownServlet business-page preview with criteria.page/pageUrl; do not convert it into ordinary IP packetsPreview.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known. ⚠️ If the user says "告警数据包 <eventId>", do NOT use this skill directly — route to napm-alert-query FIRST for automatic IP discovery. The criteria.id parameter is ONLY for linkType=2 event IDs, NOT for alert event IDs.',
     parameters: {
       type: 'object',
       properties: {
@@ -4826,7 +4960,7 @@ function createPacketAnalysisToolDefinition() {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
             ipRanges: { type: 'array', items: { type: 'string' } },
-            id: { type: 'string' },
+            id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. Do NOT use for alert event IDs — route to napm-alert-query first.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
@@ -5073,8 +5207,8 @@ function buildNapmRoutingSystemContext() {
     : 'payload.resolvedQuery';
 
   return [
+    '🔴 ABSOLUTE ROUTING PRIORITY #1 — FAULT DIAGNOSIS: When the user asks to analyze faults/errors for a specific WebApplication/business (e.g. "分析XXweb的故障", "XXweb的报错分析", "4xx/5xx错误分析", "给出故障报告"), your FIRST and ONLY tool call must be `napm-fault-diagnosis`. Pass flowType="bs_app_slow", target={groupType:"WebApplication",groupArgument:"XXweb",groupLabel:"XXweb"}, and timeRange. After it returns reportData, call `napm-report-export`. NEVER use napm-skill-query or napm-alert-query for fault analysis — the napm-fault-diagnosis skill handles ALL data collection automatically in a single standardized flow.',
     'CRITICAL ROUTING RULE: When the user asks for 综述报告, 日报, 周报, 月报 or any summary REPORT, you MUST call `napm-summary` first with scope+timeRange, then IMMEDIATELY call `napm-report-export`. Do NOT use `napm-skill-query` for report requests.',
-    'FAULT DIAGNOSIS ROUTING: When the user asks to analyze a specific web application\'s errors/faults (e.g. "分析238web的故障", "XXweb的报错分析", "4xx/5xx错误分析"), you MUST call `napm-fault-diagnosis` with flowType="bs_app_slow" and the target WebApplication. After it returns reportData, call `napm-report-export`. Do NOT manually query alerts or traffic for fault analysis — napm-fault-diagnosis runs the complete standardized diagnostic flow automatically.',
     'Scope mapping — set scope.type based on user wording: 全局/系统/NAPM 综述 → scope.type="global", scope.label="全局"; 业务 综述 → scope.type="webApplication", scope.label="业务"; 网络/流量 综述 → scope.type="network", scope.label="网络"; 工作组/业务组 综述 → scope.type="businessGroup", scope.label="工作组"; 应用 综述 → scope.type="application", scope.label="应用"; 告警 综述 → scope.type="alert", scope.label="告警". If user did NOT specify a target object, omit scope.target for an overall dimension review.',
     'You are not a general-purpose assistant in this deployment. Only handle system monitoring, performance analysis, NAPM query, anomaly diagnosis, and result interpretation requests.',
     'When the user asks a NAPM question (NOT a report request), call `napm-skill-query` only after OpenClaw upstream has produced a complete structured `resolvedQuery`.',
@@ -5093,8 +5227,9 @@ function buildNapmRoutingSystemContext() {
     'Inspection tool contract: `napm-inspection-snapshot` owns live data collection for applianceInfo, packetsInfo, TotalTraffic timeValues, and WebApplication business performance topValues. `napm-report-export` must only render the returned reportData and must not query NAPM.',
     'Summary boundary: summary/overview report requests such as 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report must call `napm-summary` first. It queries alert/traffic/business APIs in parallel, aggregates the data, returns `reportData`. After `napm-summary` succeeds, immediately call `napm-report-export` with the returned `reportData` to render and deliver the Word/docx file. Do NOT use `napm-skill-query` for summary/overview reports — use `napm-summary` instead. Do NOT ask the user whether they want a Word file after a summary report request — always auto-export.',
     'Summary tool contract: `napm-summary` takes a `scope` (type + optional target) and a `timeRange` (start/end Unix seconds). For global summaries, use scope.type=`global`. For per-application summaries, use scope.type=`webApplication` with target.groupType=`WebApplication` and target.groupArgument (e.g. `239web`). After calling `napm-summary`, ALWAYS call `napm-report-export` in the same turn — the user expects the Word file directly without an extra prompt. `napm-report-export` must consume `reportData` returned by `napm-summary` and must not query NAPM independently.',
-    'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis`. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
+    'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis` WHEN target IPs are known. ⚠️ EXCEPTION: "告警数据包 <eventId>" requests MUST route to `napm-alert-query` FIRST for automatic IP discovery, then call `napm-packet-analysis` with the resolved candidates. The `criteria.id` parameter in packet-analysis is ONLY for linkType=2 event IDs — do NOT use it for alert event IDs. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
     '⚠️ Alert-packet sequencing ("告警数据包"): when the user says "告警数据包 <eventId>" or "分析告警的数据包" (alert event ID combined with packet intent), call `napm-alert-query` FIRST (mode=detail) to obtain alert details and packetHandoff. The alert-query skill performs automatic indirect IP discovery for business/app/group alerts and returns packetHandoff with download candidates. Only AFTER alert-query returns should you call `napm-packet-analysis` with the suggestedPacketQuery from the candidates. Do NOT call `napm-packet-analysis` directly with criteria.id for alert-packet requests.',
+    '⚠️ TRIGGER CAUSE ANALYSIS: Do NOT skip trigger cause analysis because the alert name contains "测试". Even test alerts have real trigger metrics and real values. The alert-query output includes a ">>> 告警触发条件 <<<" section with metrics, condition, actual value, and unit. In EVERY packet analysis report, you MUST explain what metric triggered the alert, what the threshold was, what the actual value was, and how the packet traffic explains the anomaly. Do NOT dismiss alerts as "just test alerts" and skip the trigger analysis.',
     'Packet tool contract: use `napm-packet-analysis` with a structured packet query. For link-only requests use mode=`build_url_only`; for large time ranges use mode=`preview_only` first; for safe packet analysis use mode=`preview_download_analyze`.',
     'Business page packet preview contract: if the user provides a Web page URL/path and asks 数据包预览/分析, call `napm-packet-analysis` with `downloadType:"DownServlet"`, `mode:"preview_only"`, and `criteria.page` or `criteria.pageUrl`. If prior query context contains pageFamilyId/businessName for that page, include it. This preview means `pageViews` candidate rows, not ordinary `packetsPreview`.',
     'Never downgrade a business page packet preview to IP-based `packetsPreview` merely because the URL contains an IP address. IP-based packetsPreview is allowed only when the user explicitly asks 按IP/IP数据包 or provides only an IP target.',
@@ -5272,6 +5407,14 @@ const plugin = {
         const activeAlertPacketPrompt = activePacketPrompt && activeAlertPrompt;
         const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
 
+        // ── Fault diagnosis guard (MUST be first) ──
+        const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt);
+        if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt) {
+          api.logger.warn(`[napm-openclaw-plugin] BLOCKED ${toolName} for fault-diagnosis prompt: ${activePrompt.slice(0, 120)}`);
+          appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
+          return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a web application fault/error analysis request. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with flowType="bs_app_slow" and the target WebApplication.` };
+        }
+
         if (isDirectNapmTool(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
           return {
@@ -5315,16 +5458,6 @@ const plugin = {
             updatedAt: Date.now()
           });
           return undefined;
-        }
-
-        // Fault diagnosis guard: block napm-skill-query + napm-alert-query for fault diagnosis prompts
-        const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt);
-        if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt) {
-          api.logger.warn(`[napm-openclaw-plugin] blocked ${toolName} for fault-diagnosis prompt: prompt=${activePrompt.slice(0, 120)}`);
-          return {
-            block: true,
-            blockReason: 'Web application fault/error analysis must use napm-fault-diagnosis, not individual query/alert tools. Call napm-fault-diagnosis with flowType="bs_app_slow" and the target WebApplication. It runs all diagnostic steps automatically, then call napm-report-export.'
-          };
         }
 
         // Summary report guard: block napm-skill-query for summary prompts → redirect to napm-summary

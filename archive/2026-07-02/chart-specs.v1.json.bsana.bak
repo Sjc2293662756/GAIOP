@@ -1,11 +1,12 @@
 {
-  "schema": "openclaw_napm_fault_diagnosis_chart_specs.v1",
+  "schema": "openclaw_napm_summary_chart_specs.v1",
   "charts": [
     {
       "id": "alert.timeline",
-      "title": "告警时序图",
+      "title": "告警趋势图",
       "chartType": "line",
-      "datasetPath": "alertAnalysis.timeline",
+      "scopes": ["*"],
+      "datasetPath": "summary.alertSummary.timeline",
       "xField": "bucketStart",
       "xLabel": "时间",
       "series": [
@@ -16,9 +17,10 @@
     },
     {
       "id": "traffic.trend",
-      "title": "故障时段流量趋势图",
+      "title": "流量趋势图",
       "chartType": "line",
-      "datasetPath": "trafficAnalysis.trend.dataset",
+      "scopes": ["global", "network", "webApplication", "application", "businessGroup"],
+      "datasetPath": "summary.trafficSummary.trend.dataset",
       "xField": "time",
       "xLabel": "时间",
       "series": [
@@ -26,26 +28,14 @@
         { "field": "TPI", "name": "流入流量" },
         { "field": "TPO", "name": "流出流量" }
       ],
-      "unitPath": "trafficAnalysis.trend.dataset.unit"
-    },
-    {
-      "id": "traffic.topIPs",
-      "title": "Top 受影响 IP 流量分布",
-      "chartType": "bar",
-      "datasetPath": "trafficAnalysis.topIPs",
-      "xField": "key",
-      "xLabel": "IP地址",
-      "series": [
-        { "field": "TPIO", "name": "总流量" },
-        { "field": "TPI", "name": "流入流量" },
-        { "field": "TPO", "name": "流出流量" }
-      ]
+      "unitPath": "summary.trafficSummary.trend.dataset.unit"
     },
     {
       "id": "business.slowAccess",
-      "title": "慢访问业务（故障时段）",
+      "title": "慢访问业务 Top",
       "chartType": "bar",
-      "datasetPath": "businessAnalysis.slowAccess",
+      "scopes": ["global", "webApplication"],
+      "datasetPath": "summary.businessSummary.slowAccess",
       "xField": "businessName",
       "xLabel": "业务/接口名称",
       "series": [
@@ -55,9 +45,10 @@
     },
     {
       "id": "business.httpErrors",
-      "title": "HTTP 错误业务（故障时段）",
+      "title": "HTTP 错误业务 Top",
       "chartType": "bar",
-      "datasetPath": "businessAnalysis.httpErrors",
+      "scopes": ["global", "webApplication"],
+      "datasetPath": "summary.businessSummary.httpErrors",
       "xField": "businessName",
       "xLabel": "业务/接口名称",
       "series": [
