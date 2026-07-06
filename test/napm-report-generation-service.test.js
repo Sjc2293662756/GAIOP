@@ -121,12 +121,12 @@ describe('openclaw-napm-report generation service', () => {
     // inspection_report with explicit systemName
     const inspResult = await service.generate(makeReportPayload({
       reportType: 'inspection_report',
-      systemName: 'Netlnside流量分析系统',
-      title: 'Netlnside流量分析系统巡检报告',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
+      title: 'Netlnside基于AI的全流量性能分析平台巡检报告',
       sections: [{ type: 'summary', title: '测试', content: '内容' }]
     }));
     expect(inspResult.ok).toBe(true);
-    expect(inspResult.reportId).toMatch(/^Netlnside流量分析系统_巡检报告_\d{8}_\d{6}$/);
+    expect(inspResult.reportId).toMatch(/^Netlnside基于AI的全流量性能分析平台_巡检报告_\d{8}_\d{6}$/);
 
     // quick_report with systemName from dataSource
     const quickResult = await service.generate(makeReportPayload({
@@ -173,12 +173,12 @@ describe('openclaw-napm-report generation service', () => {
 
     const result = await service.generate(makeReportPayload({
       reportType: 'inspection_report',
-      systemName: '网深科技流量分析系统',
+      systemName: '网深科技基于AI的全流量性能分析平台',
       sections: [{ type: 'summary', title: '摘要', content: '内容' }]
     }));
     expect(result.ok).toBe(true);
-    expect(result.systemName).toBe('网深科技流量分析系统');
-    expect(result.fileName).toContain('网深科技流量分析系统_巡检报告_');
+    expect(result.systemName).toBe('网深科技基于AI的全流量性能分析平台');
+    expect(result.fileName).toContain('网深科技基于AI的全流量性能分析平台_巡检报告_');
   });
 
   test('should generate summary report with scope-aware filename', async () => {
@@ -187,18 +187,18 @@ describe('openclaw-napm-report generation service', () => {
     // Global scope: no scope field, defaults to global
     const resultGlobal = await service.generate(makeReportPayload({
       reportType: 'summary_report',
-      systemName: 'Netlnside流量分析系统',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
       title: '综述报告',
       scope: { type: 'global', label: '全局' },
       sections: [{ type: 'summary', title: '摘要', content: '内容' }]
     }));
     expect(resultGlobal.ok).toBe(true);
-    expect(resultGlobal.reportId).toMatch(/^Netlnside流量分析系统_全局综述报告_\d{8}_\d{6}$/);
+    expect(resultGlobal.reportId).toMatch(/^Netlnside基于AI的全流量性能分析平台_全局综述报告_\d{8}_\d{6}$/);
 
     // Scoped: webApplication with target
     const resultScoped = await service.generate(makeReportPayload({
       reportType: 'summary_report',
-      systemName: 'Netlnside流量分析系统',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
       title: '239web 业务综述报告',
       scope: { type: 'webApplication', label: '业务', target: { groupType: 'WebApplication', groupArgument: '239web', groupLabel: '239web' } },
       sections: [{ type: 'summary', title: '摘要', content: '内容' }]

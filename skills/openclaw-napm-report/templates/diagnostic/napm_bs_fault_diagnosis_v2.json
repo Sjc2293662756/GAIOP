@@ -7,8 +7,8 @@
   "page": {
     "margin": { "top": 1000, "right": 900, "bottom": 1000, "left": 900, "header": 450, "footer": 450 },
     "header": {
-      "leftImage": { "path": "templates/inspection/company-logo.png", "width": 110, "height": 32, "alt": "网深科技流量分析系统" },
-      "left": "网深科技流量分析系统",
+      "leftImage": { "path": "templates/inspection/company-logo.png", "width": 110, "height": 32, "alt": "网深科技基于AI的全流量性能分析平台" },
+      "left": "网深科技基于AI的全流量性能分析平台",
       "right": "{{diagnosis.targetLabel}}业务故障分析报告"
     },
     "footer": {
@@ -17,7 +17,7 @@
     }
   },
   "sections": [
-    { "id": "cover", "type": "cover", "title": "网深科技流量分析系统", "subtitle": "业务故障分析报告" },
+    { "id": "cover", "type": "cover", "title": "网深科技基于AI的全流量性能分析平台", "subtitle": "业务故障分析报告" },
     { "id": "cover_info", "type": "paragraphs", "alignment": "center", "size": 22, "paragraphs": ["{{title}}"] },
     { "id": "cover_date", "type": "paragraphs", "alignment": "center", "size": 20, "paragraphs": ["{{diagnosis.reportDate}}"] },
     { "id": "cover_break", "type": "pageBreak" },

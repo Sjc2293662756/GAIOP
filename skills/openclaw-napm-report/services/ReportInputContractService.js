@@ -171,8 +171,8 @@ function buildFaultDiagnosisReportData(result = {}, options = {}) {
     options.systemName
     || result.systemName
     || result.deviceInfo?.systemName
-    || 'Netlnside流量分析系统'
-  ).trim() || 'Netlnside流量分析系统';
+    || 'Netlnside基于AI的全流量性能分析平台'
+  ).trim() || 'Netlnside基于AI的全流量性能分析平台';
 
   const title = String(
     options.title || result.title || `${faultName}_故障分析报告`
@@ -234,8 +234,8 @@ function buildInspectionReportData(result = {}, options = {}) {
     options.systemName
     || result.systemName
     || inspection.customerName
-    || 'Netlnside流量分析系统'
-  ).trim() || 'Netlnside流量分析系统';
+    || 'Netlnside基于AI的全流量性能分析平台'
+  ).trim() || 'Netlnside基于AI的全流量性能分析平台';
 
   return {
     schema: 'openclaw_napm_report_data.v1',
@@ -457,7 +457,7 @@ function buildSummaryReportData(result = {}, options = {}) {
 
   // Title: scope-aware
   const defaultTitle = scope.type === 'global'
-    ? 'Netlnside流量分析系统_全局综述报告'
+    ? 'Netlnside基于AI的全流量性能分析平台_全局综述报告'
     : `${scopeTargetLabel}_${scopeLabel}综述报告`;
   const title = String(
     options.title || result.title || defaultTitle
@@ -467,8 +467,8 @@ function buildSummaryReportData(result = {}, options = {}) {
     options.systemName
     || result.systemName
     || summary.deviceInfo?.systemName
-    || 'Netlnside流量分析系统'
-  ).trim() || 'Netlnside流量分析系统';
+    || 'Netlnside基于AI的全流量性能分析平台'
+  ).trim() || 'Netlnside基于AI的全流量性能分析平台';
 
   return {
     schema: 'openclaw_napm_report_data.v1',
@@ -575,7 +575,7 @@ function normalizeReportInput(input = {}, options = {}) {
 
   const format = normalizeFormat(payload.format || options.format || sourceReportData.format || sourceReportData.defaultFormat);
   const defaultSystemName = sourceReportData.reportType === 'inspection_report'
-    ? 'Netlnside流量分析系统'
+    ? 'Netlnside基于AI的全流量性能分析平台'
     : undefined;
   const systemName = String(
     payload.systemName || options.systemName || sourceReportData.systemName || defaultSystemName || ''

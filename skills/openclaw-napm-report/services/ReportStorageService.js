@@ -81,7 +81,7 @@ class ReportStorageService {
    * 生成人可读的报告文件名（不含扩展名）。
    *
    * 常规报告： {SystemName}_{类型中文}_{YYYYMMDD}_{HHmmss}
-   *   示例： Netlnside流量分析系统_巡检报告_20260618_143052
+   *   示例： Netlnside基于AI的全流量性能分析平台_巡检报告_20260618_143052
    *
    * 故障分析报告： {FaultName}_故障分析报告_{YYYYMMDD}_{HHmmss}
    *   示例： 核心交换机端口故障_故障分析报告_20260618_143052

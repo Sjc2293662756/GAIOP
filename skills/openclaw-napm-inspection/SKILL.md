@@ -12,7 +12,7 @@ This skill collects structured data for the NetInside/NAPM traffic analysis syst
 Use this skill for:
 
 - 巡检报告数据采集。
-- 流量分析系统健康检查报告。
+- 基于AI的全流量性能分析平台健康检查报告。
 - 设备基本信息、性能状况、数据信息、配置信息、原始数据包存储信息。
 - 巡检报告中的总流量趋势和业务性能数据查询。
 

@@ -51,7 +51,7 @@ describe('InspectionFieldMapperService', () => {
     });
 
     expect(inspection.customerName).toBe('北京烟草');
-    expect(inspection.projectName).toBe('流量分析系统');
+    expect(inspection.projectName).toBe('基于AI的全流量性能分析平台');
     expect(inspection.devices[0]).toMatchObject({
       systemName: 'NAPM-01',
       ipAddress: '192.0.2.10',

@@ -10,7 +10,7 @@ function makeInspection(overrides = {}) {
   return {
     schema: 'openclaw_napm_inspection.v1',
     customerName: '北京烟草',
-    projectName: '流量分析系统',
+    projectName: '基于AI的全流量性能分析平台',
     reportDate: '2026-06-16',
     devices: [
       {
@@ -105,7 +105,7 @@ function makeReportData() {
     reportType: 'inspection_report',
     templateId: 'napm_traffic_health_inspection_v1',
     format: 'docx',
-    title: '北京烟草流量分析系统健康检查报告',
+    title: '北京烟草基于AI的全流量性能分析平台健康检查报告',
     dataSource: {
       system: 'NAPM',
       sourceSkill: 'openclaw-napm-inspection',
@@ -123,7 +123,7 @@ describe('InspectionFixedTemplateService', () => {
 
     expect(template.templateId).toBe('napm_traffic_health_inspection_v1');
     expect(template.page.header.leftImage.path).toBe('templates/inspection/company-logo.png');
-    expect(template.page.header.left).toBe('网深科技流量分析系统');
+    expect(template.page.header.left).toBe('网深科技基于AI的全流量性能分析平台');
     expect(template.page.footer.center).toContain('{{pageNumber}}');
     const tocSection = template.sections.find((section) => section.id === 'toc');
     expect(tocSection.headingStyleRange).toBe('1-2');
@@ -144,7 +144,7 @@ describe('InspectionFixedTemplateService', () => {
     expect(template.sections.map((section) => section.id)).not.toContain('query_evidence');
     expect(template.sections.map((section) => section.title)).toEqual(expect.arrayContaining([
       '1 文档说明',
-      '1.1 流量分析系统检查项说明',
+      '1.1 基于AI的全流量性能分析平台检查项说明',
       '2 基本信息',
       '3 巡检信息汇总',
       '3.1 性能状况',
@@ -213,7 +213,7 @@ describe('InspectionFixedTemplateService', () => {
     const stylesXml = await zip.file('word/styles.xml').async('string');
     const reportXml = [documentXml, headerXml, footerXml, stylesXml].join('\n');
 
-    expect(headerXml).toContain('网深科技流量分析系统');
+    expect(headerXml).toContain('网深科技基于AI的全流量性能分析平台');
     expect(headerXml).toContain('北京烟草');
     expect(footerXml).toContain('2026-06-16');
     expect(footerXml).toContain('PAGE');
@@ -250,7 +250,7 @@ describe('InspectionFixedTemplateService', () => {
 
     expect(mediaFiles.some((fileName) => fileName.endsWith('.png'))).toBe(true);
     expect(headerXml).toContain('a:blip');
-    expect(headerXml).not.toContain('<w:t xml:space="preserve">网深科技流量分析系统</w:t>');
+    expect(headerXml).not.toContain('<w:t xml:space="preserve">网深科技基于AI的全流量性能分析平台</w:t>');
   });
 
   test('template json files are valid', () => {

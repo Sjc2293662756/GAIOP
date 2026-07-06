@@ -108,6 +108,11 @@ function buildEventPacketHandoff(event = {}, criteria = {}) {
         category: event.category,
         categoryLabel: event.categoryLabel,
         metrics: event.metrics,
+        value: event.value,
+        unit: event.unit,
+        condition: event.condition,
+        severity: event.severity,
+        severityLabel: event.severityLabel,
         start,
         end,
         linkType: event.linkType,
@@ -125,6 +130,140 @@ function looksLikeIp(value = '') {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || '').trim());
 }
 
+/**
+ * 生成告警查询结果的展示文本。格式由 skill 定义，plugin 直接透传。
+ */
+function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
+  const lines = [];
+  const events = Array.isArray(result.details) && result.details.length > 0
+    ? result.details
+    : (Array.isArray(result.events) ? result.events : []);
+  const summary = result.summary || {};
+  const timeRange = result.timeRange || {};
+  const timeText = timeRange.displayText
+    || (timeRange.start && timeRange.end
+      ? `${formatTimestamp(timeRange.start)} 至 ${formatTimestamp(timeRange.end)}`
+      : '');
+
+  // ── 标题 ──
+  if (timeText) lines.push(`${timeText} 告警查询结果`);
+  else lines.push('告警查询结果');
+  lines.push('');
+
+  // ── 概况 ──
+  if (summary.total != null) {
+    const bySev = summary.bySeverity || {};
+    lines.push(`告警总数：${summary.total} 条`);
+    lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  轻微 ${bySev.minor || 0} 条`);
+    lines.push('');
+
+    // ── 按类别 ──
+    const byCatDetail = summary.byCategoryDetail || [];
+    const displayDetail = byCatDetail.length > 0
+      ? byCatDetail
+      : buildCategoryDetailFromEvents(events);
+    const cats = displayDetail.filter((d) => Number(d.total || 0) > 0);
+    if (cats.length > 0) {
+      const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦'];
+      for (let i = 0; i < cats.length; i++) {
+        const d = cats[i];
+        const sev = d.bySeverity || {};
+        const sevParts = [];
+        if (sev.critical > 0) sevParts.push(`🔴 ${sev.critical}`);
+        if (sev.major > 0) sevParts.push(`🟠 ${sev.major}`);
+        if (sev.minor > 0) sevParts.push(`${sev.minor}`);
+        lines.push(`${symbols[i] || (i + 1 + '.')} ${d.categoryLabel || d.category || '未知'} — ${d.total} 条（${sevParts.join('/')}）`);
+        // 主要对象
+        const overview = (d.overviewEvents || []).slice(0, 3);
+        const groups = [...new Set(overview.map((e) => e.group).filter(Boolean))];
+        if (groups.length > 0) lines.push(`   主要对象：${groups.join('、')}`);
+        // 告警概览
+        for (const e of overview) {
+          const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '';
+          lines.push(`   ${sevLabel} ${e.name || '告警'} — ${e.group || '?'}（${e.severityLabel || ''}，持续 ${formatDuration(e)}）`);
+        }
+        lines.push('');
+      }
+    }
+  }
+
+  // ── Top 对象 ──
+  const topObjects = summary.topObjects || [];
+  if (topObjects.length > 0) {
+    lines.push('告警最多的对象：');
+    for (const obj of topObjects.slice(0, 8)) {
+      const sevEmoji = obj.maxSeverity === 4 ? '🔴' : obj.maxSeverity === 3 ? '🟠' : '';
+      lines.push(`  ${sevEmoji} ${obj.group} — ${obj.count} 条`);
+    }
+    lines.push('');
+  }
+
+  // ── 事件表 ──
+  if (events.length > 0) {
+    const displayEvents = events.slice(0, 5);
+    lines.push(`前 ${displayEvents.length} 条告警：`);
+    for (const e of displayEvents) {
+      const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '⚪';
+      lines.push(`  ${sevLabel} ${e.severityLabel || ''} | ${e.categoryLabel || e.category || '-'} | ${e.group || '-'} | ${e.name || '-'}`);
+    }
+    lines.push('');
+  }
+
+  // ── packet 信息（仅 detail 模式显示）──
+  const ph = packetHandoff || result.packetHandoff;
+  if (ph && result.mode !== 'summary') {
+    if (ph.available) {
+      const cands = ph.candidates || [];
+      lines.push(`数据包：发现 ${cands.length} 个嫌疑 IP 会话`);
+      for (const c of cands) {
+        lines.push(`  ${c.rank}. ${c.ipPair || c.ip || c.ips?.join('↔') || '-'}`);
+      }
+    } else if (ph.reason) {
+      lines.push(`数据包：${ph.reason}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('告警查询完成。');
+  return lines.join('\n');
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '?';
+  const d = new Date(ts > 9999999999 ? ts : ts * 1000);
+  return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+}
+
+function formatDuration(event = {}) {
+  const period = Number(event.period);
+  if (period > 0) {
+    if (period < 60) return `${Math.round(period * 60)}秒`;
+    return `${period}分钟`;
+  }
+  const s = (event.start || event.firstStart) && (event.end || event.lastEnd)
+    ? (event.end || event.lastEnd) - (event.start || event.firstStart) : 0;
+  if (s <= 0) return '?';
+  if (s < 60) return `${Math.round(s)}秒`;
+  return `${Math.round(s / 60)}分钟`;
+}
+
+function buildCategoryDetailFromEvents(events = []) {
+  const map = new Map();
+  for (const e of events) {
+    const cat = e.category || e.categoryLabel || 'unknown';
+    const label = e.categoryLabel || cat;
+    if (!map.has(cat)) map.set(cat, { category: cat, categoryLabel: label, total: 0, bySeverity: { critical: 0, major: 0, minor: 0 }, overviewEvents: [] });
+    const d = map.get(cat);
+    d.total++;
+    if (e.severity === 4) d.bySeverity.critical++;
+    else if (e.severity === 3) d.bySeverity.major++;
+    else d.bySeverity.minor++;
+    if (d.overviewEvents.length < 3) d.overviewEvents.push(e);
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total);
+}
+
 function buildNarrationInput(result = {}) {
   const packetHandoff = result.packetHandoff || null;
   const triggerInfo = buildTriggerInfo(result);
@@ -133,6 +272,7 @@ function buildNarrationInput(result = {}) {
     schema: 'openclaw_napm_alert.v1',
     language: 'zh-CN',
     mode: result.mode || null,
+    displayText: buildDisplayText(result, packetHandoff, triggerInfo),
     ok: Boolean(result.ok),
     timeRange: result.timeRange || null,
     summary: result.summary || null,
@@ -214,12 +354,32 @@ function buildPacketInstruction(packetHandoff, triggerInfo = null) {
   // 间接发现成功 — 有 candidates
   if (packetHandoff.reason === 'ALERT_INDIRECT_PACKET_VIA_DISCOVERY'
       && Array.isArray(packetHandoff.candidates) && packetHandoff.candidates.length > 0) {
+
+    // 从 triggerInfo 动态构建聚焦消息
+    let focusMsg = '';
+    if (triggerInfo && triggerInfo.length > 0) {
+      const t = triggerInfo[0];
+      const m = (t.metrics || []).join('、');
+      const v = (t.value || []).join('、');
+      const u = (t.unit || [])[0] || '';
+      if (m) {
+        focusMsg = `\n⚠️ 告警触发指标: ${m} = ${v}${u}。`
+          + ` 触发条件: ${t.condition || 'N/A'}。`
+          + ` 级别: ${t.severityLabel || 'N/A'}。`
+          + `\n数据包分析报告必须围绕 ${m} 展开：`
+          + `\n1. 解释为什么 ${m} 达到 ${v}${u}`
+          + `\n2. 结合数据包中的重传、延迟、连接失败等证据`
+          + `\n3. 找出导致指标异常的具体 IP 会话和时间点`
+          + `\n4. 将数据包时间线与告警触发时刻关联`;
+      }
+    }
+    if (!focusMsg) {
+      focusMsg = '\n该告警无触发指标，但仍必须对发现的 IP 会话进行完整数据包分析（协议分布、会话通信、TCP 异常等）。';
+    }
+
     return {
       action: 'USE_CANDIDATES',
-      message: `间接发现到 ${packetHandoff.candidates.length} 个嫌疑 IP 会话。必须逐条展示候选列表，然后对每个 candidate 使用其 suggestedPacketQuery（原样传递 mode 和 criteria）调用 openclaw-napm-packet-analysis。禁止自己构造 packetQuery，禁止直接用 eventId 查询。` + (
-        triggerInfo && triggerInfo.length > 0
-          ? ` 【重要】数据包分析报告中必须包含告警触发原因分析：指标(${(triggerInfo[0].metrics||[]).join(',')})、触发条件(${triggerInfo[0].condition || 'N/A'})、实际值(${(triggerInfo[0].value||[]).join(',')})，结合数据包内容解释为什么指标异常。`
-          : ''),
+      message: `间接发现到 ${packetHandoff.candidates.length} 个嫌疑 IP 会话。必须逐条展示候选列表，然后对每个 candidate 使用其 suggestedPacketQuery（原样传递 mode、criteria 和 analysis）调用 openclaw-napm-packet-analysis。禁止自己构造 packetQuery，禁止直接用 eventId 查询。${focusMsg}`,
       callPacketAnalysis: true,
       candidates: packetHandoff.candidates.map((c) => ({
         rank: c.rank,
@@ -351,6 +511,7 @@ module.exports = {
   buildNarrationInput,
   buildReportData,
   buildPacketInstruction,
+  buildDisplayText,
   extractIndirectDiscoveryEvents,
   resolveAlertTimeWindow,
   looksLikeIp,

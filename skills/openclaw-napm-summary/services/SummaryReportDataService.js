@@ -45,7 +45,7 @@ class SummaryReportDataService {
 
     // Title
     const defaultTitle = scopeType === 'global'
-      ? 'Netlnside流量分析系统_全局综述报告'
+      ? 'Netlnside基于AI的全流量性能分析平台_全局综述报告'
       : `${scopeTargetLabel}_${scopeLabel}综述报告`;
     const title = String(options.title || defaultTitle).trim() || defaultTitle;
 
@@ -53,8 +53,8 @@ class SummaryReportDataService {
     const systemName = sanitizeFileSegment(
       options.systemName
       || summary.deviceInfo?.systemName
-      || 'Netlnside流量分析系统'
-    ) || 'Netlnside流量分析系统';
+      || 'Netlnside基于AI的全流量性能分析平台'
+    ) || 'Netlnside基于AI的全流量性能分析平台';
 
     return {
       schema: 'openclaw_napm_report_data.v1',
@@ -124,8 +124,8 @@ class SummaryReportDataService {
     const systemName = sanitizeFileSegment(
       options.systemName
       || result.deviceInfo?.systemName
-      || 'Netlnside流量分析系统'
-    ) || 'Netlnside流量分析系统';
+      || 'Netlnside基于AI的全流量性能分析平台'
+    ) || 'Netlnside基于AI的全流量性能分析平台';
 
     // Packet analysis results (may be injected by upstream)
     const packetAnalysis = isPlainObject(result.packetAnalysis)

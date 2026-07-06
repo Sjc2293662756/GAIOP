@@ -177,7 +177,7 @@ class FaultDiagnosisReportBuilder {
       templateId: 'napm_fault_diagnosis_v2',
       format: options.format || 'docx',
       title,
-      systemName: options.systemName || 'Netlnside流量分析系统',
+      systemName: options.systemName || 'Netlnside基于AI的全流量性能分析平台',
       faultName,
       sourceQuestion: options.sourceQuestion || undefined,
       timeRange: {
@@ -188,7 +188,7 @@ class FaultDiagnosisReportBuilder {
         baselineEnd: session.context?.baselineEnd
       },
       dataSource: {
-        system: options.systemName || 'Netlnside流量分析系统',
+        system: options.systemName || 'Netlnside基于AI的全流量性能分析平台',
         sourceSkill: 'openclaw-napm-fault-diagnosis',
         queryService: `faultDiagnosis:${flowType}`
       },

@@ -10,7 +10,7 @@ function makeInspection() {
   return {
     schema: 'openclaw_napm_inspection.v1',
     customerName: '北京烟草',
-    projectName: '流量分析系统',
+    projectName: '基于AI的全流量性能分析平台',
     reportDate: '2026-06-16',
     devices: [
       {
@@ -93,7 +93,7 @@ function makeReportData() {
     reportType: 'inspection_report',
     templateId: 'napm_traffic_health_inspection_v1',
     format: 'docx',
-    title: '北京烟草流量分析系统健康检查报告',
+    title: '北京烟草基于AI的全流量性能分析平台健康检查报告',
     dataSource: {
       system: 'NAPM',
       sourceSkill: 'openclaw-napm-inspection',

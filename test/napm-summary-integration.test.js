@@ -417,17 +417,17 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const storage = new ReportStorageService({ outputDir });
       const id = storage.createReportId({
         reportType: 'summary_report',
-        systemName: 'Netlnside流量分析系统',
+        systemName: 'Netlnside基于AI的全流量性能分析平台',
         scope: { type: 'global', label: '全局' }
       });
-      expect(id).toMatch(/^Netlnside流量分析系统_全局综述报告_\d{8}_\d{6}$/);
+      expect(id).toMatch(/^Netlnside基于AI的全流量性能分析平台_全局综述报告_\d{8}_\d{6}$/);
     });
 
     test('scoped summary → object-based filename', () => {
       const storage = new ReportStorageService({ outputDir });
       const id = storage.createReportId({
         reportType: 'summary_report',
-        systemName: 'Netlnside流量分析系统',
+        systemName: 'Netlnside基于AI的全流量性能分析平台',
         scope: { type: 'webApplication', label: '业务', target: { groupType: 'WebApplication', groupArgument: '239web', groupLabel: '239web' } }
       });
       expect(id).toMatch(/^239web_业务综述报告_\d{8}_\d{6}$/);

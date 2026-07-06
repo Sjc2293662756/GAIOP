@@ -3,7 +3,7 @@
   "templateId": "napm_traffic_health_inspection_v1",
   "version": "1.0.0",
   "titlePath": "title",
-  "description": "NAPM 流量分析系统巡检报告固定模板。章节、表格、图表槽位和叙述槽位固定，运行时只更新数据、图表数据绑定和规则叙述。",
+  "description": "NAPM 基于AI的全流量性能分析平台巡检报告固定模板。章节、表格、图表槽位和叙述槽位固定，运行时只更新数据、图表数据绑定和规则叙述。",
   "page": {
     "margin": {
       "top": 1000,
@@ -18,9 +18,9 @@
         "path": "templates/inspection/company-logo.png",
         "width": 110,
         "height": 32,
-        "alt": "网深科技流量分析系统"
+        "alt": "网深科技基于AI的全流量性能分析平台"
       },
-      "left": "网深科技流量分析系统",
+      "left": "网深科技基于AI的全流量性能分析平台",
       "right": "{{inspection.customerName}}{{inspection.projectName}}巡检报告"
     },
     "footer": {
@@ -32,7 +32,7 @@
     {
       "id": "cover",
       "type": "cover",
-      "title": "网深科技流量分析系统",
+      "title": "网深科技基于AI的全流量性能分析平台",
       "subtitle": "健康检查报告"
     },
     {
@@ -70,7 +70,7 @@
     {
       "id": "check_items_heading",
       "type": "heading",
-      "title": "1.1 流量分析系统检查项说明",
+      "title": "1.1 基于AI的全流量性能分析平台检查项说明",
       "level": 2
     },
     {
@@ -85,7 +85,7 @@
         [
           "基本信息",
           "基本信息",
-          "收集所有 NetInside 流量分析系统的名称、管理地址、软件版本、序列号、启动时长等信息。"
+          "收集所有 NetInside 基于AI的全流量性能分析平台的名称、管理地址、软件版本、序列号、启动时长等信息。"
         ],
         [
           "巡检信息汇总",
@@ -134,7 +134,7 @@
       "id": "basic_info_intro",
       "type": "paragraphs",
       "paragraphs": [
-        "本次服务共计检查 {{inspection.devices.length}} 台 NetInside 流量分析系统，具体设备信息如下："
+        "本次服务共计检查 {{inspection.devices.length}} 台 NetInside 基于AI的全流量性能分析平台，具体设备信息如下："
       ]
     },
     {

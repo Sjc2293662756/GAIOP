@@ -18,9 +18,9 @@
         "path": "templates/inspection/company-logo.png",
         "width": 110,
         "height": 32,
-        "alt": "网深科技流量分析系统"
+        "alt": "网深科技基于AI的全流量性能分析平台"
       },
-      "left": "网深科技流量分析系统",
+      "left": "网深科技基于AI的全流量性能分析平台",
       "right": "{{summary.customerName}}{{summary.projectName}}{{scope.label}}报告"
     },
     "footer": {
@@ -32,7 +32,7 @@
     {
       "id": "cover",
       "type": "cover",
-      "title": "网深科技流量分析系统",
+      "title": "网深科技基于AI的全流量性能分析平台",
       "subtitle": "{{scope.label}}报告"
     },
     {
@@ -95,7 +95,7 @@
       "id": "device_info_intro",
       "type": "paragraphs",
       "paragraphs": [
-        "本次综述涉及的 NetInside 流量分析系统设备信息如下："
+        "本次综述涉及的 NetInside 基于AI的全流量性能分析平台设备信息如下："
       ]
     },
     {
@@ -144,7 +144,7 @@
       "id": "alert_requirement",
       "type": "paragraphs",
       "paragraphs": [
-        "以下数据来源于 NetInside 流量分析系统的告警模块，统计周期内产生的所有告警记录。告警类别包括：网络性能告警、网络异常告警、应用性能告警、业务故障告警、用户体验告警、安全事件告警、智能分析告警。"
+        "以下数据来源于 NetInside 基于AI的全流量性能分析平台的告警模块，统计周期内产生的所有告警记录。告警类别包括：网络性能告警、网络异常告警、应用性能告警、业务故障告警、用户体验告警、安全事件告警、智能分析告警。"
       ]
     },
     {
@@ -272,7 +272,7 @@
       "id": "webapp_target_access_slow_chart",
       "type": "chartSlot",
       "title": "访问量和慢业务趋势图",
-      "chartId": "webapp.target.accessSlowTrend",
+      "chartId": "webapp.accessSlow",
       "scopes": ["webApplication"],
       "targetModes": ["withTarget"]
     },
@@ -347,7 +347,7 @@
       "id": "webapp_target_request_response_chart",
       "type": "chartSlot",
       "title": "请求/响应流量趋势图",
-      "chartId": "webapp.target.requestResponseTrend",
+      "chartId": "webapp.requestResponse",
       "scopes": ["webApplication"],
       "targetModes": ["withTarget"]
     },

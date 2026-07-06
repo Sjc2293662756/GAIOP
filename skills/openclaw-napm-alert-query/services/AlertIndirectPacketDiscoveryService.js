@@ -283,6 +283,9 @@ async function discover(api, event = {}, options = {}) {
       };
     }
 
+    // 告警触发指标 → 透传到 packet-analysis 用于侧重分析
+    const analysis = buildFocusAnalysis(event);
+
     return {
       available: true,
       reason: 'ALERT_INDIRECT_PACKET_VIA_DISCOVERY',
@@ -302,6 +305,7 @@ async function discover(api, event = {}, options = {}) {
             start: (event.start || 0) - bufferSeconds,
             end: (event.end || 0) + bufferSeconds,
           },
+          analysis,
         },
       })),
       bufferSeconds,
@@ -424,6 +428,70 @@ async function discoverForEvents(api, events = [], options = {}) {
 
 // ── 内部工具函数 ────────────────────────────────────────────────────
 
+/**
+ * 从告警事件中提取触发指标信息，透传给 packet-analysis 用于侧重分析。
+ * 指标是动态的——随告警变化，不做静态映射。
+ */
+function buildFocusAnalysis(event = {}) {
+  const metrics = Array.isArray(event.metrics) ? event.metrics : [];
+  const value = Array.isArray(event.value) ? event.value : [];
+  const unit = Array.isArray(event.unit) ? event.unit : [];
+  const condition = event.condition || null;
+  const severityLabel = event.severityLabel || null;
+
+  if (metrics.length === 0) {
+    return {
+      hasTriggerMetrics: false,
+      note: '该告警无触发指标（metrics 为空），仍必须对发现的 IP 会话进行完整数据包分析。',
+    };
+  }
+
+  // 从 metrics-config.yml 查中文名（运行时 lazy load）
+  const metricLabels = metrics.map((code) => getMetricLabel(code));
+
+  return {
+    hasTriggerMetrics: true,
+    metrics,
+    metricLabels,
+    values: value,
+    units: unit,
+    condition,
+    severity: severityLabel,
+    summary: metrics.map((m, i) => {
+      const label = metricLabels[i] || m;
+      return `${label}(${m})=${value[i] ?? '?'}${unit[i] ?? ''}`;
+    }).join(', '),
+    instruction: `数据包分析报告必须围绕 ${metricLabels.join('、')}(${metrics.join('、')}) 展开。` +
+      `解释为什么 ${metricLabels.join('、')} 达到 ${value.join('、')}${unit[0] || ''}，` +
+      `结合数据包中的 TCP 重传、延迟、连接失败等证据，` +
+      `找出导致指标异常的具体 IP 会话和时间点。` +
+      (condition ? ` 触发条件: ${condition}` : ''),
+  };
+}
+
+// 从 metrics-config.yml 查指标中文名（不用 js-yaml，正则解析）
+let _metricLabelCache = null;
+function getMetricLabel(code = '') {
+  if (!_metricLabelCache) {
+    _metricLabelCache = {};
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const configPath = path.join(__dirname, '..', '..', '..', 'config', 'metrics-config.yml');
+      const text = fs.readFileSync(configPath, 'utf8');
+      // 解析格式: "- code: XXX\n    description: 中文名\n"
+      const re = /-\s+code:\s*(\S+)\s*\n\s+description:\s*(.+)/g;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        _metricLabelCache[m[1]] = m[2].trim();
+      }
+    } catch (_e) {
+      // fallback: 用 code 作为 label
+    }
+  }
+  return _metricLabelCache[code] || code;
+}
+
 function looksLikeIp(value = '') {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || '').trim());
 }
@@ -457,6 +525,7 @@ module.exports = {
   parseTopValuesResult,
   discover,
   discoverForEvents,
+  buildFocusAnalysis,
   extractIPsFromKey,
   looksLikeIp,
 };

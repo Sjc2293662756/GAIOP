@@ -139,8 +139,8 @@ node skills/openclaw-napm-summary/scripts/run_summary.js --queryJson '{"scope":{
     "reportType": "summary_report",
     "templateId": "napm_summary_overview_v1",
     "format": "docx",
-    "title": "Netlnside流量分析系统_全局综述报告",
-    "systemName": "Netlnside流量分析系统",
+    "title": "Netlnside基于AI的全流量性能分析平台_全局综述报告",
+    "systemName": "Netlnside基于AI的全流量性能分析平台",
     "scope": { "type": "global", "label": "全局" },
     "summary": { ... },
     "audit": { "sourceSkill": "openclaw-napm-summary", "requestHistory": [...], "queriesPerformed": [...] }

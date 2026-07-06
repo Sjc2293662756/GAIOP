@@ -709,9 +709,6 @@ class SummaryService {
       alertSummary: this._aggregateAlerts(rawData, scope),
       trafficSummary: this._aggregateTraffic(rawData, scope),
       businessSummary: this._aggregateBusiness(rawData, scope),
-      singleBusinessAnalysis: scopeType === 'webApplication' && hasTarget
-        ? this._aggregateSingleBusiness(rawData)
-        : null,
       conclusion: null,
       recommendations: []
     };
@@ -983,57 +980,6 @@ class SummaryService {
     }
 
     return businessSummary;
-  }
-
-  _aggregateSingleBusiness(rawData = {}) {
-    const overview = normalizeAverageValues(rawData.businessOverview, ['PGNPGE', 'PGNSLPGE', 'PGSLPCT', 'PGSLRT', 'PGTME']);
-    const accessSlowTrend = normalizeTimeSeries(rawData.accessSlowTrend, ['PGNPGE', 'PGNSLPGE']);
-    const resourceSummary = normalizeAverageValues(rawData.resourceSummary, ['PGBYTI', 'PGSIZEI', 'PGSIZEO', 'PGBYTO', 'PGNOBJE']);
-    const requestResponseTrend = normalizeTimeSeries(rawData.requestResponseTrend, ['PGBYTI', 'PGBYTO']);
-    const httpCodeSummary = normalizeAverageValues(rawData.httpCodeSummary, ['PGHTTP100', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500']);
-
-    return {
-      overview: {
-        visitCount: Number(overview.PGNPGE || 0),
-        slowVisitCount: Number(overview.PGNSLPGE || 0),
-        slowVisitPct: Number(overview.PGSLPCT || 0),
-        slowVisitRate: Number(overview.PGSLRT || 0),
-        avgResponseTimeSec: Number(overview.PGTME || 0)
-      },
-      accessSlowTrend: buildTrendSummary(accessSlowTrend, 'PGNPGE'),
-      nodeDistribution: normalizeTopValues(rawData.nodeDistribution, 'ClientBusinessGroup').map((row) => ({
-        nodeName: row.keyLabel || row.key || '-',
-        visitCount: Number(row.PGNPGE || 0),
-        slowVisitCount: Number(row.PGNSLPGE || 0)
-      })),
-      resourceSummary: {
-        requestTrafficMb: Number(resourceSummary.PGBYTI || 0),
-        requestSizeKb: Number(resourceSummary.PGSIZEI || 0),
-        pageSizeKb: Number(resourceSummary.PGSIZEO || 0),
-        responseTrafficMb: Number(resourceSummary.PGBYTO || 0),
-        httpResponseCount: Number(resourceSummary.PGNOBJE || 0)
-      },
-      requestResponseTrend: buildTrendSummary(requestResponseTrend, 'PGBYTI'),
-      slowClients: normalizeTopValues(rawData.slowClients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        avgResponseTimeSec: Number(row.PGTME || 0)
-      })),
-      httpCodeSummary: {
-        http100: Number(httpCodeSummary.PGHTTP100 || 0),
-        http200: Number(httpCodeSummary.PGHTTP200 || 0),
-        http300: Number(httpCodeSummary.PGHTTP300 || 0),
-        http400: Number(httpCodeSummary.PGHTTP400 || 0),
-        http500: Number(httpCodeSummary.PGHTTP500 || 0)
-      },
-      http400Clients: normalizeTopValues(rawData.http400Clients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        count: Number(row.PGHTTP400 || 0)
-      })),
-      http500Clients: normalizeTopValues(rawData.http500Clients, 'IPAddress').map((row) => ({
-        clientIp: row.keyLabel || row.key || row.IPAddress || '-',
-        count: Number(row.PGHTTP500 || 0)
-      }))
-    };
   }
 
   // ── Fault diagnosis aggregation ────────────────────────────

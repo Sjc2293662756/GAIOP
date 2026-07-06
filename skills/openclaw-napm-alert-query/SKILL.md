@@ -188,10 +188,37 @@ The skill returns JSON with:
 - `metricSeries`
 - `packetHandoff`
 - `packetInstruction`    ← **AI 必须遵循的直接指令**（action + message + callPacketAnalysis）
+- `displayText`          ← ★ **最终输出文本，原样使用，禁止修改、总结、重排**
 - `narrationInput`
 - `reportData`
 - `warnings`
 - `error`
+
+### ⚠️ displayText — 最终展示文本（skill 生成的格式化输出）
+
+`narrationInput.displayText` 是 skill 预生成的完整展示文本。**AI 必须将其作为最终回复原样输出，禁止修改、总结、重排、翻译或添加额外内容**。
+
+格式示例（summary 模式）：
+```
+2026/7/5 00:46:00 至 2026/7/5 01:46:00 告警查询结果
+
+告警总数：32 条
+  🔴 紧急 9 条  |  🟠 重大 13 条  |  轻微 10 条
+
+① 应用性能告警 — 28 条（🔴 7/🟠 12/9）
+   主要对象：Esxi-local、HTTPS、HTTP
+   🔴 告警推送应用测试1 — Esxi-local（紧急，持续 420秒）
+   ...
+
+② 网络性能告警 — 3 条（🔴 2/🟠 1）
+   ...
+
+告警查询完成。
+```
+
+AI 收到 `displayText` 后的行为：**直接返回给用户，一字不改**。不要生成自己的摘要、表格或列表。
+
+### packetInstruction 动作指令
 
 `packetInstruction` 是 narrationInput 中的关键字段，直接告诉 AI 下一步操作：
 
@@ -205,8 +232,6 @@ The skill returns JSON with:
 
 AI 必须读取 `packetInstruction.action` 和 `packetInstruction.callPacketAnalysis`，
 不得自行判断是否调用 packet-analysis。
-
-OpenClaw should render the final answer in Chinese from `narrationInput`, not from stale memory.
 
 ## References
 

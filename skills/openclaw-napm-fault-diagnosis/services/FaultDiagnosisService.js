@@ -287,7 +287,7 @@ class FaultDiagnosisService {
       templateId: 'napm_fault_diagnosis_v2',
       format: 'docx',
       title: `${session.description}_故障分析报告`,
-      systemName: 'Netlnside流量分析系统',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
       faultName: session.description,
       timeRange: {
         start: session.context.faultStart,
@@ -297,7 +297,7 @@ class FaultDiagnosisService {
         baselineEnd: session.context.baselineEnd
       },
       dataSource: {
-        system: 'Netlnside流量分析系统',
+        system: 'Netlnside基于AI的全流量性能分析平台',
         sourceSkill: 'openclaw-napm-fault-diagnosis',
         queryService: `faultDiagnosis:${session.flowType}`
       },
@@ -394,7 +394,7 @@ class FaultDiagnosisService {
       templateId: 'napm_bs_fault_diagnosis_v2',
       format: 'docx',
       title: (diagnosis.description || '未命名故障') + '_业务故障分析报告',
-      systemName: 'Netlnside流量分析系统',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
       faultName: diagnosis.description,
       timeRange: {
         start: session.context?.faultStart,
@@ -402,7 +402,7 @@ class FaultDiagnosisService {
         displayText: session.timeRange?.displayText || ''
       },
       dataSource: {
-        system: 'Netlnside流量分析系统',
+        system: 'Netlnside基于AI的全流量性能分析平台',
         sourceSkill: 'openclaw-napm-fault-diagnosis',
         queryService: `faultDiagnosis:${session.flowType}`
       },

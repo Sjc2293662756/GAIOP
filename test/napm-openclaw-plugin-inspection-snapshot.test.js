@@ -126,7 +126,7 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
     const text = plugin.__test__.buildInspectionSnapshotReply({
       ok: true,
       summary: {
-        title: '北京烟草流量分析系统健康检查报告',
+        title: '北京烟草基于AI的全流量性能分析平台健康检查报告',
         status: 'ok',
         highlights: ['本次巡检未发现明显异常。']
       },

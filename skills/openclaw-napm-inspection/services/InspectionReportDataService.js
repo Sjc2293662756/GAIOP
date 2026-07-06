@@ -51,7 +51,7 @@ class InspectionReportDataService {
 
   buildReportData(inspection = {}, options = {}) {
     const title = asText(options.title)
-      || `${inspection.customerName ? `${inspection.customerName}` : ''}流量分析系统健康检查报告`;
+      || `${inspection.customerName ? `${inspection.customerName}` : ''}基于AI的全流量性能分析平台健康检查报告`;
     return {
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'inspection_report',
@@ -59,7 +59,7 @@ class InspectionReportDataService {
       format: options.format || 'docx',
       defaultFormat: 'docx',
       title,
-      sourceQuestion: asText(options.sourceQuestion || options.prompt) || '生成流量分析系统巡检报告',
+      sourceQuestion: asText(options.sourceQuestion || options.prompt) || '生成基于AI的全流量性能分析平台巡检报告',
       dataSource: {
         system: 'NAPM',
         sourceSkill: 'openclaw-napm-inspection',

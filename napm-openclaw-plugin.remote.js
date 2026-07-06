@@ -44,6 +44,7 @@ let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+let pendingAlertDisplayText = null;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
@@ -2940,6 +2941,13 @@ function buildAlertExecutorPayload(args = {}) {
   const explicitMode = String(args.mode || alertQuery.mode || '').trim();
   const mode = explicitMode || alertQuery.mode || defaultMode;
 
+  // summary 模式无 start/end 时自动填默认时间范围（最近 1 小时）
+  if (!criteria.start && !criteria.end && !hasEventIds) {
+    const end = Math.floor(Date.now() / 1000 / 60) * 60;
+    criteria.start = end - 3600;
+    criteria.end = end;
+  }
+
   return {
     prompt: normalizePrompt(args) || alertQuery.prompt || '',
     alertQuery: {
@@ -2987,11 +2995,11 @@ function buildSummaryExecutorPayload(args = {}) {
   }
 
   // Fix truncated target names: AI often shortens "回溯238web" → "238web".
-  // If the prompt contains a longer name that includes the target as a substring, use it.
+  // Only correct when prompt has ≥2 Chinese chars as a prefix to the target name.
   if (scope.target && scope.target.groupArgument && prompt) {
     const shortName = scope.target.groupArgument;
-    // Look for a word boundary pattern around the short name in the prompt
-    const nameRe = new RegExp('([\\u4e00-\\u9fa5a-zA-Z0-9_-]*' + shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i');
+    // Match: ≥2 Chinese chars + optional alphanumeric + the short name
+    const nameRe = new RegExp('([\\u4e00-\\u9fa5]{2,}[a-zA-Z0-9_-]*' + shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i');
     const nameMatch = prompt.match(nameRe);
     if (nameMatch && nameMatch[1].length > shortName.length) {
       scope.target.groupArgument = nameMatch[1];
@@ -3212,6 +3220,15 @@ async function runAlertExecutor(args = {}) {
 }
 
 function buildAlertQueryReply(result = {}) {
+  // skill 已生成 displayText → 直接透传
+  const skillText = result?.narrationInput?.displayText;
+  if (skillText) {
+    const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
+    return requestUrl && !skillText.includes(requestUrl)
+      ? `${skillText}\n\nDebug API:\n${requestUrl}`
+      : skillText;
+  }
+
   if (!result?.ok) {
     return String(
       result?.message
@@ -3249,15 +3266,21 @@ function buildAlertQueryReply(result = {}) {
       lines.push(`     → napm-packet-analysis mode=${sq.mode || 'preview_download_analyze'} ips=${sqIps} start=${sqStart} end=${sqEnd}`);
     }
     lines.push('');
-    // 触发条件
+    // 触发指标 — 动态透传，AI 必须围绕此展开分析
     if (Array.isArray(triggerInfo) && triggerInfo.length > 0) {
       const t = triggerInfo[0];
-      lines.push('⚠️ 报告中必须解释触发原因：');
-      lines.push(`  指标: ${(t.metrics||[]).join(', ') || 'N/A'}`);
-      lines.push(`  条件: ${t.condition || 'N/A'}`);
-      lines.push(`  实际值: ${(t.value||[]).join(', ') || 'N/A'}`);
-      lines.push('');
+      const m = (t.metrics||[]).join('、') || null;
+      const v = (t.value||[]).join('、');
+      const u = (t.unit||[])[0] || '';
+      if (m) {
+        lines.push(`🔴 告警触发: ${m} = ${v}${u}（${t.severityLabel||'?'}）`);
+        lines.push(`   条件: ${t.condition || 'N/A'}`);
+        lines.push(`   报告必须围绕 ${m} 展开，解释为什么达到 ${v}${u}`);
+      } else {
+        lines.push('该告警无触发指标，仍必须逐条分析数据包内容');
+      }
     }
+    lines.push('');
     lines.push('═══════════════════════════════════════');
     lines.push('');
     // 告警基本信息
@@ -3273,11 +3296,12 @@ function buildAlertQueryReply(result = {}) {
     return lines.join('\n').trim();
   }
 
-  if (pi && !pi.callPacketAnalysis) {
-    // STOP — 简洁告知不能继续
+  // STOP 只在确实有 packet 查询意图（packetHandoff 非 null）时才显示
+  // 普通 summary 查询（packetHandoff=null）不受影响
+  if (pi && !pi.callPacketAnalysis && result.packetHandoff) {
     lines.push(`⚠️ 该告警无法进行数据包分析: ${pi.message}`);
-    lines.push(`原因: ${result.packetHandoff?.reason || 'N/A'}`);
-    if (result.packetHandoff?.hint) {
+    lines.push(`原因: ${result.packetHandoff.reason || 'N/A'}`);
+    if (result.packetHandoff.hint) {
       lines.push(`提示: ${result.packetHandoff.hint}`);
     }
     return lines.join('\n').trim();
@@ -3372,7 +3396,8 @@ function buildAlertQueryReply(result = {}) {
   }
 
   lines.push('');
-  lines.push('需要查看某条告警的详情，或继续查看告警时间线吗？');
+  lines.push('---');
+  lines.push('以上为告警查询结果。');
 
   const text = lines.join('\n').trim() || JSON.stringify(result, null, 2);
   const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
@@ -3711,6 +3736,7 @@ async function runPacketExecutor(args = {}) {
       env: {
         ...process.env,
         NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
+        NETINSIDE_TLS_REJECT_UNAUTHORIZED: process.env.NETINSIDE_TLS_REJECT_UNAUTHORIZED || 'false',
         FORCE_COLOR: '0',
         NO_COLOR: '1'
       }
@@ -4708,6 +4734,12 @@ function createAlertQueryToolDefinition() {
       const result = await runAlertExecutor(args || {});
       const renderedText = buildAlertQueryReply(result);
       const pi = result?.narrationInput?.packetInstruction;
+      const dt = result?.narrationInput?.displayText;
+      pendingAlertDisplayText = dt || null;
+      appendPluginAuditEvent('napm_alert_displaytext_set', {
+        hasDisplayText: Boolean(dt),
+        displayTextLen: typeof dt === 'string' ? dt.length : 0
+      });
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
 
       // 有 packetInstruction 时：text=AI指令, finalAnswer=摘要, details=完整数据
@@ -4759,13 +4791,13 @@ function createInspectionSnapshotToolDefinition() {
   return {
     label: 'NAPM Inspection Snapshot',
     name: 'napm-inspection-snapshot',
-    description: 'Collect a structured NAPM health inspection snapshot for traffic analysis system inspection reports. Use this for 巡检, 巡检报告, 健康检查报告, 流量分析系统巡检, device health inspection, traffic trend inspection, and business performance inspection. The tool queries NAPM and returns reportData for napm-report-export.',
+    description: 'Collect a structured NAPM health inspection snapshot for traffic analysis system inspection reports. Use this for 巡检, 巡检报告, 健康检查报告, 基于AI的全流量性能分析平台巡检, device health inspection, traffic trend inspection, and business performance inspection. The tool queries NAPM and returns reportData for napm-report-export.',
     parameters: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
         customerName: { type: 'string', description: 'Customer name for the inspection report, for example 北京烟草.' },
-        projectName: { type: 'string', description: 'Project/system name. Defaults to 流量分析系统.' },
+        projectName: { type: 'string', description: 'Project/system name. Defaults to 基于AI的全流量性能分析平台.' },
         reportDate: { type: 'string', description: 'Report date, usually YYYY-MM-DD.' },
         title: { type: 'string', description: 'Optional report title override.' },
         format: { type: 'string', enum: ['docx', 'word'], description: 'Requested reportData format. word is normalized by the report skill.' },
@@ -5223,7 +5255,7 @@ function buildNapmRoutingSystemContext() {
     'Alert tool contract: use `napm-alert-query` with mode=`summary` for alert lists, mode=`timeline` for alert count trends, mode=`detail` for event IDs, mode=`detail_with_timeseries` for trigger metric analysis, and mode=`explain_notification` for notification field explanations. This alert tool is read-only and must not add/update/delete alert definitions.',
     'Alert final-answer contract: when `napm-alert-query` returns `finalAnswer`, `renderedText`, or text content, output that text verbatim as the final user-visible answer. Do not paraphrase it, do not regroup by severity, do not add "Let me" or "当前最需要关注", and do not change the alert category order/template.',
     'Generic alert summary template requirement: if the user did not specify an alert category, the final visible answer must be grouped by alert category with lines like `① 应用性能告警 — N 条`, severity counts on one line, `主要对象/对象`, and `告警概览` trigger sentences. Never answer generic alert summaries primarily by `紧急/重大/轻微` sections.',
-    'Inspection boundary: inspection report requests such as 巡检, 巡检报告, 健康检查报告, 流量分析系统巡检, 设备健康巡检, 流量分析状况, 业务性能状况 must call `napm-inspection-snapshot` first. It queries NAPM, returns `inspection` and `reportData`, and then `napm-report-export` may render Word/docx.',
+    'Inspection boundary: inspection report requests such as 巡检, 巡检报告, 健康检查报告, 基于AI的全流量性能分析平台巡检, 设备健康巡检, 流量分析状况, 业务性能状况 must call `napm-inspection-snapshot` first. It queries NAPM, returns `inspection` and `reportData`, and then `napm-report-export` may render Word/docx.',
     'Inspection tool contract: `napm-inspection-snapshot` owns live data collection for applianceInfo, packetsInfo, TotalTraffic timeValues, and WebApplication business performance topValues. `napm-report-export` must only render the returned reportData and must not query NAPM.',
     'Summary boundary: summary/overview report requests such as 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report must call `napm-summary` first. It queries alert/traffic/business APIs in parallel, aggregates the data, returns `reportData`. After `napm-summary` succeeds, immediately call `napm-report-export` with the returned `reportData` to render and deliver the Word/docx file. Do NOT use `napm-skill-query` for summary/overview reports — use `napm-summary` instead. Do NOT ask the user whether they want a Word file after a summary report request — always auto-export.',
     'Summary tool contract: `napm-summary` takes a `scope` (type + optional target) and a `timeRange` (start/end Unix seconds). For global summaries, use scope.type=`global`. For per-application summaries, use scope.type=`webApplication` with target.groupType=`WebApplication` and target.groupArgument (e.g. `239web`). After calling `napm-summary`, ALWAYS call `napm-report-export` in the same turn — the user expects the Word file directly without an extra prompt. `napm-report-export` must consume `reportData` returned by `napm-summary` and must not query NAPM independently.',
@@ -5728,6 +5760,7 @@ const plugin = {
           };
         }
 
+        appendPluginAuditEvent("napm_alert_displaytext_consumed_msg_sending", { consumed: Boolean(pendingAlertDisplayText) }); if (pendingAlertDisplayText) { const text = pendingAlertDisplayText; pendingAlertDisplayText = null; return { content: text }; }
         if (!outOfScopeBoundaryRequested) {
           const activePrompt = activePromptForReport;
           const alertScopedPrompt = Boolean(
@@ -5761,6 +5794,12 @@ const plugin = {
                 ? buildAlertExecutionTraceReplyFromRememberedRecord(rememberedRecord)
                 : buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
             };
+          }
+          appendPluginAuditEvent("napm_alert_displaytext_consumed_before_write", { consumed: Boolean(pendingAlertDisplayText) });
+        if (pendingAlertDisplayText) {
+            const text = pendingAlertDisplayText;
+            pendingAlertDisplayText = null;
+            return { content: text };
           }
           if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {
             return {
@@ -5896,6 +5935,15 @@ const plugin = {
                 : buildExecutionTraceReplyFromRememberedRecord(rememberedRecord),
               message
             )
+          };
+        }
+        // skill 已生成 displayText → 直接替换 AI 输出，不走 AI 格式化
+        appendPluginAuditEvent("napm_alert_displaytext_consumed_before_write", { consumed: Boolean(pendingAlertDisplayText) });
+        if (pendingAlertDisplayText) {
+          const text = pendingAlertDisplayText;
+          pendingAlertDisplayText = null;
+          return {
+            message: buildAssistantTextMessage(text, message)
           };
         }
         if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {

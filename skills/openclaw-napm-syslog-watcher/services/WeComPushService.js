@@ -257,7 +257,12 @@ class WeComPushService {
         const qEnd = hasEnd
           ? Math.floor(rawEnd / 60) * 60 + 60
           : Math.floor(rawStart / 60) * 60 + 120;
-        md += `\n> 💬 深入分析\n\n\`\`\`\n分析这个告警数据包 ${alert.extra.elogid} ${qStart} ${qEnd}\n\`\`\`\n`;
+        // 追加指标名，供 AI 分析时定位
+        const metricNames = (alert.metrics || [])
+          .map(m => m.name)
+          .filter(Boolean);
+        const metricPart = metricNames.length > 0 ? ' ' + metricNames.join(' ') : '';
+        md += `\n> 💬 深入分析\n\n\`\`\`\n分析这个告警数据包 ${alert.extra.elogid} ${qStart} ${qEnd}${metricPart}\n\`\`\`\n`;
       }
     }
 

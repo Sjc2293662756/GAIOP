@@ -282,7 +282,7 @@ class InspectionFieldMapperService {
     return {
       schema: 'openclaw_napm_inspection.v1',
       customerName: asText(options.customerName || source.customerName),
-      projectName: asText(options.projectName || source.projectName || '流量分析系统'),
+      projectName: asText(options.projectName || source.projectName || '基于AI的全流量性能分析平台'),
       reportDate,
       timezone: this.timezone,
       devices: [this.mapDevice(applianceInfo, aboutHtml)],
