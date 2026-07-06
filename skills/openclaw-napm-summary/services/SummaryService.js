@@ -1336,10 +1336,17 @@ class SummaryService {
     return {
       systemName: raw.boxName || raw.systemName || raw.hostname || '',
       ip: raw.address || raw.ip || raw.ipAddress || '',
-      softwareVersion: raw.uiVersion || raw.mktVersion || raw.softwareVersion || raw.version || '',
-      serialNumber: raw.serialNumber || raw.sn || '',
+      softwareVersion: '5.0',
+      serialNumber: this._formatSerialNumber(raw.serialNumber || raw.sn || ''),
       uptime: raw.uptime || ''
     };
+  }
+
+  _formatSerialNumber(value = '') {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    // 通用前缀替换：将原始前缀（如 ARXVXA、ARX3800）统一替换为 NAPM
+    return text.replace(/^[A-Z0-9]+-/i, 'NAPM-');
   }
 
   _buildNarrationInput(summary = {}, scope = {}, timeRange = {}) {

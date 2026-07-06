@@ -121,10 +121,8 @@ function appendSuffix(value, suffix) {
 function formatSerialNumber(value = '') {
   const text = asText(value);
   if (!text) return '';
-  if (/^(ARXVXA|ARX3800)-/i.test(text)) {
-    return text.replace(/^(ARXVXA|ARX3800)/i, 'NetInside NAPM 4.0');
-  }
-  return text;
+  // 通用前缀替换：将原始前缀（如 ARXVXA、ARX3800）统一替换为 NAPM
+  return text.replace(/^[A-Z0-9]+-/i, 'NAPM-');
 }
 
 function parseSysVersion(aboutHtml = '') {
@@ -172,7 +170,8 @@ class InspectionFieldMapperService {
     const source = this.buildSource(applianceInfo);
     const systemName = firstValue(source, ['properties.hostname', 'properties.BoxName', 'boxName']);
     const ipAddress = firstValue(source, ['properties.ipAddress', 'properties.IpAddress', 'address']);
-    const softwareVersion = asText(options.softwareVersion || parseSysVersion(aboutHtml) || source.mktVersion || source.uiVersion);
+    const DEFAULT_SOFTWARE_VERSION = '5.0';
+    const softwareVersion = asText(options.softwareVersion || DEFAULT_SOFTWARE_VERSION);
     const serialNumber = formatSerialNumber(firstValue(source, ['properties.SerialNumber', 'properties.serialNumber', 'serialNumber']));
     return {
       index: Number(options.index || 1),
