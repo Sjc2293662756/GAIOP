@@ -105,8 +105,9 @@ function isFaultDiagnosisSourceResult(result = {}) {
     return false;
   }
   const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
+  const templateId = String(result?.reportData?.templateId || '').trim();
   return String(result?.reportData?.reportType || '').trim() === 'diagnostic_report'
-    && String(result?.reportData?.templateId || '').trim() === 'napm_bs_fault_diagnosis_v2'
+    && (templateId === 'napm_bs_fault_diagnosis_v2' || templateId === 'napm_cs_fault_diagnosis_v1')
     || String(result.schema || '').trim() === 'openclaw_napm_fault_diagnosis_result.v1'
     || String(narrationInput.schema || '').trim() === 'openclaw_napm_fault_diagnosis.v1'
     || (isPlainObject(result.alertAnalysis) && isPlainObject(result.trafficAnalysis));

@@ -35,11 +35,8 @@ const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/open
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
 const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
-const {
-  validateTimeRangeFreshness,
-  autoCorrectTimestampIfStale
-} = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolvedQueryTimeRangeService'));
-
+// validateTimeRangeFreshness / autoCorrectTimestampIfStale removed 2026-07-07:
+// time override now handled by before_tool_call Hook + src/shared/timeResolver.js
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
 function normalizeTraceId(value = '') {
@@ -473,24 +470,8 @@ function normalizeResolvedQueryTimeRange(query = {}) {
   if (Number.isFinite(Number(query.end)) && Number(query.end) > 0) {
     query.end = floorToMinute(query.end);
   }
-  // 时间戳年份校验：防止 LLM 自行计算时间戳时出现年份错误（如 2025 vs 2026）
-  if (Number.isFinite(Number(query.start)) && Number.isFinite(Number(query.end))) {
-    const freshness = validateTimeRangeFreshness(query.start, query.end);
-    if (!freshness.ok) {
-      const correctedStart = autoCorrectTimestampIfStale(query.start);
-      const correctedEnd = autoCorrectTimestampIfStale(query.end);
-      logAudit('napm_skill_time_range_stale_corrected', {
-        originalStart: query.start,
-        originalEnd: query.end,
-        correctedStart,
-        correctedEnd,
-        issues: freshness.issues,
-        serverTime: freshness.nowSeconds
-      });
-      query.start = correctedStart;
-      query.end = correctedEnd;
-    }
-  }
+  // 2026-07-07: 时间覆盖已由 before_tool_call Hook 统一处理，
+  // validateTimeRangeFreshness / autoCorrectTimestampIfStale 不再需要。
   if (query.timeRange && typeof query.timeRange === 'object' && !Array.isArray(query.timeRange)) {
     delete query.timeRange.start;
     delete query.timeRange.end;
@@ -2295,7 +2276,173 @@ if (require.main === module) {
   });
 }
 
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象（buildSkillPayload 的产出），
+ * 包含 resolvedQuery, prompt, traceId, sessionState 等字段，
+ * 无需 CLI 参数解析和 JSON 反序列化。
+ *
+ * 时间覆盖已由 before_tool_call Hook 完成，
+ * 此函数只做 floorToMinute + 基础 shape 校验。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    const payload = params;
+    const traceId = normalizeTraceId(payload.traceId) || buildTraceIdFromPayload(payload, {});
+    payload.traceId = traceId;
+    const input = await resolveInput({}, payload);
+    const prompt = input.prompt || '';
+    const resolvedQuery = input.resolvedQuery || {};
+    const mappingResult = input.mappingResult || null;
+    const intentResult = input.intentResult || null;
+    const semanticResolutionResult = input.semanticResolutionResult || null;
+    const hierarchyCatalogPayload = input.hierarchyCatalogPayload
+      || await buildHierarchyCatalogPayloadFromResolvedQuery(resolvedQuery)
+      || null;
+
+    logSkillAudit('napm_skill_resolved_query_received', {
+      traceId,
+      prompt,
+      resolvedQuerySource: detectResolvedQuerySource({}, payload),
+      boundaryMode: getBoundaryMode(),
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      sessionPresent: Boolean(input?.requestContext?.session),
+      sensitiveCredentialRequest: Boolean(input.sensitiveCredentialRequest),
+    }, traceId);
+
+    // Guard: sensitive credential request
+    if (input.sensitiveCredentialRequest) {
+      logSkillAudit('napm_skill_execution_completed', {
+        traceId, prompt, service: 'security_refusal', resolvedQuery,
+        resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+        ok: true, responseType: 'security_refusal',
+      }, traceId);
+      return buildSensitiveCredentialRefusalContract({
+        prompt, service: 'security_refusal', resolvedQuery, intentResult, semanticResolutionResult,
+        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
+      });
+    }
+
+    // Guard: clarification gate
+    const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
+    if (clarificationGate?.required) {
+      logSkillAudit('napm_skill_execution_completed', {
+        traceId, prompt, service: String(resolvedQuery?.service || '').trim() || null,
+        resolvedQuery, resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+        ok: true, responseType: 'clarification_required',
+        clarificationQuestion: clarificationGate?.question || null,
+      }, traceId);
+      return buildClarificationContract({
+        prompt, service: resolvedQuery?.service || null, resolvedQuery, intentResult, semanticResolutionResult,
+        assistantDecision: clarificationGate,
+        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
+      }, clarificationGate);
+    }
+
+    // Guard: execution guard
+    if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
+      logSkillAudit('napm_skill_execution_completed', {
+        traceId, prompt, service: String(resolvedQuery?.service || '').trim() || null,
+        resolvedQuery, resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+        ok: true, responseType: 'execution_guard_blocked',
+        guardMessage: resolvedQuery?.executionGuard?.message || null,
+      }, traceId);
+      return buildClarificationContract({
+        prompt, service: resolvedQuery?.service || null, resolvedQuery, intentResult, semanticResolutionResult,
+        assistantDecision: resolvedQuery.executionGuard,
+        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
+      }, {
+        question: resolvedQuery.executionGuard.message,
+        options: (resolvedQuery.executionGuard.details?.suggestedCandidates || []).map((item) => ({
+          label: item?.label || item?.value,
+          value: item?.value || item?.label,
+          replyText: item?.value || item?.label,
+        })),
+      });
+    }
+
+    // Guard: drilldown catalog
+    if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
+      logSkillAudit('napm_skill_execution_completed', {
+        traceId, prompt, service: 'drilldownCatalog', resolvedQuery,
+        resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+        ok: !Boolean(hierarchyCatalogPayload?.notFound),
+        responseType: 'drilldown_catalog',
+        hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null,
+      }, traceId);
+      return buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
+    }
+
+    // Main execution path
+    const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
+    const rows = Array.isArray(executionResult?.data) ? executionResult.data : [];
+    const service = executionResult?.service || resolvedQuery?.service || null;
+    const summary = executionResult?.summary || buildSummary(service, resolvedQuery, rows);
+    const output = buildOpenClawReplyContract({
+      ok: Boolean(executionResult?.ok),
+      prompt, service, resolvedQuery, rows, data: rows,
+      overview: executionResult?.overview || null,
+      requestUrl: executionResult?.requestUrl || null,
+      requestParamsJson: executionResult?.requestParams || null,
+      metadata: executionResult?.metadata || null,
+      rawApiResponse: undefined,
+      summary,
+      error: executionResult?.error || null,
+      warnings: Array.isArray(executionResult?.warnings) ? executionResult.warnings : [],
+      supportedMetrics: MetricMappingService.getAllMetricCodes().length,
+      intentResult, semanticResolutionResult,
+      assistantDecision: clarificationGate || null,
+    }, {
+      forwardDisplayText: isOverviewResolvedQuery(resolvedQuery) ? true : SKILL_FORWARD_DISPLAY_TEXT,
+      appendRequestUrlToDisplayText,
+      defaultDisplayTextBuilder: buildDisplayText,
+      includeRequestUrl: false,
+    });
+
+    return output;
+  } catch (error) {
+    const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
+    if (isMissingResolvedQuery) {
+      logSkillAudit('napm_skill_missing_resolved_query', {
+        traceId: null,
+        error: { code: error.code || null, message: error.message },
+        details: error.details || null,
+      }, null);
+      return buildMissingResolvedQueryContract({
+        prompt: null, service: null, resolvedQuery: null,
+        rows: [], data: [],
+        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
+      });
+    }
+
+    logSkillAudit('napm_skill_execution_failed', {
+      traceId: null,
+      error: { code: error.code || 'SKILL_EXECUTION_ERROR', message: error.message },
+    }, null);
+
+    const failureClassification = ExecutionFailureClassifier.classify(error, {});
+    const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
+    return buildOpenClawReplyContract({
+      ok: false, service: null, resolvedQuery: null, rows: [], data: [], summary,
+      error: {
+        code: error.code || 'SKILL_EXECUTION_ERROR',
+        message: error.message,
+        failureClassification,
+        userMessage: failureClassification.userMessage,
+      },
+      responseType: 'decision_result',
+      displayText: failureClassification.userMessage,
+    }, {
+      forwardDisplayText: false,
+      appendRequestUrlToDisplayText,
+      includeRequestUrl: false,
+    });
+  }
+}
+
 module.exports = {
+  handleSkillCall,
   __test__: {
     getBoundaryMode,
     isStrictBoundaryMode,

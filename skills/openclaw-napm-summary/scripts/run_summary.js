@@ -123,4 +123,33 @@ if (require.main === module) {
   });
 }
 
-module.exports = { executeSummaryQuery };
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    loadDotEnvCandidates([
+      '.env',
+      '.env.local',
+      'skills/openclaw-napm-query/.env',
+    ]);
+
+    const payload = {
+      ...params,
+      sourceQuestion: params.sourceQuestion || params.prompt,
+    };
+
+    return await executeSummaryQuery(payload);
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: error.code || 'SUMMARY_SKILL_ERROR',
+        message: error.message || String(error),
+      },
+    };
+  }
+}
+
+module.exports = { executeSummaryQuery, handleSkillCall };

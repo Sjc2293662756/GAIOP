@@ -2,9 +2,15 @@
 - [summary-report-implementation](memory/summary-report-implementation.md) — 综述报告完整实现状态（模板、渲染、聚合、6种scope、61个测试通过）
 - [summary-report-final](docs/2026-06-22-综述报告实现落地与元数据共享说明.md) — 综述报告最终落地文档（scope矩阵、元数据共享架构、NAP API格式适配、CLI使用）
 - [napm-query-chinese-metric-mapping](memory/2026-06-23-napm-query-metric-mapping-fix.md) — NAPM query skill 中文语义→指标映射系统性修复（报错→PLI误映射根因+两轮修复+8语义域正向查表）
-- [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（SSH连接、日志位置、命令模板、时间线分析模板、字段解读）
+- [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（5层分析法、多日志关联、reqId追踪、Agent内部阶段拆解、Prompt大小分析、常见排查场景）
+- [query-latency-case-study](docs/2026-07-08-查询流程耗时排查-吞吐量前10IP.md) — 实战排查案例：吞吐量前10IP查询全流程10.3s耗时拆解（频道层→Agent层→Hook层→API层→Prompt层），LLM推理占77%为绝对瓶颈，Prompt膨胀至~16K token
 - [query-latency-optimization](docs/2026-06-23-查询耗时优化与时间戳年份Bug修复.md) — 查询耗时优化（19s→5-8s）：时间戳年份Bug修复（2025→2026自动修正）+ Memory子系统故障修复（禁用embeddings节省7s）
 - [llm-inference-bottleneck](docs/2026-06-23-LLM推理耗时根因分析.md) — LLM推理是唯一瓶颈的硬数据分析：审计日志精确时间线证明DeepSeek Chat占96%耗时(16.8s)，规则引擎仅需9ms，NAP API仅682ms
 - [hybrid-query-architecture](docs/2026-06-23-混合查询架构设计方案.md) — 混合查询架构设计方案：LLM轻量实体提取(~1s) + 规则引擎精确构造(9ms) + 三级回退
+- [time-handling-analysis](docs/2026-07-06-项目时间处理全面分析文档.md) — 项目时间处理全面分析：分层架构（基础工具→时间描述解析→插件主防线→契约校验→Skill防线）、时区策略（Asia/Shanghai）、各Skill时间使用方式、远端服务器时间处理、关键设计决策演进历史
 - [query-latency-status](docs/2026-06-24-查询耗时问题现状与求助.md) — 查询耗时问题现状
 - [final-architecture-tag-mapping](docs/2026-06-24-最终架构设计-语义标签映射.md) — 最终架构设计：LLM提取语义标签（中文描述，~2s）+ 规则引擎标签→resolvedQuery精确映射（9ms）+ 复杂查询needsConstruction回退
+- [architecture-refactor-inprocess](docs/2026-07-07-架构重构实施记录-消除子进程统一时间覆盖.md) — 架构重构实施记录：消除execFileAsync子进程边界，统一时间覆盖到before_tool_call Hook，Plugin缩减~794行，7个Skill统一handleSkillCall接口，部署到远端并验证通过
+- [llm-inference-optimization-plan](docs/2026-07-08-LLM推理耗时优化方案-Prompt精简与动态上下文.md) — LLM推理耗时优化方案（输入侧）：定量分析根因（16K token输入中85%无关），4个方案（P0动态上下文/P1精简Tool Schema/P2规则压缩/P3模型调参）
+- [llm-inference-deep-optimization](docs/2026-07-08-LLM推理耗时深度优化方案-输出侧精简.md) — LLM推理深度优化方案（输出侧）：揭示P0+P1+P2不够的根本原因（瓶颈在generation而非prefill），提出P4预格式化displayText+强制verbatim输出、P5消除第二轮LLM调用，目标简单查询4-5s/复杂查询~8s
+- [report-empty-data-fix](docs/2026-07-08-报告数据为空问题排查与修复.md) — 报告数据为空问题排查与修复：全局综述/故障诊断报告无数据，根因是before_tool_call Hook中summary/fault时间覆盖的条件缺陷（依赖timeRange.key存在才覆盖），LLM直接传start/end不传key时跳过覆盖，修复为无条件覆盖+默认24h+根级别双保险

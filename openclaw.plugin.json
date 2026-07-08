@@ -23,7 +23,8 @@
       "napm-packet-analysis",
       "napm-alert-query",
       "napm-inspection-snapshot",
-      "napm-summary"
+      "napm-summary",
+      "napm-fault-diagnosis"
     ]
   }
 }

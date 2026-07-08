@@ -53,17 +53,28 @@ class FaultDiagnosisService {
 
     // ── Run remaining steps ──
     for (let i = 1; i < flow.steps.length; i++) {
-      // Inject previous step's rawData into context for dependent steps
+      // Inject previous step's rawData and analysisFlags into context for dependent steps
       const prevStep = session.completedSteps[session.completedSteps.length - 1];
-      if (prevStep && prevStep.rawData) {
-        session.context._prevStepRawData = prevStep.rawData;
+      if (prevStep) {
+        if (prevStep.rawData) {
+          session.context._prevStepRawData = prevStep.rawData;
+        }
+        if (prevStep.analysisFlags) {
+          session.context._prevAnalysisFlags = prevStep.analysisFlags;
+          // Pass peak list directly for step3 convenience
+          if (prevStep.analysisFlags._selectedPeaks) {
+            session.context._prevPeaks = prevStep.analysisFlags._selectedPeaks;
+          }
+        }
       }
       const stepResult = await this.executeStep(session, flow.steps[i]);
       session = stepResult.session;
     }
 
     // ── Build template-compatible reportData ──
-    const reportData = this._buildBsTemplateData(session);
+    const reportData = session.flowType === 'cs_app_slow'
+      ? this._buildCsTemplateData(session)
+      : this._buildBsTemplateData(session);
 
     return {
       ok: true,
@@ -506,6 +517,8 @@ class FaultDiagnosisService {
       // pageViews returns JSON array: [{startTime, page, clientIp, httpStatus, http200S, http400S, http500S, httpResponses}]
       const rows = Array.isArray(data) ? data : [];
       for (const r of rows) {
+        // Skip HTTP 200 — only show abnormal status codes
+        if (String(r.httpStatus) === '200') continue;
         allVisits.push({
           startTime: r.startTime || '-',
           page: r.page || key.replace('pageDetail_', ''),
@@ -551,6 +564,162 @@ class FaultDiagnosisService {
       result[mv.metric?.id || 'value'] = mv.value;
     }
     return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // C/S App slow — template data builder
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildCsTemplateData(session) {
+    const target = session.target || session.context?.target || {};
+    const faultInput = session.faultInput || {};
+    const steps = session.completedSteps || [];
+
+    const diagnosis = {
+      flowType: session.flowType,
+      flowLabel: session.flowLabel,
+      description: session.description,
+      targetLabel: target.groupLabel || target.groupArgument || session.description,
+      targetType: target.groupType || 'DefinedApp',
+      severity: faultInput.severity || 'major',
+      severityLabel: { critical: '紧急', major: '重大', minor: '轻微' }[faultInput.severity] || '重大',
+      stepCount: steps.length,
+      reportDate: new Date().toISOString().slice(0, 10),
+      recommendations: faultInput.recommendations || [],
+      prevention: faultInput.prevention || [],
+      step1Hints: [],
+      step2Hints: [],
+      step3Hints: [],
+      step1: {},
+      step2: {},
+      step3: {}
+    };
+
+    for (const step of steps) {
+      const hints = (step.hints || []).filter((h) => h.type === 'judgment').map((h) => h.text);
+      const raw = step.rawData || {};
+
+      if (step.stepId === 'step1_app_overview') {
+        diagnosis.step1Hints = hints;
+        diagnosis.step1 = this._extractCsStep1Data(raw);
+      } else if (step.stepId === 'step2_user_experience_trend') {
+        diagnosis.step2Hints = hints;
+        diagnosis.step2 = this._extractCsStep2Data(raw);
+      } else if (step.stepId === 'step3_slow_client_analysis') {
+        diagnosis.step3Hints = hints;
+        diagnosis.step3 = this._extractCsStep3Data(raw);
+      }
+    }
+
+    return {
+      schema: 'openclaw_napm_report_data.v1',
+      reportType: 'diagnostic_report',
+      templateId: 'napm_cs_fault_diagnosis_v1',
+      format: 'docx',
+      title: (diagnosis.description || '未命名故障') + '_应用故障分析报告',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
+      faultName: diagnosis.description,
+      timeRange: {
+        start: session.context?.faultStart,
+        end: session.context?.faultEnd,
+        displayText: session.timeRange?.displayText || ''
+      },
+      dataSource: {
+        system: 'Netlnside基于AI的全流量性能分析平台',
+        sourceSkill: 'openclaw-napm-fault-diagnosis',
+        queryService: `faultDiagnosis:${session.flowType}`
+      },
+      diagnosis,
+      audit: {
+        sourceSkill: 'openclaw-napm-fault-diagnosis',
+        sourceSchema: 'openclaw_napm_fault_diagnosis_result.v2',
+        flowType: session.flowType,
+        totalSteps: steps.length,
+        queriesPerformed: steps.map((s) => s.stepId)
+      }
+    };
+  }
+
+  _extractCsStep1Data(raw) {
+    const result = { performanceSummary: {}, trafficTrend: null };
+
+    const perfData = raw.appPerformanceSummary;
+    if (perfData && Object.keys(perfData).length > 0) {
+      result.performanceSummary = {
+        UEII: Number(perfData.UEII) || 0,
+        CSTI: Number(perfData.CSTI) || 0,
+        TRTI: Number(perfData.TRTI) || 0,
+        PTTO: Number(perfData.PTTO) || 0,
+        RDTO: Number(perfData.RDTO) || 0
+      };
+    }
+
+    if (raw.appTrafficTrend) {
+      result.trafficTrend = raw.appTrafficTrend;
+    }
+
+    return result;
+  }
+
+  _extractCsStep2Data(raw) {
+    const result = { uetTrend: null, peakSummary: {} };
+
+    if (raw.userExpTrend) {
+      result.uetTrend = raw.userExpTrend;
+    }
+
+    // The peak analysis comes from the flags stored in the step, not raw
+    // These will be enriched later by the template service from step.hints/analysisFlags
+
+    return result;
+  }
+
+  _extractCsStep3Data(raw) {
+    const peaks = [];
+    const peakKeys = Object.keys(raw).filter((k) => k.startsWith('peak_') && raw[k]);
+
+    for (const key of peakKeys) {
+      const data = raw[key];
+      const items = [];
+      if (data && Array.isArray(data.topValues)) {
+        for (const item of data.topValues.slice(0, 10)) {
+          const row = { key: item.key || item.keyLabel || '-', keyLabel: item.keyLabel || item.key || '-' };
+          const mvList = Array.isArray(item.metricValues) ? item.metricValues : [];
+          for (const mv of mvList) {
+            row[mv.metric?.id || 'value'] = Number(mv.value) || 0;
+          }
+          items.push(row);
+        }
+      } else if (Array.isArray(data)) {
+        for (const item of data.slice(0, 10)) {
+          const row = { key: item.key || item.group?.argument || '-', keyLabel: item.keyLabel || item.key || '-' };
+          const mvList = Array.isArray(item.metricValues) ? item.metricValues : [];
+          for (const mv of mvList) {
+            row[mv.metric?.id || 'value'] = Number(mv.value) || 0;
+          }
+          items.push(row);
+        }
+      }
+      peaks.push({ peakLabel: key.replace('peak_', '波峰'), clients: items });
+    }
+
+    // Overall clients
+    let overallClients = [];
+    if (raw.overallSlowClients) {
+      const data = raw.overallSlowClients;
+      if (data && Array.isArray(data.topValues)) {
+        overallClients = data.topValues.slice(0, 10).map((item) => {
+          const row = { key: item.key || item.keyLabel || '-', keyLabel: item.keyLabel || item.key || '-' };
+          const mvList = Array.isArray(item.metricValues) ? item.metricValues : [];
+          for (const mv of mvList) {
+            row[mv.metric?.id || 'value'] = Number(mv.value) || 0;
+          }
+          return row;
+        });
+      }
+    }
+
+    return { peaks, overallClients };
   }
 
   _buildReportResult(session) {

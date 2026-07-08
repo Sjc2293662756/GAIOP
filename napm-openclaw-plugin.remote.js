@@ -1,27 +1,30 @@
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
 
-const execFileAsync = promisify(execFile);
 const NAPM_DIRECT_SKILL_MODE = true;
 const OPENCLAW_SKILLS_ROOT = process.env.OPENCLAW_SKILLS_ROOT
   || path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
-const NAPM_SKILL_EXECUTOR = process.env.NAPM_SKILL_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-query/scripts/run_napm_query.js');
-const NAPM_REPORT_EXECUTOR = process.env.NAPM_REPORT_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-report/scripts/generate_napm_report.js');
-const NAPM_PACKET_EXECUTOR = process.env.NAPM_PACKET_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js');
-const NAPM_ALERT_EXECUTOR = process.env.NAPM_ALERT_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-alert-query/scripts/run_alert_query.js');
-const NAPM_INSPECTION_EXECUTOR = process.env.NAPM_INSPECTION_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-inspection/scripts/run_inspection_snapshot.js');
-const NAPM_SUMMARY_EXECUTOR = process.env.NAPM_SUMMARY_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-summary/scripts/run_summary.js');
-const NAPM_FAULT_DIAGNOSIS_EXECUTOR = process.env.NAPM_FAULT_DIAGNOSIS_EXECUTOR
-  || path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js');
+
+// ── In-process Skill loaders (2026-07-07) ─────────────────────────────────
+// 替代 execFileAsync subprocess spawn，改为同进程 require() 调用。
+// 每次 execute() 前 delete require.cache 确保远端更新后能热加载。
+function loadSkill(skillDir, scriptName) {
+  const skillPath = path.join(OPENCLAW_SKILLS_ROOT, skillDir, 'scripts', scriptName);
+  try {
+    delete require.cache[require.resolve(skillPath)];
+  } catch (_e) {
+    // 首次加载，缓存中可能没有
+  }
+  return require(skillPath);
+}
+
+const napmQuerySkill = () => loadSkill('openclaw-napm-query', 'run_napm_query.js');
+const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
+const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
+const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
+const napmInspectionSkill = () => loadSkill('openclaw-napm-inspection', 'run_inspection_snapshot.js');
+const napmSummarySkill = () => loadSkill('openclaw-napm-summary', 'run_summary.js');
+const napmFaultDiagnosisSkill = () => loadSkill('openclaw-napm-fault-diagnosis', 'run_fault_diagnosis.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmDebugApiByPrompt = new Map();
@@ -673,7 +676,7 @@ function normalizeGroupsForPlanning(groups = []) {
 }
 
 function getSkillWorkspaceRootFromExecutor() {
-  const executorPath = String(NAPM_SKILL_EXECUTOR || '').trim();
+  const executorPath = path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-query/scripts/run_napm_query.js');
   if (!executorPath) {
     return '';
   }
@@ -1458,8 +1461,8 @@ function getWorkflowClassifierService() {
     workflowClassifierLookupComplete = true;
     try {
       cachedWorkflowClassifierService = require(path.join(
-        path.dirname(NAPM_SKILL_EXECUTOR),
-        '../services/WorkflowClassifierService'
+        OPENCLAW_SKILLS_ROOT,
+        'openclaw-napm-query/services/WorkflowClassifierService'
       ));
     } catch (_error) {
       cachedWorkflowClassifierService = null;
@@ -2568,147 +2571,8 @@ function buildAssistantTextMessage(text, originalMessage) {
   };
 }
 
-function buildSkillPayload(args = {}) {
-  const prompt = normalizePrompt(args);
-  return {
-    traceId: typeof args.traceId === 'string' ? args.traceId : undefined,
-    userQuery: prompt || (typeof args.userQuery === 'string' ? args.userQuery : undefined),
-    prompt,
-    query: normalizeObject(args.query),
-    decision: normalizeObject(args.decision),
-    intent: normalizeObject(args.intent),
-    resolvedQuery: normalizeObject(args.resolvedQuery),
-    sessionState: normalizeObject(args.sessionState),
-    clarificationContext: normalizeObject(args.clarificationContext),
-    policyAction: typeof args.policyAction === 'string' ? args.policyAction : undefined
-  };
-}
 
-function extractSkillJson(stdout) {
-  const normalized = String(stdout || '');
-  for (let index = normalized.lastIndexOf('{'); index >= 0; index = normalized.lastIndexOf('{', index - 1)) {
-    const candidate = normalized.slice(index).trim();
-    if (!candidate.startsWith('{')) {
-      continue;
-    }
-    try {
-      return JSON.parse(candidate);
-    } catch (_error) {
-      // keep searching for the start of the trailing JSON object
-    }
-  }
 
-  throw new Error(`Unable to locate trailing skill JSON in stdout: ${normalized.slice(-4000)}`);
-}
-
-async function runSkillExecutor(args = {}) {
-  const preparedArgs = prepareSkillExecutionArgs(args);
-  if (!normalizeTraceId(preparedArgs.traceId)) {
-    preparedArgs.traceId = buildNapmTraceId({}, preparedArgs);
-  }
-  const payload = buildSkillPayload(preparedArgs);
-  const traceId = normalizeTraceId(payload.traceId) || buildNapmTraceId({}, preparedArgs);
-  if (!payload.traceId) {
-    payload.traceId = traceId;
-  }
-  if (isPluginStructuredOverviewInjection(args, preparedArgs)) {
-    payload.__pluginOverviewStructured = true;
-  }
-
-  // 2026-06-29: 时间描述替代时间戳。LLM 只传 timeRange.key，插件用 Date.now() 无条件计算 start/end。
-  if (isPlainObject(payload.resolvedQuery)) {
-    const rq = payload.resolvedQuery;
-    const needsTime = ['topValues','averageValues','timeValues','overview','topValues_multi_protocol'];
-    if (needsTime.includes(String(rq.service || '').trim())) {
-      const now = Math.floor(Date.now() / 1000);
-      const floor = (v) => Math.floor(v / 60) * 60;
-      const timeKey = String(rq.timeRange?.key || '').trim() || 'last1hour';
-
-      let start, end;
-      if (timeKey === 'today') {
-        const d = new Date(now * 1000); d.setHours(0,0,0,0);
-        start = floor(d.getTime() / 1000);
-        end = floor(now);
-      } else if (timeKey === 'yesterday') {
-        const d = new Date(now * 1000); d.setDate(d.getDate() - 1); d.setHours(0,0,0,0);
-        start = floor(d.getTime() / 1000);
-        end = floor(start + 86340);
-      } else {
-        const DURATION_MAP = { last5minutes:300, last1hour:3600, last24hours:86400, last1day:86400, last7days:604800, last30days:2592000 };
-        const duration = DURATION_MAP[timeKey] || 3600;
-        start = floor(now - duration);
-        end = floor(now);
-      }
-
-      rq.start = start;
-      rq.end = end;
-      if (!isPlainObject(rq.timeRange)) rq.timeRange = {};
-      rq.timeRange.key = timeKey;
-    }
-  }
-
-  appendPluginAuditEvent('napm_plugin_skill_executor_invoked', {
-    traceId,
-    prompt: normalizePrompt(preparedArgs),
-    boundaryMode: getBoundaryMode(),
-    resolvedQuery: normalizeObject(payload.resolvedQuery) || null,
-    resolvedQuerySummary: summarizeResolvedQueryForAudit(payload.resolvedQuery),
-    sessionStatePresent: Boolean(payload.sessionState)
-  });
-
-  try {
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_SKILL_EXECUTOR,
-      '--payload',
-      JSON.stringify(payload)
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        NETINSIDE_TLS_REJECT_UNAUTHORIZED: process.env.NETINSIDE_TLS_REJECT_UNAUTHORIZED || 'false',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-
-    appendPluginAuditEvent('napm_plugin_skill_executor_completed', {
-      traceId,
-      prompt: normalizePrompt(preparedArgs),
-      ok: Boolean(result?.ok),
-      service: String(result?.service || result?.resolvedQuery?.service || '').trim() || null,
-      responseType: String(result?.responseType || '').trim() || null,
-      summaryMode: String(result?.summary?.mode || '').trim() || null,
-      requestUrl: getRequestUrlFromResult(result) || null,
-      resolvedQuery: isPlainObject(result?.resolvedQuery) ? result.resolvedQuery : null,
-      resolvedQuerySummary: summarizeResolvedQueryForAudit(result?.resolvedQuery),
-      error: isPlainObject(result?.error)
-        ? result.error
-        : (result?.error ? { message: String(result.error) } : null),
-      executorStderr: result.executorStderr || null
-    });
-
-    return result;
-  } catch (error) {
-    appendPluginAuditEvent('napm_plugin_skill_executor_failed', {
-      traceId,
-      prompt: normalizePrompt(preparedArgs),
-      resolvedQuery: normalizeObject(payload.resolvedQuery) || null,
-      resolvedQuerySummary: summarizeResolvedQueryForAudit(payload.resolvedQuery),
-      error: {
-        code: error?.code || null,
-        message: error?.message || String(error)
-      }
-    });
-    throw error;
-  }
-}
 
 function normalizeReportFormat(format = '') {
   const raw = String(format || '').trim().toLowerCase();
@@ -2737,109 +2601,7 @@ function buildInspectionTraceId(args = {}) {
     || `napm-inspection-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildInspectionExecutorPayload(args = {}) {
-  const inspectionQuery = isPlainObject(args.inspectionQuery)
-    ? args.inspectionQuery
-    : {};
-  const payload = {
-    ...inspectionQuery,
-    prompt: normalizePrompt(args) || inspectionQuery.prompt || '',
-    sourceQuestion: String(args.sourceQuestion || inspectionQuery.sourceQuestion || '').trim() || undefined,
-    title: String(args.title || inspectionQuery.title || '').trim() || undefined,
-    customerName: String(args.customerName || inspectionQuery.customerName || '').trim() || undefined,
-    projectName: String(args.projectName || inspectionQuery.projectName || '').trim() || undefined,
-    reportDate: String(args.reportDate || inspectionQuery.reportDate || '').trim() || undefined,
-    format: String(args.format || inspectionQuery.format || 'docx').trim() || 'docx',
-    nowSeconds: Number(args.nowSeconds || inspectionQuery.nowSeconds) || undefined,
-    timezone: String(args.timezone || inspectionQuery.timezone || '').trim() || undefined,
-    source: isPlainObject(args.source)
-      ? args.source
-      : (isPlainObject(inspectionQuery.source) ? inspectionQuery.source : undefined),
-    thresholds: isPlainObject(args.thresholds)
-      ? args.thresholds
-      : (isPlainObject(inspectionQuery.thresholds) ? inspectionQuery.thresholds : undefined),
-    traceId: normalizeTraceId(args.traceId) || undefined
-  };
 
-  Object.keys(payload).forEach((key) => {
-    if (payload[key] === undefined || payload[key] === '') {
-      delete payload[key];
-    }
-  });
-  return payload;
-}
-
-async function runInspectionExecutor(args = {}) {
-  const traceId = buildInspectionTraceId(args);
-  const payload = buildInspectionExecutorPayload({
-    ...args,
-    traceId
-  });
-  appendPluginAuditEvent('napm_inspection_snapshot_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    customerName: String(payload.customerName || '').trim() || null,
-    projectName: String(payload.projectName || '').trim() || null,
-    reportDate: String(payload.reportDate || '').trim() || null,
-    hasFixtureSource: isPlainObject(payload.source)
-  });
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-inspection-input-'));
-    const tempInputPath = path.join(tempInputDir, 'inspection.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_INSPECTION_EXECUTOR,
-      '--input',
-      tempInputPath
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 20 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_inspection_snapshot_completed' : 'napm_inspection_snapshot_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      status: String(result?.summary?.status || result?.inspection?.summary?.overallStatus || '').trim() || null,
-      reportType: String(result?.reportData?.reportType || '').trim() || null,
-      evidenceCount: Array.isArray(result?.reportData?.audit?.queryEvidence) ? result.reportData.audit.queryEvidence.length : null,
-      errorCode: result?.error?.code || result?.errorCode || null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      errorCode: error?.code || 'INSPECTION_SNAPSHOT_FAILED',
-      message: error?.message || String(error)
-    };
-    appendPluginAuditEvent('napm_inspection_snapshot_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try {
-        fs.rmSync(tempInputDir, { recursive: true, force: true });
-      } catch (_cleanupError) {
-        // best-effort temp cleanup
-      }
-    }
-  }
-}
 
 function buildFaultDiagnosisReply(result = {}) {
   if (!result?.ok) {
@@ -2867,6 +2629,10 @@ function buildSummaryReply(result = {}) {
   if (!result?.ok) {
     lines.push('综述报告生成失败：' + (result?.error?.message || '未知错误'));
     return lines.join('\n');
+  }
+  // Target not found warning
+  if (result.targetNotFoundWarning) {
+    lines.push('⚠️ ' + result.targetNotFoundWarning);
   }
   const summary = isPlainObject(result.summary) ? result.summary : {};
   const scope = isPlainObject(result.scope) ? result.scope : {};
@@ -2928,296 +2694,10 @@ function buildInspectionSnapshotReply(result = {}) {
   return lines.join('\n');
 }
 
-function buildAlertExecutorPayload(args = {}) {
-  const alertQuery = isPlainObject(args.alertQuery)
-    ? args.alertQuery
-    : {};
-  const criteria = isPlainObject(args.criteria)
-    ? args.criteria
-    : (isPlainObject(alertQuery.criteria) ? alertQuery.criteria : {});
-  const hasEventIds = Array.isArray(criteria.eventIds) && criteria.eventIds.length > 0;
-  // 默认 mode: 有 eventIds 时用 detail（触发 indirect discovery），否则 summary
-  const defaultMode = hasEventIds ? 'detail' : 'summary';
-  const explicitMode = String(args.mode || alertQuery.mode || '').trim();
-  const mode = explicitMode || alertQuery.mode || defaultMode;
 
-  // summary 模式无 start/end 时自动填默认时间范围（最近 1 小时）
-  if (!criteria.start && !criteria.end && !hasEventIds) {
-    const end = Math.floor(Date.now() / 1000 / 60) * 60;
-    criteria.start = end - 3600;
-    criteria.end = end;
-  }
 
-  return {
-    prompt: normalizePrompt(args) || alertQuery.prompt || '',
-    alertQuery: {
-      ...alertQuery,
-      mode,
-      criteria,
-      options: isPlainObject(args.options)
-        ? args.options
-        : (isPlainObject(alertQuery.options) ? alertQuery.options : undefined)
-    },
-    sessionState: isPlainObject(args.sessionState) ? args.sessionState : undefined,
-    traceId: normalizeTraceId(args.traceId) || undefined
-  };
-}
 
-function buildSummaryExecutorPayload(args = {}) {
-  const scope = isPlainObject(args.scope) ? args.scope : { type: 'global', label: '全局' };
-  const timeRange = isPlainObject(args.timeRange)
-    ? args.timeRange
-    : (Number(args.start) || Number(args.end)
-      ? { start: Number(args.start), end: Number(args.end), displayText: args.displayText || '' }
-      : {});
 
-  // Force-correct scope based on user prompt intent.
-  // AI may pass wrong scope.type; the prompt is the ground truth.
-  const prompt = normalizePrompt(args) || '';
-  // Only correct scope when the prompt CLEARLY indicates a different intent.
-  // "综述" alone does NOT mean global — it's a generic term for all summary reports.
-  const SCOPE_INTENT_MAP = [
-    { re: /业务(?!组)/, type: 'webApplication', label: '业务' },
-    { re: /业务组|工作组/, type: 'businessGroup', label: '工作组' },
-    { re: /网络(?!性能|异常|告警)|流量整体/, type: 'network', label: '网络' },
-    { re: /应用(?!性能|告警)/, type: 'application', label: '应用' },
-    { re: /告警/, type: 'alert', label: '告警' },
-    { re: /^.*全局|系统整体/, type: 'global', label: '全局' }
-  ];
-  const matched = SCOPE_INTENT_MAP.find((m) => m.re.test(prompt));
-  if (matched && scope.type !== matched.type) {
-    if (matched.type === 'global' && scope.type !== 'global' && scope.type !== undefined) {
-      // AI set a specific scope — trust it
-    } else {
-      scope.type = matched.type;
-      scope.label = matched.label;
-    }
-  }
-
-  // Fix truncated target names: AI often shortens "回溯238web" → "238web".
-  // Only correct when prompt has ≥2 Chinese chars as a prefix to the target name.
-  if (scope.target && scope.target.groupArgument && prompt) {
-    const shortName = scope.target.groupArgument;
-    // Match: ≥2 Chinese chars + optional alphanumeric + the short name
-    const nameRe = new RegExp('([\\u4e00-\\u9fa5]{2,}[a-zA-Z0-9_-]*' + shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i');
-    const nameMatch = prompt.match(nameRe);
-    if (nameMatch && nameMatch[1].length > shortName.length) {
-      scope.target.groupArgument = nameMatch[1];
-      scope.target.groupLabel = nameMatch[1];
-    }
-  }
-
-  return {
-    scope,
-    timeRange,
-    format: args.format || 'docx',
-    title: args.title || undefined,
-    systemName: args.systemName || undefined,
-    sourceQuestion: args.sourceQuestion || normalizePrompt(args) || undefined
-  };
-}
-
-async function runSummaryExecutor(args = {}) {
-  const traceId = String(args.traceId || `napm-summary-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-  const payload = buildSummaryExecutorPayload(args);
-  appendPluginAuditEvent('napm_summary_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    scopeType: String(payload.scope?.type || '').trim() || null,
-    scopeLabel: String(payload.scope?.label || '').trim() || null
-  });
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-summary-input-'));
-    const tempInputPath = path.join(tempInputDir, 'summary.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_SUMMARY_EXECUTOR,
-      '--queryFile',
-      tempInputPath
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_summary_completed' : 'napm_summary_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      scopeType: String(result?.scope?.type || '').trim() || null,
-      overallStatus: String(result?.summary?.overallStatus || '').trim() || null,
-      alertTotal: Number(result?.summary?.alertSummary?.total) || null,
-      errorCode: result?.error?.code || result?.errorCode || null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      error: {
-        code: 'SUMMARY_EXECUTOR_CRASH',
-        message: error.message
-      }
-    };
-    appendPluginAuditEvent('napm_summary_crashed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      errorMessage: error.message.slice(0, 500)
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try { fs.rmSync(tempInputDir, { recursive: true, force: true }); } catch (_) {}
-    }
-  }
-}
-
-async function runFaultDiagnosisExecutor(args = {}) {
-  const traceId = String(args.traceId || `napm-fault-dx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
-  const payload = {
-    description: args.description || args.prompt || '',
-    flowType: args.flowType || undefined,
-    timeRange: args.timeRange || undefined,
-    target: args.target || undefined,
-    fault: args.fault || { description: args.description || args.prompt || '' }
-  };
-  appendPluginAuditEvent('napm_fault_diagnosis_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    flowType: payload.flowType || null
-  });
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-fault-dx-input-'));
-    const tempInputPath = path.join(tempInputDir, 'fault-diagnosis.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_FAULT_DIAGNOSIS_EXECUTOR,
-      '--queryFile',
-      tempInputPath
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_fault_diagnosis_completed' : 'napm_fault_diagnosis_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      flowType: result?.flowType || null,
-      stepsCount: Array.isArray(result?.steps) ? result.steps.length : null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      error: { code: 'FAULT_DIAGNOSIS_EXECUTOR_CRASH', message: error.message }
-    };
-    appendPluginAuditEvent('napm_fault_diagnosis_crashed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      errorMessage: error.message.slice(0, 500)
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try { fs.rmSync(tempInputDir, { recursive: true, force: true }); } catch (_) {}
-    }
-  }
-}
-
-async function runAlertExecutor(args = {}) {
-  const traceId = buildAlertTraceId(args);
-  const payload = buildAlertExecutorPayload({
-    ...args,
-    traceId
-  });
-  appendPluginAuditEvent('napm_alert_query_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    mode: String(payload?.alertQuery?.mode || '').trim() || null,
-    criteria: normalizeObject(payload?.alertQuery?.criteria) || null
-  });
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-input-'));
-    const tempInputPath = path.join(tempInputDir, 'alert.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_ALERT_EXECUTOR,
-      '--queryFile',
-      tempInputPath
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_alert_query_completed' : 'napm_alert_query_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      mode: String(result?.mode || payload?.alertQuery?.mode || '').trim() || null,
-      service: String(result?.service || '').trim() || null,
-      eventCount: Array.isArray(result?.events) ? result.events.length : null,
-      detailCount: Array.isArray(result?.details) ? result.details.length : null,
-      errorCode: result?.error?.code || result?.errorCode || null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      mode: String(payload?.alertQuery?.mode || '').trim() || null,
-      errorCode: error?.code || 'ALERT_QUERY_FAILED',
-      message: error?.message || String(error)
-    };
-    appendPluginAuditEvent('napm_alert_query_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try {
-        fs.rmSync(tempInputDir, { recursive: true, force: true });
-      } catch (_cleanupError) {
-        // best-effort temp cleanup
-      }
-    }
-  }
-}
 
 function buildAlertQueryReply(result = {}) {
   // skill 已生成 displayText → 直接透传
@@ -3316,28 +2796,21 @@ function buildAlertQueryReply(result = {}) {
   const timeText = timeRange.displayText
     || (timeRange.start && timeRange.end ? `${timeRange.start} 至 ${timeRange.end}` : '');
   if (timeText) {
-    if (shouldGroupByCategory && result.summary?.total != null) {
-      lines.push(`${timeText}告警汇总：共 ${result.summary.total} 条`);
-    } else {
-      lines.push(`${timeText}告警概况：`);
-    }
+    lines.push(`${timeText} 告警查询结果`);
     lines.push('');
   }
 
   if (result.summary?.total != null) {
+    const bySev = result.summary?.bySeverity || {};
+    lines.push(`告警总数：${result.summary.total} 条`);
+    lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  轻微 ${bySev.minor || 0} 条`);
+    lines.push('');
     if (shouldGroupByCategory) {
       if (Number(result.summary.total || 0) > 0) {
         lines.push(...buildAlertCategorySections(result.summary.byCategoryDetail, events));
       } else {
         lines.push('本时间范围内未查询到告警事件。');
       }
-    } else {
-      lines.push(`告警总数：${result.summary.total} 条`);
-      lines.push('');
-      lines.push(`- ${formatSeverityBadge(4)} 紧急：${bySeverity.critical || 0} 条`);
-      lines.push(`- ${formatSeverityBadge(3)} 重大：${bySeverity.major || 0} 条`);
-      lines.push(`- ${formatSeverityBadge(2)} 轻微：${bySeverity.minor || 0} 条`);
-      lines.push('');
     }
   } else if (Array.isArray(result.timeline) && result.timeline.length > 0) {
     lines.push(`时间线桶数量：${result.timeline.length}`);
@@ -3396,8 +2869,7 @@ function buildAlertQueryReply(result = {}) {
   }
 
   lines.push('');
-  lines.push('---');
-  lines.push('以上为告警查询结果。');
+  lines.push('告警查询完成。');
 
   const text = lines.join('\n').trim() || JSON.stringify(result, null, 2);
   const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
@@ -3437,7 +2909,7 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
     lines.push('告警概览：');
     if (overviewEvents.length > 0) {
       for (const event of overviewEvents) {
-        lines.push(`- ${formatSeverityBadge(event.severity)} ${buildAlertOverviewSentence(event)}`);
+        lines.push(`   ${formatSeverityBadge(event.severity)} ${buildAlertOverviewSentence(event)}`);
       }
     } else {
       lines.push('暂无可展示明细。');
@@ -3512,12 +2984,9 @@ function formatAlertCategorySectionTitle(label = '') {
 function buildAlertOverviewSentence(event = {}) {
   const name = String(event.name || '告警').trim();
   const group = String(event.group || '未知对象').trim();
-  const triggerCount = Number.isFinite(Number(event.triggerCount)) && Number(event.triggerCount) > 0
-    ? Number(event.triggerCount)
-    : 1;
+  const severityLabel = event.severityLabel || '';
   const durationText = formatAlertDuration(event);
-  const startText = formatAlertTimestamp(event.start || event.firstStart);
-  return `${name}触发：对象 ${group} 触发了 ${triggerCount} 次告警，持续时长为 ${durationText}，开始时间为 ${startText}。`;
+  return `${name} — ${group}（${severityLabel}，持续 ${durationText}）`;
 }
 
 function formatAlertDuration(event = {}) {
@@ -3627,32 +3096,6 @@ function maskDebugApiUrl(inputUrl = '') {
   }
 }
 
-function buildPacketExecutorPayload(args = {}) {
-  const packetQuery = isPlainObject(args.packetQuery)
-    ? args.packetQuery
-    : {};
-  const criteria = isPlainObject(args.criteria)
-    ? args.criteria
-    : (isPlainObject(packetQuery.criteria) ? packetQuery.criteria : {});
-
-  const prompt = normalizePrompt(args) || packetQuery.prompt || '';
-  const normalized = normalizePacketBusinessPagePayload({
-    ...packetQuery,
-    mode: String(args.mode || packetQuery.mode || '').trim() || packetQuery.mode,
-    downloadType: String(args.downloadType || packetQuery.downloadType || '').trim() || packetQuery.downloadType,
-    criteria: {
-      ...criteria
-    },
-    analysis: isPlainObject(args.analysis)
-      ? args.analysis
-      : (isPlainObject(packetQuery.analysis) ? packetQuery.analysis : undefined),
-    filePolicy: isPlainObject(args.filePolicy)
-      ? args.filePolicy
-      : (isPlainObject(packetQuery.filePolicy) ? packetQuery.filePolicy : undefined),
-    prompt
-  });
-  return normalized;
-}
 
 function looksLikeBusinessPagePacketPreviewPrompt(text = '') {
   const raw = String(text || '');
@@ -3707,77 +3150,6 @@ function normalizePacketBusinessPagePayload(payload = {}) {
   return normalized;
 }
 
-async function runPacketExecutor(args = {}) {
-  const traceId = buildPacketTraceId(args);
-  const payload = buildPacketExecutorPayload({
-    ...args,
-    traceId
-  });
-  appendPluginAuditEvent('napm_packet_analysis_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    mode: String(payload.mode || '').trim() || null,
-    downloadType: String(payload.downloadType || '').trim() || null,
-    criteria: normalizeObject(payload.criteria) || null
-  });
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-packet-input-'));
-    const tempInputPath = path.join(tempInputDir, 'packet.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(payload), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_PACKET_EXECUTOR,
-      '--queryFile',
-      tempInputPath
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 20 * 1024 * 1024,
-      env: {
-        ...process.env,
-        NETINSIDE_TLS_INSECURE: process.env.NETINSIDE_TLS_INSECURE || 'true',
-        NETINSIDE_TLS_REJECT_UNAUTHORIZED: process.env.NETINSIDE_TLS_REJECT_UNAUTHORIZED || 'false',
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_packet_analysis_completed' : 'napm_packet_analysis_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      mode: String(result?.mode || payload.mode || '').trim() || null,
-      errorCode: result?.error?.code || result?.errorCode || null,
-      summaryTitle: String(result?.summary?.title || '').trim() || null
-    });
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      mode: String(payload.mode || '').trim() || null,
-      errorCode: error?.code || 'PACKET_ANALYSIS_FAILED',
-      message: error?.message || String(error)
-    };
-    appendPluginAuditEvent('napm_packet_analysis_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try {
-        fs.rmSync(tempInputDir, { recursive: true, force: true });
-      } catch (_cleanupError) {
-        // best-effort temp cleanup
-      }
-    }
-  }
-}
 
 function buildPacketAnalysisReply(result = {}) {
   const summary = isPlainObject(result?.summary) ? result.summary : {};
@@ -3893,104 +3265,6 @@ function buildReportInputForExport(args = {}) {
   };
 }
 
-async function runReportExecutor(args = {}) {
-  const traceId = buildReportTraceId(args);
-  const built = buildReportInputForExport(args);
-  if (!built.ok) {
-    appendPluginAuditEvent('napm_report_export_blocked', {
-      traceId,
-      prompt: normalizePrompt(args),
-      errorCode: built.errorCode,
-      message: built.message
-    });
-    return built;
-  }
-
-  const reportData = built.reportData || built.reportInput?.reportData || {};
-  const reportInput = isPlainObject(built.reportInput) ? built.reportInput : reportData;
-  appendPluginAuditEvent('napm_report_export_invoked', {
-    traceId,
-    prompt: normalizePrompt(args),
-    source: built.source,
-    reportType: String(reportData.reportType || '').trim() || null,
-    format: String(reportInput.format || reportData.format || '').trim() || null,
-    title: String(reportInput.title || reportData.title || '').trim() || null
-  });
-
-  if (String(reportInput.format || reportData.format || '').trim().toLowerCase() === 'pdf') {
-    const result = {
-      ok: false,
-      errorCode: 'REPORT_PDF_EXPORT_UNAVAILABLE',
-      message: 'PDF 导出暂未启用。目前只支持 Word/docx，不能静默降级。'
-    };
-    appendPluginAuditEvent('napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  }
-
-  let tempInputDir = null;
-  try {
-    tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-report-input-'));
-    const tempInputPath = path.join(tempInputDir, 'report.json');
-    fs.writeFileSync(tempInputPath, JSON.stringify(reportInput), 'utf8');
-    const { stdout, stderr } = await execFileAsync('node', [
-      NAPM_REPORT_EXECUTOR,
-      '--input',
-      tempInputPath,
-      '--downloadBaseUrl',
-      String(args.downloadBaseUrl || process.env.NAPM_REPORT_DOWNLOAD_BASE_URL || '/reports')
-    ], {
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        FORCE_COLOR: '0',
-        NO_COLOR: '1'
-      }
-    });
-
-    const result = extractSkillJson(stdout);
-    if (stderr && String(stderr).trim()) {
-      result.executorStderr = String(stderr).trim();
-    }
-    appendPluginAuditEvent(result?.ok ? 'napm_report_export_completed' : 'napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ok: Boolean(result?.ok),
-      reportId: result?.reportId || null,
-      format: result?.format || reportInput.format || reportData.format || null,
-      filePath: result?.filePath || null,
-      downloadUrl: result?.downloadUrl || null,
-      errorCode: result?.errorCode || null,
-      message: result?.message || null
-    });
-    rememberReportExportResult(normalizePrompt(args), result, args?.conversationKey || '');
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      errorCode: error?.code || 'REPORT_EXPORT_FAILED',
-      message: error?.message || String(error)
-    };
-    appendPluginAuditEvent('napm_report_export_failed', {
-      traceId,
-      prompt: normalizePrompt(args),
-      ...result
-    });
-    return result;
-  } finally {
-    if (tempInputDir) {
-      try {
-        fs.rmSync(tempInputDir, { recursive: true, force: true });
-      } catch (_cleanupError) {
-        // best-effort temp cleanup
-      }
-    }
-  }
-}
 
 function buildReportExportReply(result = {}) {
   if (!result?.ok) {
@@ -4107,7 +3381,7 @@ async function runResolvedSkillExecutor(args = {}) {
     }
   }
   nextArgs.traceId = traceId;
-  return runSkillExecutor(nextArgs);
+  return napmQuerySkill().handleSkillCall(nextArgs);
 }
 
 function isQueryLikeAction(nextAction) {
@@ -4115,7 +3389,7 @@ function isQueryLikeAction(nextAction) {
 }
 
 async function runGatewaySkillFallback(args = {}) {
-  return runSkillExecutor(args);
+  return napmQuerySkill().handleSkillCall(args);
 }
 
 function isDirectNapmTool(toolName = '') {
@@ -4630,7 +3904,7 @@ function createSkillToolDefinition() {
         });
         return makeToolResult(buildResolvedQueryBoundaryFailureResult(validation, preparedArgs));
       }
-      const result = await runSkillExecutor(preparedArgs);
+      const result = await napmQuerySkill().handleSkillCall(preparedArgs);
       rememberDebugApi(normalizePrompt(preparedArgs), result, null);
       return makeToolResult(result);
     }
@@ -4656,7 +3930,7 @@ function createReportExportToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runReportExecutor(args || {});
+      const result = await napmReportSkill().handleSkillCall(args || {});
       rememberReportExportResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -4731,7 +4005,7 @@ function createAlertQueryToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runAlertExecutor(args || {});
+      const result = await napmAlertSkill().handleSkillCall(args || {});
       const renderedText = buildAlertQueryReply(result);
       const pi = result?.narrationInput?.packetInstruction;
       const dt = result?.narrationInput?.displayText;
@@ -4764,24 +4038,10 @@ function createAlertQueryToolDefinition() {
         };
       }
 
+      // summary / 无数据包模式：只返回 finalAnswer（纯文本），不给 AI 任何结构化数据
+      // 防止 AI 从文本中解析数字后自行重组输出（算百分比、画 markdown 表格等）
       return {
-        text: renderedText,
-        content: [{ type: 'text', text: renderedText }],
-        finalAnswer: renderedText,
-        renderedText,
-        renderPolicy: {
-          mode: 'verbatim_final_answer',
-          instruction: 'Return finalAnswer exactly as-is to the user.'
-        },
-        metadata: {
-          ok: Boolean(result?.ok),
-          mode: result?.mode || null,
-          service: result?.service || null,
-          total: result?.summary?.total ?? null,
-          requestUrl: result?.requestUrl || result?.requestUrls?.[0] || null,
-          packetHandoff: result?.packetHandoff || null,
-          packetInstruction: pi || null
-        }
+        finalAnswer: renderedText
       };
     }
   };
@@ -4811,7 +4071,7 @@ function createInspectionSnapshotToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runInspectionExecutor(args || {});
+      const result = await napmInspectionSkill().handleSkillCall(args || {});
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -4873,7 +4133,7 @@ function createSummaryToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runSummaryExecutor(args || {});
+      const result = await napmSummarySkill().handleSkillCall(args || {});
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -4945,7 +4205,7 @@ function createFaultDiagnosisToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runFaultDiagnosisExecutor(args || {});
+      const result = await napmFaultDiagnosisSkill().handleSkillCall(args || {});
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -5015,7 +4275,7 @@ function createPacketAnalysisToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await runPacketExecutor(args || {});
+      const result = await napmPacketSkill().handleSkillCall(args || {});
       rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -5090,7 +4350,7 @@ async function runMainflowQuery(args = {}) {
     traceId,
     resolvedQuery: resolverResult.resolvedQuery
   });
-  const skillResult = await runSkillExecutor(skillArgs);
+  const skillResult = await napmQuerySkill().handleSkillCall(skillArgs);
   rememberDebugApi(prompt, skillResult, null);
   appendPluginAuditEvent('napm_mainflow_skill_completed', {
     traceId,
@@ -5166,122 +4426,99 @@ function createMainflowQueryToolDefinition() {
   };
 }
 
-function registerCommand(api, definition) {
-  api.registerCommand({
-    name: definition.name,
-    description: definition.description,
-    acceptsArgs: true,
-    async handler(ctx) {
-      const prompt = typeof ctx.args === 'string' ? ctx.args.trim() : '';
-      if (!prompt && definition.name === 'napm-skill-query') {
-        return { text: 'Usage: /napm-skill-query <your NAPM question>' };
-      }
 
-      if (definition.name === 'napm-resolve-query') {
-        const { result } = resolvePromptWithAudit({ prompt, userQuery: prompt }, 'napm-resolver-command');
-        return makeTextReply(JSON.stringify(result, null, 2));
-      }
-
-      if (definition.name === 'napm-mainflow-query') {
-        const result = await runMainflowQuery({ prompt, userQuery: prompt });
-        if (isPlainObject(result?.skillResult)) {
-          return makeTextReplyFromSkillResult(result.skillResult);
-        }
-        return makeTextReply(JSON.stringify(result, null, 2));
-      }
-
-      if (definition.name === 'napm-skill-query') {
-        const skillArgs = prepareSkillExecutionArgs({ prompt, userQuery: prompt });
-        const result = await runSkillExecutor(skillArgs);
-        rememberDebugApi(prompt, result, null);
-        return makeTextReplyFromSkillResult(result);
-      }
-
-      if (definition.name === 'napm-report-export') {
-        const result = await runReportExecutor({ prompt, format: 'docx' });
-        rememberReportExportResult(prompt, result, null);
-        return makeTextReply(buildReportExportReply(result));
-      }
-
-      if (definition.name === 'napm-alert-query') {
-        const result = await runAlertExecutor({ prompt });
-        rememberSkillResult(prompt, result, null);
-        return makeTextReply(buildAlertQueryReply(result));
-      }
-
-      if (definition.name === 'napm-inspection-snapshot') {
-        const result = await runInspectionExecutor({ prompt });
-        rememberSkillResult(prompt, result, null);
-        return makeTextReply(buildInspectionSnapshotReply(result));
-      }
-
-      if (definition.name === 'napm-packet-analysis') {
-        const result = await runPacketExecutor({ prompt });
-        rememberSkillResult(prompt, result, null);
-        return makeTextReply(buildPacketAnalysisReply(result));
-      }
-
-      if (typeof definition.payloadBuilder !== 'function') {
-        return makeTextReply(JSON.stringify({ ok: false, reason: 'unsupported_command', command: definition.name }, null, 2));
-      }
-
-      const result = await runSkillExecutor({ resolvedQuery: definition.payloadBuilder({ prompt, userQuery: prompt }) });
-      rememberDebugApi(prompt, result, null);
-      return makeTextReplyFromSkillResult(result);
-    }
-  });
-}
-
-function buildNapmRoutingSystemContext() {
+function buildNapmRoutingSystemContext(opts = {}) {
   const queryContract = getResolutionSpecQueryContract() || {};
   const acceptedInputs = Array.isArray(queryContract?.acceptedInputs)
     ? queryContract.acceptedInputs.join(', ')
     : 'payload.resolvedQuery';
+  const prompt = String(opts.prompt || '').trim();
 
-  return [
-    '🔴 ABSOLUTE ROUTING PRIORITY #1 — FAULT DIAGNOSIS: When the user asks to analyze faults/errors for a specific WebApplication/business (e.g. "分析XXweb的故障", "XXweb的报错分析", "4xx/5xx错误分析", "给出故障报告"), your FIRST and ONLY tool call must be `napm-fault-diagnosis`. Pass flowType="bs_app_slow", target={groupType:"WebApplication",groupArgument:"XXweb",groupLabel:"XXweb"}, and timeRange. After it returns reportData, call `napm-report-export`. NEVER use napm-skill-query or napm-alert-query for fault analysis — the napm-fault-diagnosis skill handles ALL data collection automatically in a single standardized flow.',
-    'CRITICAL ROUTING RULE: When the user asks for 综述报告, 日报, 周报, 月报 or any summary REPORT, you MUST call `napm-summary` first with scope+timeRange, then IMMEDIATELY call `napm-report-export`. Do NOT use `napm-skill-query` for report requests.',
-    'Scope mapping — set scope.type based on user wording: 全局/系统/NAPM 综述 → scope.type="global", scope.label="全局"; 业务 综述 → scope.type="webApplication", scope.label="业务"; 网络/流量 综述 → scope.type="network", scope.label="网络"; 工作组/业务组 综述 → scope.type="businessGroup", scope.label="工作组"; 应用 综述 → scope.type="application", scope.label="应用"; 告警 综述 → scope.type="alert", scope.label="告警". If user did NOT specify a target object, omit scope.target for an overall dimension review.',
-    'You are not a general-purpose assistant in this deployment. Only handle system monitoring, performance analysis, NAPM query, anomaly diagnosis, and result interpretation requests.',
-    'When the user asks a NAPM question (NOT a report request), call `napm-skill-query` only after OpenClaw upstream has produced a complete structured `resolvedQuery`.',
-    '`napm-resolve-query` and `napm-mainflow-query` are diagnostic-only tools and are not production query paths. Do not choose them unless they are explicitly enabled for development diagnostics.',
-    `The accepted structured input channel is: ${acceptedInputs}. Do not rely on raw prompt only when the request is a data query, metadata inventory query, ranking, average, trend, or overview request.`,
-    'OpenClaw upstream is the owner of resolvedQuery construction. The NAPM plugin only forwards structured queries, and the NAPM skill only executes them.',
-    'Time contract: set `timeRange.key` to last1hour|last24hours|today|yesterday|last7days|last30days. The plugin computes start/end from the server clock automatically. Do NOT calculate or pass start/end timestamps — leave them empty.',
-    'Example: `{service:"topValues", timeRange:{key:"last1hour", displayText:"最近1小时"}}`. Do NOT pass start/end.',
-    'Query-specific construction rules for inventory, metric ownership, drilldown, time wording, follow-up inheritance, and object vocabulary now live in `skills/openclaw-napm-query/references/query-workflow-contract.md`. Use that skill contract instead of treating this plugin context as the semantic rule source.',
-    'High-level query boundary: metric, ranking, average, trend, overview, inventory, metric-list, and drilldown questions belong to `openclaw-napm-query` with a complete `resolvedQuery`. IMPORTANT: if the user asks for a 综述报告, 全局综述, or any summary/overview REPORT (not a query), use `napm-summary` instead — see Summary boundary below.',
-    'Alert boundary: alert event questions such as 告警, 告警事件, 告警摘要, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog 告警通知字段解释 must call `napm-alert-query` with a structured `alertQuery`.',
-    'Alert tool contract: use `napm-alert-query` with mode=`summary` for alert lists, mode=`timeline` for alert count trends, mode=`detail` for event IDs, mode=`detail_with_timeseries` for trigger metric analysis, and mode=`explain_notification` for notification field explanations. This alert tool is read-only and must not add/update/delete alert definitions.',
-    'Alert final-answer contract: when `napm-alert-query` returns `finalAnswer`, `renderedText`, or text content, output that text verbatim as the final user-visible answer. Do not paraphrase it, do not regroup by severity, do not add "Let me" or "当前最需要关注", and do not change the alert category order/template.',
-    'Generic alert summary template requirement: if the user did not specify an alert category, the final visible answer must be grouped by alert category with lines like `① 应用性能告警 — N 条`, severity counts on one line, `主要对象/对象`, and `告警概览` trigger sentences. Never answer generic alert summaries primarily by `紧急/重大/轻微` sections.',
-    'Inspection boundary: inspection report requests such as 巡检, 巡检报告, 健康检查报告, 基于AI的全流量性能分析平台巡检, 设备健康巡检, 流量分析状况, 业务性能状况 must call `napm-inspection-snapshot` first. It queries NAPM, returns `inspection` and `reportData`, and then `napm-report-export` may render Word/docx.',
-    'Inspection tool contract: `napm-inspection-snapshot` owns live data collection for applianceInfo, packetsInfo, TotalTraffic timeValues, and WebApplication business performance topValues. `napm-report-export` must only render the returned reportData and must not query NAPM.',
-    'Summary boundary: summary/overview report requests such as 综述报告, 全局综述, 业务综述, 应用综述, 业务组综述, 网络综述, 告警综述, summary report, overview report must call `napm-summary` first. It queries alert/traffic/business APIs in parallel, aggregates the data, returns `reportData`. After `napm-summary` succeeds, immediately call `napm-report-export` with the returned `reportData` to render and deliver the Word/docx file. Do NOT use `napm-skill-query` for summary/overview reports — use `napm-summary` instead. Do NOT ask the user whether they want a Word file after a summary report request — always auto-export.',
-    'Summary tool contract: `napm-summary` takes a `scope` (type + optional target) and a `timeRange` (start/end Unix seconds). For global summaries, use scope.type=`global`. For per-application summaries, use scope.type=`webApplication` with target.groupType=`WebApplication` and target.groupArgument (e.g. `239web`). After calling `napm-summary`, ALWAYS call `napm-report-export` in the same turn — the user expects the Word file directly without an extra prompt. `napm-report-export` must consume `reportData` returned by `napm-summary` and must not query NAPM independently.',
-    'Packet boundary: packet capture/download/analysis wording such as 数据包/报文/抓包/原始包/pcap/cap/packetsPreview/packetsDown/DownServlet must call `napm-packet-analysis` WHEN target IPs are known. ⚠️ EXCEPTION: "告警数据包 <eventId>" requests MUST route to `napm-alert-query` FIRST for automatic IP discovery, then call `napm-packet-analysis` with the resolved candidates. The `criteria.id` parameter in packet-analysis is ONLY for linkType=2 event IDs — do NOT use it for alert event IDs. Do not answer packet requests by reading skill files, using stale memory, or falling back to `napm-skill-query` metric overview/topValues.',
-    '⚠️ Alert-packet sequencing ("告警数据包"): when the user says "告警数据包 <eventId>" or "分析告警的数据包" (alert event ID combined with packet intent), call `napm-alert-query` FIRST (mode=detail) to obtain alert details and packetHandoff. The alert-query skill performs automatic indirect IP discovery for business/app/group alerts and returns packetHandoff with download candidates. Only AFTER alert-query returns should you call `napm-packet-analysis` with the suggestedPacketQuery from the candidates. Do NOT call `napm-packet-analysis` directly with criteria.id for alert-packet requests.',
-    '⚠️ TRIGGER CAUSE ANALYSIS: Do NOT skip trigger cause analysis because the alert name contains "测试". Even test alerts have real trigger metrics and real values. The alert-query output includes a ">>> 告警触发条件 <<<" section with metrics, condition, actual value, and unit. In EVERY packet analysis report, you MUST explain what metric triggered the alert, what the threshold was, what the actual value was, and how the packet traffic explains the anomaly. Do NOT dismiss alerts as "just test alerts" and skip the trigger analysis.',
-    'Packet tool contract: use `napm-packet-analysis` with a structured packet query. For link-only requests use mode=`build_url_only`; for large time ranges use mode=`preview_only` first; for safe packet analysis use mode=`preview_download_analyze`.',
-    'Business page packet preview contract: if the user provides a Web page URL/path and asks 数据包预览/分析, call `napm-packet-analysis` with `downloadType:"DownServlet"`, `mode:"preview_only"`, and `criteria.page` or `criteria.pageUrl`. If prior query context contains pageFamilyId/businessName for that page, include it. This preview means `pageViews` candidate rows, not ordinary `packetsPreview`.',
-    'Never downgrade a business page packet preview to IP-based `packetsPreview` merely because the URL contains an IP address. IP-based packetsPreview is allowed only when the user explicitly asks 按IP/IP数据包 or provides only an IP target.',
-    'Cross-skill boundary: report/export wording belongs to `napm-report-export` after valid source data exists. If the report request asks for fresh alert data, call `napm-alert-query` first and then `napm-report-export` with the returned reportData. If it asks for a fresh inspection report, call `napm-inspection-snapshot` first and then `napm-report-export` with the returned reportData.',
-    'Never claim that business inventory was queried by direct curl/API, exec, python filtering, raw backend probing, or by bypassing napm-skill-query. If a valid current skill result is unavailable, say the question must be executed through napm-skill-query with resolvedQuery first.',
-    'The legacy direct tools `napm-timeseries`, `napm-topn`, and `napm-average` have been removed from this deployment to avoid bypassing the resolvedQuery-first production entry.',
-    'This rule also applies to boundary-check requests such as restart, deploy, modify config, inspect SQL, code debugging, or DB-internal asks when they mention NAPM-monitored objects.',
-    'If `napm-skill-query` returns decision.next_action=`REJECT_AND_REDIRECT`, do not call exec, shell, restart, deployment, or configuration tools. Explain that the request is outside the NAPM skill boundary and invite the user to ask a NAPM query, analysis, explanation, or result-interpretation question instead.',
-    'If `napm-skill-query` returns `ASK_CLARIFYING_QUESTION`, ask that clarification and stop.',
-    'If `napm-skill-query` returns `ANSWER_CONCEPTUALLY` or `INTERPRET_RESULT`, answer from that result and stop.',
-    'If `napm-skill-query` returns `displayText` or `summary.displayText`, prefer using that text directly instead of paraphrasing it.',
-    'When the user explicitly asks to generate/export a report, Word, docx, or PDF for NAPM results, use `napm-report-export` after `napm-skill-query` has produced `reportData`.',
-    'For follow-up export wording such as "将以上以 Word 形式导出", "把刚才结果导出成 Word", or "生成报告", do not re-query NAPM unless the user changes the data scope. Call `napm-report-export` and let it consume the latest fresh NAPM skill `reportData`.',
-    'For new report requests that include a data question, first call `napm-skill-query` with a complete resolvedQuery, then call `napm-report-export` with the returned `reportData`.',
-    'Do not call `napm-report-export` for ordinary data questions unless the user explicitly asks for a report/export file.',
-    'PDF export is not enabled in this stage. If the user asks for PDF, call `napm-report-export` with format=pdf and report the tool error; do not silently generate Word instead.',
-    'For any NAPM data question, including repeated or follow-up wording, never answer from stale conversation memory alone. You must base the reply on a fresh NAPM tool result from the current turn.',
-    'If the tool result contains `requestUrl`, you must append `Debug API:` followed by that exact URL at the end of your final reply.',
-    'If the request is clearly unrelated to system monitoring or NAPM, such as weather, casual chat, reminders, entertainment, or general knowledge, do not answer the request. Briefly redirect the user back to system monitoring, anomaly analysis, or result interpretation questions.'
-  ].join('\n');
+  // Scene detection via existing classifiers (all accept prompt string)
+  var isFault = false, isSummary = false, isAlert = false, isPacket = false;
+  try {
+    if (prompt) {
+      isFault = isFaultDiagnosisPrompt(prompt);
+      isSummary = isSummaryPrompt(prompt);
+      isAlert = isAlertEventPrompt(prompt);
+      isPacket = isPacketCapturePrompt(prompt);
+    }
+  } catch (_e) { /* classifier errors → inject all rules as fallback */ }
+
+  var isNapm = Boolean(opts.napmRelated) || (prompt && isNapmRelatedPrompt(prompt));
+  // Guard: if no scene detected, default to data-query + packet scenes to cover all possibilities
+  var anyScene = isFault || isSummary || isAlert || isPacket;
+  if (!anyScene) { isFault = true; isSummary = true; isAlert = true; isPacket = true; }
+
+  var rules = [];
+
+  // ── TOOL ROUTING TABLE (always) ──
+  rules.push(
+    'TOOL ROUTING — pick exactly one entry point based on user intent:',
+    '  fault/error analysis (故障/报错/4xx/5xx) → napm-fault-diagnosis (flowType="bs_app_slow", target={groupType:"WebApplication",groupArgument,groupLabel}, timeRange) → napm-report-export',
+    '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
+    '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
+    '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',
+    '  packet capture/analysis (数据包/报文/抓包/pcap) → napm-packet-analysis',
+    '  alert+packet combined (告警数据包 <eventId>) → napm-alert-query FIRST (mode=detail) → napm-packet-analysis with suggestedPacketQuery',
+    '  data query (ranking/average/trend/overview/inventory/metric-list/drilldown) → napm-skill-query',
+    '  report/export only (将以上导出Word/生成报告, no new data) → napm-report-export (consume existing reportData)',
+    'Do NOT use napm-skill-query for reports, fault analysis, alerts, or packet requests. Each domain has its own tool.',
+    'napm-resolve-query and napm-mainflow-query are diagnostic-only; do not use in production.',
+    'Legacy tools napm-timeseries/napm-topn/napm-average are removed.'
+  );
+
+  // ── SCOPE MAPPING (only for summary) ──
+  if (isSummary) {
+    rules.push('Scope mapping: 全局/系统/NAPM→{type:"global",label:"全局"} 业务→{type:"webApplication",label:"业务"} 网络→{type:"network",label:"网络"} 工作组→{type:"businessGroup",label:"工作组"} 应用→{type:"application",label:"应用"} 告警→{type:"alert",label:"告警"}. Omit scope.target for overall review.');
+  }
+
+  // ── GENERAL BOUNDARY (always) ──
+  rules.push(
+    'You handle only system monitoring, NAPM query, anomaly diagnosis, and result interpretation. Non-monitoring (weather/chat/entertainment) → briefly redirect.',
+    'OpenClaw upstream owns resolvedQuery construction. Plugin forwards structured queries; skill executes them.',
+    'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
+    '',
+    'Time: set timeRange.key only (last1hour|last24hours|today|yesterday|last7days|last30days). Plugin computes start/end from server clock. Do NOT pass start/end timestamps. Example: {service:"topValues",timeRange:{key:"last1hour",displayText:"最近1小时"}}.',
+    'Query construction rules (inventory/metric ownership/drilldown/time wording/follow-up) → skills/openclaw-napm-query/references/query-workflow-contract.md.'
+  );
+
+  // ── ALERT CONTRACT (only for alert scenes) ──
+  if (isAlert) {
+    rules.push(
+      'Alert mode: summary=list, timeline=trend, detail=by eventId, detail_with_timeseries=trigger metrics, explain_notification=field help. Read-only tool.',
+      'Alert answer: output result verbatim. Do NOT add 建议关注/按严重程度/当前持续中/tables/bullet lists or any modification. Result IS the final answer.'
+    );
+  }
+
+  // ── PACKET CONTRACT (only for packet scenes) ──
+  if (isPacket) {
+    rules.push(
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Alert-packet: napm-alert-query FIRST (auto IP discovery via packetHandoff), then napm-packet-analysis. criteria.id is for linkType=2 only, not alert event IDs.',
+      'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
+    );
+  }
+
+  // ── ANSWER / FOLLOW-UP RULES (always) ──
+  rules.push(
+    'REJECT_AND_REDIRECT → explain boundary. ASK_CLARIFYING_QUESTION → ask and stop. ANSWER_CONCEPTUALLY/INTERPRET_RESULT → answer from result.',
+    'Prefer displayText/summary.displayText directly over paraphrasing.',
+    'Never answer from stale memory. Base reply on fresh tool result from current turn.',
+    'Never claim data was queried by direct API/curl/exec/python. Say: use napm-skill-query with resolvedQuery.'
+  );
+
+  // ── REPORT EXPORT (always — small) ──
+  rules.push(
+    'Report export: napm-skill-query→napm-report-export (new). Follow-up export (将以上导出) → napm-report-export only (no re-query). Do not auto-export for ordinary data questions.',
+    'Cross-skill: fresh alert report → napm-alert-query→napm-report-export. Fresh inspection → napm-inspection-snapshot→napm-report-export.',
+    'PDF not available; if requested, call napm-report-export format=pdf and report error.',
+    '',
+    'Append "Debug API: <requestUrl>" at end of reply when present.',
+    'Boundary requests (restart/deploy/config/SQL/code) mentioning NAPM objects → reject and redirect.'
+  );
+
+  return rules.join('\n');
 }
 
 const skillTool = createSkillToolDefinition();
@@ -5392,7 +4629,7 @@ const plugin = {
           api.logger.info(`[napm-openclaw-plugin] injecting NAPM routing policy for prompt: ${prompt.slice(0, 120)}`);
         }
         return {
-          appendSystemContext: buildNapmRoutingSystemContext()
+          appendSystemContext: buildNapmRoutingSystemContext({ prompt, napmRelated: promptNapmRelated })
         };
       },
       {
@@ -5411,6 +4648,71 @@ const plugin = {
         const toolName = String(event?.toolName || '').trim();
         const toolParams = isPlainObject(event?.params) ? event.params : {};
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
+
+        // ── Unified Time Override (2026-07-07) ──────────────────────────────
+        // Date.now() 无条件覆盖所有 NAPM Tool 的时间参数。
+        // 替代之前在 runSkillExecutor 中只对 napm-skill-query 生效的时间覆盖。
+        // 现在对所有需要时间的 Tool 统一生效。
+        if (isSafeNapmToolName(toolName) && isPlainObject(event.params)) {
+          try {
+            const { applyTimeOverride } = require(path.resolve(__dirname, 'src/shared/timeResolver'));
+
+            // napm-skill-query: 覆盖 resolvedQuery.start/end
+            if (toolName === 'napm-skill-query' && isPlainObject(event.params.resolvedQuery)) {
+              applyTimeOverride(event.params.resolvedQuery);
+            }
+
+            // napm-summary / napm-fault-diagnosis: 无条件覆盖时间（2026-07-08 修复）
+            // 即使 LLM 直接传了 start/end 而没有传 timeRange.key，也必须用 Date.now() 覆盖。
+            // 否则 SummaryService._resolveTimeRange 可能使用 LLM 提供的错误时间戳。
+            if (toolName === 'napm-summary' || toolName === 'napm-fault-diagnosis') {
+              if (!isPlainObject(event.params.timeRange)) {
+                event.params.timeRange = {};
+              }
+              const now = Math.floor(Date.now() / 1000);
+              const floor = (v) => Math.floor(v / 60) * 60;
+              const timeKey = String(event.params.timeRange.key || '').trim() || 'last24hours';
+              const DURATION_MAP = { last5minutes: 300, last1hour: 3600, last24hours: 86400,
+                last1day: 86400, last7days: 604800, last30days: 2592000 };
+
+              let start, end;
+              if (timeKey === 'today') {
+                const d = new Date(now * 1000); d.setHours(0, 0, 0, 0);
+                start = floor(d.getTime() / 1000);
+                end = floor(now);
+              } else if (timeKey === 'yesterday') {
+                const d = new Date(now * 1000); d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0);
+                start = floor(d.getTime() / 1000);
+                end = floor(start + 86340);
+              } else {
+                const duration = DURATION_MAP[timeKey] || 86400;
+                start = floor(now - duration);
+                end = floor(now);
+              }
+              event.params.timeRange.start = start;
+              event.params.timeRange.end = end;
+              event.params.timeRange.key = timeKey;
+              // 同时设置根级别 start/end，兼容直接从 params 读取时间的服务
+              event.params.start = start;
+              event.params.end = end;
+            }
+
+            // napm-alert-query: 如果 criteria 有 timeRange.key，覆盖 start/end
+            if (toolName === 'napm-alert-query'
+                && isPlainObject(event.params.alertQuery?.criteria)) {
+              const criteria = event.params.alertQuery.criteria;
+              if (!criteria.start && !criteria.end) {
+                const now = Math.floor(Date.now() / 1000);
+                const floor = (v) => Math.floor(v / 60) * 60;
+                criteria.start = floor(now - 3600);
+                criteria.end = floor(now);
+              }
+            }
+          } catch (_timeOverrideError) {
+            // 时间覆盖失败不影响工具调用 — 静默降级
+            api.logger.warn(`[napm-openclaw-plugin] time override failed for ${toolName}: ${_timeOverrideError.message}`);
+          }
+        }
 
         const fallbackPrompt = normalizePrompt(toolParams);
         const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
@@ -5704,6 +5006,14 @@ const plugin = {
     registerNapmHook(
       'message_sending',
       async (event, ctx) => {
+        // 🔴 最高优先级：如果有 pendingAlertDisplayText，直接替换整个消息
+        // 必须在所有其他逻辑之前执行，防止被 early-return 跳过
+        if (pendingAlertDisplayText) {
+          const text = pendingAlertDisplayText;
+          pendingAlertDisplayText = null;
+          appendPluginAuditEvent('napm_alert_displaytext_consumed_msg_sending', { consumed: true });
+          return { content: text };
+        }
         const mediaDedupe = dedupeOutgoingMediaForConversation(event, ctx);
         if (mediaDedupe?.original?.length > 0 && mediaDedupe.fresh.length === 0) {
           appendPluginAuditEvent('napm_plugin_duplicate_media_suppressed', {
@@ -5760,7 +5070,6 @@ const plugin = {
           };
         }
 
-        appendPluginAuditEvent("napm_alert_displaytext_consumed_msg_sending", { consumed: Boolean(pendingAlertDisplayText) }); if (pendingAlertDisplayText) { const text = pendingAlertDisplayText; pendingAlertDisplayText = null; return { content: text }; }
         if (!outOfScopeBoundaryRequested) {
           const activePrompt = activePromptForReport;
           const alertScopedPrompt = Boolean(
@@ -5794,12 +5103,6 @@ const plugin = {
                 ? buildAlertExecutionTraceReplyFromRememberedRecord(rememberedRecord)
                 : buildExecutionTraceReplyFromRememberedRecord(rememberedRecord)
             };
-          }
-          appendPluginAuditEvent("napm_alert_displaytext_consumed_before_write", { consumed: Boolean(pendingAlertDisplayText) });
-        if (pendingAlertDisplayText) {
-            const text = pendingAlertDisplayText;
-            pendingAlertDisplayText = null;
-            return { content: text };
           }
           if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {
             return {
@@ -5880,6 +5183,14 @@ const plugin = {
     registerNapmHook(
       'before_message_write',
       (event, ctx) => {
+        // 🔴 最高优先级：如果有 pendingAlertDisplayText，直接替换整个消息
+        if (pendingAlertDisplayText) {
+          const text = pendingAlertDisplayText;
+          pendingAlertDisplayText = null;
+          appendPluginAuditEvent('napm_alert_displaytext_consumed_before_write', { consumed: true });
+          const msg = event?.message;
+          return { message: buildAssistantTextMessage(text, msg) };
+        }
         const message = event?.message;
         const role = String(message?.role || '').trim();
         if (role !== 'assistant') {
@@ -5937,15 +5248,6 @@ const plugin = {
             )
           };
         }
-        // skill 已生成 displayText → 直接替换 AI 输出，不走 AI 格式化
-        appendPluginAuditEvent("napm_alert_displaytext_consumed_before_write", { consumed: Boolean(pendingAlertDisplayText) });
-        if (pendingAlertDisplayText) {
-          const text = pendingAlertDisplayText;
-          pendingAlertDisplayText = null;
-          return {
-            message: buildAssistantTextMessage(text, message)
-          };
-        }
         if (alertScopedPrompt && isAlertSkillResultRecord(rememberedRecord)) {
           return {
             message: buildAssistantTextMessage(buildAlertQueryReply(rememberedRecord.result), message)
@@ -6000,56 +5302,6 @@ const plugin = {
       }
     );
 
-    registerCommand(api, {
-      name: 'napm-skill-query',
-      description: 'Call the NAPM skill bridge command.',
-      endpoint: 'local://napm.skill.query',
-      payloadBuilder: buildSkillPayload
-    });
-
-    registerCommand(api, {
-      name: 'napm-report-export',
-      description: 'Export the latest NAPM skill reportData as a Word report.',
-      endpoint: 'local://napm.report.export'
-    });
-
-    registerCommand(api, {
-      name: 'napm-packet-analysis',
-      description: 'Run the NAPM packet preview/download/analysis skill.',
-      endpoint: 'local://napm.packet.analysis'
-    });
-
-    registerCommand(api, {
-      name: 'napm-alert-query',
-      description: 'Run the NAPM alert event query skill.',
-      endpoint: 'local://napm.alert.query'
-    });
-
-    registerCommand(api, {
-      name: 'napm-inspection-snapshot',
-      description: 'Collect NAPM inspection snapshot data for traffic analysis system inspection reports.',
-      endpoint: 'local://napm.inspection.snapshot'
-    });
-
-    registerCommand(api, {
-      name: 'napm-summary',
-      description: 'Generate a NAPM summary report aggregating alerts, traffic, and business performance.',
-      endpoint: 'local://napm.summary'
-    });
-
-    if (shouldEnableDevResolverTools()) {
-      registerCommand(api, {
-        name: 'napm-resolve-query',
-        description: 'Diagnostic-only: construct a NAPM resolvedQuery from a natural-language prompt.',
-        endpoint: 'local://napm.resolve.query'
-      });
-
-      registerCommand(api, {
-        name: 'napm-mainflow-query',
-        description: 'Diagnostic-only: resolve a NAPM prompt into resolvedQuery and execute it through napm-skill-query.',
-        endpoint: 'local://napm.mainflow.query'
-      });
-    }
   }
 };
 
@@ -6087,19 +5339,11 @@ module.exports.__test__ = {
   createInspectionSnapshotToolDefinition,
   createSummaryToolDefinition,
   createPacketAnalysisToolDefinition,
-  runInspectionExecutor,
-  runSummaryExecutor,
-  buildInspectionExecutorPayload,
   buildInspectionSnapshotReply,
   buildSummaryReply,
-  runAlertExecutor,
-  buildAlertExecutorPayload,
   buildAlertQueryReply,
   buildNapmRoutingSystemContext,
-  runPacketExecutor,
-  buildPacketExecutorPayload,
   buildPacketAnalysisReply,
-  runReportExecutor,
   buildReportDataForExport,
   buildReportInputForExport,
   buildReportExportReply,

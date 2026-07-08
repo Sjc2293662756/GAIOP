@@ -15,6 +15,7 @@ const {
 const InspectionFixedTemplateService = require('./InspectionFixedTemplateService');
 const SummaryFixedTemplateService = require('./SummaryFixedTemplateService');
 const BsFaultTemplateService = require('./BsFaultTemplateService');
+const CsFaultTemplateService = require('./CsFaultTemplateService');
 const { buildEChartsOption, renderChartPngBuffer } = require('./InspectionFixedTemplateService').__test__;
 
 function asText(value) {
@@ -457,6 +458,7 @@ class ReportTemplateService {
     this.inspectionFixedTemplate = options.inspectionFixedTemplate || new InspectionFixedTemplateService(options);
     this.summaryFixedTemplate = options.summaryFixedTemplate || new SummaryFixedTemplateService(options);
     this.bsFaultTemplate = options.bsFaultTemplate || new BsFaultTemplateService(options);
+    this.csFaultTemplate = options.csFaultTemplate || new CsFaultTemplateService(options);
   }
 
   async renderDocx(report = {}) {
@@ -473,9 +475,13 @@ class ReportTemplateService {
     if (report.reportType === 'diagnostic_report' && report.templateId === 'napm_bs_fault_diagnosis_v2') {
       return this.bsFaultTemplate.renderDocx(report);
     }
+    // C/S fault diagnosis — fixed template rendering
+    if (report.reportType === 'diagnostic_report' && report.templateId === 'napm_cs_fault_diagnosis_v1') {
+      return this.csFaultTemplate.renderDocx(report);
+    }
 
     // No more generic/fallback rendering. Every diagnostic_report must match a fixed template.
-    throw new Error(`REPORT_TEMPLATE_NOT_FOUND: No template matched for reportType=${report.reportType} templateId=${report.templateId}. Supported: napm_bs_fault_diagnosis_v2, napm_traffic_health_inspection_v1, napm_summary_overview_v1.`);
+    throw new Error(`REPORT_TEMPLATE_NOT_FOUND: No template matched for reportType=${report.reportType} templateId=${report.templateId}. Supported: napm_bs_fault_diagnosis_v2, napm_cs_fault_diagnosis_v1, napm_traffic_health_inspection_v1, napm_summary_overview_v1.`);
   }
 
   async renderInspectionDocx(report = {}) {

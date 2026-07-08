@@ -35,7 +35,7 @@ const FLOW_TYPES = {
   },
   cs_app_slow: {
     label: 'C/S 架构应用慢',
-    steps: ['step1_app_overview', 'step2_time_breakdown'],
+    steps: ['step1_app_overview', 'step2_user_experience_trend', 'step3_slow_client_analysis'],
     jumpTargets: {
       network_slow: { label: '网络慢分析', trigger: '网络侧流量异常' },
       connection_failure: { label: '连接失败/RST 分析', trigger: '失败率升高' },

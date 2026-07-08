@@ -11,6 +11,10 @@ metadata:
 - **用户名**: `netinside`
 - **密码**: `netinside_123`
 - **项目根目录**: `/home/netinside/.openclaw/workspace/`
+- **Plugin 实际加载目录**: `/home/netinside/.openclaw/extensions/napm-openclaw-plugin/`
+  - `index.mjs` 是 ESM wrapper，先尝试 `require('./index.js')`，失败后回退到 `require('./napm-openclaw-plugin.remote.js')`
+  - **推送 Plugin 必须同时覆盖 extensions 目录**，仅推送到 workspace 无效（gateway 不从 workspace 加载 Plugin）
+  - `openclaw.plugin.json` 在 extensions 目录中，contracts.tools 需要在 extensions 目录中的文件更新
 
 ## 推送方式
 
@@ -25,7 +29,13 @@ metadata:
 ## 推送命令模板
 
 ```bash
-cd "g:/my_file/项目测试/观枢·智维平台-GAIOP/project_3/NAPM_skill" && pscp -pw netinside_123 "<local-relative-path>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-relative-dir>/"
+# Skill 脚本 → workspace/skills/
+cd "<project>" && pscp -pw netinside_123 "<local-relative-path>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-relative-dir>/"
+
+# Plugin + manifest + timeResolver → extensions 目录 (Gateway 实际加载位置)
+cd "<project>" && pscp -pw netinside_123 "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
+cd "<project>" && pscp -pw netinside_123 "openclaw.plugin.json" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
+cd "<project>" && pscp -pw netinside_123 "src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/src/shared/"
 ```
 
 目标路径末尾必须带 `/` 表示目录，否则多文件推送会报 `not a directory` 错误。

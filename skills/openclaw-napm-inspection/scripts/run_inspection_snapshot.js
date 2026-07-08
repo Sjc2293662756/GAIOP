@@ -151,9 +151,36 @@ if (require.main === module) {
   });
 }
 
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析/cli 参数合并。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    const service = new InspectionReportDataService({
+      host: params.host,
+      username: params.username,
+      password: params.password,
+      tlsInsecure: params.tlsInsecure,
+      timeoutMs: params.timeoutMs,
+    });
+
+    const result = await service.run(params);
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: error?.code || 'NAPM_INSPECTION_FAILED',
+      message: error?.message || String(error),
+      details: error?.details || undefined,
+    };
+  }
+}
+
 module.exports = {
   parseArgs,
   parseJsonText,
   applyCliOverrides,
-  readPayload
+  readPayload,
+  handleSkillCall,
 };

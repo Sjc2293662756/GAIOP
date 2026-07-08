@@ -866,13 +866,24 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
     });
   }
 
+  // Format Unix timestamps to readable HH:mm
+  function formatTimeLabel(value) {
+    const ts = Number(value);
+    if (Number.isFinite(ts) && ts > 1000000000) {
+      const d = new Date(ts * 1000);
+      const pad = (n) => String(n).padStart(2, '0');
+      return pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    return String(value);
+  }
+
   const xAxisConfig = {
     type: 'category',
     data: xData,
     axisLine: NAPM_STYLE.axisLine,
     axisLabel: chartType === 'bar'
-      ? { ...NAPM_STYLE.axisLabel, rotate: 30, overflow: 'truncate', width: 120 }
-      : NAPM_STYLE.axisLabel,
+      ? { ...NAPM_STYLE.axisLabel, rotate: 30, overflow: 'truncate', width: 120, formatter: formatTimeLabel }
+      : { ...NAPM_STYLE.axisLabel, formatter: formatTimeLabel },
     splitLine: { show: false }
   };
 

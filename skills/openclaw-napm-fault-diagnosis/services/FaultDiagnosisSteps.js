@@ -194,7 +194,8 @@ class FaultDiagnosisSteps {
       },
       cs_app_slow: {
         step1_app_overview: (ctx) => this._csStep1(ctx),
-        step2_time_breakdown: (ctx) => this._csStep2(ctx)
+        step2_user_experience_trend: (ctx) => this._csStep2(ctx),
+        step3_slow_client_analysis: (ctx) => this._csStep3(ctx)
       }
     };
 
@@ -223,7 +224,8 @@ class FaultDiagnosisSteps {
       },
       cs_app_slow: {
         step1_app_overview: (d) => this._analyzeCsStep1(d),
-        step2_time_breakdown: (d) => this._analyzeCsStep2(d)
+        step2_user_experience_trend: (d) => this._analyzeCsStep2(d),
+        step3_slow_client_analysis: (d) => this._analyzeCsStep3(d)
       }
     };
 
@@ -654,36 +656,30 @@ class FaultDiagnosisSteps {
 
   _csStep1(ctx = {}) {
     const { faultStart, faultEnd, target, granularity } = ctx;
-    const groupType = target?.groupType || 'Application';
+    const groupType = target?.groupType || 'DefinedApp';
     const groupArg = target?.groupArgument || '';
     const groups = groupArg
       ? [{ type: groupType, argument: groupArg }]
-      : [{ type: 'Application' }];
+      : [{ type: 'DefinedApp' }];
 
     return {
       label: 'step1_app_overview',
       description: '第一步：查看应用运行状况',
       queries: [
         {
-          label: 'appTrend',
+          label: 'appPerformanceSummary',
+          fn: () => this.client.getAverageValues(
+            faultStart, faultEnd,
+            'UEII,CSTI,TRTI,PTTO,RDTO',
+            groups
+          )
+        },
+        {
+          label: 'appTrafficTrend',
           fn: () => this.client.getTimeValues(
             faultStart, faultEnd,
-            'TPIO,TPI,TPO,CONI,CONO,SCSI,SCSO,FLSI,FLSO',
+            'TPI,TPO',
             groups, granularity || 60
-          )
-        },
-        {
-          label: 'appConnections',
-          fn: () => this.client.getTopValues(
-            faultStart, faultEnd,
-            'CONI,CONO', 'CONI', 10, groups
-          )
-        },
-        {
-          label: 'appFailures',
-          fn: () => this.client.getTopValues(
-            faultStart, faultEnd,
-            'RFCI,RFCO,FLSI,FLSO', 'RFCO', 10, groups
           )
         }
       ]
@@ -692,7 +688,27 @@ class FaultDiagnosisSteps {
 
   _analyzeCsStep1(raw = {}) {
     const flags = {};
-    if (raw.appTrend) flags.hasAppData = true;
+    if (raw.appPerformanceSummary) flags.hasPerformanceData = true;
+    if (raw.appTrafficTrend) flags.hasTrafficData = true;
+
+    const perfData = raw.appPerformanceSummary;
+    if (perfData && Object.keys(perfData).length > 0) {
+      const ueii = Number(perfData.UEII) || 0;
+      const rdt = Number(perfData.RDTO) || 0;
+      const trti = Number(perfData.TRTI) || 0;
+      const csti = Number(perfData.CSTI) || 0;
+
+      flags._ueii = ueii;
+      flags._rdto = rdt;
+      flags._trti = trti;
+      flags._csti = csti;
+
+      if (ueii > 1000) flags.userExpHigh = true;
+      if (rdt > 200) flags.retransHigh = true;
+      if (trti > 500) flags.serverRespHigh = true;
+      if (csti > 200) flags.connSetupHigh = true;
+    }
+
     return flags;
   }
 
@@ -701,31 +717,23 @@ class FaultDiagnosisSteps {
   // ═══════════════════════════════════════════════════════════════
 
   _csStep2(ctx = {}) {
-    const { faultStart, faultEnd, target } = ctx;
-    const groupType = target?.groupType || 'Application';
+    const { faultStart, faultEnd, target, granularity } = ctx;
+    const groupType = target?.groupType || 'DefinedApp';
     const groupArg = target?.groupArgument || '';
     const groups = groupArg
       ? [{ type: groupType, argument: groupArg }]
-      : [{ type: 'Application' }];
+      : [{ type: 'DefinedApp' }];
 
     return {
-      label: 'step2_time_breakdown',
-      description: '第二步：拆分用户体验（建连时间 + 服务器响应 + 数据传输 + 重传）',
+      label: 'step2_user_experience_trend',
+      description: '第二步：用户体验趋势分析（查找波峰）',
       queries: [
         {
-          label: 'timeComponents',
-          fn: () => this.client.getTopValues(
+          label: 'userExpTrend',
+          fn: () => this.client.getTimeValues(
             faultStart, faultEnd,
-            'CSTI,CSTO,SRTI,SRTO,DTTI,DTTO,RTDI,RTDO,UETI,UETO',
-            'UETO', 10, groups
-          )
-        },
-        {
-          label: 'qualityMetrics',
-          fn: () => this.client.getTopValues(
-            faultStart, faultEnd,
-            'RTTI,RTTO,PLI,PLO',
-            'PLI', 10, groups
+            'UEII,CSTI,TRTI,PTTO,RDTO',
+            groups, granularity || 60
           )
         }
       ]
@@ -734,7 +742,211 @@ class FaultDiagnosisSteps {
 
   _analyzeCsStep2(raw = {}) {
     const flags = {};
-    if (raw.timeComponents) flags.hasTimeComponents = true;
+    const trend = raw.userExpTrend;
+
+    if (!trend || !isPlainObject(trend)) {
+      flags.noTrendData = true;
+      return flags;
+    }
+
+    flags.hasTrendData = true;
+
+    const uetVals = extractTimeSeries(trend, 'UEII');
+    if (uetVals.length === 0) {
+      flags.noUetData = true;
+      return flags;
+    }
+
+    const mean = avg(uetVals);
+    const maxVal = max(uetVals);
+    const sd = Math.sqrt(uetVals.reduce((s, v) => s + (v - mean) ** 2, 0) / uetVals.length);
+    const threshold = mean + 2 * sd;
+
+    flags._uetMean = mean;
+    flags._uetMax = maxVal;
+    flags._uetThreshold = threshold;
+    flags._uetPointCount = uetVals.length;
+
+    // Find indices above threshold
+    const aboveIdx = [];
+    for (let i = 0; i < uetVals.length; i++) {
+      if (uetVals[i] >= threshold) aboveIdx.push(i);
+    }
+
+    if (aboveIdx.length === 0) {
+      flags.uetNormal = true;
+      return flags;
+    }
+
+    // Group consecutive indices into intervals, find peak in each
+    const intervals = [];
+    let start = aboveIdx[0];
+    for (let i = 1; i <= aboveIdx.length; i++) {
+      if (i === aboveIdx.length || aboveIdx[i] > aboveIdx[i - 1] + 1) {
+        const end = aboveIdx[i - 1];
+        let peakIdx = start, peakVal = uetVals[start];
+        for (let j = start; j <= end; j++) {
+          if (uetVals[j] > peakVal) { peakIdx = j; peakVal = uetVals[j]; }
+        }
+        intervals.push({ startIdx: start, endIdx: end, peakIdx, peakVal, span: end - start + 1 });
+        if (i < aboveIdx.length) start = aboveIdx[i];
+      }
+    }
+
+    const totalSpan = aboveIdx[aboveIdx.length - 1] - aboveIdx[0] + 1;
+    const isPlateau = intervals.length >= 3 && totalSpan > uetVals.length * 0.5;
+
+    flags._intervals = intervals;
+    flags._intervalCount = intervals.length;
+    flags._isPlateau = isPlateau;
+
+    // Select peaks
+    let selectedPeaks = [];
+    if (isPlateau) {
+      const sampleIndices = [];
+      const step = Math.max(1, Math.floor(totalSpan / 4));
+      for (let i = aboveIdx[0]; i <= aboveIdx[aboveIdx.length - 1]; i += step) {
+        sampleIndices.push(i);
+      }
+      const unique = [...new Set(sampleIndices)].sort((a, b) => a - b);
+      selectedPeaks = unique.slice(0, 5).map((idx) => ({
+        index: idx, value: uetVals[idx], reason: 'plateau_sample'
+      }));
+    } else if (intervals.length > 5) {
+      selectedPeaks = [...intervals]
+        .sort((a, b) => b.peakVal - a.peakVal)
+        .slice(0, 5)
+        .map((iv) => ({ index: iv.peakIdx, value: iv.peakVal, reason: 'top5' }));
+    } else {
+      selectedPeaks = intervals.map((iv) => ({
+        index: iv.peakIdx, value: iv.peakVal, reason: 'all'
+      }));
+    }
+
+    flags._selectedPeaks = selectedPeaks;
+    flags._peakCount = selectedPeaks.length;
+    flags.hasPeaks = selectedPeaks.length > 0;
+
+    return flags;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // C/S App slow — Step 3: 波峰窗口慢客户端分析
+  // ═══════════════════════════════════════════════════════════════
+
+  _csStep3(ctx = {}) {
+    const { faultStart, faultEnd, target } = ctx;
+    const groupType = target?.groupType || 'DefinedApp';
+    const groupArg = target?.groupArgument || '';
+
+    const clientGroups = groupArg
+      ? [{ type: groupType, argument: groupArg }, { type: 'ExternalIPs' }, { type: 'IPAddress' }]
+      : [{ type: 'DefinedApp' }, { type: 'ExternalIPs' }, { type: 'IPAddress' }];
+
+    const prevRaw = ctx._prevStepRawData || {};
+    const trend = prevRaw.userExpTrend;
+    let startTime = Number(faultStart) || 0;
+    let gran = Number(ctx.granularity) || 60;
+    if (trend) {
+      startTime = Number(trend.interval?.start || trend.start) || startTime;
+      gran = Number(trend.granularity) || gran;
+    }
+
+    // Get peaks detected in step2 analysis
+    const prevAnalysisFlags = ctx._prevAnalysisFlags || {};
+    const peaks = prevAnalysisFlags._selectedPeaks || [];
+    if (peaks.length === 0) {
+      return {
+        label: 'step3_slow_client_analysis',
+        description: '第三步：慢客户端分析（全窗口，未检测到明显波峰）',
+        queries: [{
+          label: 'overallSlowClients',
+          fn: () => this.client.getTopValues(
+            faultStart, faultEnd || (faultStart + 3600),
+            'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+          )
+        }]
+      };
+    }
+
+    const queries = peaks.map((p, i) => ({
+      label: `peak_${i + 1}_clients`,
+      peakIndex: p.index,
+      peakValue: p.value,
+      peakReason: p.reason || '',
+      fn: () => {
+        const peakTime = startTime + p.index * gran;
+        return this.client.getTopValues(
+          peakTime - 30, peakTime + 30,
+          'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+        );
+      }
+    }));
+
+    queries.push({
+      label: 'overallSlowClients',
+      fn: () => this.client.getTopValues(
+        faultStart, faultEnd || (faultStart + 3600),
+        'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+      )
+    });
+
+    return {
+      label: 'step3_slow_client_analysis',
+      description: `第三步：波峰窗口慢客户端分析（检测到 ${peaks.length} 个波峰）`,
+      queries
+    };
+  }
+
+  _analyzeCsStep3(raw = {}) {
+    const flags = {};
+    const peakKeys = Object.keys(raw).filter((k) => k.startsWith('peak_') && raw[k]);
+    flags._peakQueryCount = peakKeys.length;
+
+    if (peakKeys.length === 0) {
+      flags.noPeakData = true;
+      return flags;
+    }
+
+    flags.hasPeakData = true;
+
+    const peakClients = [];
+    for (const key of peakKeys) {
+      const items = extractTopItems(raw[key]);
+      peakClients.push({
+        peakLabel: key,
+        clients: items.slice(0, 10),
+        clientCount: items.length
+      });
+    }
+    flags._peakClients = peakClients;
+
+    if (peakClients.length >= 2) {
+      const allClientSets = peakClients.map((pc) => new Set(pc.clients.map((c) => c.key)));
+      const recurring = [...allClientSets[0]].filter((ip) =>
+        allClientSets.every((s) => s.has(ip))
+      );
+      if (recurring.length > 0) {
+        flags.recurringClient = true;
+        flags._recurringIps = recurring;
+      }
+    }
+
+    for (const pc of peakClients) {
+      if (pc.clients.length === 1) {
+        flags.singleClientDominant = true;
+        break;
+      }
+      if (pc.clients.length >= 2) {
+        const first = pc.clients[0]?.UEII || 0;
+        const second = pc.clients[1]?.UEII || 0;
+        if (first > 0 && first > second * 3) {
+          flags.singleClientDominant = true;
+          break;
+        }
+      }
+    }
+
     return flags;
   }
 }

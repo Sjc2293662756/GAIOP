@@ -39,7 +39,8 @@ const STEP_LABELS = {
   step3_page_status_detail: '第三步：页面状态码详情分析',
   // C/S App slow
   step1_app_overview: '第一步：查看应用运行状况',
-  step2_time_breakdown: '第二步：拆分用户体验耗时'
+  step2_user_experience_trend: '第二步：用户体验趋势分析',
+  step3_slow_client_analysis: '第三步：波峰窗口慢客户端分析'
 };
 
 const FLOW_LABELS = {
@@ -174,7 +175,7 @@ class FaultDiagnosisReportBuilder {
     return {
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'diagnostic_report',
-      templateId: 'napm_fault_diagnosis_v2',
+      templateId: flowType === 'cs_app_slow' ? 'napm_cs_fault_diagnosis_v1' : 'napm_bs_fault_diagnosis_v2',
       format: options.format || 'docx',
       title,
       systemName: options.systemName || 'Netlnside基于AI的全流量性能分析平台',

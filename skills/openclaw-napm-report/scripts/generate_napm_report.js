@@ -86,7 +86,37 @@ if (require.main === module) {
   });
 }
 
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析/cli 参数合并。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    const reportData = normalizeReportInput(params, {
+      format: params.format,
+      title: params.title,
+      prompt: params.prompt,
+      sourceQuestion: params.prompt,
+    });
+
+    const service = new ReportGenerationService({
+      outputDir: params.outputDir,
+      downloadBaseUrl: params.downloadBaseUrl,
+    });
+
+    const result = await service.generate(reportData);
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      errorCode: error?.code || 'REPORT_GENERATION_FAILED',
+      message: error?.message || String(error),
+    };
+  }
+}
+
 module.exports = {
   parseArgs,
-  readInput
+  readInput,
+  handleSkillCall,
 };

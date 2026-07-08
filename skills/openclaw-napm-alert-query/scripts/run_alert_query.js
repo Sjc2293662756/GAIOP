@@ -636,8 +636,35 @@ function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    loadDotEnvCandidates([
+      path.join(workspaceRoot, '.env'),
+      path.join(process.cwd(), '.env'),
+      process.env.OPENCLAW_HOME ? path.join(process.env.OPENCLAW_HOME, '.env') : null,
+      process.env.HOME ? path.join(process.env.HOME, '.openclaw', '.env') : null,
+    ]);
+
+    return await executeAlertQuery(params);
+  } catch (error) {
+    return {
+      ok: false,
+      mode: null,
+      error: {
+        code: error.code || 'ALERT_SKILL_ERROR',
+        message: error.message || String(error),
+      },
+    };
+  }
+}
+
 module.exports = {
   executeAlertQuery,
+  handleSkillCall,
   parseArgs,
   loadPayload,
   loadDotEnvCandidates,

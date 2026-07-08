@@ -443,11 +443,125 @@
     },
 
     {
+      "id": "app_target_heading",
+      "type": "heading",
+      "title": "3 应用剖析",
+      "level": 1,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_overview_heading",
+      "type": "heading",
+      "title": "应用性能概览",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_overview_table",
+      "type": "table",
+      "rowBuilder": "appTargetOverview",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["指标", "值"]
+    },
+    {
+      "id": "app_target_userexp_chart",
+      "type": "chartSlot",
+      "title": "用户体验趋势",
+      "chartId": "app.userExpTrend",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_traffic_heading",
+      "type": "heading",
+      "title": "网络流量趋势",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_traffic_chart",
+      "type": "chartSlot",
+      "title": "流量趋势图",
+      "chartId": "traffic.trend",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_slow_clients_heading",
+      "type": "heading",
+      "title": "最慢外部客户端",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_slow_clients_table",
+      "type": "table",
+      "rowBuilder": "appTargetSlowClients",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "客户端IP", "连接时间(ms)", "响应时间(ms)", "传输时间(ms)", "重传时延(ms)"]
+    },
+    {
+      "id": "app_target_ext_traffic_heading",
+      "type": "heading",
+      "title": "流量最大外部地址",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_ext_traffic_table",
+      "type": "table",
+      "rowBuilder": "appTargetExternalTraffic",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "地址", "入流量(MB)", "出流量(MB)"]
+    },
+    {
+      "id": "app_target_conv_heading",
+      "type": "heading",
+      "title": "流量最大会话",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_conv_table",
+      "type": "table",
+      "rowBuilder": "appTargetConversations",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "会话", "入流量(MB)", "出流量(MB)"]
+    },
+    {
+      "id": "app_target_int_traffic_heading",
+      "type": "heading",
+      "title": "流量最大内部地址",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_int_traffic_table",
+      "type": "table",
+      "rowBuilder": "appTargetInternalTraffic",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "地址", "入流量(MB)", "出流量(MB)"]
+    },
+
+    {
       "id": "traffic_heading",
       "type": "heading",
       "title": "3 流量总览",
       "level": 1,
-      "scopes": ["global", "network", "application", "businessGroup"]
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"]
     },
     {
       "id": "traffic_requirement",

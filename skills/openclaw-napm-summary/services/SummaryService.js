@@ -9,6 +9,28 @@ function isPlainObject(v) {
   return Boolean(v && typeof v === 'object' && !Array.isArray(v));
 }
 
+/**
+ * Format a Unix timestamp (seconds) to "YYYY-MM-DD HH:mm:ss" in Asia/Shanghai.
+ */
+function formatTimestamp(seconds) {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) return String(seconds ?? '');
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
 function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
@@ -116,7 +138,7 @@ function normalizeTimeSeries(raw, metrics) {
     const valCount = Array.isArray(firstMV.values) ? firstMV.values.length : 0;
     const time = [];
     for (let i = 0; i < valCount; i++) {
-      time.push(start + i * granularity);
+      time.push(formatTimestamp(start + i * granularity));
     }
 
     const result = { time, unit: firstMV.metric?.unit || '' };
@@ -136,7 +158,7 @@ function normalizeTimeSeries(raw, metrics) {
 
   for (const row of rows) {
     const t = Number(row.time || row.Time || row.timestamp || 0);
-    time.push(t);
+    time.push(t > 0 ? formatTimestamp(t) : String(row.time || row.Time || row.timestamp || ''));
     for (const m of metricList) {
       series[m].push(Number(row[m]) || 0);
     }
@@ -590,11 +612,29 @@ class SummaryService {
   _planApplicationTarget(scope, start, end, granularity) {
     const target = scope.target || {};
     const groupArg = target.groupArgument || '';
+    const appGroups = [{ type: 'DefinedApp', argument: groupArg }];
+    const extIpGroups = [{ type: 'DefinedApp', argument: groupArg }, { type: 'ExternalIPs' }, { type: 'IPAddress' }];
+    const intIpGroups = [{ type: 'DefinedApp', argument: groupArg }, { type: 'InternalIPs' }, { type: 'IPAddress' }];
+    const convGroups = [{ type: 'DefinedApp', argument: groupArg }, { type: 'IPConversations' }, { type: 'IPConversation' }];
+
     return [
       { label: 'alertsSummary', fn: () => this.client.getAlertsSummary(start, end) },
       { label: 'alertsTimeline', fn: () => this.client.getAlertsTimeline(start, end) },
-      { label: 'trafficTrend', fn: () => this.client.getTimeValues(start, end, 'TPIO,TPI,TPO,PLI,PLO', [{ type: 'Application', argument: groupArg }], granularity) },
-      { label: 'drillDown', fn: () => this.client.getTopValues(start, end, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'Application', argument: groupArg }, { type: 'IPAddress' }]) }
+      // #1 应用性能概要 (averageValues: UEII,CSTI,TRTI,PTTO,RDTO)
+      { label: 'appOverview', fn: () => this.client.getAverageValues(start, end, 'UEII,CSTI,TRTI,PTTO,RDTO', appGroups) },
+      // #2 用户体验趋势 (timeValues)
+      { label: 'userExpTrend', fn: () => this.client.getTimeValues(start, end, 'UEII,CSTI,TRTI,PTTO,RDTO', appGroups, granularity) },
+      // #3 最慢外部客户端 (topValues: ExternalIPs→IPAddress)
+      { label: 'slowClients', fn: () => this.client.getTopValues(start, end, 'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, extIpGroups) },
+      // #4 网络流量趋势 (timeValues: TPI,TPO)
+      { label: 'trafficTrend', fn: () => this.client.getTimeValues(start, end, 'TPI,TPO', appGroups, granularity) },
+      // #5 流量最大外部地址 (topValues: ExternalIPs→IPAddress)
+      { label: 'externalTraffic', fn: () => this.client.getTopValues(start, end, 'BYTI,BYTO', 'TPIO', 10, extIpGroups) },
+      // #6 流量最大会话 (topValues: IPConversations→IPConversation)
+      { label: 'conversations', fn: () => this.client.getTopValues(start, end, 'BYTI,BYTO', 'TPIO', 10, convGroups) },
+      // #7 流量最大内部地址 (topValues: InternalIPs→IPAddress)
+      { label: 'internalTraffic', fn: () => this.client.getTopValues(start, end, 'BYTI,BYTO', 'TPIO', 10, intIpGroups) },
+      { label: 'applianceInfo', fn: () => this.client.getApplianceInfo() }
     ];
   }
 
@@ -784,7 +824,9 @@ class SummaryService {
   _aggregateTraffic(rawData = {}, scope = {}) {
     const scopeType = scope.type || 'global';
     const hasTarget = !!(scope.target && scope.target.groupType && scope.target.groupArgument);
-    const trafficSummary = { trend: null, topIPs: [], topApps: [], drillDown: null, appConnections: [], appFailures: [], appQuality: [] };
+    const trafficSummary = { trend: null, topIPs: [], topApps: [], drillDown: null, appConnections: [], appFailures: [], appQuality: [],
+      // Single application profile (AppPro)
+      appOverview: null, userExpTrend: null, slowClients: [], externalTraffic: [], conversations: [], internalTraffic: [] };
 
     if (scopeType === 'webApplication' && hasTarget && rawData.requestResponseTrend) {
       const ts = normalizeTimeSeries(rawData.requestResponseTrend, ['PGBYTI', 'PGBYTO']);
@@ -842,6 +884,19 @@ class SummaryService {
         rttIn: Number(row.RTTI || 0),
         rttOut: Number(row.RTTO || 0)
       }));
+    }
+
+    // ── Single application profile (AppPro) ────────────────────
+    if (hasTarget && scopeType === 'application') {
+      if (rawData.appOverview) trafficSummary.appOverview = parseAverageValues(rawData.appOverview);
+      if (rawData.userExpTrend) {
+        const ts = normalizeTimeSeries(rawData.userExpTrend, ['UEII','CSTI','TRTI','PTTO','RDTO']);
+        if (ts.time?.length > 0) trafficSummary.userExpTrend = { dataset: { points: buildTimePoints(ts, ['UEII','CSTI','TRTI','PTTO','RDTO']), metrics: ['UEII','CSTI','TRTI','PTTO','RDTO'], unit: '' } };
+      }
+      if (rawData.slowClients) trafficSummary.slowClients = normalizeTopValues(rawData.slowClients, 'IPAddress').map(row => ({ clientIp: row.key||row.keyLabel||'-', csti:Number(row.CSTI||0), trti:Number(row.TRTI||0), ptto:Number(row.PTTO||0), rdto:Number(row.RDTO||0) }));
+      if (rawData.externalTraffic) trafficSummary.externalTraffic = normalizeTopValues(rawData.externalTraffic, 'IPAddress').map(row => ({ addr: row.key||row.keyLabel||'-', byti:Number(row.BYTI||0), byto:Number(row.BYTO||0) }));
+      if (rawData.conversations) trafficSummary.conversations = normalizeTopValues(rawData.conversations, 'IPConversation').map(row => ({ conv: row.key||row.keyLabel||'-', byti:Number(row.BYTI||0), byto:Number(row.BYTO||0) }));
+      if (rawData.internalTraffic) trafficSummary.internalTraffic = normalizeTopValues(rawData.internalTraffic, 'IPAddress').map(row => ({ addr: row.key||row.keyLabel||'-', byti:Number(row.BYTI||0), byto:Number(row.BYTO||0) }));
     }
 
     return trafficSummary;

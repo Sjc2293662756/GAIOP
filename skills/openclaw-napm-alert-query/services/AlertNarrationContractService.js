@@ -187,26 +187,28 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     }
   }
 
-  // ── Top 对象 ──
-  const topObjects = summary.topObjects || [];
-  if (topObjects.length > 0) {
-    lines.push('告警最多的对象：');
-    for (const obj of topObjects.slice(0, 8)) {
-      const sevEmoji = obj.maxSeverity === 4 ? '🔴' : obj.maxSeverity === 3 ? '🟠' : '';
-      lines.push(`  ${sevEmoji} ${obj.group} — ${obj.count} 条`);
+  // ── Top 对象 + 事件表（仅非 summary 模式显示）──
+  if (result.mode !== 'summary') {
+    const topObjects = summary.topObjects || [];
+    if (topObjects.length > 0) {
+      lines.push('告警最多的对象：');
+      for (const obj of topObjects.slice(0, 8)) {
+        const sevEmoji = obj.maxSeverity === 4 ? '🔴' : obj.maxSeverity === 3 ? '🟠' : '';
+        lines.push(`  ${sevEmoji} ${obj.group} — ${obj.count} 条`);
+      }
+      lines.push('');
     }
-    lines.push('');
-  }
 
-  // ── 事件表 ──
-  if (events.length > 0) {
-    const displayEvents = events.slice(0, 5);
-    lines.push(`前 ${displayEvents.length} 条告警：`);
-    for (const e of displayEvents) {
-      const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '⚪';
-      lines.push(`  ${sevLabel} ${e.severityLabel || ''} | ${e.categoryLabel || e.category || '-'} | ${e.group || '-'} | ${e.name || '-'}`);
+    // ── 事件表 ──
+    if (events.length > 0) {
+      const displayEvents = events.slice(0, 5);
+      lines.push(`前 ${displayEvents.length} 条告警：`);
+      for (const e of displayEvents) {
+        const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '⚪';
+        lines.push(`  ${sevLabel} ${e.severityLabel || ''} | ${e.categoryLabel || e.category || '-'} | ${e.group || '-'} | ${e.name || '-'}`);
+      }
+      lines.push('');
     }
-    lines.push('');
   }
 
   // ── packet 信息（仅 detail 模式显示）──
@@ -224,7 +226,6 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     lines.push('');
   }
 
-  lines.push('---');
   lines.push('告警查询完成。');
   return lines.join('\n');
 }

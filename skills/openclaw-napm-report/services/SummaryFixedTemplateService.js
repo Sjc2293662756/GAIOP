@@ -327,6 +327,30 @@ function buildBusinessPageTrafficRows(data = []) {
   ]);
 }
 
+// ── AppPro: single application row builders ────────────────────
+
+function buildAppTargetOverview(data = {}) {
+  if (!data || !Object.keys(data).length) return [['暂无数据', '-']];
+  const labels = { UEII: '用户体感指数', CSTI: '连接建立时间(ms)', TRTI: '服务器响应时间(ms)', PTTO: '传输时间(ms)', RDTO: '重传时延(ms)' };
+  return Object.entries(data).map(([k, v]) => [labels[k] || k, formatNumber(v)]);
+}
+
+function buildAppTargetSlowClients(data = []) {
+  return asArray(data).map((row, i) => [i + 1, row.clientIp || '-', formatNumber(row.csti), formatNumber(row.trti), formatNumber(row.ptto), formatNumber(row.rdto)]);
+}
+
+function buildAppTargetExternalTraffic(data = []) {
+  return asArray(data).map((row, i) => [i + 1, row.addr || '-', formatNumber(row.byti), formatNumber(row.byto)]);
+}
+
+function buildAppTargetConversations(data = []) {
+  return asArray(data).map((row, i) => [i + 1, row.conv || '-', formatNumber(row.byti), formatNumber(row.byto)]);
+}
+
+function buildAppTargetInternalTraffic(data = []) {
+  return asArray(data).map((row, i) => [i + 1, row.addr || '-', formatNumber(row.byti), formatNumber(row.byto)]);
+}
+
 function buildAppConnectionsRows(data = []) {
   return asArray(data).map((row, index) => [
     index + 1,
@@ -535,6 +559,16 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
         return { columns: section.columns, rows: buildBusinessPageViewsRows(summary.businessSummary?.pageViews || []) };
       case 'appConnections':
         return { columns: section.columns, rows: buildAppConnectionsRows(summary.trafficSummary?.appConnections || []) };
+      case 'appTargetOverview':
+        return { columns: section.columns, rows: buildAppTargetOverview(summary.trafficSummary?.appOverview || {}) };
+      case 'appTargetSlowClients':
+        return { columns: section.columns, rows: buildAppTargetSlowClients(summary.trafficSummary?.slowClients || []) };
+      case 'appTargetExternalTraffic':
+        return { columns: section.columns, rows: buildAppTargetExternalTraffic(summary.trafficSummary?.externalTraffic || []) };
+      case 'appTargetConversations':
+        return { columns: section.columns, rows: buildAppTargetConversations(summary.trafficSummary?.conversations || []) };
+      case 'appTargetInternalTraffic':
+        return { columns: section.columns, rows: buildAppTargetInternalTraffic(summary.trafficSummary?.internalTraffic || []) };
       case 'appFailures':
         return { columns: section.columns, rows: buildAppFailuresRows(summary.trafficSummary?.appFailures || []) };
       case 'appQuality':

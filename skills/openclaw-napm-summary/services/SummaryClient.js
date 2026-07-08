@@ -233,6 +233,28 @@ class SummaryClient {
 
 // ── Alert data aggregation helpers ──────────────────────────────
 
+/**
+ * Format a Unix timestamp (seconds) to "YYYY-MM-DD HH:mm:ss" in Asia/Shanghai.
+ */
+function formatTimestamp(seconds) {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) return String(seconds ?? '');
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
 function aggregateAlertsSummary(rawSummary) {
   if (!rawSummary || typeof rawSummary !== 'object') return { total: 0, critical: 0, major: 0, minor: 0, byCategory: [], topObjects: [], unresolvedAlerts: [] };
 
@@ -313,6 +335,28 @@ function aggregateAlertsSummary(rawSummary) {
   };
 }
 
+/**
+ * Format a Unix timestamp (seconds) to "YYYY-MM-DD HH:mm:ss" in Asia/Shanghai.
+ */
+function formatTimestamp(seconds) {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) return String(seconds ?? '');
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
 function aggregateAlertsTimeline(rawTimeline) {
   if (!rawTimeline || typeof rawTimeline !== 'object') return [];
 
@@ -342,7 +386,7 @@ function aggregateAlertsTimeline(rawTimeline) {
         else if (key.endsWith('_minor')) minor_total += Number(val) || 0;
       }
       return {
-        bucketStart: Number(ts),
+        bucketStart: formatTimestamp(Number(ts)),
         critical_total,
         major_total,
         minor_total

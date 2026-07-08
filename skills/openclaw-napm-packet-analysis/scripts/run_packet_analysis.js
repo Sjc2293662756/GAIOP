@@ -2223,7 +2223,202 @@ function loadDotEnv(filePath) {
   }
 }
 
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象（buildPacketExecutorPayload 的产出），
+ * 无需 CLI 参数解析。
+ */
+async function handleSkillCall(params = {}) {
+  try {
+    loadDotEnv(path.resolve(process.cwd(), '.env'));
+
+    const query = params;
+    const startedAt = new Date().toISOString();
+
+    const resolved = resolveQuery(query);
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        mode: query.mode || DEFAULT_MODE,
+        startedAt,
+        criteria: query.criteria || null,
+        urls: {},
+        explanation: null,
+        preview: null,
+        download: null,
+        analysis: null,
+        businessResolution: null,
+        error: resolved.error,
+        decision: { next_action: 'CLARIFICATION_REQUIRED' },
+        summary: {
+          title: '数据包任务缺少必要条件',
+          highlights: [resolved.error.message],
+        },
+      };
+    }
+
+    const task = resolved.task;
+
+    // Business packet instance resolution
+    if (task.needsBusinessInstanceResolution) {
+      const businessResolution = await resolveBusinessPacketInstance(task);
+      task.businessResolution = businessResolution;
+      if (businessResolution.previewOnly) {
+        const result = buildPacketResult(task, startedAt, {
+          businessResolution,
+          ok: businessResolution.ok,
+          error: businessResolution.ok ? null : businessResolution.error,
+          decision: businessResolution.ok
+            ? { next_action: 'SELECT_PAGE_VIEW', reason: 'BUSINESS_PAGE_VIEWS_PREVIEW_READY',
+                message: '请选择一个页面访问明细的 clientIp 或 pageViewIndex，再继续构造或下载业务数据包。' }
+            : { next_action: 'CLARIFICATION_REQUIRED',
+                reason: businessResolution.error?.code,
+                message: businessResolution.error?.message },
+        });
+        result.summary = buildSummary(result);
+        result.narrationInput = buildNarrationInput(result);
+        return result;
+      }
+      if (!businessResolution.ok) {
+        const result = buildPacketResult(task, startedAt, {
+          businessResolution,
+          ok: false,
+          error: businessResolution.error,
+          decision: { next_action: 'CLARIFICATION_REQUIRED',
+            reason: businessResolution.error?.code,
+            message: businessResolution.error?.message },
+        });
+        result.summary = { title: '业务数据包实例解析失败',
+          highlights: [businessResolution.error?.message].filter(Boolean) };
+        return result;
+      }
+      task.criteria = { ...task.criteria, ...businessResolution.criteriaPatch };
+      task.urls = buildUrls({ host: task.host, criteria: task.criteria,
+        downloadType: task.downloadType, showFullUrls: task.showFullUrls });
+    }
+
+    // Execute the task (same branching as main())
+    return await executePacketTask(task, startedAt);
+  } catch (error) {
+    return failureResult('PACKET_RUNTIME_ERROR', error.message || String(error), { stack: error.stack });
+  }
+}
+
+function buildPacketResult(task, startedAt, overrides = {}) {
+  return {
+    ok: true,
+    mode: task.mode,
+    downloadType: task.downloadType,
+    startedAt,
+    criteria: task.criteria,
+    urls: publicUrls(task.urls || {}),
+    explanation: null,
+    preview: null,
+    download: null,
+    analysis: null,
+    businessResolution: task.businessResolution || null,
+    error: null,
+    decision: null,
+    ...overrides,
+  };
+}
+
+async function executePacketTask(task, startedAt) {
+  const result = buildPacketResult(task, startedAt);
+
+  if (task.mode === 'explain_url') {
+    result.explanation = explainUrl(task.url);
+    result.summary = buildSummary(result);
+    result.narrationInput = buildNarrationInput(result);
+    return result;
+  }
+
+  if (task.mode === 'build_url_only') {
+    result.summary = buildSummary(result);
+    result.narrationInput = buildNarrationInput(result);
+    return result;
+  }
+
+  if (PREVIEW_MODES.has(task.mode) && task.urls.previewRaw) {
+    result.preview = await requestPreview(task);
+    task.preview = result.preview;
+    if (!result.preview.ok || result.preview.empty) {
+      result.ok = false;
+      result.error = result.preview.error || { code: 'PACKET_PREVIEW_EMPTY', message: 'packetsPreview 未返回可下载数据。' };
+      result.decision = { next_action: 'NO_DOWNLOAD', reason: result.error.code,
+        message: '预览接口没有发现可下载数据包，因此没有发起下载请求。' };
+      result.summary = buildSummary(result);
+      result.narrationInput = buildNarrationInput(result);
+      return result;
+    }
+    if (DOWNLOAD_MODES.has(task.mode) && applyPreviewRiskGate(result, task)) {
+      result.summary = buildSummary(result);
+      result.narrationInput = buildNarrationInput(result);
+      return result;
+    }
+  } else if (PREVIEW_MODES.has(task.mode) && task.downloadType !== 'DownServlet') {
+    result.ok = false;
+    result.error = { code: 'PACKET_PREVIEW_UNSUPPORTED', message: '当前数据包任务没有可用的 packetsPreview URL。' };
+    result.summary = buildSummary(result);
+    result.narrationInput = buildNarrationInput(result);
+    return result;
+  }
+
+  if (DOWNLOAD_MODES.has(task.mode)) {
+    if (shouldPreviewBeforeDownload(task) && !result.preview) {
+      result.preview = await requestPreview(task);
+      task.preview = result.preview;
+      if (!result.preview.ok || result.preview.empty) {
+        result.ok = false;
+        result.error = result.preview.error || { code: 'PACKET_PREVIEW_EMPTY', message: 'packetsPreview 未返回可下载数据。' };
+        result.decision = { next_action: 'NO_DOWNLOAD', reason: result.error.code,
+          message: '预览接口没有发现可下载数据包，因此没有发起下载请求。' };
+        result.summary = buildSummary(result);
+        result.narrationInput = buildNarrationInput(result);
+        return result;
+      }
+      if (applyPreviewRiskGate(result, task)) {
+        result.summary = buildSummary(result);
+        result.narrationInput = buildNarrationInput(result);
+        return result;
+      }
+    }
+
+    result.download = await downloadPacket(task);
+    if (!result.download.ok) {
+      result.ok = false;
+      result.error = result.download.error;
+      result.summary = buildSummary(result);
+      result.narrationInput = buildNarrationInput(result);
+      return result;
+    }
+  }
+
+  if (ANALYZE_MODES.has(task.mode)) {
+    const filePath = task.mode === 'analyze_file' ? task.file : result.download?.filePath;
+    if (!filePath) {
+      result.ok = false;
+      result.error = { code: 'PACKET_FILE_REQUIRED', message: '分析模式需要本地 packet 文件路径，或先完成下载。' };
+    } else {
+      result.analysis = await analyzePacketFile(filePath, task.analysis);
+      if (!result.analysis.ok) {
+        result.ok = false;
+        result.error = result.analysis.error;
+      }
+      if (result.download?.artifactDir) {
+        await writeArtifactJson(result.download.artifactDir, 'analysis.json', result.analysis);
+      }
+      await removeDownloadedFileAfterAnalysisIfNeeded(result, task);
+    }
+  }
+
+  result.summary = buildSummary(result);
+  result.narrationInput = buildNarrationInput(result);
+  return result;
+}
+
 module.exports = {
+  handleSkillCall,
   resolveQuery,
   normalizeCriteria,
   validateCriteria,

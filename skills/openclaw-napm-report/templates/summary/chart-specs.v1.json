@@ -70,6 +70,22 @@
       ]
     },
     {
+      "id": "app.userExpTrend",
+      "title": "用户体验趋势图",
+      "chartType": "line",
+      "scopes": ["application"],
+      "datasetPath": "summary.trafficSummary.userExpTrend.dataset",
+      "xField": "time",
+      "xLabel": "时间",
+      "series": [
+        { "field": "UEII", "name": "用户体感指数" },
+        { "field": "CSTI", "name": "连接建立时间" },
+        { "field": "TRTI", "name": "服务器响应时间" },
+        { "field": "PTTO", "name": "传输时间" },
+        { "field": "RDTO", "name": "重传时延" }
+      ]
+    },
+    {
       "id": "webapp.requestResponse",
       "title": "请求/响应流量趋势",
       "chartType": "line",

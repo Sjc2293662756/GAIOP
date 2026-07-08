@@ -46,7 +46,41 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`[fault-diagnosis] Fatal: ${err.message}\n`);
-  process.exit(1);
-});
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析。
+ */
+async function handleSkillCall(params = {}) {
+  const payload = {
+    description: params.description || params.prompt || '',
+    flowType: params.flowType || undefined,
+    timeRange: params.timeRange || undefined,
+    target: params.target || undefined,
+    fault: params.fault || { description: params.description || params.prompt || '' },
+    traceId: params.traceId || undefined,
+  };
+
+  try {
+    const service = new FaultDiagnosisService();
+    const result = await service.run(payload);
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: error.code || 'FAULT_DIAGNOSIS_ERROR',
+        message: error.message || String(error),
+      },
+    };
+  }
+}
+
+// 保留 CLI 入口（本地测试用）
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`[fault-diagnosis] Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { handleSkillCall };
