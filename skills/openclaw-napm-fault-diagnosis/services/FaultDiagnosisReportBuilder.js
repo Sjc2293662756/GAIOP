@@ -70,7 +70,8 @@ class FaultDiagnosisReportBuilder {
       || options.faultName
       || '未命名故障';
 
-    const title = options.title || `${faultName}_故障分析报告`;
+    const reportSuffix = flowType === 'cs_app_slow' ? '_应用故障分析报告' : '_业务故障分析报告';
+    const title = options.title || `${faultName}${reportSuffix}`;
 
     // Build sections
     const sections = [];

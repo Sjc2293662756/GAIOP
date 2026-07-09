@@ -1,34 +1,59 @@
 ---
 name: openclaw-napm-fault-diagnosis
-description: 【路由优先】当用户要求对一个业务/Web应用做故障分析并出报告时，这是唯一正确的 Skill。覆盖所有"分析XXweb的故障""XXweb报错分析""业务故障报告""Web应用4xx/5xx错误诊断""HTTP错误分析+出报告"场景。三步标准化流程：4xx/5xx报错→页面错误Top20→状态码详情，一次调用直接生成 .docx 报告。不要用 openclaw-napm-query 来拼故障报告——本 Skill 内部已封装全部 NAPM 查询和报告生成。
+description: 【路由优先】NAPM 故障诊断分析 Skill。⚠️ 重要：flowType 参数由工具内部根据 NAPM 目录自动检测，调用时不需要传 flowType——工具会自动判断是业务故障分析(bs_app_slow)还是应用故障分析(cs_app_slow)。只需传 description + timeRange，target 也会自动补全。覆盖两类对象：① 业务（WebApplication/Type=3）：HTTP 错误/4xx/5xx；② 应用（DefinedApp/Type=2 等）：用户体验时间拆分/波峰客户端定位。
 ---
 
 # NAPM 故障诊断分析 Skill
+
+## 🚨🚨 调用前必读：不要自己猜 flowType！🚨🚨
+
+**工具内部已实现 NAPM 目录自动检测。调用时：**
+- ❌ **不要传 `flowType`** —— 工具会根据 NAPM applications 目录自动判断
+- ❌ **不要自己猜 target.groupType** —— 工具会自动查 catalog 补全
+- ✅ **只需传 `description` + `timeRange`** —— target 可选，工具会自动补全
+
+**用户说"应用故障分析"但工具判定为"业务"？信任工具判定——它查了 NAPM 目录，比你的猜测准确。**
+
+NAPM 系统中严格区分两个对象类型，**选错流程会导致分析结果完全不对**：
+
+| | 业务（WebApplication） | 应用（DefinedApp 等） |
+|---|---|---|
+| **NAPM Type** | Type=3 | Type=2（1/4 映射到 2） |
+| **中文关键词** | 业务、业务系统、Web应用、网站、web | 应用、已定义应用、协议应用、客户端软件 |
+| **协议层** | HTTP/HTTPS | TCP/UDP |
+| **故障分析流程** | `bs_app_slow` — B/S 架构业务慢 | `cs_app_slow` — C/S 架构应用慢 |
+| **分析锚点** | 页面 URL → HTTP 状态码 | 时间波峰 → 用户体验时间成分 |
+| **报告标题** | `_业务故障分析报告` | `_应用故障分析报告` |
+
+**你不需要自己判断走哪个流程。** 直接把用户的原始描述传给工具的 `description` 参数。工具内部自动完成：名称提取 → NAPM 目录查询 → Type 判定 → flowType 选择。不要自己去调 `applications` API 来判断类型——这是工具的内部逻辑。
 
 ## 🚨 路由规则（必读）
 
 **以下用户说法，必须路由到本 Skill，禁止使用 openclaw-napm-query：**
 
-| 用户说法 | 正确路由 |
-|---------|---------|
-| "分析一下 业务 XXweb 的故障情况" | → `napm-fault-diagnosis` |
-| "分析XXweb的故障，给出故障报告" | → `napm-fault-diagnosis` |
-| "XXweb报错分析" | → `napm-fault-diagnosis` |
-| "XX业务 HTTP 400/500 错误诊断" | → `napm-fault-diagnosis` |
-| "给XXweb出故障报告" | → `napm-fault-diagnosis` |
+| 用户说法 | 正确路由 | flowType |
+|---------|---------|----------|
+| "分析一下 业务 XXweb 的故障情况" | → `napm-fault-diagnosis` | `bs_app_slow` |
+| "XXweb报错分析" | → `napm-fault-diagnosis` | `bs_app_slow` |
+| "XX业务 HTTP 400/500 错误诊断" | → `napm-fault-diagnosis` | `bs_app_slow` |
+| "XX的应用故障分析报告" | → `napm-fault-diagnosis` | `cs_app_slow` |
+| "XX应用慢，帮我分析" | → `napm-fault-diagnosis` | `cs_app_slow` |
+| "分析XX应用的故障" | → `napm-fault-diagnosis` | `cs_app_slow` |
+| "客户端软件慢/数据库访问慢" | → `napm-fault-diagnosis` | `cs_app_slow` |
 
 **只有当用户问的是单个指标查询（如"哪个业务报错最多""XX业务的HTTP 400数量""最近24小时TPIO趋势"）时，才用 openclaw-napm-query。**
 
 ## Skill Boundary
 
 **必须用本 Skill：**
-- 用户要求分析某个业务/Web应用/应用的故障情况 → B/S 业务慢流程（`bs_app_slow`）
-- 用户要求分析客户端软件/数据库/非Web应用的慢问题 → C/S 应用慢流程（`cs_app_slow`）
-- 用户要求分析全网慢/带宽占满/流量异常 → 网络慢流程（`network_slow`）
+- 用户要求分析某个 **业务/Web 应用** 的故障 → `bs_app_slow`（业务故障分析）
+- 用户要求分析某个 **应用/客户端软件/数据库** 的故障 → `cs_app_slow`（应用故障分析）
+- 用户说"应用故障分析报告"、"业务故障分析报告" → 直接按对应 flowType 调用
+- 用户要求分析全网慢/带宽占满/流量异常 → `network_slow`
 - 用户说"分析XX故障，给出报告"——**直接走标准化流程，不要拆成多次查询**
 
 **不要用本 Skill：**
-- 单个指标查询（如"哪个业务报错最多"、"最近24小时TPIO"） → `openclaw-napm-query`
+- 单个指标查询 → `openclaw-napm-query`
 - 综述报告/日报/周报 → `openclaw-napm-summary`
 - 巡检报告 → `openclaw-napm-inspection`
 - 数据包下载和分析 → `openclaw-napm-packet-analysis`
@@ -36,11 +61,11 @@ description: 【路由优先】当用户要求对一个业务/Web应用做故障
 
 ## 支持的故障分析流程
 
-| 流程 | flowType | 模式 | 步骤 | 适用场景 |
-|------|---------|------|:--:|---------|
-| B/S 业务慢 | `bs_app_slow` | 标准化单次调用 | 3 步 | Web 页面 4xx/5xx 报错、页面错误分析、状态码详情 |
-| C/S 应用慢 | `cs_app_slow` | 标准化单次调用 | 2 步 | 客户端软件慢、数据库访问慢 |
-| 网络慢 | `network_slow` | 交互式多轮 | 4 步 | 全网慢、带宽占满、流量异常 |
+| 流程 | flowType | 对象类型 | 步骤 | 适用场景 |
+|------|---------|---------|:--:|---------|
+| B/S 业务慢 | `bs_app_slow` | WebApplication (Type=3) | 3 步 | Web 页面 4xx/5xx 报错、页面错误分析、状态码详情 |
+| C/S 应用慢 | `cs_app_slow` | DefinedApp (Type=2/1/4) + OtherApp | 3 步 | 客户端软件慢、应用性能退化、用户体验波峰定位 |
+| 网络慢 | `network_slow` | 全局 | 4 步 | 全网慢、带宽占满、流量异常 |
 
 ---
 
@@ -77,17 +102,12 @@ Step 3 — 页面状态码详情（pageViews，对 Step2 每个页面 1 次 API 
 ```json
 {
   "description": "回溯238web 页面大量 HTTP 400/500 报错",
-  "flowType": "bs_app_slow",
-  "target": {
-    "groupType": "WebApplication",
-    "groupArgument": "回溯238web",
-    "groupLabel": "回溯238web"
-  },
   "timeRange": {
     "faultWindow": { "start": 1782805440, "end": 1782891840 }
   }
 }
 ```
+**这就是全部参数。** 不要传 `flowType`、不要传 `target`——工具会自动补全。
 
 **返回**：`{ ok: true, reportReady: true, filePath: "...", fileName: "...", downloadUrl: "..." }`
 文件已内置生成，不需要再调 `napm-report-export`。

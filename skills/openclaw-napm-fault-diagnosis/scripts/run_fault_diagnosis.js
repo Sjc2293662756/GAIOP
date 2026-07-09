@@ -53,12 +53,11 @@ async function main() {
 async function handleSkillCall(params = {}) {
   const payload = {
     description: params.description || params.prompt || '',
-    flowType: params.flowType || undefined,
     timeRange: params.timeRange || undefined,
-    target: params.target || undefined,
     fault: params.fault || { description: params.description || params.prompt || '' },
     traceId: params.traceId || undefined,
   };
+  // flowType and target are intentionally NOT passed — FaultDiagnosisService auto-detects them.
 
   try {
     const service = new FaultDiagnosisService();

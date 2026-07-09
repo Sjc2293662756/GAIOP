@@ -1,7 +1,8 @@
 'use strict';
 
 const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClient');
-const { classify, getFlow, getNextStep, resolveJump, getJumpOptions } = require('./FaultDiagnosisFlowRouter');
+const { classify, getFlow, getNextStep, resolveJump, getJumpOptions,
+  extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -34,6 +35,26 @@ class FaultDiagnosisService {
     this.client = options.client || new SummaryClient(options);
     this.steps = options.steps || new FaultDiagnosisSteps({ client: this.client });
     this.timeoutMs = options.timeoutMs || 120000;
+    this._appCatalogCache = null;  // { list: [...], fetchedAt: timestamp }
+  }
+
+  /**
+   * Fetch NAPM applications catalog (cached 5 min).
+   * Returns array of { name, type, ... } or null on failure.
+   */
+  async _getAppCatalog() {
+    const TTL_MS = 300_000;
+    if (this._appCatalogCache && (Date.now() - this._appCatalogCache.fetchedAt < TTL_MS)) {
+      return this._appCatalogCache.list;
+    }
+    try {
+      const raw = await this.client.request('applications', {});
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.rows) ? raw.rows : []);
+      this._appCatalogCache = { list, fetchedAt: Date.now() };
+      return list;
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -142,11 +163,36 @@ class FaultDiagnosisService {
 
     // ── New session ──
     const description = String(input.description || input.fault?.description || '');
-    // If OpenClaw explicitly passes flowType, use it; otherwise classify from description
-    const flowType = input.flowType || classify(description);
+
+    // ── Resolve flowType — catalog ALWAYS wins ──
+    // The tool fully controls flowType and target. External input (e.g. AI guesses) is ignored.
+    let flowType = null;
+    let resolvedTarget = null;
+
+    const candidateName = extractTargetName(input);
+    if (candidateName) {
+      const catalog = await this._getAppCatalog();
+      if (catalog) {
+        const match = matchAppByName(candidateName, catalog);
+        if (match) {
+          const resolved = resolveFlowTypeFromCatalog(match);
+          flowType = resolved.flowType;
+          resolvedTarget = {
+            groupType: resolved.groupType,
+            groupArgument: resolved.groupArgument,
+            groupLabel: resolved.groupLabel
+          };
+        }
+      }
+    }
+    // Fallback: keyword classifier
+    if (!flowType) {
+      flowType = classify(description);
+    }
+
     const flow = getFlow(flowType);
+    const target = resolvedTarget;
     const timeRange = this._resolveTimeRange(input.timeRange || input);
-    const target = isPlainObject(input.target) ? input.target : null;
     const faultInput = isPlainObject(input.fault) ? input.fault : {};
 
     const session = {
@@ -297,7 +343,9 @@ class FaultDiagnosisService {
       reportType: 'diagnostic_report',
       templateId: 'napm_fault_diagnosis_v2',
       format: 'docx',
-      title: `${session.description}_故障分析报告`,
+      title: session.flowType === 'cs_app_slow'
+        ? `${session.description}_应用故障分析报告`
+        : `${session.description}_业务故障分析报告`,
       systemName: 'Netlnside基于AI的全流量性能分析平台',
       faultName: session.description,
       timeRange: {
@@ -575,12 +623,17 @@ class FaultDiagnosisService {
     const faultInput = session.faultInput || {};
     const steps = session.completedSteps || [];
 
+    // Resolve app type label for display
+    const appTypeLabel = {
+      DefinedApp: '已定义应用', CompositeApplication: '自动识别应用（复合协议）',
+      BuiltinApplication: '内置端口应用', OtherApp: '未知应用', Application: '已定义应用'
+    };
     const diagnosis = {
       flowType: session.flowType,
       flowLabel: session.flowLabel,
       description: session.description,
       targetLabel: target.groupLabel || target.groupArgument || session.description,
-      targetType: target.groupType || 'DefinedApp',
+      targetType: appTypeLabel[target.groupType] || target.groupType || '已定义应用',
       severity: faultInput.severity || 'major',
       severityLabel: { critical: '紧急', major: '重大', minor: '轻微' }[faultInput.severity] || '重大',
       stepCount: steps.length,
@@ -643,14 +696,19 @@ class FaultDiagnosisService {
   _extractCsStep1Data(raw) {
     const result = { performanceSummary: {}, trafficTrend: null };
 
-    const perfData = raw.appPerformanceSummary;
-    if (perfData && Object.keys(perfData).length > 0) {
+    // NAPM averageValues returns multiple formats — use _extractMetricValues for robust parsing
+    // Format A: [{metricValues:[{metric:{id:'UEII'},value:123}]}] → {UEII:123}
+    // Format B: {UEII:123, CSTI:45} → pass through
+    // Format C: {metricValues:[{metric:{id:'UEII'},value:123}]} → {UEII:123}
+    const perfRaw = raw.appPerformanceSummary;
+    const perfFlat = this._extractMetricValues(perfRaw);
+    if (perfFlat && Object.keys(perfFlat).length > 0) {
       result.performanceSummary = {
-        UEII: Number(perfData.UEII) || 0,
-        CSTI: Number(perfData.CSTI) || 0,
-        TRTI: Number(perfData.TRTI) || 0,
-        PTTO: Number(perfData.PTTO) || 0,
-        RDTO: Number(perfData.RDTO) || 0
+        UEII: Number(perfFlat.UEII) || 0,
+        CSTI: Number(perfFlat.CSTI) || 0,
+        TRTI: Number(perfFlat.TRTI) || 0,
+        PTTO: Number(perfFlat.PTTO) || 0,
+        RDTO: Number(perfFlat.RDTO) || 0
       };
     }
 

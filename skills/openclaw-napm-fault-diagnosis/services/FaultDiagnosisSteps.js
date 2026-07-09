@@ -651,20 +651,56 @@ class FaultDiagnosisSteps {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // C/S App slow — 应用类型识别 & 执行参数映射
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // NAPM 的"应用"覆盖多种子类型（参见 config/object-ontology.v1.json）：
+  //   DefinedApp (Type=2)          → executionGroupType = DefinedApp
+  //   CompositeApplication (Type=4) → executionGroupType = DefinedApp（映射）
+  //   BuiltinApplication (Type=1)   → executionGroupType = DefinedApp（映射）
+  //   OtherApp                     → executionGroupType = OtherApp
+  //
+  // AppPro 双轨逻辑（参见 单个应用剖析-接口文档.md）：
+  //   checkApplicationType < 0  → OtherApp, groupType3 = ConnectedIP
+  //   checkApplicationType >= 0 → DefinedApp, groupType3 = IPAddress
+  //
+  // 返回 { executionGroupType, isOtherApp, clientIpGroupType, label }
+
+  _resolveCsAppMeta(target) {
+    const rawType = (target?.groupType || '').trim();
+    // CompositeApplication / BuiltinApplication / Application 执行时映射为 DefinedApp
+    const isOtherApp = rawType === 'OtherApp';
+    const executionGroupType = isOtherApp ? 'OtherApp' : 'DefinedApp';
+    // 客户端 IP 分组：OtherApp 用 ConnectedIP，其余用 IPAddress
+    const clientIpGroupType = isOtherApp ? 'ConnectedIP' : 'IPAddress';
+
+    const labelMap = {
+      DefinedApp: '已定义应用',
+      CompositeApplication: '自动识别应用（复合协议）',
+      BuiltinApplication: '内置端口应用',
+      OtherApp: '未知应用',
+      Application: '已定义应用（通用）'
+    };
+    const label = labelMap[rawType] || labelMap.DefinedApp;
+
+    return { executionGroupType, isOtherApp, clientIpGroupType, label, rawType: rawType || 'DefinedApp' };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // C/S App slow — Step 1: 应用运行状况
   // ═══════════════════════════════════════════════════════════════
 
   _csStep1(ctx = {}) {
     const { faultStart, faultEnd, target, granularity } = ctx;
-    const groupType = target?.groupType || 'DefinedApp';
+    const appMeta = this._resolveCsAppMeta(target);
     const groupArg = target?.groupArgument || '';
     const groups = groupArg
-      ? [{ type: groupType, argument: groupArg }]
-      : [{ type: 'DefinedApp' }];
+      ? [{ type: appMeta.executionGroupType, argument: groupArg }]
+      : [{ type: appMeta.executionGroupType }];
 
     return {
       label: 'step1_app_overview',
-      description: '第一步：查看应用运行状况',
+      description: `第一步：查看${appMeta.label}运行状况`,
       queries: [
         {
           label: 'appPerformanceSummary',
@@ -718,11 +754,11 @@ class FaultDiagnosisSteps {
 
   _csStep2(ctx = {}) {
     const { faultStart, faultEnd, target, granularity } = ctx;
-    const groupType = target?.groupType || 'DefinedApp';
+    const appMeta = this._resolveCsAppMeta(target);
     const groupArg = target?.groupArgument || '';
     const groups = groupArg
-      ? [{ type: groupType, argument: groupArg }]
-      : [{ type: 'DefinedApp' }];
+      ? [{ type: appMeta.executionGroupType, argument: groupArg }]
+      : [{ type: appMeta.executionGroupType }];
 
     return {
       label: 'step2_user_experience_trend',
@@ -836,12 +872,13 @@ class FaultDiagnosisSteps {
 
   _csStep3(ctx = {}) {
     const { faultStart, faultEnd, target } = ctx;
-    const groupType = target?.groupType || 'DefinedApp';
+    const appMeta = this._resolveCsAppMeta(target);
     const groupArg = target?.groupArgument || '';
 
+    // OtherApp 用 ConnectedIP，其余用 IPAddress（AppPro 双轨逻辑）
     const clientGroups = groupArg
-      ? [{ type: groupType, argument: groupArg }, { type: 'ExternalIPs' }, { type: 'IPAddress' }]
-      : [{ type: 'DefinedApp' }, { type: 'ExternalIPs' }, { type: 'IPAddress' }];
+      ? [{ type: appMeta.executionGroupType, argument: groupArg }, { type: 'ExternalIPs' }, { type: appMeta.clientIpGroupType }]
+      : [{ type: appMeta.executionGroupType }, { type: 'ExternalIPs' }, { type: appMeta.clientIpGroupType }];
 
     const prevRaw = ctx._prevStepRawData || {};
     const trend = prevRaw.userExpTrend;
@@ -863,7 +900,7 @@ class FaultDiagnosisSteps {
           label: 'overallSlowClients',
           fn: () => this.client.getTopValues(
             faultStart, faultEnd || (faultStart + 3600),
-            'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+            'UEII,CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
           )
         }]
       };
@@ -878,7 +915,7 @@ class FaultDiagnosisSteps {
         const peakTime = startTime + p.index * gran;
         return this.client.getTopValues(
           peakTime - 30, peakTime + 30,
-          'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+          'UEII,CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
         );
       }
     }));
@@ -887,7 +924,7 @@ class FaultDiagnosisSteps {
       label: 'overallSlowClients',
       fn: () => this.client.getTopValues(
         faultStart, faultEnd || (faultStart + 3600),
-        'CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
+        'UEII,CSTI,TRTI,PTTO,RDTO', 'UEII', 10, clientGroups
       )
     });
 

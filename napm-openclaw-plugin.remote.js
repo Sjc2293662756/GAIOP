@@ -3930,7 +3930,14 @@ function createReportExportToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await napmReportSkill().handleSkillCall(args || {});
+      // Build report input from remembered NAPM skill result (e.g. fault-diagnosis, summary, etc.)
+      const reportInput = buildReportInputForExport(args);
+      if (!reportInput.ok) {
+        return {
+          content: [{ type: 'text', text: reportInput.message || 'REPORT_DATA_NOT_FOUND: 未找到可导出的 NAPM 结果。请先完成一次故障分析或查询。' }]
+        };
+      }
+      const result = await napmReportSkill().handleSkillCall(reportInput);
       rememberReportExportResult(normalizePrompt(args), result, args?.conversationKey || '');
       return {
         content: [
@@ -4152,23 +4159,12 @@ function createFaultDiagnosisToolDefinition() {
   return {
     label: 'NAPM Fault Diagnosis',
     name: 'napm-fault-diagnosis',
-    description: 'Run a standardized NAPM fault diagnosis flow for B/S web application errors or C/S application slowness. Executes all diagnostic steps automatically and returns a structured fault analysis report ready for docx export. Use this for: Web系统4xx/5xx报错分析, 页面错误分析, HTTP状态码详情, C/S应用性能诊断, 业务故障分析. The tool queries NAPM indicators step by step, generates judgment hints, and produces reportData for napm-report-export. IMPORTANT: after napm-fault-diagnosis returns reportData, you MUST call napm-report-export to generate the Word file.',
+    description: 'Run a standardized NAPM fault diagnosis flow. The tool automatically detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) by querying the NAPM applications catalog. Simply pass the user description + timeRange — the tool handles everything else internally. DO NOT try to determine the flow type yourself.',
     parameters: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
-        description: { type: 'string', description: 'Fault description, e.g. "238web页面大量HTTP 400/500报错"' },
-        flowType: { type: 'string', enum: ['bs_app_slow', 'cs_app_slow', 'network_slow'], description: 'Diagnostic flow type. bs_app_slow=Web应用4xx/5xx错误分析, cs_app_slow=C/S应用性能诊断, network_slow=网络慢分析.' },
-        target: {
-          type: 'object',
-          description: 'The NAPM object to analyze. Required for bs_app_slow and cs_app_slow.',
-          properties: {
-            groupType: { type: 'string', description: 'NAPM group type, e.g. WebApplication, Application, DefinedApp.' },
-            groupArgument: { type: 'string', description: 'NAPM group argument, e.g. 238web.' },
-            groupLabel: { type: 'string', description: 'Display label for the target object.' }
-          },
-          additionalProperties: true
-        },
+        description: { type: 'string', description: 'User fault description. Pass the original user request as-is. The tool auto-extracts the target name and auto-detects the correct flow type.' },
         timeRange: {
           type: 'object',
           description: 'Fault time window. If omitted, defaults to last 24 hours.',
@@ -4194,10 +4190,7 @@ function createFaultDiagnosisToolDefinition() {
           description: 'Optional fault metadata.',
           properties: {
             description: { type: 'string' },
-            severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
-            affectedObjects: { type: 'array', items: { type: 'string' } },
-            recommendations: { type: 'array', items: { type: 'string' } },
-            prevention: { type: 'array', items: { type: 'string' } }
+            severity: { type: 'string', enum: ['critical', 'major', 'minor'] }
           }
         },
         traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
@@ -4455,7 +4448,8 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── TOOL ROUTING TABLE (always) ──
   rules.push(
     'TOOL ROUTING — pick exactly one entry point based on user intent:',
-    '  fault/error analysis (故障/报错/4xx/5xx) → napm-fault-diagnosis (flowType="bs_app_slow", target={groupType:"WebApplication",groupArgument,groupLabel}, timeRange) → napm-report-export',
+    '  business fault analysis (业务/Web/HTTP错误/4xx/5xx/报错) → napm-fault-diagnosis (description + timeRange; DO NOT pass flowType or target — the tool auto-detects from NAPM catalog) → napm-report-export',
+    '  application fault analysis (应用/客户端软件/数据库/协议) → napm-fault-diagnosis (description + timeRange; DO NOT pass flowType or target — the tool auto-detects from NAPM catalog) → napm-report-export',
     '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
     '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
     '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',
@@ -4746,7 +4740,7 @@ const plugin = {
         if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt) {
           api.logger.warn(`[napm-openclaw-plugin] BLOCKED ${toolName} for fault-diagnosis prompt: ${activePrompt.slice(0, 120)}`);
           appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
-          return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a web application fault/error analysis request. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with flowType="bs_app_slow" and the target WebApplication.` };
+          return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a fault/error analysis request. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with description + timeRange only. The tool auto-detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) based on the NAPM catalog. DO NOT pass flowType — let the tool decide.` };
         }
 
         if (isDirectNapmTool(toolName)) {

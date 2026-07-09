@@ -57,8 +57,15 @@ function classify(description = '') {
   const bsKeywords = [
     'web', '页面', 'url', 'http', '登录慢', '查询慢', '接口慢',
     '提交后', '转圈', '报错', '400', '500', '页面慢', 'bs', 'b/s',
-    '业务系统慢', '业务慢', '网站慢', '浏览器'
+    '业务系统慢', '业务慢', '网站慢', '浏览器',
+    '业务故障分析', '业务故障诊断', 'web应用慢', 'web业务'
   ];
+
+  // B/S takes priority when user explicitly says "业务故障"
+  if (text.includes('业务故障') || text.includes('业务诊断')) {
+    return 'bs_app_slow';
+  }
+  // B/S keyword matching
   if (bsKeywords.some((k) => text.includes(k))) {
     return 'bs_app_slow';
   }
@@ -67,8 +74,17 @@ function classify(description = '') {
   const csKeywords = [
     '客户端软件', '数据库访问', '非web', '非 web', 'cs', 'c/s',
     '固定端口', '能连上但', '操作慢', '没有url', '客户端慢',
-    'c/s架构', 'cs架构', '桌面应用'
+    'c/s架构', 'cs架构', '桌面应用',
+    '应用故障分析', '应用故障诊断', '应用性能分析',
+    '应用慢', '应用访问慢', '应用响应慢', '应用延迟',
+    'tcp应用', '非http', '非http应用', '协议应用'
   ];
+
+  // C/S takes priority when user explicitly says "应用故障"
+  if (text.includes('应用故障') || text.includes('应用诊断')) {
+    return 'cs_app_slow';
+  }
+  // C/S keyword matching
   if (csKeywords.some((k) => text.includes(k))) {
     return 'cs_app_slow';
   }
@@ -113,12 +129,10 @@ function resolveJump(fromFlowType, fromStepId, userDecision = '') {
 
   // Map user decisions to jump targets
   const jumpMap = {
-    '转应用分析': 'bs_app_slow',
-    '转业务分析': 'bs_app_slow',
-    '转bs应用': 'bs_app_slow',
-    '转b/s应用': 'bs_app_slow',
-    '转cs应用': 'cs_app_slow',
-    '转c/s应用': 'cs_app_slow',
+    '转B/S业务': 'bs_app_slow',
+    '转B/S业务分析': 'bs_app_slow',
+    '转C/S应用': 'cs_app_slow',
+    '转C/S应用分析': 'cs_app_slow',
     '转应用慢': 'bs_app_slow',
     '转网络质量': 'network_quality',
     '转网络质量专项': 'network_quality',
@@ -158,12 +172,160 @@ function getJumpOptions(flowType) {
   }));
 }
 
+// ── Name → NAPM catalog resolution ────────────────────────────────
+
+/**
+ * Extract candidate target name from user input.
+ * Priority: target.groupLabel > target.groupArgument > regex from description.
+ */
+function extractTargetName(input = {}) {
+  // 1. From description — always check first, it's the user's actual intent.
+  //    Target fields may contain AI guesses that are wrong.
+  let desc = String(input.description || '');
+  let raw = _extractFromDescription(desc);
+  if (raw) return raw;
+
+  // 2. Fallback: from explicit target fields (caller provided name but no description match)
+  const label = input.target?.groupLabel || input.target?.groupArgument || '';
+  const trimmed = String(label).trim();
+  if (trimmed) return trimmed;
+
+  return null;
+}
+
+/**
+ * Extract candidate target name from description text.
+ * Keyword-anchored: locate "应用故障"/"业务故障" etc., then extract the name before it.
+ */
+function _extractFromDescription(desc) {
+  desc = String(desc || '');
+
+  // Ordered keyword patterns — first match wins
+  const kwPatterns = [
+    /(?:应用|业务)故障/,
+    /(?:应用|业务)(?:慢|异常|延迟|分析|诊断)/,
+    /故障(?:分析|报告|诊断)/,
+  ];
+
+  let kwMatch = null;
+  for (const pat of kwPatterns) {
+    kwMatch = desc.match(pat);
+    if (kwMatch) break;
+  }
+  if (!kwMatch) return null;
+
+  // Extract text before the keyword
+  const before = desc.slice(0, kwMatch.index).trim();
+  if (!before) return null;
+
+  let raw = null;
+
+  // Strip trailing "的" (with optional leading whitespace) then extract last word
+  //   "可观测239的应用故障" → before="可观测239"  → "可观测239"
+  //   "给我可观测239 的"     → before="给我可观测239" → "可观测239"
+  const beforeClean = before.replace(/\s*的\s*$/, '').trim();
+  if (beforeClean) {
+    const runMatch = beforeClean.match(/([一-龥a-zA-Z0-9_-]+)$/);
+    if (runMatch) raw = runMatch[1];
+  }
+
+  if (!raw) return null;
+
+  // Strip leading action words that may bleed into the name
+  // ("分析一下可观测239的" → after deMatch: "分析一下可观测239")
+  raw = raw.replace(/^(?:请帮我看一下|请帮我分析一下|帮我分析一下|帮我查看一下|帮我分析|帮我查看|请帮我|帮我|请|分析一下|分析下|分析|查看一下|查看|检查一下|检查|诊断一下|诊断|排查|给|给我|我|做|出个|出)+/, '').trim();
+
+  return raw || null;
+}
+
+/**
+ * Find the best-matching NAPM application entry by name.
+ * Scoring: exact(100) > prefix(80) > contains(50) > contained(40).
+ * Tie-break: prefer Type=2 (DefinedApp, shorter/more precise names).
+ */
+function matchAppByName(candidateName, catalog = []) {
+  if (!candidateName || catalog.length === 0) return null;
+
+  const candidates = [];
+
+  for (const app of catalog) {
+    const name = String(app.name || '');
+    if (!name) continue;
+
+    if (name === candidateName) {
+      candidates.push({ name, type: Number(app.type) || 0, score: 100, matchType: 'exact' });
+    } else if (name.startsWith(candidateName)) {
+      candidates.push({ name, type: Number(app.type) || 0, score: 80, matchType: 'prefix' });
+    } else if (name.includes(candidateName)) {
+      candidates.push({ name, type: Number(app.type) || 0, score: 50, matchType: 'contains' });
+    } else if (candidateName.includes(name) && name.length >= 3) {
+      candidates.push({ name, type: Number(app.type) || 0, score: 40, matchType: 'contained' });
+    }
+  }
+
+  if (candidates.length === 0) {
+    // No match — try stripping common suffixes and re-matching
+    // "239web" → "239" → may find "可观测239" (DefinedApp)
+    const stripped = candidateName.replace(/(?:web|应用|业务|网站|系统|平台|服务)$/i, '');
+    if (stripped && stripped !== candidateName && stripped.length >= 2) {
+      return matchAppByName(stripped, catalog);
+    }
+    return null;
+  }
+
+  // Sort: highest score first; tie-break → prefer Type=2 (DefinedApp)
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.type === 2 && b.type !== 2) return -1;
+    if (b.type === 2 && a.type !== 2) return 1;
+    return 0;
+  });
+
+  const best = candidates[0];
+
+  // If best match is not exact, also try suffix-stripped version —
+  // it might find a better-typed match
+  if (best.score < 100) {
+    const stripped = candidateName.replace(/(?:web|应用|业务|网站|系统|平台|服务)$/i, '');
+    if (stripped && stripped !== candidateName && stripped.length >= 2) {
+      const strippedMatch = matchAppByName(stripped, catalog);
+      // Prefer stripped match if it has higher score or same score but better type (Type=2)
+      if (strippedMatch && (
+        strippedMatch.score > best.score ||
+        (strippedMatch.score === best.score && strippedMatch.type === 2 && best.type !== 2)
+      )) {
+        return strippedMatch;
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Resolve fault diagnosis flow type from a NAPM catalog match.
+ * Type=3 → WebApplication → bs_app_slow (业务故障分析)
+ * Type=1,2,4 → DefinedApp (or mapped) → cs_app_slow (应用故障分析)
+ */
+function resolveFlowTypeFromCatalog(match) {
+  const isBusiness = match.type === 3;
+  return {
+    flowType: isBusiness ? 'bs_app_slow' : 'cs_app_slow',
+    groupType: isBusiness ? 'WebApplication' : 'DefinedApp',
+    groupArgument: match.name,
+    groupLabel: match.name
+  };
+}
+
 module.exports = {
   classify,
   getFlow,
   getNextStep,
   resolveJump,
   getJumpOptions,
+  extractTargetName,
+  matchAppByName,
+  resolveFlowTypeFromCatalog,
   FLOW_TYPES,
   __test__: { FLOW_TYPES }
 };
