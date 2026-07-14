@@ -28,11 +28,6 @@ function valueOrDash(v) {
 // ── Step description templates ──────────────────────────────────────
 
 const STEP_LABELS = {
-  // Network slow
-  step1_traffic_trend: '第一步：查看总流量趋势',
-  step2_top_objects: '第二步：定位 Top 对象',
-  step3_network_quality: '第三步：查看网络质量指标',
-  step4_connection_failure: '第四步：检查连接失败和异常主机',
   // B/S App slow
   step1_4xx_5xx_overview: '第一步：查询业务 4xx/5xx 报错情况',
   step2_page_error_analysis: '第二步：页面错误分析（按访问数排序 Top 20）',
@@ -44,7 +39,6 @@ const STEP_LABELS = {
 };
 
 const FLOW_LABELS = {
-  network_slow: '网络慢/网络运行异常',
   bs_app_slow: 'B/S 架构业务慢',
   cs_app_slow: 'C/S 架构应用慢'
 };
@@ -60,7 +54,7 @@ class FaultDiagnosisReportBuilder {
    * @param {object} options — overrides: title, format, systemName
    */
   build(session = {}, options = {}) {
-    const flowType = session.flowType || 'network_slow';
+    const flowType = session.flowType || 'bs_app_slow';
     const flowLabel = FLOW_LABELS[flowType] || flowType;
     const steps = asArray(session.completedSteps);
     const faultInput = isPlainObject(session.faultInput) ? session.faultInput : {};

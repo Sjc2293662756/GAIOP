@@ -40,13 +40,18 @@ NAPM 系统中严格区分两个对象类型，**选错流程会导致分析结�
 | "XX应用慢，帮我分析" | → `napm-fault-diagnosis` | `cs_app_slow` |
 | "分析XX应用的故障" | → `napm-fault-diagnosis` | `cs_app_slow` |
 | "客户端软件慢/数据库访问慢" | → `napm-fault-diagnosis` | `cs_app_slow` |
+| "分析XXweb页面加载慢的情况" | → `napm-fault-diagnosis` | `bs_page_perf` |
+| "XX业务页面延时高/卡顿" | → `napm-fault-diagnosis` | `bs_page_perf` |
+| "XXweb 性能分析/首屏慢/白屏" | → `napm-fault-diagnosis` | `bs_page_perf` |
+| "XX业务访问慢，看看是服务器还是网络问题" | → `napm-fault-diagnosis` | `bs_page_perf` |
 
 **只有当用户问的是单个指标查询（如"哪个业务报错最多""XX业务的HTTP 400数量""最近24小时TPIO趋势"）时，才用 openclaw-napm-query。**
 
 ## Skill Boundary
 
 **必须用本 Skill：**
-- 用户要求分析某个 **业务/Web 应用** 的故障 → `bs_app_slow`（业务故障分析）
+- 用户要求分析某个 **业务/Web 应用** 的故障（报错/4xx/5xx） → `bs_app_slow`（业务故障分析）
+- 用户要求分析某个 **业务/Web 页面** 的性能（慢/卡顿/延时） → `bs_page_perf`（页面性能分析）
 - 用户要求分析某个 **应用/客户端软件/数据库** 的故障 → `cs_app_slow`（应用故障分析）
 - 用户说"应用故障分析报告"、"业务故障分析报告" → 直接按对应 flowType 调用
 - 用户要求分析全网慢/带宽占满/流量异常 → `network_slow`
@@ -64,6 +69,7 @@ NAPM 系统中严格区分两个对象类型，**选错流程会导致分析结�
 | 流程 | flowType | 对象类型 | 步骤 | 适用场景 |
 |------|---------|---------|:--:|---------|
 | B/S 业务慢 | `bs_app_slow` | WebApplication (Type=3) | 3 步 | Web 页面 4xx/5xx 报错、页面错误分析、状态码详情 |
+| B/S 页面性能 | `bs_page_perf` | WebApplication (Type=3) | 3 步 | Web 页面加载慢、延时分解（服务器 vs 网络）、性能根因定位 |
 | C/S 应用慢 | `cs_app_slow` | DefinedApp (Type=2/1/4) + OtherApp | 3 步 | 客户端软件慢、应用性能退化、用户体验波峰定位 |
 | 网络慢 | `network_slow` | 全局 | 4 步 | 全网慢、带宽占满、流量异常 |
 
@@ -92,6 +98,46 @@ Step 3 — 页面状态码详情（pageViews，对 Step2 每个页面 1 次 API 
 ### 报告结构（§8）
 
 封面 → 目录 → 1 基本信息 → 2 分析过程（2.1/2.2/2.3 每步含表格+判断提示）→ 3 证据项 → 4 根因判断（条件叙述，AND/OR）→ 5 处置建议 → 6 验证方式
+
+---
+
+## B/S 页面性能慢标准化流程（3 步）
+
+**适用于页面加载慢但不报错的场景。** 报告模板 `napm_bs_page_perf_v1`，封面→目录→§8 结构。
+核心目标：**区分页面慢的根因是应用服务器处理慢还是网络传输慢。**
+
+```
+Step 1 — 页面性能总览（averageValues，1 次 API 调用）
+  指标: PGNPGE, PGTME, PGNSLPGE, PGSLPCT
+  表格: 页面访问数 | 页面平均延时 | 慢页面数 | 慢页面率
+
+Step 2 — 页面延时 Top 20（topValues 三层钻取，1 次 API 调用）
+  路径: WebApplication → PageFamilies → PageFamily
+  指标: PGNPGE, PGTME, PGNSLPGE, PGSLPCT
+  排序: PGNSLPGE（慢页面数）, Top 20
+  表格: 页面路径 | 访问次数 | 平均延时 | 慢页面数 | 慢页面率
+
+Step 3 — 延时成分分析：服务器 vs 网络（pageViews，对 Step2 每个页面 1 次 API 调用）
+  参数: pageFamilyId（从 Step2 的 groupPath 中正则提取 /page\s+(\d+)/i）
+  关键列: PageTime（页面总耗时）| ServBusyTime（服务器处理耗时）| NetBusyTime（网络传输耗时）
+  根因逻辑: ServBusyTime 占比 > 60% → 服务器处理慢；NetBusyTime 占比 > 60% → 网络传输慢
+  表格: 开始时间 | 页面 | 客户端IP | 页面总耗时 | 服务器耗时 | 网络耗时 | 服务器占比 | 网络占比
+```
+
+### 与 B/S 业务慢（错误分析）的区别
+
+| | B/S 业务慢（bs_app_slow） | B/S 页面性能（bs_page_perf） |
+|---|---|---|
+| 分析目标 | HTTP 状态码错误 | 页面延时根因（服务器 vs 网络） |
+| 触发关键词 | 报错、400、500、错误 | 页面慢、加载慢、卡顿、延时 |
+| Step1 指标 | PGHTTP400, PGHTTP500 | PGTME, PGNSLPGE, PGSLPCT |
+| Step2 排序 | PGHTTP500 | PGNSLPGE |
+| Step3 核心列 | HttpStatus, Http200S, Http400S, Http500S | PageTime, ServBusyTime, NetBusyTime |
+| 根因判断 | 哪个页面错误最多 | 服务端慢还是网络慢 |
+
+### 报告结构（§8）
+
+封面 → 目录 → 1 基本信息 → 2 分析过程（2.1 性能总览 / 2.2 页面延时 / 2.3 延时成分拆分）→ 3 证据项 → 4 根因判断（条件叙述，AND/OR）→ 5 处置建议 → 6 验证方式
 
 ---
 

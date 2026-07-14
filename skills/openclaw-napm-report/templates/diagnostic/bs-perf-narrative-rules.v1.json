@@ -1,0 +1,27 @@
+{
+  "schema": "openclaw_napm_narrative_rules.v1",
+  "groups": {
+    "bs_perf.root_cause": [
+      {
+        "when": "diagnosis.step3Hints exists AND diagnosis.step1.slowRate >= 30",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 的慢页面占比为 {{diagnosis.step1.slowRate}}，页面性能存在明显退化。延时成分分析显示服务器处理耗时（ServBusyTime）和网络传输耗时（NetBusyTime）的占比详见 2.3 节。根因判断请结合延时成分拆分表：若大部分页面服务器耗时占比 > 60%，根因倾向应用服务器处理慢，建议优先排查后端接口响应时间、数据库慢查询和中间件状态；若大部分页面网络耗时占比 > 60%，根因倾向网络传输慢，建议检查链路带宽、网络质量和接入路径。"
+      },
+      {
+        "when": "diagnosis.step3Hints exists AND diagnosis.step1.slowRate >= 10 AND diagnosis.step1.slowRate < 30",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 的慢页面占比为 {{diagnosis.step1.slowRate}}，存在一定程度的页面性能问题但未达到严重水平。建议关注 2.2 节中慢页面数集中的 URL，并结合 2.3 节延时成分拆分，优先处理服务器耗时或网络耗时占比较高的页面。"
+      },
+      {
+        "when": "diagnosis.step3Hints exists AND diagnosis.step1.slowRate < 10",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 的慢页面占比为 {{diagnosis.step1.slowRate}}，整体页面性能在正常范围内。如果用户仍反馈访问慢，建议检查客户端侧环境（浏览器、DNS、本地网络），或扩大时间范围至问题发生时段重新分析。"
+      },
+      {
+        "when": "diagnosis.step2Hints exists AND diagnosis.step1.avgDelay > 3",
+        "text": "综合判断：业务 {{diagnosis.targetLabel}} 的平均页面延时为 {{diagnosis.step1.avgDelay}} 秒，超过正常阈值。页面级分析（2.2 节）已定位延时集中的 URL，延时成分拆分（2.3 节）进一步区分了服务器耗时和网络耗时的贡献。建议根据占比情况分别处置：服务器耗时导向后端优化，网络耗时导向链路排查。"
+      },
+      {
+        "when": "default",
+        "text": "综合判断：已完成业务 {{diagnosis.targetLabel}} 的页面性能分析流程，各维度数据请参阅以上章节。建议结合页面延时成分拆分（2.3 节）和客户端来源分布，判断慢访问的根因层次（应用层/网络层）和影响范围（全局/局部/个别客户端）。"
+      }
+    ]
+  }
+}

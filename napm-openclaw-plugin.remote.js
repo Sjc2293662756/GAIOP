@@ -387,6 +387,24 @@ function isFaultDiagnosisPrompt(prompt = '') {
     return true;
   }
 
+  // PgPerf: page performance analysis (页面性能分析)
+  if (/(?:页面性能|性能分析|性能诊断|页面加载|加载慢|页面慢|访问慢|响应慢|打开慢|延时分析|卡顿|转圈|首屏|白屏|渲染慢|servBusyTime|netBusyTime|pageTime|加载时间|用户体验时间)/i.test(text)) {
+    return true;
+  }
+
+  // "XXweb加载慢" / "XX业务页面延时" / "服务端还是网络慢"
+  if (/(?:web|业务|网站|应用|页面).*(?:加载慢|延时|延迟|响应慢|打开慢|卡顿|转圈|性能)[^，。！？\n]{0,30}(?:分析|报告|诊断|排查|原因|情况|问题)/i.test(text)) {
+    return true;
+  }
+
+  // 延时根因定位: "服务器慢还是网络慢" / "服务端还是网络" / "延时拆分"
+  if (/(?:服务器|服务端).*(?:网络).*(?:慢|延时|延迟|问题)/i.test(text)) {
+    return true;
+  }
+  if (/(?:延时|延迟).*(?:拆分|分解|成分|来源|服务端|服务器|网络)/i.test(text)) {
+    return true;
+  }
+
   return false;
 }
 
@@ -2135,8 +2153,18 @@ function getReportDataFromRecord(record = null) {
   if (!record || !isPlainObject(record.result)) {
     return null;
   }
+  // 2026-07-09 修复：execute() 返回 {content, details: result} 或 {content, result}，
+  // reportData 嵌套在 details 或 result 子对象中，不在顶层。
   if (isPlainObject(record.result.reportData)) {
     return record.result.reportData;
+  }
+  // napm-summary / napm-inspection: {content, details: {..., reportData}}
+  if (isPlainObject(record.result.details) && isPlainObject(record.result.details.reportData)) {
+    return record.result.details.reportData;
+  }
+  // napm-fault-diagnosis: {content, result: {..., reportData}}
+  if (isPlainObject(record.result.result) && isPlainObject(record.result.result.reportData)) {
+    return record.result.result.reportData;
   }
   return null;
 }
@@ -4159,12 +4187,12 @@ function createFaultDiagnosisToolDefinition() {
   return {
     label: 'NAPM Fault Diagnosis',
     name: 'napm-fault-diagnosis',
-    description: 'Run a standardized NAPM fault diagnosis flow. The tool automatically detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) by querying the NAPM applications catalog. Simply pass the user description + timeRange — the tool handles everything else internally. DO NOT try to determine the flow type yourself.',
+    description: 'Run a standardized NAPM fault diagnosis flow. The tool automatically detects the correct analysis type and target object from the NAPM catalog. ⚠️ You MUST pass the user ORIGINAL message in BOTH prompt and description fields — do NOT modify, shorten, or reinterpret the user request. The tool uses the exact wording for name extraction.',
     parameters: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'Original user prompt retained for traceability.' },
-        description: { type: 'string', description: 'User fault description. Pass the original user request as-is. The tool auto-extracts the target name and auto-detects the correct flow type.' },
+        prompt: { type: 'string', description: 'MANDATORY: Copy the user EXACT original message here character-by-character. Do NOT modify, shorten, translate, or interpret. This is used for object name extraction.' },
+        description: { type: 'string', description: 'MANDATORY: Same as prompt — the exact user request. The tool uses this for flow type classification.' },
         timeRange: {
           type: 'object',
           description: 'Fault time window. If omitted, defaults to last 24 hours.',
@@ -4195,6 +4223,7 @@ function createFaultDiagnosisToolDefinition() {
         },
         traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
       },
+      required: ['prompt', 'description'],
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
@@ -4207,7 +4236,7 @@ function createFaultDiagnosisToolDefinition() {
             text: buildFaultDiagnosisReply(result)
           }
         ],
-        result
+        details: result
       };
     }
   };
@@ -4448,8 +4477,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── TOOL ROUTING TABLE (always) ──
   rules.push(
     'TOOL ROUTING — pick exactly one entry point based on user intent:',
-    '  business fault analysis (业务/Web/HTTP错误/4xx/5xx/报错) → napm-fault-diagnosis (description + timeRange; DO NOT pass flowType or target — the tool auto-detects from NAPM catalog) → napm-report-export',
-    '  application fault analysis (应用/客户端软件/数据库/协议) → napm-fault-diagnosis (description + timeRange; DO NOT pass flowType or target — the tool auto-detects from NAPM catalog) → napm-report-export',
+    '  fault/error diagnosis (故障分析/故障诊断/报错分析/错误排查/应用故障/业务故障/性能诊断/HTTP错误/4xx/5xx/应用慢/客户端慢/数据库慢) → napm-fault-diagnosis (ONLY pass description + timeRange; the tool queries NAPM catalog internally to auto-detect object type and choose the correct analysis flow) → napm-report-export',
     '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
     '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
     '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',

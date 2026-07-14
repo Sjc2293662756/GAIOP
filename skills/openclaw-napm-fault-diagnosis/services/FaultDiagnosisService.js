@@ -1,8 +1,7 @@
 'use strict';
 
 const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClient');
-const { classify, getFlow, getNextStep, resolveJump, getJumpOptions,
-  extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
+const { classify, getFlow, isPerfDescription, extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -95,13 +94,14 @@ class FaultDiagnosisService {
     // ── Build template-compatible reportData ──
     const reportData = session.flowType === 'cs_app_slow'
       ? this._buildCsTemplateData(session)
-      : this._buildBsTemplateData(session);
+      : session.flowType === 'bs_page_perf'
+        ? this._buildBsPerfTemplateData(session)
+        : this._buildBsTemplateData(session);
 
     return {
       ok: true,
       reportReady: true,
       reportData,
-      sessionJson: serializeSession(session),
       flowType: session.flowType,
       flowLabel: session.flowLabel,
       steps: session.completedSteps.map((s) => ({
@@ -131,37 +131,6 @@ class FaultDiagnosisService {
    * @param {string} input.action — user action: "继续下一步" / "转XXX" / "生成报告"
    */
   async start(input = {}) {
-    // ── Resume existing session ──
-    if (input.sessionJson) {
-      const session = deserializeSession(input.sessionJson);
-      if (!session) {
-        return { ok: false, message: '会话恢复失败：sessionJson 无效或已过期' };
-      }
-
-      const action = String(input.action || '').trim();
-      if (!action) {
-        // No action specified — return current state for display
-        const lastStep = session.completedSteps[session.completedSteps.length - 1];
-        return {
-          ok: true,
-          session,
-          sessionJson: serializeSession(session),
-          step: lastStep ? {
-            stepId: lastStep.stepId,
-            flowType: lastStep.flowType,
-            description: lastStep.description,
-            data: lastStep.rawData,
-            analysisFlags: lastStep.analysisFlags,
-            hints: lastStep.hints,
-            nextOptions: this._buildNextOptions(session)
-          } : null
-        };
-      }
-
-      return this.nextAction(session, action);
-    }
-
-    // ── New session ──
     const description = String(input.description || input.fault?.description || '');
 
     // ── Resolve flowType — catalog ALWAYS wins ──
@@ -188,6 +157,12 @@ class FaultDiagnosisService {
     // Fallback: keyword classifier
     if (!flowType) {
       flowType = classify(description);
+    }
+
+    // Secondary: override to bs_page_perf if description indicates performance intent
+    // (catalog resolves WebApplication → bs_app_slow, but user wants page perf analysis)
+    if (flowType === 'bs_app_slow' && isPerfDescription(description)) {
+      flowType = 'bs_page_perf';
     }
 
     const flow = getFlow(flowType);
@@ -236,57 +211,14 @@ class FaultDiagnosisService {
     // Match judgment hints
     const hints = matchHints(flowType, stepId, analysisFlags);
 
-    // Get next step options
-    const nextStepId = getNextStep(flowType, stepId);
-    const jumpOptions = getJumpOptions(flowType);
-
-    const nextOptions = [];
-    if (nextStepId) {
-      const nextFlow = getFlow(flowType);
-      const nextIdx = nextFlow.steps.indexOf(nextStepId);
-      nextOptions.push({
-        type: 'continue',
-        flowType,
-        stepId: nextStepId,
-        label: `继续${nextFlow.steps.length > nextIdx + 1 ? '下一步' : '最后一步'}`
-      });
-    }
-    for (const jump of jumpOptions) {
-      nextOptions.push({
-        type: 'jump',
-        flowType: jump.flowType,
-        stepId: null, // resolved when user selects
-        label: jump.label,
-        trigger: jump.trigger
-      });
-    }
-    nextOptions.push({ type: 'report', label: '生成故障分析报告' });
-
-    // Record step completion
     session.completedSteps.push({
-      stepId,
-      flowType,
-      description: plan.description,
-      rawData,
-      analysisFlags,
-      hints,
-      userJudgment: null
+      stepId, flowType, description: plan.description, rawData, analysisFlags, hints
     });
-    session.currentStepId = stepId;
 
     const result = {
       ok: true,
       session,
-      sessionJson: serializeSession(session),
-      step: {
-        stepId,
-        flowType,
-        description: plan.description,
-        data: rawData,
-        analysisFlags,
-        hints,
-        nextOptions
-      }
+      step: { stepId, flowType, description: plan.description, analysisFlags, hints }
     };
 
     return result;
@@ -778,6 +710,165 @@ class FaultDiagnosisService {
     }
 
     return { peaks, overallClients };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // B/S Page Perf — template data builder
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildBsPerfTemplateData(session) {
+    const target = session.target || session.context?.target || {};
+    const faultInput = session.faultInput || {};
+    const steps = session.completedSteps || [];
+
+    const diagnosis = {
+      flowType: session.flowType,
+      flowLabel: session.flowLabel,
+      description: session.description,
+      targetLabel: target.groupLabel || target.groupArgument || session.description,
+      targetType: target.groupType || 'WebApplication',
+      severity: faultInput.severity || 'major',
+      severityLabel: { critical: '紧急', major: '重大', minor: '轻微' }[faultInput.severity] || '重大',
+      stepCount: steps.length,
+      reportDate: new Date().toISOString().slice(0, 10),
+      recommendations: faultInput.recommendations || [],
+      prevention: faultInput.prevention || [],
+      step1Hints: [],
+      step2Hints: [],
+      step3Hints: [],
+      step1: {},
+      step2: {},
+      step3: {}
+    };
+
+    for (const step of steps) {
+      const hints = (step.hints || []).filter((h) => h.type === 'judgment').map((h) => h.text);
+      const raw = step.rawData || {};
+
+      if (step.stepId === 'step1_page_perf_overview') {
+        diagnosis.step1Hints = hints;
+        diagnosis.step1 = this._extractPerfStep1Data(raw);
+      } else if (step.stepId === 'step2_page_delay_detail') {
+        diagnosis.step2Hints = hints;
+        diagnosis.step2 = this._extractPerfStep2Data(raw);
+      } else if (step.stepId === 'step3_slow_pattern_analysis') {
+        diagnosis.step3Hints = hints;
+        diagnosis.step3 = this._extractPerfStep3Data(raw);
+      }
+    }
+
+    return {
+      schema: 'openclaw_napm_report_data.v1',
+      reportType: 'diagnostic_report',
+      templateId: 'napm_bs_page_perf_v1',
+      format: 'docx',
+      title: (diagnosis.description || '未命名故障') + '_页面性能分析报告',
+      systemName: 'Netlnside基于AI的全流量性能分析平台',
+      faultName: diagnosis.description,
+      timeRange: {
+        start: session.context?.faultStart,
+        end: session.context?.faultEnd,
+        displayText: session.timeRange?.displayText || ''
+      },
+      dataSource: {
+        system: 'Netlnside基于AI的全流量性能分析平台',
+        sourceSkill: 'openclaw-napm-fault-diagnosis',
+        queryService: `faultDiagnosis:${session.flowType}`
+      },
+      diagnosis,
+      audit: {
+        sourceSkill: 'openclaw-napm-fault-diagnosis',
+        sourceSchema: 'openclaw_napm_fault_diagnosis_result.v2',
+        flowType: session.flowType,
+        totalSteps: steps.length,
+        queriesPerformed: steps.map((s) => s.stepId)
+      }
+    };
+  }
+
+  /** Extract step1 data: page performance overview */
+  _extractPerfStep1Data(raw) {
+    const result = { topApps: [], avgDelay: 0, slowRate: '0%', slowCount: 0, totalVisits: 0 };
+    const perfRaw = raw.perfOverview;
+    const flat = this._extractMetricValues(perfRaw);
+    if (flat && Object.keys(flat).length > 0) {
+      const visits = Number(flat.PGNPGE) || 0;
+      const avgDelay = Number(flat.PGTME) || 0;
+      const slowCount = Number(flat.PGNSLPGE) || 0;
+      const slowRate = Number(flat.PGSLPCT) || 0;
+
+      result.topApps = [{ keyLabel: '当前业务', ...flat }];
+      result.avgDelay = avgDelay;
+      result.slowRate = slowRate.toFixed(2) + '%';
+      result.slowCount = slowCount;
+      result.totalVisits = visits;
+    }
+    return result;
+  }
+
+  /** Extract step2 data: page-level delay analysis */
+  _extractPerfStep2Data(raw) {
+    const result = { pages: [] };
+    const pageData = raw.pageDelayAnalysis;
+    if (!pageData) return result;
+
+    let items = [];
+    if (Array.isArray(pageData) && pageData.length > 0) {
+      items = pageData;
+    } else if (isPlainObject(pageData) && Array.isArray(pageData.topValues) && pageData.topValues.length > 0) {
+      items = pageData.topValues;
+    } else if (isPlainObject(pageData) && (pageData.group || pageData.groupPath || pageData.metricValues)) {
+      items = [pageData];
+    }
+
+    // Cache metric ID order from first item (NAPM optimization)
+    const firstMV = items.length > 0 ? (Array.isArray(items[0]?.metricValues) ? items[0].metricValues : []) : [];
+    const metricIdOrder = firstMV.map((mv) => mv.metric?.id || null);
+
+    result.pages = items.slice(0, 20).map((item, idx) =>
+      this._flattenPageItem(item, idx === 0 ? null : metricIdOrder)
+    ).filter(Boolean);
+
+    // Sort by slow page count descending
+    result.pages.sort((a, b) => (Number(b.PGNSLPGE) || 0) - (Number(a.PGNSLPGE) || 0));
+
+    return result;
+  }
+
+  /** Extract step3 data: delay decomposition per visit */
+  _extractPerfStep3Data(raw) {
+    const allVisits = [];
+
+    for (const [key, data] of Object.entries(raw)) {
+      if (!key.startsWith('pageDetail_')) continue;
+      const rows = Array.isArray(data) ? data : [];
+      for (const r of rows) {
+        const pageTime = Number(r.pageTime || r.PageTime || 0);
+        const servBusyTime = Number(r.servBusyTime || r.ServBusyTime || 0);
+        const netBusyTime = Number(r.netBusyTime || r.NetBusyTime || 0);
+        const totalBusy = servBusyTime + netBusyTime;
+
+        // Skip rows with no meaningful delay data
+        if (pageTime === 0 && totalBusy === 0) continue;
+
+        allVisits.push({
+          startTime: r.startTime || r.StartTime || '-',
+          page: r.page || r.Page || key.replace('pageDetail_', ''),
+          clientIp: r.clientIp || r.ClientIp || '-',
+          pageTime,
+          servBusyTime,
+          netBusyTime,
+          servRatio: totalBusy > 0 ? ((servBusyTime / totalBusy) * 100).toFixed(1) + '%' : '-',
+          netRatio: totalBusy > 0 ? ((netBusyTime / totalBusy) * 100).toFixed(1) + '%' : '-',
+          httpResponses: r.httpResponses || r.HttpResponses || 0
+        });
+      }
+    }
+
+    // Sort by pageTime descending, show slowest first
+    allVisits.sort((a, b) => (b.pageTime || 0) - (a.pageTime || 0));
+
+    return { pageDetails: allVisits };
   }
 
   _buildReportResult(session) {

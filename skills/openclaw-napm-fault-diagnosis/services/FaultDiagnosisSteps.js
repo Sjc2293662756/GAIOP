@@ -181,16 +181,15 @@ class FaultDiagnosisSteps {
    */
   buildQueries(flowType, stepId, context = {}) {
     const builders = {
-      network_slow: {
-        step1_traffic_trend: (ctx) => this._networkStep1(ctx),
-        step2_top_objects: (ctx) => this._networkStep2(ctx),
-        step3_network_quality: (ctx) => this._networkStep3(ctx),
-        step4_connection_failure: (ctx) => this._networkStep4(ctx)
-      },
       bs_app_slow: {
         step1_4xx_5xx_overview: (ctx) => this._bsStep1(ctx),
         step2_page_error_analysis: (ctx) => this._bsStep2(ctx),
         step3_page_status_detail: (ctx) => this._bsStep3(ctx)
+      },
+      bs_page_perf: {
+        step1_page_perf_overview: (ctx) => this._perfStep1(ctx),
+        step2_page_delay_detail: (ctx) => this._perfStep2(ctx),
+        step3_slow_pattern_analysis: (ctx) => this._perfStep3(ctx)
       },
       cs_app_slow: {
         step1_app_overview: (ctx) => this._csStep1(ctx),
@@ -211,16 +210,15 @@ class FaultDiagnosisSteps {
    */
   analyzeStepData(flowType, stepId, rawData = {}, context = {}) {
     const analyzers = {
-      network_slow: {
-        step1_traffic_trend: (d) => this._analyzeNetworkStep1(d),
-        step2_top_objects: (d) => this._analyzeNetworkStep2(d),
-        step3_network_quality: (d) => this._analyzeNetworkStep3(d),
-        step4_connection_failure: (d) => this._analyzeNetworkStep4(d)
-      },
       bs_app_slow: {
         step1_4xx_5xx_overview: (d) => this._analyzeBsStep1(d),
         step2_page_error_analysis: (d) => this._analyzeBsStep2(d),
         step3_page_status_detail: (d) => this._analyzeBsStep3(d)
+      },
+      bs_page_perf: {
+        step1_page_perf_overview: (d) => this._analyzePerfStep1(d),
+        step2_page_delay_detail: (d) => this._analyzePerfStep2(d),
+        step3_slow_pattern_analysis: (d) => this._analyzePerfStep3(d)
       },
       cs_app_slow: {
         step1_app_overview: (d) => this._analyzeCsStep1(d),
@@ -234,137 +232,6 @@ class FaultDiagnosisSteps {
     return analyzer(rawData);
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // Network slow — Step 1: 总流量趋势
-  // ═══════════════════════════════════════════════════════════════
-
-  _networkStep1(ctx = {}) {
-    const { faultStart, faultEnd, baselineStart, baselineEnd, granularity } = ctx;
-    const queries = [
-      {
-        label: 'faultTrend',
-        fn: () => this.client.getTimeValues(
-          faultStart, faultEnd, 'TPIO,TPI,TPO',
-          [{ type: 'TotalTraffic' }], granularity || 60
-        )
-      }
-    ];
-    if (baselineStart && baselineEnd) {
-      queries.push({
-        label: 'baselineTrend',
-        fn: () => this.client.getTimeValues(
-          baselineStart, baselineEnd, 'TPIO,TPI,TPO',
-          [{ type: 'TotalTraffic' }], granularity || 60
-        )
-      });
-    }
-    return {
-      label: 'step1_traffic_trend',
-      description: '第一步：查看总流量趋势',
-      queries
-    };
-  }
-
-  _analyzeNetworkStep1(raw = {}) {
-    const flags = {};
-    // Simplified: in production, this would compare fault vs baseline
-    // For now, provide the flags based on what data is available
-    if (raw.faultTrend) {
-      flags.hasFaultData = true;
-    }
-    if (raw.baselineTrend) {
-      flags.hasBaseline = true;
-    }
-    // Default hint: let the human judge based on the trend chart
-    flags.trafficNormal = true; // Most conservative default
-    return flags;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // Network slow — Step 2: Top 对象
-  // ═══════════════════════════════════════════════════════════════
-
-  _networkStep2(ctx = {}) {
-    const { faultStart, faultEnd } = ctx;
-    return {
-      label: 'step2_top_objects',
-      description: '第二步：定位 Top 对象',
-      queries: [
-        { label: 'topApps', groupType: 'DefinedApp',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'DefinedApp' }]) },
-        { label: 'topHosts', groupType: 'IPAddress',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'IPAddress' }]) },
-        { label: 'topGroups', groupType: 'BusinessGroup',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'BusinessGroup' }]) },
-        { label: 'topSessions', groupType: 'IPConversation',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'TPIO,TPI,TPO', 'TPIO', 10, [{ type: 'IPConversation' }]) }
-      ]
-    };
-  }
-
-  _analyzeNetworkStep2(raw = {}) {
-    const flags = {};
-    if (raw.topApps) flags.hasTopApps = true;
-    if (raw.topHosts) flags.hasTopHosts = true;
-    if (raw.topGroups) flags.hasTopGroups = true;
-    flags.scattered = true; // Default
-    return flags;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // Network slow — Step 3: 网络质量
-  // ═══════════════════════════════════════════════════════════════
-
-  _networkStep3(ctx = {}) {
-    const { faultStart, faultEnd } = ctx;
-    return {
-      label: 'step3_network_quality',
-      description: '第三步：查看网络质量指标',
-      queries: [
-        { label: 'ipQuality', groupType: 'IPAddress',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'RTTI,RTTO,PLI,PLO,RTDI,RTDO', 'PLI', 10, [{ type: 'IPAddress' }]) },
-        { label: 'groupQuality', groupType: 'BusinessGroup',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'PLI,PLO,RTTI,RTTO', 'PLI', 10, [{ type: 'BusinessGroup' }]) },
-        { label: 'appQuality', groupType: 'DefinedApp',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'PLI,PLO,RTTI,RTTO,RTDI,RTDO', 'PLI', 10, [{ type: 'DefinedApp' }]) }
-      ]
-    };
-  }
-
-  _analyzeNetworkStep3(raw = {}) {
-    const flags = {};
-    // Placeholder — actual analysis would compare values vs thresholds
-    flags.normalTrafficButLoss = true;
-    return flags;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // Network slow — Step 4: 连接失败和异常
-  // ═══════════════════════════════════════════════════════════════
-
-  _networkStep4(ctx = {}) {
-    const { faultStart, faultEnd } = ctx;
-    return {
-      label: 'step4_connection_failure',
-      description: '第四步：检查连接失败和异常主机',
-      queries: [
-        { label: 'ipFailures', groupType: 'IPAddress',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'RFCI,RFCO,FLSI,FLSO', 'RFCO', 10, [{ type: 'IPAddress' }]) },
-        { label: 'appFailures', groupType: 'DefinedApp',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'RFCI,RFCO,FLSI,FLSO', 'RFCO', 10, [{ type: 'DefinedApp' }]) },
-        { label: 'groupFailures', groupType: 'BusinessGroup',
-          fn: () => this.client.getTopValues(faultStart, faultEnd, 'FLSI,FLSO', 'FLSO', 10, [{ type: 'BusinessGroup' }]) }
-      ]
-    };
-  }
-
-  _analyzeNetworkStep4(raw = {}) {
-    const flags = {};
-    // Placeholder — actual analysis needs threshold checking
-    return flags;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
   // B/S App slow — Step 1: 业务整体指标
   // ═══════════════════════════════════════════════════════════════
 
@@ -983,6 +850,359 @@ class FaultDiagnosisSteps {
         }
       }
     }
+
+    return flags;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // B/S Page Perf — Step 1: 页面性能总览
+  // ═══════════════════════════════════════════════════════════════
+
+  _perfStep1(ctx = {}) {
+    const { faultStart, faultEnd, target } = ctx;
+    const groupArg = resolveGroupArg(target);
+    const groupType = target?.groupType || 'WebApplication';
+    const groups = groupArg
+      ? [{ type: groupType, argument: groupArg }]
+      : [{ type: groupType }];
+
+    return {
+      label: 'step1_page_perf_overview',
+      description: '第一步：页面性能总览（平均延时 + 慢页面占比）',
+      queries: [
+        {
+          label: 'perfOverview',
+          fn: () => this.client.getAverageValues(
+            faultStart, faultEnd,
+            'PGNPGE,PGTME,PGNSLPGE,PGSLPCT',
+            groups
+          )
+        }
+      ]
+    };
+  }
+
+  _analyzePerfStep1(raw = {}) {
+    const flags = {};
+    const data = raw.perfOverview || {};
+
+    if (!isPlainObject(data) || Object.keys(data).length === 0) {
+      flags.perfNormal = true;
+      return flags;
+    }
+
+    flags.hasPerfData = true;
+    const avgDelay = Number(data.PGTME) || 0;
+    const slowRate = Number(data.PGSLPCT) || 0;
+    const slowCount = Number(data.PGNSLPGE) || 0;
+    const totalVisits = Number(data.PGNPGE) || 1;
+
+    flags._avgDelay = avgDelay;
+    flags._slowRate = slowRate;
+    flags._slowCount = slowCount;
+    flags._totalVisits = totalVisits;
+
+    // PgPerf thresholds: PGTME in seconds, PGSLPCT in %
+    if (avgDelay > 3) {
+      flags.highAvgDelay = true;
+    }
+    if (slowRate > 10) {
+      flags.highSlowPageRate = true;
+    }
+    if (slowCount > 100) {
+      flags.highSlowPageCount = true;
+    }
+    if (!flags.highAvgDelay && !flags.highSlowPageRate && !flags.highSlowPageCount) {
+      flags.perfNormal = true;
+    }
+
+    return flags;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // B/S Page Perf — Step 2: 页面延时成分分析（核心步骤）
+  // ═══════════════════════════════════════════════════════════════
+
+  _perfStep2(ctx = {}) {
+    const { faultStart, faultEnd, target } = ctx;
+    const groupArg = resolveGroupArg(target);
+    const groupType = target?.groupType || 'WebApplication';
+    const baseGroup = groupArg
+      ? [{ type: groupType, argument: groupArg }]
+      : [{ type: groupType }];
+
+    // Step 1 only got averageValues (not topValues), so we can't extract pageFamilyId yet.
+    // Instead, we query topValues here to get the slowest pages, THEN drill into pageViews in step 3.
+    return {
+      label: 'step2_page_delay_detail',
+      description: '第二步：页面延时 Top 20 分析（按慢页面数排序）',
+      queries: [
+        {
+          label: 'pageDelayAnalysis',
+          fn: () => this.client.getTopValues(
+            faultStart, faultEnd,
+            'PGNPGE,PGTME,PGNSLPGE,PGSLPCT',
+            'PGNSLPGE', 20,
+            [...baseGroup, { type: 'PageFamilies' }, { type: 'PageFamily' }]
+          )
+        }
+      ]
+    };
+  }
+
+  _analyzePerfStep2(raw = {}) {
+    const flags = {};
+
+    if (!raw.pageDelayAnalysis) return flags;
+
+    flags.hasPageData = true;
+    const pages = extractTopItems(raw.pageDelayAnalysis);
+
+    if (pages.length === 0) return flags;
+
+    let totalVisits = 0, totalSlowPages = 0, maxDelay = 0;
+    let maxSlowPage = null, maxDelayPage = null;
+    let pagesWithHighSlowRate = 0;
+
+    for (const page of pages) {
+      const visits = page.PGNPGE || 0;
+      const avgDelay = page.PGTME || 0;
+      const slowPages = page.PGNSLPGE || 0;
+      const slowRate = page.PGSLPCT || 0;
+
+      totalVisits += visits;
+      totalSlowPages += slowPages;
+
+      if (slowPages > 0) pagesWithHighSlowRate++;
+      if (slowRate > 30) pagesWithHighSlowRate++;
+
+      if (slowPages > (maxSlowPage?.PGNSLPGE || 0)) {
+        maxSlowPage = page;
+      }
+      if (avgDelay > maxDelay) {
+        maxDelay = avgDelay;
+        maxDelayPage = page;
+      }
+    }
+
+    flags._totalVisits = totalVisits;
+    flags._totalSlowPages = totalSlowPages;
+    flags._pageCount = pages.length;
+    flags._maxSlowPage = maxSlowPage;
+    flags._maxDelayPage = maxDelayPage;
+
+    // Judgment: slow pages concentrated
+    if (maxSlowPage && totalSlowPages > 0) {
+      const pctOfTotalSlow = ((maxSlowPage.PGNSLPGE || 0) / totalSlowPages) * 100;
+      if (pctOfTotalSlow > 50) {
+        flags.slowPageConcentrated = true;
+        flags._dominantSlowPct = Math.round(pctOfTotalSlow);
+      }
+    }
+
+    // Judgment: slow pages scattered
+    if (pagesWithHighSlowRate > pages.length * 0.4 && !flags.slowPageConcentrated) {
+      flags.slowPagesScattered = true;
+    }
+
+    // Judgment: top visit page is slow
+    const topVisitPage = [...pages].sort((a, b) => (b.PGNPGE || 0) - (a.PGNPGE || 0))[0];
+    if (topVisitPage && (topVisitPage.PGSLPCT || 0) > 10) {
+      flags.topVisitPageSlow = true;
+    }
+
+    // Judgment: high delay page found (> 3s)
+    if (maxDelay > 3) {
+      flags.highDelayPageFound = true;
+      flags._maxDelayVal = maxDelay;
+    }
+
+    return flags;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // B/S Page Perf — Step 3: 慢访问模式分析
+  // ═══════════════════════════════════════════════════════════════
+
+  _perfStep3(ctx = {}) {
+    const { faultStart, faultEnd } = ctx;
+    const prevRaw = ctx._prevStepRawData || {};
+    const pageData = prevRaw.pageDelayAnalysis;
+    let topItems = [];
+    if (Array.isArray(pageData?.topValues)) topItems = pageData.topValues;
+    else if (Array.isArray(pageData)) topItems = pageData;
+
+    // Sort by slow page count descending, pick top 10
+    const sorted = [...topItems].sort((a, b) => {
+      const aSlow = extractMetric(a, 'PGNSLPGE');
+      const bSlow = extractMetric(b, 'PGNSLPGE');
+      return bSlow - aSlow;
+    });
+
+    const queries = [];
+    for (const item of sorted.slice(0, 10)) {
+      let pageFamilyId = '';
+      if (item.groupPath) {
+        const m = String(item.groupPath).match(/page\s+(\d+)/i);
+        if (m) pageFamilyId = m[1];
+      }
+      if (!pageFamilyId) pageFamilyId = item.group?.argument || item.key || '';
+      if (!pageFamilyId) continue;
+
+      queries.push({
+        label: `pageDetail_${pageFamilyId}`,
+        pageKey: item.keyLabel || item.group?.argument || pageFamilyId,
+        pageId: pageFamilyId,
+        fn: () => this.client.request('pageViews', {
+          start: faultStart,
+          end: faultEnd,
+          pageFamilyId
+        })
+      });
+    }
+
+    return {
+      label: 'step3_slow_pattern_analysis',
+      description: `第三步：延时成分分析 & 慢访问模式（共 ${queries.length} 个慢页面）`,
+      queries
+    };
+  }
+
+  _analyzePerfStep3(raw = {}) {
+    const flags = { hasPageViewData: true };
+
+    const pageDetailKeys = Object.keys(raw).filter((k) => k.startsWith('pageDetail_'));
+    flags._pageDetailCount = pageDetailKeys.length;
+
+    if (pageDetailKeys.length === 0) {
+      flags.isPresentationStep = true;
+      return flags;
+    }
+
+    // Analyze each page's delay decomposition
+    let serverDominantPages = 0;
+    let networkDominantPages = 0;
+    let balancedPages = 0;
+    let totalRows = 0;
+    const allClientIps = new Set();
+    const slowClientCounts = {};
+
+    for (const key of pageDetailKeys) {
+      const pageData = raw[key];
+      if (!pageData) continue;
+
+      const rows = Array.isArray(pageData) ? pageData
+        : (Array.isArray(pageData?.rows) ? pageData.rows
+          : (Array.isArray(pageData?.data) ? pageData.data : []));
+
+      let totalServBusy = 0, totalNetBusy = 0;
+
+      for (const row of rows) {
+        totalRows++;
+        // Handle both camelCase and PascalCase from NAPM API
+        const servBusy = Number(row.servBusyTime || row.ServBusyTime || 0);
+        const netBusy = Number(row.netBusyTime || row.NetBusyTime || 0);
+        totalServBusy += servBusy;
+        totalNetBusy += netBusy;
+
+        // Track client IPs
+        const clientIp = String(row.clientIp || row.ClientIp || '');
+        if (clientIp) {
+          allClientIps.add(clientIp);
+          slowClientCounts[clientIp] = (slowClientCounts[clientIp] || 0) + 1;
+        }
+      }
+
+      const totalBusy = totalServBusy + totalNetBusy;
+      if (totalBusy > 0) {
+        const serverRatio = totalServBusy / totalBusy;
+        if (serverRatio > 0.6) {
+          serverDominantPages++;
+        } else if (serverRatio < 0.4) {
+          networkDominantPages++;
+        } else {
+          balancedPages++;
+        }
+      }
+    }
+
+    const analyzedPages = serverDominantPages + networkDominantPages + balancedPages;
+
+    // Server dominant
+    if (analyzedPages > 0 && serverDominantPages > analyzedPages * 0.5) {
+      flags.serverDominant = true;
+    }
+
+    // Network dominant
+    if (analyzedPages > 0 && networkDominantPages > analyzedPages * 0.5) {
+      flags.networkDominant = true;
+    }
+
+    // Mixed cause
+    if (!flags.serverDominant && !flags.networkDominant && analyzedPages > 1) {
+      flags.mixedDelay = true;
+    }
+
+    // Single page slow
+    if (pageDetailKeys.length === 1 && totalRows > 0) {
+      flags.singlePageSlow = true;
+    }
+
+    // Multi page slow
+    if (pageDetailKeys.length > 2) {
+      flags.multiPageSlow = true;
+    }
+
+    // Client concentration
+    const recurringThreshold = 3;
+    const recurringIps = Object.entries(slowClientCounts)
+      .filter(([, count]) => count >= recurringThreshold)
+      .map(([ip]) => ip);
+
+    if (recurringIps.length > 0) {
+      flags.clientConcentrated = true;
+      flags._recurringIps = recurringIps;
+      flags._recurringIpCount = recurringIps.length;
+    }
+
+    // Time concentration detection: check if slow visits cluster in specific time windows
+    // Build time buckets by hour
+    const timeBuckets = {};
+    for (const key of pageDetailKeys) {
+      const pageData = raw[key];
+      if (!pageData) continue;
+      const rows = Array.isArray(pageData) ? pageData
+        : (Array.isArray(pageData?.rows) ? pageData.rows
+          : (Array.isArray(pageData?.data) ? pageData.data : []));
+      for (const row of rows) {
+        const startTime = row.startTime || row.StartTime || '';
+        if (!startTime) continue;
+        try {
+          const hour = new Date(startTime).getUTCHours();
+          timeBuckets[hour] = (timeBuckets[hour] || 0) + 1;
+        } catch (_) { /* skip */ }
+      }
+    }
+    const bucketVals = Object.values(timeBuckets);
+    if (bucketVals.length > 0) {
+      const maxBucket = Math.max(...bucketVals);
+      const totalInBuckets = bucketVals.reduce((a, b) => a + b, 0);
+      if (totalInBuckets > 0 && maxBucket / totalInBuckets > 0.5) {
+        flags.timeConcentrated = true;
+      }
+    }
+
+    // Scattered: no clear pattern
+    if (!flags.serverDominant && !flags.networkDominant &&
+        !flags.clientConcentrated && !flags.timeConcentrated && totalRows > 0) {
+      flags.scatteredSlow = true;
+    }
+
+    // Store for template extractor
+    flags._serverDominantPages = serverDominantPages;
+    flags._networkDominantPages = networkDominantPages;
+    flags._analyzedPages = analyzedPages;
+    flags._totalVisitRows = totalRows;
 
     return flags;
   }

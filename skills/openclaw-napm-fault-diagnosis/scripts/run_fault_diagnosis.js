@@ -53,6 +53,7 @@ async function main() {
 async function handleSkillCall(params = {}) {
   const payload = {
     description: params.description || params.prompt || '',
+    prompt: params.prompt || params.description || '',  // original user text for name extraction
     timeRange: params.timeRange || undefined,
     fault: params.fault || { description: params.description || params.prompt || '' },
     traceId: params.traceId || undefined,

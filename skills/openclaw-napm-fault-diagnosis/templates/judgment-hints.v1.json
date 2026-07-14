@@ -90,19 +90,58 @@
         {"when": "userExpHigh", "text": "用户体验时间升高，继续拆分连接、响应、传输、重传"}
       ]
     },
-    "step2_time_breakdown": {
+    "step2_user_experience_trend": {
       "hints": [
-        {"when": "connSetupHigh", "text": "建连时间长，网络路径、策略设备、防火墙、服务端连接处理慢"},
-        {"when": "serverRespHigh", "text": "服务器响应时间长，应用服务端、数据库、中间件、后端处理慢"},
-        {"when": "dataTransferHigh", "text": "数据传输时间长，带宽、窗口、传输效率、响应数据量大"},
-        {"when": "retransHigh", "text": "重传时间长，链路丢包、设备问题、网络质量差"}
+        {"when": "hasPeaks", "text": "检测到用户体验时间波峰，表明存在集中劣化时段。建议进入下一步波峰窗口客户端分析，定位具体来源。"},
+        {"when": "uetNormal", "text": "用户体验时间整体正常，未检测到显著波峰。如果用户仍反馈慢，建议扩大时间范围或检查其他维度。"},
+        {"when": "noTrendData", "text": "未获取到用户体验时序数据，可能该应用在当前时间窗口内无有效数据。"},
+        {"when": "noUetData", "text": "用户体验时间序列为空，无法进行波峰检测。"}
+      ]
+    },
+    "step3_slow_client_analysis": {
+      "hints": [
+        {"when": "recurringClient", "text": "同一客户端 IP 在多个波峰中出现，该客户端可能是持续性的慢体验来源。建议排查该客户端环境、接入链路或应用行为。"},
+        {"when": "singleClientDominant", "text": "波峰时刻的慢体验集中在单个客户端，问题更可能出在客户端侧或该客户端对应的接入路径。"},
+        {"when": "hasPeakData", "text": "波峰窗口客户端分析完成，可结合客户端分布判断慢体验是集中在少数来源还是分散在多个来源。"},
+        {"when": "noPeakData", "text": "未检测到显著波峰或波峰窗口内无慢客户端数据，可能当前时段整体体验正常。"}
+      ]
+    }
+  },
+
+  "bs_page_perf": {
+    "step1_page_perf_overview": {
+      "hints": [
+        {"when": "highAvgDelay", "text": "页面平均延时超过 3 秒，存在整体性能退化。建议进入页面延时成分分析，区分是服务器处理慢还是网络传输慢。"},
+        {"when": "highSlowPageRate", "text": "慢页面占比较高，表明该业务存在普遍性的页面加载缓慢问题。建议下钻到页面级数据，定位慢页面集中的 URL。"},
+        {"when": "highSlowPageCount", "text": "慢页面数量较多，可能涉及多个后端接口或公共依赖的性能问题。建议通过页面延时拆分定位瓶颈。"},
+        {"when": "perfNormal", "text": "页面性能指标整体正常。如果用户仍反馈访问慢，建议检查客户端侧环境或扩大时间范围重新分析。"}
+      ]
+    },
+    "step2_page_delay_detail": {
+      "hints": [
+        {"when": "slowPageConcentrated", "text": "慢页面集中在少数 URL，建议优先排查这些页面对应的后端接口、数据库查询和业务逻辑。进入下一步延时成分分析，定位根因是服务端还是网络。"},
+        {"when": "slowPagesScattered", "text": "慢页面分散在多个 URL，可能是公共组件问题（数据库连接池、缓存、中间件、网关）。建议检查公共依赖服务的健康状态，同时进入延时成分分析。"},
+        {"when": "topVisitPageSlow", "text": "访问量最高的页面同时存在较高延时，影响面较广。建议优先对该页面进行延时成分下钻，确认延时来源。"},
+        {"when": "highDelayPageFound", "text": "检测到单页面平均延时超过 3 秒的高延时页面，建议进入下一步延时成分分析，查看 PageTime 中 ServBusyTime 和 NetBusyTime 的占比。"}
       ],
       "packetTriggers": [
-        {"when": "connSetupHigh", "text": "连接建立时间高，建议下载数据包确认TCP握手是否慢、是否重传、是否有SYN无响应"},
-        {"when": "failureRateHigh", "text": "失败率高，建议下载数据包确认失败类型：RST、无响应、ICMP、超时"},
-        {"when": "retransRateHigh", "text": "重传率高，建议下载数据包确认重传方向、ACK行为、丢包表现"},
-        {"when": "serverRespHighUnclear", "text": "服务器响应时间高且原因不清，建议下载数据包确认请求到达后服务端响应等待"},
-        {"when": "transferTimeHigh", "text": "数据传输时间高，建议下载数据包确认传输过程是否有重传、窗口问题、大响应"}
+        {"when": "highDelayPageFound", "text": "高延时页面需要查看 HTTP 请求-响应的具体时间差，建议下载数据包确认延时发生在服务端处理阶段还是网络传输阶段。"}
+      ]
+    },
+    "step3_slow_pattern_analysis": {
+      "hints": [
+        {"when": "serverDominant", "text": "服务器耗时（ServBusyTime）占比明显偏高（>60%），根因倾向应用服务器处理慢。建议排查后端接口响应时间、数据库慢查询、中间件状态和应用日志。"},
+        {"when": "networkDominant", "text": "网络耗时（NetBusyTime）占比明显偏高（>60%），根因倾向网络传输慢。建议检查网络带宽、链路质量、TCP 重传率和客户端接入路径。"},
+        {"when": "mixedDelay", "text": "服务器耗时和网络耗时均有贡献，不同页面瓶颈成分不同。建议逐页面分析延时成分，分别制定服务端优化和网络优化策略。"},
+        {"when": "singlePageSlow", "text": "仅单个页面延时高，根因大概率在该页面的后端接口或数据库操作。建议对该页面进行专项优化。"},
+        {"when": "multiPageSlow", "text": "多个页面都延时高，可能是公共组件（数据库连接池、缓存、网关）或服务器资源瓶颈。建议排查公共基础设施。"},
+        {"when": "clientConcentrated", "text": "慢访问集中在特定客户端 IP，问题更可能出在客户端侧或该客户端的接入路径。建议排查客户端环境和网络链路。"},
+        {"when": "timeConcentrated", "text": "慢访问集中在特定时段，可能与业务高峰期、定时任务或外部依赖的周期性负载相关。建议对比正常时段与异常时段的差异。"},
+        {"when": "scatteredSlow", "text": "慢访问分散在不同页面、不同客户端和不同时段，无明显集中模式。倾向服务器整体资源瓶颈或网络基础设施问题，建议扩大排查范围。"}
+      ],
+      "packetTriggers": [
+        {"when": "serverDominant", "text": "服务器耗时高但无法确认具体慢接口，建议下载数据包查看 HTTP 请求-响应时间差和应用层 Payload。"},
+        {"when": "networkDominant", "text": "网络耗时高，建议下载数据包查看 TCP 三次握手时间、ACK 延迟、重传和窗口大小。"}
       ]
     }
   }
