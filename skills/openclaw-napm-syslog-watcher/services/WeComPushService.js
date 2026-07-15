@@ -257,12 +257,31 @@ class WeComPushService {
         const qEnd = hasEnd
           ? Math.floor(rawEnd / 60) * 60 + 60
           : Math.floor(rawStart / 60) * 60 + 120;
-        // 追加指标名，供 AI 分析时定位
+        // 构建指标信息（指标名 + 实际值 + 告警级别）
+        // 格式化为独立的上下文行，避免指标中文名被 AI 解析为 criteria.metrics 过滤条件
         const metricNames = (alert.metrics || [])
           .map(m => m.name)
           .filter(Boolean);
         const metricPart = metricNames.length > 0 ? ' ' + metricNames.join(' ') : '';
-        md += `\n> 💬 深入分析\n\n\`\`\`\n分析这个告警数据包 ${alert.extra.elogid} ${qStart} ${qEnd}${metricPart}\n\`\`\`\n`;
+
+        let metricDetail = '';
+        if (alert.metrics && alert.metrics.length > 0) {
+          const details = alert.metrics
+            .map(m => `${m.name}=${m.value}${m.unit || ''}`)
+            .join('，');
+          metricDetail = `\n触发指标值: ${details}`;
+        }
+        if (alert.alertSeverity) {
+          metricDetail += `\n告警级别: ${alert.alertSeverity}`;
+        }
+        if (alert.extra?.condition) {
+          metricDetail += `\n触发条件: ${alert.extra.condition}`;
+        }
+
+        // 2026-07-14: 改为 key=value 格式，避免 AI 漏掉 start/end 映射。
+        // 旧格式 "分析这个告警数据包 <id> <start> <end>" 是位置参数，
+        // AI 频繁漏传 start/end → ALERT_TIME_RANGE_REQUIRED。
+        md += `\n> 💬 深入分析\n\n\`\`\`\n分析告警数据包 eventId=${alert.extra.elogid} start=${qStart} end=${qEnd}${metricPart}${metricDetail}\n\`\`\`\n`;
       }
     }
 

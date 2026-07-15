@@ -21,7 +21,7 @@
 - 企业微信通道：`channels.wecom`
 - NAPM 插件：`napm-openclaw-plugin`（`napm-openclaw-plugin.remote.js`）
 
-### Skills（8 个）
+### Skills（9 个）
 
 | Skill | 目录 | 能力 |
 |---|---|---|
@@ -32,9 +32,10 @@
 | openclaw-napm-inspection | `skills/openclaw-napm-inspection/` | 巡检快照（流量健康、业务性能） |
 | openclaw-napm-summary | `skills/openclaw-napm-summary/` | 综述报告（全局/网络/Web/应用/业务组/告警 6 种 scope） |
 | openclaw-napm-syslog-watcher | `skills/openclaw-napm-syslog-watcher/` | Syslog/SNMP 告警接收、富化、企业微信推送 |
+| openclaw-napm-fault-diagnosis | `skills/openclaw-napm-fault-diagnosis/` | 故障诊断分析（B/S业务慢/页面性能/C/S应用慢/网络慢 4种流程），自动检测 flowType |
 | echarts-chart-skill | `skills/echarts-chart-skill/` | ECharts 图表渲染（PNG 输出），供报告 skill 调用 |
 
-### OpenClaw 工具契约（6 个，定义在 openclaw.plugin.json）
+### OpenClaw 工具契约（7 个，定义在 openclaw.plugin.json）
 
 - `napm-skill-query` — NAPM 自然语言查询
 - `napm-report-export` — 报告生成与导出
@@ -42,13 +43,14 @@
 - `napm-alert-query` — 告警查询
 - `napm-inspection-snapshot` — 巡检快照
 - `napm-summary` — 综述报告
+- `napm-fault-diagnosis` — 故障诊断分析
 
 ## 报告类型
 
 | 类型 | 模板 | 固定模板服务 |
 |---|---|---|
 | 巡检报告 (inspection) | `templates/inspection/napm_traffic_health_inspection_v1.json` | InspectionFixedTemplateService |
-| 故障诊断报告 (diagnostic) | `templates/diagnostic/napm_fault_diagnosis_v1.json` | DiagnosticFixedTemplateService |
+| 故障诊断报告 (diagnostic) | `templates/diagnostic/napm_bs_fault_diagnosis_v2.json` / `napm_bs_page_perf_v1.json` / `napm_cs_fault_diagnosis_v1.json` | DiagnosticFixedTemplateService |
 | 综述报告 (summary) | `templates/summary/napm_summary_overview_v1.json` | SummaryFixedTemplateService |
 
 ## 领域对象
@@ -88,6 +90,7 @@
 - 对"详细点/继续/下钻"类追问，沿用上一轮对象、指标和时间范围，除非用户明确改变条件。
 - 查询不到数据时，优先提示检查时间范围、对象类型、指标映射和数据延迟。
 - 报告类请求（综述/日报/周报/巡检/故障诊断）走对应的报告生成链路，不走纯文本回答。
+- 故障诊断类请求（报错分析/故障分析/页面慢/应用慢/网络慢）走 `napm-fault-diagnosis`，不要拆成多次 query 调用。
 
 ## 维护规则
 

@@ -284,7 +284,9 @@ async function discover(api, event = {}, options = {}) {
     }
 
     // 告警触发指标 → 透传到 packet-analysis 用于侧重分析
-    const analysis = buildFocusAnalysis(event);
+    // options.alertTriggerMetrics 可包含外部注入的指标值（来自 syslog 等），
+    // 当 NAPM API 返回 metrics:[] 时作为回退数据源
+    const analysis = buildFocusAnalysis(event, options);
 
     return {
       available: true,
@@ -430,42 +432,92 @@ async function discoverForEvents(api, events = [], options = {}) {
 
 /**
  * 从告警事件中提取触发指标信息，透传给 packet-analysis 用于侧重分析。
- * 指标是动态的——随告警变化，不做静态映射。
+ *
+ * @param {object} event - 告警事件（已归一化）
+ * @param {object} [options] - 可选配置
+ * @param {object} [options.alertTriggerMetrics] - 外部注入的指标值，
+ *   当 NAPM alertsDetail 返回 metrics:[] 时作为回退数据源。
+ *   格式: { names: ["中文名"], codes: ["CODE"], values: [1.23], units: ["ms"],
+ *           condition: "> 3000", severity: "紧急" }
  */
-function buildFocusAnalysis(event = {}) {
+function buildFocusAnalysis(event = {}, options = {}) {
   const metrics = Array.isArray(event.metrics) ? event.metrics : [];
   const value = Array.isArray(event.value) ? event.value : [];
   const unit = Array.isArray(event.unit) ? event.unit : [];
   const condition = event.condition || null;
   const severityLabel = event.severityLabel || null;
 
-  if (metrics.length === 0) {
+  // event 自身有指标 → 走原有逻辑
+  if (metrics.length > 0) {
+    const metricLabels = metrics.map((code) => getMetricLabel(code));
     return {
-      hasTriggerMetrics: false,
-      note: '该告警无触发指标（metrics 为空），仍必须对发现的 IP 会话进行完整数据包分析。',
+      hasTriggerMetrics: true,
+      metrics,
+      metricLabels,
+      values: value,
+      units: unit,
+      condition,
+      severity: severityLabel,
+      summary: metrics.map((m, i) => {
+        const label = metricLabels[i] || m;
+        return `${label}(${m})=${value[i] ?? '?'}${unit[i] ?? ''}`;
+      }).join(', '),
+      instruction: `数据包分析报告必须围绕 ${metricLabels.join('、')}(${metrics.join('、')}) 展开。`
+        + `解释为什么 ${metricLabels.join('、')} 达到 ${value.join('、')}${unit[0] || ''}，`
+        + `结合数据包中的 TCP 重传、延迟、连接失败等证据，`
+        + `找出导致指标异常的具体 IP 会话和时间点。`
+        + (condition ? ` 触发条件: ${condition}` : ''),
     };
   }
 
-  // 从 metrics-config.yml 查中文名（运行时 lazy load）
-  const metricLabels = metrics.map((code) => getMetricLabel(code));
+  // event metrics 为空 → 尝试外部注入（来自 syslog 等数据源）
+  const external = options.alertTriggerMetrics || null;
+  if (external && Array.isArray(external.names) && external.names.length > 0) {
+    return buildFocusFromExternalMetrics(external);
+  }
+
+  return {
+    hasTriggerMetrics: false,
+    note: '该告警无触发指标（metrics 为空），仍必须对发现的 IP 会话进行完整数据包分析。',
+  };
+}
+
+/**
+ * 从外部注入的指标值构建 focusAnalysis。
+ * 用于 NAPM alertsDetail API 不返回触发指标时，
+ * 由 syslog 等外部数据源补充指标上下文。
+ *
+ * @param {object} external
+ * @param {string[]} external.names - 指标中文名
+ * @param {string[]} [external.codes] - 指标代码
+ * @param {number[]} external.values - 指标实际值
+ * @param {string[]} external.units - 指标单位
+ * @param {string} [external.condition] - 触发条件
+ * @param {string} [external.severity] - 告警级别
+ */
+function buildFocusFromExternalMetrics(external = {}) {
+  const names = external.names || [];
+  const codes = external.codes || names;
+  const values = external.values || [];
+  const units = external.units || [];
+  const condition = external.condition || null;
+  const severity = external.severity || null;
 
   return {
     hasTriggerMetrics: true,
-    metrics,
-    metricLabels,
-    values: value,
-    units: unit,
+    metrics: codes,
+    metricLabels: names,
+    values,
+    units,
     condition,
-    severity: severityLabel,
-    summary: metrics.map((m, i) => {
-      const label = metricLabels[i] || m;
-      return `${label}(${m})=${value[i] ?? '?'}${unit[i] ?? ''}`;
-    }).join(', '),
-    instruction: `数据包分析报告必须围绕 ${metricLabels.join('、')}(${metrics.join('、')}) 展开。` +
-      `解释为什么 ${metricLabels.join('、')} 达到 ${value.join('、')}${unit[0] || ''}，` +
-      `结合数据包中的 TCP 重传、延迟、连接失败等证据，` +
-      `找出导致指标异常的具体 IP 会话和时间点。` +
-      (condition ? ` 触发条件: ${condition}` : ''),
+    severity,
+    summary: names.map((n, i) => `${n}(${codes[i] || n})=${values[i] ?? '?'}${units[i] ?? ''}`).join(', '),
+    instruction: `数据包分析报告必须围绕 ${names.join('、')} 展开。`
+      + `解释为什么 ${names.join('、')} 达到 ${values.join('、')}${units[0] || ''}，`
+      + `结合数据包中的 TCP 重传、延迟、连接失败等证据，`
+      + `找出导致指标异常的具体 IP 会话和时间点。`
+      + (condition ? ` 触发条件: ${condition}` : ''),
+    _source: 'external_injected', // 标记数据来源
   };
 }
 

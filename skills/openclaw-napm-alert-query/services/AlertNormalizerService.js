@@ -128,7 +128,10 @@ function filterEvents(events = [], criteria = {}) {
     if (criteria.severities?.length && !criteria.severities.includes(event.severity)) return false;
     if (criteria.objects?.length && !criteria.objects.includes(event.group)) return false;
     if (criteria.eventIds?.length && !criteria.eventIds.includes(String(event.id))) return false;
-    if (criteria.metrics?.length && !event.metrics.some((metric) => criteria.metrics.includes(metric))) return false;
+    // 仅当事件自身有 metrics 时才按指标名过滤。
+    // NAPM alertsDetail API 可能对某些事件返回 metrics:[]，
+    // 此时不应因 criteria.metrics 有值而误杀事件。
+    if (criteria.metrics?.length && event.metrics.length > 0 && !event.metrics.some((metric) => criteria.metrics.includes(metric))) return false;
     if (criteria.categoryTypes?.length && !criteria.categoryTypes.includes(event.categoryType)) return false;
     if (criteria.taskTypes?.length && !criteria.taskTypes.includes(String(event.tasktype))) return false;
     if (criteria.linkTypes?.length && !criteria.linkTypes.includes(event.linkType)) return false;

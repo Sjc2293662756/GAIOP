@@ -178,70 +178,6 @@ function buildSummaryDeviceTableRows(deviceInfo = {}) {
   ]];
 }
 
-function buildHealthSummaryRows(summary = {}, scope = {}) {
-  const rows = [];
-  const scopeType = scope.type || 'global';
-  const scopedTarget = hasScopeTarget(scope);
-  const singleBusiness = summary.singleBusinessAnalysis || {};
-
-  const alertTotal = summary.alertSummary?.total ?? 0;
-  const alertCritical = summary.alertSummary?.critical ?? 0;
-  if (alertCritical > 0) {
-    rows.push(['告警态势', '异常', `存在 ${alertCritical} 条紧急告警，共 ${alertTotal} 条告警`]);
-  } else if (alertTotal > 0) {
-    rows.push(['告警态势', '需关注', `共 ${alertTotal} 条告警，无紧急告警`]);
-  } else {
-    rows.push(['告警态势', '正常', '无告警']);
-  }
-
-  if (scopeType !== 'alert') {
-    const missingPoints = summary.trafficSummary?.trend?.stats?.missingPointCount ?? 0;
-    const spikeCount = summary.trafficSummary?.trend?.stats?.spikeCount ?? 0;
-    if (missingPoints > 0 || spikeCount > 0) {
-      const issues = [];
-      if (missingPoints > 0) issues.push(`${missingPoints} 个缺失点`);
-      if (spikeCount > 0) issues.push(`${spikeCount} 个尖峰`);
-      rows.push(['流量状况', '需关注', issues.join('，')]);
-    } else {
-      rows.push(['流量状况', '正常', '流量趋势连续']);
-    }
-  }
-
-  if (scopeType === 'webApplication' && scopedTarget) {
-    const slowVisitCount = singleBusiness.overview?.slowVisitCount ?? 0;
-    const slowVisitPct = Number(singleBusiness.overview?.slowVisitPct ?? 0);
-    const http400 = singleBusiness.httpCodeSummary?.http400 ?? 0;
-    const http500 = singleBusiness.httpCodeSummary?.http500 ?? 0;
-    if (slowVisitCount > 0 || http400 > 0 || http500 > 0) {
-      const issues = [];
-      if (slowVisitCount > 0) issues.push(`慢访问 ${slowVisitCount} 次（${slowVisitPct.toFixed(2)}%）`);
-      if (http400 > 0) issues.push(`HTTP 400 ${http400} 次`);
-      if (http500 > 0) issues.push(`HTTP 500 ${http500} 次`);
-      rows.push(['业务性能', '需关注', issues.join('，')]);
-    } else {
-      rows.push(['业务性能', '正常', '未发现明显慢访问或 HTTP 错误']);
-    }
-  } else if (scopeType === 'global' || scopeType === 'webApplication') {
-    const slowCount = asArray(summary.businessSummary?.slowAccess).length;
-    const errorCount = asArray(summary.businessSummary?.httpErrors).length;
-    if (slowCount > 0 || errorCount > 0) {
-      const issues = [];
-      if (slowCount > 0) issues.push(`${slowCount} 个慢访问`);
-      if (errorCount > 0) issues.push(`${errorCount} 个 HTTP 错误`);
-      rows.push(['业务性能', '需关注', issues.join('，')]);
-    } else {
-      rows.push(['业务性能', '正常', '未发现慢访问或 HTTP 错误']);
-    }
-  }
-
-  const overallStatus = summary.overallStatus || 'ok';
-  if (overallStatus === 'critical') rows.push(['综合评估', '异常', '存在紧急级别问题，需立即处理']);
-  else if (overallStatus === 'warning') rows.push(['综合评估', '需关注', '部分指标需要关注']);
-  else rows.push(['综合评估', '正常', '系统运行稳定']);
-
-  return rows;
-}
-
 function buildAlertCategoryStatsRows(byCategory = []) {
   return asArray(byCategory).map((cat) => [
     cat.categoryLabel || cat.category || '-',
@@ -537,8 +473,6 @@ class SummaryFixedTemplateService extends InspectionFixedTemplateService {
         return { columns: section.columns, rows: buildSummaryDeviceRows(summary.deviceInfo) };
       case 'summaryDeviceTable':
         return { columns: section.columns, rows: buildSummaryDeviceTableRows(summary.deviceInfo) };
-      case 'healthSummary':
-        return { columns: section.columns, rows: buildHealthSummaryRows(summary, context.scope || {}) };
       case 'alertCategoryStats':
         return { columns: section.columns, rows: buildAlertCategoryStatsRows(summary.alertSummary?.byCategory) };
       case 'alertTopObjects':
@@ -741,7 +675,6 @@ module.exports.__test__ = {
   evalCondition,
   buildSummaryDeviceRows,
   buildSummaryDeviceTableRows,
-  buildHealthSummaryRows,
   buildAlertCategoryStatsRows,
   buildAlertTopObjectRows,
   buildUnresolvedAlertRows,

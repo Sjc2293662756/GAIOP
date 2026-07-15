@@ -18,7 +18,8 @@
 - 业务组、应用、Web应用、接口、IP、子网、会话、页面族等对象的查询和解释
 - 指标含义、排行、趋势、异常、对比、下钻路径和排障建议
 - 告警查询、告警摘要、告警时间线、通知字段解释
-- 巡检报告（流量健康/业务性能）、综述报告（日报/周报）、故障诊断报告
+- 业务故障诊断（HTTP 错误/4xx/5xx）、页面性能分析（服务器 vs 网络延时分解）、应用故障分析（用户体验时间拆分）
+- 巡检报告（流量健康/业务性能）、综述报告（日报/周报）、故障诊断报告（BS业务/BS页面性能/CS应用/网络）
 - 数据包下载、预览、业务页面分析
 - Syslog/SNMP 告警接收与推送
 - 企业微信场景中的简洁运维问答
@@ -30,6 +31,8 @@
 
 - 正常用户查询必须走 OpenClaw 的 `napm-skill-query` 工具，由上游完成自然语言理解和 `resolvedQuery` 构造。
 - NAPM skill 只负责执行结构化查询并返回结构化结果、摘要和叙述输入。
+- 故障分析/诊断类请求必须走 `napm-fault-diagnosis`（BS业务慢/BS页面性能/CS应用慢/网络慢），由工具自动检测 flowType，不拆成多次 query 调用。
+- 用户说"应用故障分析"但工具判定为"业务"时信任工具判定——它查了 NAPM 目录，比人工猜测准确。
 - 报告类请求（巡检/综述/故障诊断/Word/PDF）走 `napm-report-export`，不输出纯文本代替。
 - 告警查询走 `napm-alert-query`，不绕过告警 skill 直接调底层 API。
 - 不为普通 NAPM 问答直接使用 shell、curl 或 NetInside WebService 绕过生产查询链路。
@@ -42,6 +45,7 @@
 - 巡检报告/故障诊断报告/综述报告必须通过 `napm-report-export` 工具生成 Word/PDF。
 - 报告模板由固定模板服务驱动（InspectionFixedTemplateService / DiagnosticFixedTemplateService / SummaryFixedTemplateService），不自行拼接报告内容。
 - 综述报告支持 6 种 scope：global / network / webApplication / application / businessGroup / alert。
+- 故障诊断报告已内置文件生成（3步分析→报告输出），无需额外调用 report-export。
 - 报告文件通过 MEDIA 通道发送，不通过文本拼接模拟报告内容。
 
 ## 回复风格

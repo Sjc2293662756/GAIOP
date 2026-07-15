@@ -372,6 +372,13 @@ function isFaultDiagnosisPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) return false;
 
+  // 2026-07-14: "告警数据包" 是 alert+packet 路由，不应触发故障诊断。
+  // 否则所有包含"用户体验时间"的深入分析 prompt 都会被 fault guard 拦截，
+  // AI 被强制导向 napm-fault-diagnosis 而非 napm-alert-query → napm-packet-analysis。
+  if (/(?:告警.*数据包|数据包.*告警)/i.test(text)) {
+    return false;
+  }
+
   // Direct mentions of fault/diagnosis/error analysis
   if (/(?:故障分析|故障诊断|故障报告|错误分析|报错分析|页面错误|HTTP\s*[45]\d{2}|[45]xx)/i.test(text)) {
     return true;
@@ -2758,48 +2765,45 @@ function buildAlertQueryReply(result = {}) {
   // 当有 packetInstruction 时，输出这是主要指令，不混入长摘要
   // ═══════════════════════════════════════════════════════════════
   if (pi && pi.callPacketAnalysis && Array.isArray(pi.candidates) && pi.candidates.length > 0) {
-    // USE_CANDIDATES — 只输出指令和候选，AI 必须逐条调 packet-analysis
-    lines.push('═══════════════════════════════════════');
-    lines.push('⚠️ 数据包发现完成 — 请执行以下操作：');
+    // USE_CANDIDATES — AI 必须逐条调 packet-analysis，这是中间步骤不是最终答复。
+    // 2026-07-14: 实测 AI 多次忽略原格式，改成顶部红标强制指令。
+    lines.push('🚨🚨🚨 下一步操作（必须执行，这是中间步骤，不是最终答复）🚨🚨🚨');
     lines.push('');
-    lines.push(`发现 ${pi.candidates.length} 个嫌疑 IP 会话，必须逐条调用 napm-packet-analysis：`);
+    lines.push(`已发现 ${pi.candidates.length} 个嫌疑 IP 会话。`);
+    lines.push('你必须立即对每个 candidate 调用 napm-packet-analysis 工具：');
     lines.push('');
     for (const c of pi.candidates) {
       const label = c.ipPair || c.ip || c.ips?.join('↔') || '-';
       const sq = c.suggestedPacketQuery || {};
-      const sqIps = (sq.criteria?.ips || c.ips || []).join(',');
-      const sqStart = sq.criteria?.start || '';
-      const sqEnd = sq.criteria?.end || '';
-      lines.push(`  ${c.rank}. ${label}`);
-      lines.push(`     → napm-packet-analysis mode=${sq.mode || 'preview_download_analyze'} ips=${sqIps} start=${sqStart} end=${sqEnd}`);
+      lines.push(`  napm-packet-analysis(`);
+      lines.push(`    mode: "${sq.mode || 'preview_download_analyze'}",`);
+      lines.push(`    criteria: { ips: ${JSON.stringify(sq.criteria?.ips || c.ips)}, start: ${sq.criteria?.start || ''}, end: ${sq.criteria?.end || ''} },`);
+      if (sq.analysis && sq.analysis.hasTriggerMetrics) {
+        lines.push(`    analysis: { metrics: ${JSON.stringify(sq.analysis.metrics)}, metricLabels: ${JSON.stringify(sq.analysis.metricLabels)}, instruction: "${sq.analysis.instruction?.slice(0, 60)}..." }`);
+      }
+      lines.push(`  )  ← 第${c.rank}个候选: ${label}`);
+      lines.push('');
     }
-    lines.push('');
-    // 触发指标 — 动态透传，AI 必须围绕此展开分析
+    // 触发指标
     if (Array.isArray(triggerInfo) && triggerInfo.length > 0) {
       const t = triggerInfo[0];
       const m = (t.metrics||[]).join('、') || null;
-      const v = (t.value||[]).join('、');
-      const u = (t.unit||[])[0] || '';
       if (m) {
-        lines.push(`🔴 告警触发: ${m} = ${v}${u}（${t.severityLabel||'?'}）`);
-        lines.push(`   条件: ${t.condition || 'N/A'}`);
-        lines.push(`   报告必须围绕 ${m} 展开，解释为什么达到 ${v}${u}`);
-      } else {
-        lines.push('该告警无触发指标，仍必须逐条分析数据包内容');
+        lines.push(`📊 告警触发指标: ${m} = ${(t.value||[]).join('、')}${(t.unit||[])[0] || ''}（${t.severityLabel||'?'}）`);
       }
     }
     lines.push('');
-    lines.push('═══════════════════════════════════════');
+    lines.push('⛔ 禁止: 自己拼 curl、用 napm-skill-query 查 IP 会话、直接输出这段文本给用户。');
+    lines.push('✅ 必须: 对上面每个 candidate 调 napm-packet-analysis，拿到 tshark 分析结果后再组织最终答复。');
     lines.push('');
-    // 告警基本信息
+    // 告警基本信息（参考用）
     const events = Array.isArray(result.details) && result.details.length > 0
       ? result.details
       : (Array.isArray(result.events) ? result.events : []);
     if (events.length > 0) {
       const e = events[0];
-      lines.push(`告警: ${e.id} ${e.severityLabel||''} ${e.group||''} ${e.name||''}`);
-      lines.push(`时间: ${e.start||'-'} ~ ${e.end||'-'}`);
-      lines.push(`触发指标: ${(e.metrics||[]).join(', ') || '无'}`);
+      lines.push(`--- 参考信息 ---`);
+      lines.push(`告警: ${e.id} ${e.severityLabel||''} ${e.group||''} ${e.name||''} | 时间: ${e.start||'-'}~${e.end||'-'}`);
     }
     return lines.join('\n').trim();
   }
@@ -3193,7 +3197,10 @@ function buildPacketAnalysisReply(result = {}) {
     ).trim();
   }
   if (highlights.length > 0) {
-    return highlights.join('\n');
+    // 2026-07-14: 禁止 AI 看到 Password=*** 后自己猜密码填进去。
+    // skill 内部已从 .env 读取正确凭证，URL 中的 *** 是脱敏标记。
+    const credentialNotice = '⛔ 安全提示：所有 URL 中的认证（UserName/Password）已由 skill 从 .env 自动注入。Password=*** 是脱敏标记，不是占位符——禁止自行替换或拼接密码！如需下载/分析数据包，请使用 napm-packet-analysis 工具而非 curl。';
+    return highlights.join('\n') + '\n\n' + credentialNotice;
   }
   return JSON.stringify(result, null, 2);
 }
@@ -4073,10 +4080,12 @@ function createAlertQueryToolDefinition() {
         };
       }
 
-      // summary / 无数据包模式：只返回 finalAnswer（纯文本），不给 AI 任何结构化数据
+      // summary / 无数据包模式：displayText 直达用户，绕过 AI 叙述层
+      // OpenClaw SDK: displayText 直接显示给用户，不经过 Bot/AI 处理
       // 防止 AI 从文本中解析数字后自行重组输出（算百分比、画 markdown 表格等）
       return {
-        finalAnswer: renderedText
+        finalAnswer: renderedText,
+        displayText: renderedText
       };
     }
   };
@@ -4720,10 +4729,18 @@ const plugin = {
             }
 
             // napm-alert-query: 如果 criteria 有 timeRange.key，覆盖 start/end
-            if (toolName === 'napm-alert-query'
-                && isPlainObject(event.params.alertQuery?.criteria)) {
-              const criteria = event.params.alertQuery.criteria;
-              if (!criteria.start && !criteria.end) {
+            // 2026-07-14: 兼容两种参数格式——
+            //   嵌套: { alertQuery: { criteria: { eventIds, ... } } }
+            //   扁平: { eventIds, mode, ... }（AI 常用此格式）
+            if (toolName === 'napm-alert-query') {
+              const criteria = (isPlainObject(event.params.alertQuery?.criteria)
+                ? event.params.alertQuery.criteria
+                : (isPlainObject(event.params.criteria)
+                  ? event.params.criteria
+                  : (isPlainObject(event.params) && !isPlainObject(event.params.alertQuery)
+                    ? event.params
+                    : null)));
+              if (criteria && !criteria.start && !criteria.end) {
                 const now = Math.floor(Date.now() / 1000);
                 const floor = (v) => Math.floor(v / 60) * 60;
                 criteria.start = floor(now - 3600);
@@ -4764,8 +4781,10 @@ const plugin = {
         const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
 
         // ── Fault diagnosis guard (MUST be first) ──
+        // 2026-07-14: 当 prompt 明确是"告警数据包"请求时（activeAlertPacketPrompt=true），
+        // 不触发故障诊断拦截。否则所有包含"用户体验时间"的深入分析都会被导向 fault-diagnosis。
         const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt);
-        if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt) {
+        if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt && !activeAlertPacketPrompt) {
           api.logger.warn(`[napm-openclaw-plugin] BLOCKED ${toolName} for fault-diagnosis prompt: ${activePrompt.slice(0, 120)}`);
           appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
           return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a fault/error analysis request. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with description + timeRange only. The tool auto-detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) based on the NAPM catalog. DO NOT pass flowType — let the tool decide.` };
@@ -4840,7 +4859,10 @@ const plugin = {
           return undefined;
         }
 
-        if (toolName === 'napm-skill-query' && activeNapmPrompt && activePrompt) {
+        // 2026-07-14: packet prompt 场景下禁止 napm-skill-query，
+        // 否则 auto-repair 会把包请求修成错误的 metric query，
+        // AI 连续失败后就会绕过 skill 用 exec/curl。
+        if (toolName === 'napm-skill-query' && activeNapmPrompt && activePrompt && !activePacketPrompt) {
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
@@ -4981,6 +5003,31 @@ const plugin = {
             api.logger.warn(`[napm-openclaw-plugin] canonicalized napm-skill-query params: originalPrompt=${originalPrompt || 'none'} canonicalPrompt=${canonicalPrompt} originalGroup=${originalResolvedGroup || 'none'} canonicalGroup=${canonicalResolvedGroup || 'none'}`);
             return {
               params: canonicalSkillParams
+            };
+          }
+        }
+
+        // ── Packet prompt: block exec/bash/curl bypass ──────────────────
+        // 当 AI 尝试用 shell 工具直接 curl NAPM 包接口时强制拦截，
+        // 防止绕过 napm-packet-analysis skill（skill 会正确读取 .env 中的密码和 TLS 配置）。
+        // 2026-07-14: 实测 AI 用 bash+curl+硬编码错误密码绕过 skill，导致 403 + 无分析。
+        if (activePacketPrompt && isDangerousSystemTool(toolName)) {
+          const paramsStr = JSON.stringify(toolParams).toLowerCase();
+          const hasNapmPacketUrl = /101\.254\.114\.238/.test(paramsStr)
+            && /(packetspreview|packetsdown|downservlet)/i.test(paramsStr);
+          const hasCurlToNapm = /curl|wget/.test(paramsStr)
+            && /101\.254\.114\.238/.test(paramsStr)
+            && /(netinside|webservice)/i.test(paramsStr);
+          if (hasNapmPacketUrl || hasCurlToNapm) {
+            api.logger.warn(`[napm-openclaw-plugin] BLOCKED exec/curl bypass for packet prompt: tool=${toolName}`);
+            appendPluginAuditEvent('napm_plugin_packet_exec_curl_blocked', {
+              toolName,
+              prompt: activePrompt,
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: 'Packet capture/download/analysis MUST use napm-packet-analysis skill, NOT shell/exec/curl. The skill handles TLS certificates, reads credentials from .env, and runs tshark for analysis. Direct curl will fail with wrong passwords or TLS errors.'
             };
           }
         }

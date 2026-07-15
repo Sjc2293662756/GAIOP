@@ -41,6 +41,9 @@ const PACKET_SIZE_KEYS = [
 ];
 const PACKET_PAYLOAD_EXTENSIONS = new Set(['.pcap', '.cap', '.pcapng', '.zip']);
 
+// 推算 workspace 根目录，用于加载 .env（参照 alert-query 的 loadDotEnvCandidates 模式）
+const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
+
 if (require.main === module) {
   main().catch((error) => {
     const result = failureResult('PACKET_RUNTIME_ERROR', error.message || String(error), { stack: error.stack });
@@ -50,7 +53,12 @@ if (require.main === module) {
 }
 
 async function main() {
-  loadDotEnv(path.resolve(process.cwd(), '.env'));
+  loadDotEnvCandidates([
+    path.join(workspaceRoot, '.env'),
+    path.join(process.cwd(), '.env'),
+    process.env.OPENCLAW_HOME ? path.join(process.env.OPENCLAW_HOME, '.env') : null,
+    process.env.HOME ? path.join(process.env.HOME, '.openclaw', '.env') : null,
+  ]);
   const args = parseArgs(process.argv.slice(2));
   const query = loadQuery(args);
   const startedAt = new Date().toISOString();
@@ -1318,6 +1326,7 @@ async function analyzePacketFile(filePath, analysisOptions) {
   }
 
   const timeoutMs = analysisOptions.timeoutMs;
+  const alertContext = analysisOptions.alertContext || null;
   const result = {
     ok: true,
     filePath: resolvedPath,
@@ -1329,6 +1338,9 @@ async function analyzePacketFile(filePath, analysisOptions) {
     dnsQueries: [],
     httpRows: [],
     tlsSni: [],
+    // 告警触发指标上下文（从 alert-query 透传），
+    // 使 AI 层能围绕告警根因展开叙述，而非只输出泛化的协议分布。
+    alertContext,
     error: null,
   };
 
@@ -1940,6 +1952,12 @@ function buildSummary(result) {
 }
 
 function buildNarrationInput(result) {
+  // 从 analysis.alertContext 提取告警叙述指令，注入 renderPolicy
+  const alertContext = result.analysis && result.analysis.alertContext;
+  const alertRenderHint = alertContext && alertContext.hasTriggerMetrics
+    ? buildAlertRenderHint(alertContext)
+    : null;
+
   return {
     schema: 'openclaw_napm_packet_analysis.v1',
     language: 'zh-CN',
@@ -1967,8 +1985,49 @@ function buildNarrationInput(result) {
       language: 'zh-CN',
       includeRawPackets: false,
       includeSensitiveUrls: false,
+      // 告警聚焦叙述指令：当 analysis.alertContext 存在时，
+      // AI 必须围绕告警触发指标展开数据包分析报告，而非只输出泛化协议分布。
+      alertRenderHint,
     },
   };
+}
+
+/**
+ * 根据告警上下文构建 AI 层的叙述聚焦指令。
+ *
+ * 当 packet-analysis 被 alert-query 通过 suggestedPacketQuery 调用时，
+ * alertContext 中包含了告警触发指标（metrics / values / condition 等）。
+ * 此函数生成一条明确的指令，告诉 AI：数据包报告必须聚焦于解释
+ * "为什么这些告警指标异常"，要把 tshark 分析结果（重传、延迟、会话）
+ * 与告警触发条件关联起来。
+ */
+function buildAlertRenderHint(alertContext = {}) {
+  const metricText = (alertContext.metricLabels || []).join('、')
+    || (alertContext.metrics || []).join('、')
+    || '未知指标';
+  const valueText = (alertContext.values || []).join('、') || '?';
+  const unitText = (alertContext.units || [])[0] || '';
+
+  let hint = '⚠️ 本次数据包分析由告警事件触发，报告必须聚焦于告警根因：\n';
+  hint += `触发指标: ${metricText} = ${valueText}${unitText}\n`;
+  if (alertContext.condition) {
+    hint += `触发条件: ${alertContext.condition}\n`;
+  }
+  if (alertContext.severity) {
+    hint += `告警级别: ${alertContext.severity}\n`;
+  }
+  hint += '\n';
+  hint += 'AI 叙述要求（必须遵循）：\n';
+  hint += `1. 结合 tshark 分析结果（TCP 重传率、RTT 延迟、连接失败、HTTP 状态码等），解释为什么 ${metricText} 达到 ${valueText}${unitText}\n`;
+  hint += '2. 找出数据包中导致指标异常的具体 IP 会话和时间点\n';
+  hint += '3. 将数据包时间线与告警触发时刻关联，给出根因结论\n';
+  hint += '4. 不要只输出泛化的协议分布统计——每一个发现都要与告警指标关联\n';
+
+  if (alertContext.instruction) {
+    hint += `\n补充指令: ${alertContext.instruction}`;
+  }
+
+  return hint;
 }
 
 function summarizeBusinessResolution(businessResolution) {
@@ -2040,6 +2099,9 @@ function summarizeAnalysis(analysis) {
     dnsQueries: analysis.dnsQueries,
     httpRows: analysis.httpRows,
     tlsSni: analysis.tlsSni,
+    // 告警触发指标上下文：透传给 AI 层的 narrationInput，
+    // 确保数据包分析报告围绕告警根因展开，而非只做泛化的协议描述。
+    alertContext: analysis.alertContext || null,
     error: analysis.error,
   };
 }
@@ -2067,6 +2129,7 @@ function isEmptyPreview(parsed, text) {
 }
 
 function normalizeAnalysisOptions(options = {}) {
+  const alertContext = buildAlertAnalysisContext(options);
   return {
     level: options.level || 'summary',
     includeDns: options.includeDns !== false,
@@ -2074,6 +2137,39 @@ function normalizeAnalysisOptions(options = {}) {
     includeTls: options.includeTls !== false,
     includePorts: options.includePorts !== false,
     timeoutMs: Number(options.timeoutMs || process.env.PACKET_ANALYSIS_TIMEOUT_MS || 60000),
+    // 告警上下文：从 alert-query 的 suggestedPacketQuery.analysis 透传过来，
+    // 用于在数据包分析报告中聚焦解释告警触发指标的根因。
+    alertContext,
+  };
+}
+
+/**
+ * 从 analysis options 中提取告警触发指标上下文。
+ *
+ * 当调用方是 openclaw-napm-alert-query（通过 suggestedPacketQuery.analysis），
+ * 会传入 hasTriggerMetrics / metrics / metricLabels / values / units /
+ * condition / severity / summary / instruction 等字段。
+ * 这些字段不控制 tshark 行为，但必须在 narrationInput 中透传给 AI 层，
+ * 确保 AI 生成的数据包分析报告围绕告警触发指标展开，而非泛泛描述协议分布。
+ */
+function buildAlertAnalysisContext(options = {}) {
+  if (!options.hasTriggerMetrics) {
+    return {
+      hasTriggerMetrics: false,
+      note: options.note || '该查询未携带告警触发指标上下文。',
+    };
+  }
+
+  return {
+    hasTriggerMetrics: true,
+    metrics: Array.isArray(options.metrics) ? options.metrics : [],
+    metricLabels: Array.isArray(options.metricLabels) ? options.metricLabels : [],
+    values: Array.isArray(options.values) ? options.values : [],
+    units: Array.isArray(options.units) ? options.units : [],
+    condition: options.condition || null,
+    severity: options.severity || null,
+    summary: options.summary || null,
+    instruction: options.instruction || null,
   };
 }
 
@@ -2224,13 +2320,29 @@ function loadDotEnv(filePath) {
 }
 
 /**
+ * 加载 .env 文件，按优先级依次尝试多个路径。
+ * 参照 alert-query 的 loadDotEnvCandidates 模式，
+ * 确保无论 gateway 以什么 cwd 启动都能找到 workspace 根目录的 .env。
+ */
+function loadDotEnvCandidates(filePaths = []) {
+  for (const filePath of filePaths.filter(Boolean)) {
+    loadDotEnv(filePath);
+  }
+}
+
+/**
  * Plugin 通过 require() 同进程调用的入口。
  * params 已经是 JavaScript 对象（buildPacketExecutorPayload 的产出），
  * 无需 CLI 参数解析。
  */
 async function handleSkillCall(params = {}) {
   try {
-    loadDotEnv(path.resolve(process.cwd(), '.env'));
+    loadDotEnvCandidates([
+      path.join(workspaceRoot, '.env'),
+      path.join(process.cwd(), '.env'),
+      process.env.OPENCLAW_HOME ? path.join(process.env.OPENCLAW_HOME, '.env') : null,
+      process.env.HOME ? path.join(process.env.HOME, '.openclaw', '.env') : null,
+    ]);
 
     const query = params;
     const startedAt = new Date().toISOString();

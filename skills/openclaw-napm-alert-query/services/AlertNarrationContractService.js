@@ -1,6 +1,7 @@
 'use strict';
 
 const { shouldDiscover } = require('./AlertIndirectPacketDiscoveryService');
+const { ALERT_CATEGORY_LABELS, ALERT_SEVERITY_LABELS } = require('./AlertConstants');
 
 function buildTimeRange(criteria = {}) {
   return {
@@ -151,64 +152,95 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
   lines.push('');
 
   // ── 概况 ──
-  if (summary.total != null) {
-    const bySev = summary.bySeverity || {};
-    lines.push(`告警总数：${summary.total} 条`);
-    lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  轻微 ${bySev.minor || 0} 条`);
-    lines.push('');
+  const bySev = summary.bySeverity || {};
+  const total = summary.total != null ? summary.total : events.length;
+  lines.push(`告警总数：${total} 条`);
+  lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  🟢 轻微 ${bySev.minor || 0} 条`);
+  lines.push('');
 
-    // ── 按类别 ──
-    const byCatDetail = summary.byCategoryDetail || [];
-    const displayDetail = byCatDetail.length > 0
-      ? byCatDetail
-      : buildCategoryDetailFromEvents(events);
-    const cats = displayDetail.filter((d) => Number(d.total || 0) > 0);
-    if (cats.length > 0) {
-      const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦'];
-      for (let i = 0; i < cats.length; i++) {
-        const d = cats[i];
-        const sev = d.bySeverity || {};
-        const sevParts = [];
-        if (sev.critical > 0) sevParts.push(`🔴 ${sev.critical}`);
-        if (sev.major > 0) sevParts.push(`🟠 ${sev.major}`);
-        if (sev.minor > 0) sevParts.push(`${sev.minor}`);
-        lines.push(`${symbols[i] || (i + 1 + '.')} ${d.categoryLabel || d.category || '未知'} — ${d.total} 条（${sevParts.join('/')}）`);
-        // 主要对象
-        const overview = (d.overviewEvents || []).slice(0, 3);
-        const groups = [...new Set(overview.map((e) => e.group).filter(Boolean))];
-        if (groups.length > 0) lines.push(`   主要对象：${groups.join('、')}`);
-        // 告警概览
-        for (const e of overview) {
-          const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '';
-          lines.push(`   ${sevLabel} ${e.name || '告警'} — ${e.group || '?'}（${e.severityLabel || ''}，持续 ${formatDuration(e)}）`);
-        }
-        lines.push('');
-      }
-    }
+  // ── 按类别 + name+severity 分组 ──
+  const categoryOrder = ['networkAlerts', 'networkIssueAlerts', 'appAlerts', 'busAlerts', 'userAlerts', 'securityAlerts', 'AIAlerts'];
+  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦'];
+
+  // 按类别归类事件
+  const eventsByCategory = new Map();
+  for (const e of events) {
+    const cat = e.category || 'unknown';
+    if (!eventsByCategory.has(cat)) eventsByCategory.set(cat, []);
+    eventsByCategory.get(cat).push(e);
   }
 
-  // ── Top 对象 + 事件表（仅非 summary 模式显示）──
-  if (result.mode !== 'summary') {
-    const topObjects = summary.topObjects || [];
-    if (topObjects.length > 0) {
-      lines.push('告警最多的对象：');
-      for (const obj of topObjects.slice(0, 8)) {
-        const sevEmoji = obj.maxSeverity === 4 ? '🔴' : obj.maxSeverity === 3 ? '🟠' : '';
-        lines.push(`  ${sevEmoji} ${obj.group} — ${obj.count} 条`);
-      }
-      lines.push('');
+  for (let i = 0; i < categoryOrder.length; i++) {
+    const catKey = categoryOrder[i];
+    const catLabel = ALERT_CATEGORY_LABELS[catKey] || catKey;
+    const catEvents = eventsByCategory.get(catKey) || [];
+    const catTotal = catEvents.length;
+
+    // 统计本类别各级别数量
+    let catCritical = 0, catMajor = 0, catMinor = 0;
+    for (const e of catEvents) {
+      if (e.severity === 4) catCritical++;
+      else if (e.severity === 3) catMajor++;
+      else catMinor++;
     }
 
-    // ── 事件表 ──
-    if (events.length > 0) {
-      const displayEvents = events.slice(0, 5);
-      lines.push(`前 ${displayEvents.length} 条告警：`);
-      for (const e of displayEvents) {
-        const sevLabel = e.severity === 4 ? '🔴' : e.severity === 3 ? '🟠' : '⚪';
-        lines.push(`  ${sevLabel} ${e.severityLabel || ''} | ${e.categoryLabel || e.category || '-'} | ${e.group || '-'} | ${e.name || '-'}`);
-      }
+    if (catTotal === 0) {
+      // 空类别：显式标注
+      lines.push(`${symbols[i]} ${catLabel} — 0 条（🔴 0 / 🟠 0 / 🟢 0）`);
+      lines.push('   无告警记录');
+    } else {
+      lines.push(`${symbols[i]} ${catLabel} — ${catTotal} 条（🔴 ${catCritical} / 🟠 ${catMajor} / 🟢 ${catMinor}）`);
       lines.push('');
+
+      // 按 name + severity 分组聚合
+      const groupMap = new Map();
+      for (const e of catEvents) {
+        const key = `${e.name || '未知告警'}||${e.severity || 0}`;
+        if (!groupMap.has(key)) {
+          groupMap.set(key, {
+            name: e.name || '未知告警',
+            severity: e.severity || 0,
+            severityLabel: e.severityLabel || '',
+            groups: new Map(),
+            count: 0,
+            totalPeriod: 0,
+            firstStart: e.start,
+          });
+        }
+        const g = groupMap.get(key);
+        g.count++;
+        if (e.period > 0) g.totalPeriod += e.period;
+        if (e.start && (!g.firstStart || e.start < g.firstStart)) g.firstStart = e.start;
+        // 按 group 聚合对象名
+        const objKey = e.group || '?';
+        g.groups.set(objKey, (g.groups.get(objKey) || 0) + 1);
+      }
+
+      // 按严重级别降序排列分组
+      const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
+      for (let j = 0; j < sortedGroups.length; j++) {
+        const g = sortedGroups[j];
+        const sevEmoji = g.severity === 4 ? '🔴' : g.severity === 3 ? '🟠' : '🟢';
+        const sevLabel = g.severityLabel || (g.severity === 4 ? '紧急' : g.severity === 3 ? '重大' : '轻微');
+        const topObjects = [...g.groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+        const objText = topObjects.join('、');
+        const durationText = g.totalPeriod > 0
+          ? (g.totalPeriod < 60 ? `${Math.round(g.totalPeriod * 60)}秒` : `${g.totalPeriod}分钟`)
+          : '?';
+        const startText = g.firstStart ? formatTimestamp(g.firstStart) : '?';
+
+        lines.push(`# ${g.name}触发（${sevEmoji} ${sevLabel}）`);
+        lines.push('');
+        lines.push(`对象 **${objText}** 触发了 **${g.count}** 次告警，持续时长为 **${durationText}**，开始时间为 **${startText}**。`);
+        lines.push('');
+
+        if (j < sortedGroups.length - 1) {
+          lines.push('---');
+          lines.push('');
+        }
+      }
     }
+    lines.push('');
   }
 
   // ── packet 信息（仅 detail 模式显示）──

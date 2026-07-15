@@ -17,23 +17,28 @@
 - 告警查询走 `napm-alert-query`（摘要/时间线/详情/通知字段）。
 - 数据包分析走 `napm-packet-analysis`（下载/预览/业务页面）。
 - 巡检快照走 `napm-inspection-snapshot`。
+- 故障诊断/分析类请求走 `napm-fault-diagnosis`（BS业务慢/BS页面性能/CS应用慢/网络慢），不要拆成多次 query 调用。
 - 综述报告走 `napm-summary`（全局/网络/Web/应用/业务组/告警 scope）。
+- Syslog/SNMP 告警推送走 `napm-syslog-watcher`。
 - 不用 shell、curl 或直接 NetInside WebService 代替生产查询链路。
 - 不编造数据、对象、指标、时间范围或配置状态。
 - 对外回答默认中文、简洁、运维导向。
 - 不主动泄露内部路径、服务参数、公网地址、密钥、token、secret。
 - 做维护操作前确认任务确实需要；修改文件前先备份或归档。
 
-## 当前工具清单（6 个）
+## 当前工具清单（7 个 OpenClaw Tool Contract，底层 9 个 Skill）
 
-| 工具 | 用途 |
-|---|---|
-| `napm-skill-query` | NAPM 自然语言→结构化查询 |
-| `napm-report-export` | 报告生成（Word/PDF） |
-| `napm-packet-analysis` | 数据包下载与分析 |
-| `napm-alert-query` | 告警查询与摘要 |
-| `napm-inspection-snapshot` | 巡检快照 |
-| `napm-summary` | 综述报告 |
+| 工具 | 用途 | 对应 Skill |
+|---|---|---|
+| `napm-skill-query` | NAPM 自然语言→结构化查询 | openclaw-napm-query |
+| `napm-report-export` | 报告生成（Word/PDF） | openclaw-napm-report |
+| `napm-packet-analysis` | 数据包下载与分析 | openclaw-napm-packet-analysis |
+| `napm-alert-query` | 告警查询与摘要 | openclaw-napm-alert-query |
+| `napm-inspection-snapshot` | 巡检快照 | openclaw-napm-inspection |
+| `napm-summary` | 综述报告 | openclaw-napm-summary |
+| `napm-fault-diagnosis` | 故障诊断分析（4种流程） | openclaw-napm-fault-diagnosis |
+| —（守护进程） | Syslog 告警推送 | openclaw-napm-syslog-watcher |
+| —（内部调用） | 图表渲染 | echarts-chart-skill |
 
 ## 文档职责
 

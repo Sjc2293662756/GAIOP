@@ -1,64 +1,6 @@
 {
   "schema": "openclaw_napm_summary_narrative_rules.v1",
   "groups": {
-    "overview.health": [
-      {
-        "when": "summary.overallStatus == critical",
-        "scopes": ["global"],
-        "text": "⚠ 系统存在紧急告警，需立即处理。当前共有 {{summary.alertSummary.critical}} 条紧急告警和 {{summary.alertSummary.major}} 条重大告警，建议优先排查告警对象。"
-      },
-      {
-        "when": "summary.overallStatus == critical",
-        "scopes": ["webApplication", "application", "businessGroup", "network"],
-        "text": "⚠ {{scope.target.groupLabel}} 存在紧急告警，需立即处理。当前共有 {{summary.alertSummary.critical}} 条紧急告警和 {{summary.alertSummary.major}} 条重大告警。"
-      },
-      {
-        "when": "summary.overallStatus == warning",
-        "scopes": ["global"],
-        "text": "⚠ 系统存在需关注的事项。当前共有 {{summary.alertSummary.total}} 条告警（紧急 {{summary.alertSummary.critical}} 条、重大 {{summary.alertSummary.major}} 条），详见第2章告警态势。"
-      },
-      {
-        "when": "summary.overallStatus == warning",
-        "scopes": ["webApplication", "application", "businessGroup", "network"],
-        "text": "⚠ {{scope.target.groupLabel}} 存在需关注的事项。当前共有 {{summary.alertSummary.total}} 条告警（紧急 {{summary.alertSummary.critical}} 条、重大 {{summary.alertSummary.major}} 条），详见第2章告警态势。"
-      },
-      {
-        "when": "summary.overallStatus == ok",
-        "text": "✅ 运行正常，各项指标均在健康范围内，未发现异常告警或性能劣化。"
-      },
-      {
-        "when": "default",
-        "text": "本期综述已完成，各维度详情请参阅以下章节。"
-      }
-    ],
-    "alert.conclusion": [
-      {
-        "when": "summary.alertSummary.critical > 0",
-        "scopes": ["global"],
-        "text": "本期存在 {{summary.alertSummary.critical}} 条紧急告警，涉及对象包括 {{summary.alertSummary.topObjects.0.group}} 等，需立即安排排查处理。"
-      },
-      {
-        "when": "summary.alertSummary.critical > 0",
-        "scopes": ["webApplication", "application", "businessGroup", "network"],
-        "text": "本期 {{scope.target.groupLabel}} 存在 {{summary.alertSummary.critical}} 条紧急告警，需立即安排排查处理。"
-      },
-      {
-        "when": "summary.alertSummary.total > 10",
-        "text": "本期告警总量 {{summary.alertSummary.total}} 条，数量偏高，建议检查是否存在集中爆发或基线漂移。"
-      },
-      {
-        "when": "summary.alertSummary.total > 0",
-        "text": "本期告警集中在 {{summary.alertSummary.byCategory.0.categoryLabel}} 类别，整体可控，建议按优先级逐条确认。"
-      },
-      {
-        "when": "summary.alertSummary.total == 0",
-        "text": "本期未产生任何告警，告警态势平稳。"
-      },
-      {
-        "when": "default",
-        "text": "本期告警态势详见上方图表和表格数据。"
-      }
-    ],
     "traffic.conclusion": [
       {
         "when": "summary.trafficSummary.trend.stats.missingPointCount > 0",
@@ -120,7 +62,7 @@
       {
         "when": "summary.overallStatus == critical",
         "scopes": ["global"],
-        "text": "综合评定：系统存在紧急级别问题，建议立即组织排查。重点关注告警态势中的紧急告警项，按优先级依次处理。"
+        "text": "综合评定：系统存在紧急级别问题，建议立即组织排查。请重点关注紧急告警项，按优先级依次处理。"
       },
       {
         "when": "summary.overallStatus == critical",

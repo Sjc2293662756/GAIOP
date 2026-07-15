@@ -11,7 +11,7 @@
 
 ## NAPM 工具边界
 
-当前 6 个 OpenClaw 工具，各有严格边界：
+当前 7 个 OpenClaw 工具（底层 9 个 Skill），各有严格边界：
 
 | 工具名 | 用途 | 边界 |
 |---|---|---|
@@ -21,6 +21,11 @@
 | `napm-alert-query` | 告警查询 | 告警摘要/时间线/详情/通知字段说明 |
 | `napm-inspection-snapshot` | 巡检快照 | 流量健康/业务性能一键巡检 |
 | `napm-summary` | 综述报告 | 全局/网络/Web/应用/业务组/告警 6 种 scope 综述 |
+| `napm-fault-diagnosis` | 故障诊断分析 | BS业务慢/BS页面性能/CS应用慢/网络慢 4种流程，自动检测 flowType |
+
+另有 2 个 Skill 不暴露为独立工具：
+- `openclaw-napm-syslog-watcher`：Syslog 告警守护进程，独立部署
+- `echarts-chart-skill`：图表渲染，由 report skill 内部调用
 
 - 自然语言理解、对象识别、指标识别和 `resolvedQuery` 构造由 OpenClaw 上游负责。
 - NAPM skill 只执行结构化查询并返回结构化结果、摘要和叙述输入。
@@ -45,6 +50,9 @@
 | alert | `skills/openclaw-napm-alert-query/scripts/run_alert_query.js` |
 | inspection | `skills/openclaw-napm-inspection/scripts/run_inspection_snapshot.js` |
 | summary | `skills/openclaw-napm-summary/scripts/run_summary.js` |
+| fault-diagnosis | `skills/openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js` |
+| syslog-watcher | `skills/openclaw-napm-syslog-watcher/scripts/run_syslog_watcher.js`（守护进程） |
+| echarts | `skills/echarts-chart-skill/`（CLI: recommend-chart / generate-chart / render-chart） |
 
 ## 服务维护命令
 
@@ -74,7 +82,7 @@ pscp -pw <pw> "<local-file>" "netinside@101.254.114.237:/home/netinside/.opencla
 ## 报告模板
 
 - 巡检：`skills/openclaw-napm-report/templates/inspection/`
-- 故障诊断：`skills/openclaw-napm-report/templates/diagnostic/`
+- 故障诊断：`skills/openclaw-napm-report/templates/diagnostic/`（含 `napm_bs_fault_diagnosis_v2.json` / `napm_bs_page_perf_v1.json` / `napm_cs_fault_diagnosis_v1.json` 及对应叙述规则）
 - 综述：`skills/openclaw-napm-report/templates/summary/`
 
 每个模板目录含：`napm_*_v1.json`（主模板）、`chart-specs.v1.json`（图表规格）、`narrative-rules.v1.json`（叙述规则）。
@@ -87,6 +95,7 @@ pscp -pw <pw> "<local-file>" "netinside@101.254.114.237:/home/netinside/.opencla
 - 排障类回答优先给下一步可执行检查，而不是泛泛解释。
 - 追问"详细点""继续看"时，保持上一轮上下文。
 - 报告类请求识别关键词：综述报告、日报、周报、巡检报告、故障诊断报告。
+- 故障诊断类请求识别关键词：报错分析、故障分析、页面慢、应用慢、网络慢、HTTP错误、页面性能、性能分析——走 `napm-fault-diagnosis`，不要拆成多次 query。
 
 ## 文档维护
 

@@ -111,118 +111,7 @@
         "启动时长"
       ]
     },
-    {
-      "id": "health_heading",
-      "type": "heading",
-      "title": "综合健康评估",
-      "level": 2
-    },
-    {
-      "id": "health_table",
-      "type": "table",
-      "rowBuilder": "healthSummary",
-      "columns": [
-        "评估维度",
-        "状态",
-        "说明"
-      ]
-    },
-    {
-      "id": "health_narrative",
-      "type": "narrative",
-      "ruleGroup": "overview.health",
-      "mode": "first"
-    },
 
-    {
-      "id": "alert_heading",
-      "type": "heading",
-      "title": "2 告警态势",
-      "level": 1
-    },
-    {
-      "id": "alert_requirement",
-      "type": "paragraphs",
-      "paragraphs": [
-        "以下数据来源于 NetInside 基于AI的全流量性能分析平台的告警模块，统计周期内产生的所有告警记录。告警类别包括：网络性能告警、网络异常告警、应用性能告警、业务故障告警、用户体验告警、安全事件告警、智能分析告警。"
-      ]
-    },
-    {
-      "id": "alert_stats_heading",
-      "type": "heading",
-      "title": "告警概览",
-      "level": 2
-    },
-    {
-      "id": "alert_stats_table",
-      "type": "table",
-      "rowBuilder": "alertCategoryStats",
-      "columns": [
-        "告警类别",
-        "总数",
-        "紧急",
-        "重大",
-        "轻微"
-      ]
-    },
-    {
-      "id": "alert_trend_heading",
-      "type": "heading",
-      "title": "告警趋势",
-      "level": 2
-    },
-    {
-      "id": "alert_trend_chart",
-      "type": "chartSlot",
-      "title": "告警趋势图",
-      "chartId": "alert.timeline"
-    },
-    {
-      "id": "alert_top_objects_heading",
-      "type": "heading",
-      "title": "Top 告警对象",
-      "level": 2,
-      "scopes": ["global"]
-    },
-    {
-      "id": "alert_top_objects_table",
-      "type": "table",
-      "rowBuilder": "alertTopObjects",
-      "scopes": ["global"],
-      "columns": [
-        "对象名称",
-        "对象类型",
-        "告警总数",
-        "紧急",
-        "重大",
-        "轻微"
-      ]
-    },
-    {
-      "id": "alert_unresolved_heading",
-      "type": "heading",
-      "title": "未恢复告警",
-      "level": 2
-    },
-    {
-      "id": "alert_unresolved_table",
-      "type": "table",
-      "rowBuilder": "unresolvedAlerts",
-      "columns": [
-        "告警ID",
-        "告警名称",
-        "级别",
-        "类别",
-        "对象",
-        "开始时间"
-      ]
-    },
-    {
-      "id": "alert_narrative",
-      "type": "narrative",
-      "ruleGroup": "alert.conclusion",
-      "mode": "first"
-    },
 
     {
       "id": "webapp_target_access_heading",
@@ -610,7 +499,8 @@
       "type": "heading",
       "title": "流量对象排行",
       "level": 2,
-      "scopes": ["global", "network", "application", "businessGroup"]
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"]
     },
     {
       "id": "traffic_top_ip_table",
@@ -631,6 +521,7 @@
       "type": "table",
       "rowBuilder": "trafficTopApps",
       "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"],
       "caption": "Top 10 流量应用",
       "columns": [
         "序号",
@@ -665,13 +556,15 @@
       "type": "heading",
       "title": "连接数排行",
       "level": 2,
-      "scopes": ["application"]
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
     },
     {
       "id": "app_connections_table",
       "type": "table",
       "rowBuilder": "appConnections",
       "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
       "caption": "Top 10 连接数",
       "columns": [
         "序号",
@@ -685,13 +578,15 @@
       "type": "heading",
       "title": "连接失败排行",
       "level": 2,
-      "scopes": ["application"]
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
     },
     {
       "id": "app_failures_table",
       "type": "table",
       "rowBuilder": "appFailures",
       "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
       "caption": "Top 10 连接失败",
       "columns": [
         "序号",
@@ -705,13 +600,15 @@
       "type": "heading",
       "title": "应用质量排行",
       "level": 2,
-      "scopes": ["application"]
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
     },
     {
       "id": "app_quality_table",
       "type": "table",
       "rowBuilder": "appQuality",
       "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
       "caption": "Top 10 丢包与延迟",
       "columns": [
         "序号",
