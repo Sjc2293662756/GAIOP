@@ -7,11 +7,11 @@
  */
 const DimensionMappingService = require('./DimensionMappingService');
 const MetricMappingService = require('./MetricMappingService');
-const { SUPPORTED_GRANULARITIES } = require('../../../src/constants/metricDomains');
+const { SUPPORTED_GRANULARITIES } = require('../src/constants/metricDomains');
 const {
   isBusinessObjectType,
   getOwnedMetricIdsForObjectType
-} = require('../../../src/constants/objectMetricOwnership');
+} = require('../src/constants/objectMetricOwnership');
 
 /**
  * QueryMetadataConstraintService 类

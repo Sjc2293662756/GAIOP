@@ -32,7 +32,7 @@
 - `指标使用介绍.md`：提供“模块分类 / 指标分类 / metric id / 适合场景”的主表。
 - `指标使用介绍2.md`：提供不同指标族的适用维度与方向性区分。
 - `napm顶层所对应的指标.md`：提供项目内最终采用的业务类 / 非业务类边界。
-- 项目当前实现：`src/constants/objectMetricOwnership.js`、`QueryMetadataConstraintService`、`NapmMetadataService.getMetricsForGroupPath()`。
+- 项目当前实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`QueryMetadataConstraintService`、`NapmMetadataService.getMetricsForGroupPath()`。
 
 用途：
 
@@ -45,12 +45,12 @@
 - `指标使用介绍.md`：提供指标的模块分类、指标分类、适合场景与概览模块归属。
 - `指标使用介绍2.md`：提供不同 `group` 维度下的指标归属、静态候选与 `metricsForGroup` 最终校验原则。
 - `api参数.pdf`：提供主要 `groupType` 与 metric code 的官方名称。
-- 项目当前实现：`src/constants/metricDomains.js`、`NapmMetadataService.getMetricsForGroupPath()`。
+- 项目当前实现：`skills/openclaw-napm-query/src/constants/metricDomains.js`、`NapmMetadataService.getMetricsForGroupPath()`。
 
 ### 2.5 top-level-metric-ownership.md
 主要来源：
 - `napm顶层所对应的指标.md`：提供顶层对象是业务类还是非业务类，以及每类对象对应的指标分类。
-- 项目当前实现：`src/constants/objectMetricOwnership.js`、`src/constants/metricDomains.js`、`QueryMetadataConstraintService`。
+- 项目当前实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`skills/openclaw-napm-query/src/constants/metricDomains.js`、`QueryMetadataConstraintService`。
 
 ### 2.6 service-modes.md
 主要来源：
@@ -72,7 +72,7 @@
 
 ### 2.9 chinese-semantic-metric-mapping.md
 主要来源：
-- 项目现有实现：`src/constants/objectMetricOwnership.js`、`src/constants/metricDomains.js`、`src/constants/objectDimensions.js`
+- 项目现有实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`skills/openclaw-napm-query/src/constants/metricDomains.js`、`skills/openclaw-napm-query/src/constants/objectDimensions.js`
 - 项目配置：`config/object-ontology.v1.json`、`config/metrics-config.yml`
 - 历史映射错误案例与纠正经验
 

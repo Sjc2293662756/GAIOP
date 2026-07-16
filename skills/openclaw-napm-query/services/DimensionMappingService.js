@@ -5,7 +5,7 @@
  * 这个服务本身不访问上游，只对常量表做统一封装，供语义约束和兼容性判断复用。
  */
 
-const { OBJECT_DIMENSIONS } = require('../../../src/constants/objectDimensions');
+const { OBJECT_DIMENSIONS } = require('../src/constants/objectDimensions');
 const {
   METRIC_DOMAINS,
   METRIC_META,
@@ -13,7 +13,7 @@ const {
   getDomainMeta,
   getObjectsForMetric,
   getPreferredObjectsForMetric
-} = require('../../../src/constants/metricDomains');
+} = require('../src/constants/metricDomains');
 const MetricMappingService = require('./MetricMappingService');
 
 /**

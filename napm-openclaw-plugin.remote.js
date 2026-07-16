@@ -4686,7 +4686,7 @@ const plugin = {
         // 现在对所有需要时间的 Tool 统一生效。
         if (isSafeNapmToolName(toolName) && isPlainObject(event.params)) {
           try {
-            const { applyTimeOverride } = require(path.resolve(__dirname, 'src/shared/timeResolver'));
+            const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
 
             // napm-skill-query: 覆盖 resolvedQuery.start/end
             if (toolName === 'napm-skill-query' && isPlainObject(event.params.resolvedQuery)) {

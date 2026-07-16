@@ -14,7 +14,7 @@ const NapmClient = require('./NapmClient');
 const DimensionMappingService = require('./DimensionMappingService');
 const MetadataTruthSourcePolicy = require('./MetadataTruthSourcePolicy');
 const ObjectMetadataRegistry = require('./ObjectMetadataRegistry');
-const logger = require('../../../src/utils/logger');
+const logger = require('../src/utils/logger');
 
 /**
  * NAPM 元数据服务类

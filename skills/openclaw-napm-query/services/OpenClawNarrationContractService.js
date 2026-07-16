@@ -8,7 +8,7 @@
 const {
   isBusinessObjectType,
   getMetricCategoriesForObjectType
-} = require('../../../src/constants/objectMetricOwnership');
+} = require('../src/constants/objectMetricOwnership');
 const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 const { buildReportData } = require('./ReportDataContractService');

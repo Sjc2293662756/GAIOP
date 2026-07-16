@@ -8,12 +8,12 @@ const DimensionMappingService = require('../skills/openclaw-napm-query/services/
 const {
   getDefaultMetricCandidatesForObjectType,
   rankMetricIdsForObjectType
-} = require('../src/constants/objectMetricOwnership');
+} = require('../skills/openclaw-napm-query/src/constants/objectMetricOwnership');
 const {
   getDomainMeta,
   getObjectsForDomain,
   isMetricCompatibleWithObjectType
-} = require('../src/constants/metricDomains');
+} = require('../skills/openclaw-napm-query/src/constants/metricDomains');
 
 describe('business metric ownership guardrails', () => {
   test('should filter WebApplication metric inventory to PG and optimization metrics', () => {

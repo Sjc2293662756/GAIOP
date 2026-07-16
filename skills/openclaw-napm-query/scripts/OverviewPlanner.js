@@ -10,7 +10,7 @@ const { getOverviewSceneProfile } = require('./OverviewCandidateRegistry');
 const {
   normalizeSemanticMetricDomainToken,
   getSemanticMetricDomainAliases
-} = require('../../../src/constants/metricDomains');
+} = require('../src/constants/metricDomains');
 
 // 规划期打分与过滤策略，统一定义 root/child 评分权重及元数据问题处理规则。
 const DEFAULT_OVERVIEW_PLANNING_POLICY = {

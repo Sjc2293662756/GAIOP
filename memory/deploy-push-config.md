@@ -35,7 +35,7 @@ cd "<project>" && pscp -pw netinside_123 "<local-relative-path>" "netinside@101.
 # Plugin + manifest + timeResolver → extensions 目录 (Gateway 实际加载位置)
 cd "<project>" && pscp -pw netinside_123 "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
 cd "<project>" && pscp -pw netinside_123 "openclaw.plugin.json" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-cd "<project>" && pscp -pw netinside_123 "src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/src/shared/"
+cd "<project>" && pscp -pw netinside_123 "skills/openclaw-napm-query/src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/skills/openclaw-napm-query/src/shared/"
 ```
 
 目标路径末尾必须带 `/` 表示目录，否则多文件推送会报 `not a directory` 错误。

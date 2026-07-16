@@ -4,8 +4,8 @@
  * 负责在运行时构建 NAPM 所需的 group 参数结构。
  * 同时提供对象类型别名解析、合法性校验等基础能力，供查询执行链路复用。
  */
-const logger = require('../../../src/utils/logger');
-const { OBJECT_DIMENSIONS } = require('../../../src/constants/objectDimensions');
+const logger = require('../src/utils/logger');
+const { OBJECT_DIMENSIONS } = require('../src/constants/objectDimensions');
 class GroupBuilder {
   // 预构建“自然语言别名 -> 标准 groupType”的映射表，减少运行时重复扫描。
   constructor() {

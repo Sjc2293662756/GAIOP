@@ -1,5 +1,5 @@
-const logger = require('../../../src/utils/logger');
-const { logAudit, buildSafeUrl, maskSensitiveParams } = require('../../../src/utils/auditLogger');
+const logger = require('../src/utils/logger');
+const { logAudit, buildSafeUrl, maskSensitiveParams } = require('../src/utils/auditLogger');
 
 class MetadataExecutionKernel {
   constructor(context = {}) {

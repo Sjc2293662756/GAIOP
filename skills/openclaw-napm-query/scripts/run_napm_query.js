@@ -33,8 +33,8 @@ const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-
 const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
-const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
-const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
+const TimeUtils = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/src/utils/TimeUtils'));
+const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/src/utils/auditLogger'));
 // validateTimeRangeFreshness / autoCorrectTimestampIfStale removed 2026-07-07:
 // time override now handled by before_tool_call Hook + src/shared/timeResolver.js
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());

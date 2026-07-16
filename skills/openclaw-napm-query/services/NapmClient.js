@@ -6,8 +6,8 @@
  */
 const axios = require('axios');
 const https = require('https');
-const logger = require('../../../src/utils/logger');
-const { maskSensitiveParams, buildSafeUrl, buildOrderedParams } = require('../../../src/utils/auditLogger');
+const logger = require('../src/utils/logger');
+const { maskSensitiveParams, buildSafeUrl, buildOrderedParams } = require('../src/utils/auditLogger');
 class NapmClient {
   // 初始化 axios 客户端，并按环境变量决定是否关闭 TLS 证书校验。
   constructor() {

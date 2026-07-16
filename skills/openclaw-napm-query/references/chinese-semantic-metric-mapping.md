@@ -182,9 +182,9 @@ NAPM 指标有严格的方向区分，不可混用：
 
 本文件中的指标编码和对象分类与以下项目文件保持一致：
 
-- `src/constants/objectMetricOwnership.js`：业务/非业务对象分类、指标归属、默认优先级
-- `src/constants/metricDomains.js`：指标域定义、`normalizeSemanticMetricDomainToken()`
-- `src/constants/objectDimensions.js`：对象维度定义与中文别名
+- `skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`：业务/非业务对象分类、指标归属、默认优先级
+- `skills/openclaw-napm-query/src/constants/metricDomains.js`：指标域定义、`normalizeSemanticMetricDomainToken()`
+- `skills/openclaw-napm-query/src/constants/objectDimensions.js`：对象维度定义与中文别名
 - `config/object-ontology.v1.json`：对象类型定义、中文别名、库存来源
 - `config/metrics-config.yml`：指标定义与合法编码列表
 

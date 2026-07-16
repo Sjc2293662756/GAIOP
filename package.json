@@ -5,7 +5,7 @@
   "scripts": {
     "query": "node skills/openclaw-napm-query/scripts/run_napm_query.js",
     "test": "jest",
-    "lint": "eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query/services/**/*.js src/constants/**/*.js src/utils/**/*.js"
+    "lint": "eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query/services/**/*.js skills/openclaw-napm-query/src/**/*.js"
   },
   "keywords": [
     "network",

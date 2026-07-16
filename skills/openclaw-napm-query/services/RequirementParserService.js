@@ -29,19 +29,19 @@ const MetricExecutionKernel = require('./MetricExecutionKernel');
 const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
-const CsvParser = require('../../../src/utils/CsvParser');
-const TimeUtils = require('../../../src/utils/TimeUtils');
-const logger = require('../../../src/utils/logger');
-const { logAudit, buildSafeUrl, maskSensitiveParams, buildOrderedParams } = require('../../../src/utils/auditLogger');
+const CsvParser = require('../src/utils/CsvParser');
+const TimeUtils = require('../src/utils/TimeUtils');
+const logger = require('../src/utils/logger');
+const { logAudit, buildSafeUrl, maskSensitiveParams, buildOrderedParams } = require('../src/utils/auditLogger');
 const {
   filterMetricsForObjectType,
   rankMetricIdsForObjectType,
   resolveMetricOwnershipObjectType,
   isMetricCompatibleWithGroupPath
-} = require('../../../src/constants/objectMetricOwnership');
+} = require('../src/constants/objectMetricOwnership');
 const {
   normalizeSemanticMetricDomainToken
-} = require('../../../src/constants/metricDomains');
+} = require('../src/constants/metricDomains');
 
 /**
  * RequirementParserService 类
@@ -96,7 +96,7 @@ class RequirementParserService {
     const error = new Error(`Dependency contract mismatch: objectMetricOwnership missing functions: ${missing.join(', ')}`);
     error.code = 'DEPENDENCY_CONTRACT_MISMATCH';
     error.details = {
-      module: 'src/constants/objectMetricOwnership',
+      module: 'skills/openclaw-napm-query/src/constants/objectMetricOwnership',
       missing
     };
     throw error;
