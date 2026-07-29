@@ -136,7 +136,9 @@ const SummaryReportDataService = require('../skills/openclaw-napm-summary/servic
 const { normalizeReportInput } = require('../skills/openclaw-napm-report/services/ReportInputContractService');
 const SummaryFixedTemplateService = require('../skills/openclaw-napm-report/services/SummaryFixedTemplateService');
 const ReportStorageService = require('../skills/openclaw-napm-report/services/ReportStorageService');
+const { resolveExecutionTime } = require('../skills/openclaw-napm-query/src/shared/timeResolver');
 const outputDir = path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'output');
+const TEST_EXECUTION_TIME_RANGE = resolveExecutionTime({ start: 1780882620, end: 1780969020 });
 
 function makeService() {
   return new SummaryService({ client: new MockSummaryClient() });
@@ -195,6 +197,7 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const service = makeService();
       result = await service.run({
         scope: { type: 'global', label: '全局' },
+        executionTimeRange: TEST_EXECUTION_TIME_RANGE,
         timeRange: { start: 1780882620, end: 1780969020, displayText: '2026-06-17 00:00 ~ 2026-06-18 00:00' }
       });
     });
@@ -299,6 +302,7 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const service = makeService();
       const result = await service.run({
         scope: { type: 'global', label: '全局' },
+        executionTimeRange: TEST_EXECUTION_TIME_RANGE,
         timeRange: { start: 1780882620, end: 1780969020, displayText: '2026-06-17 00:00 ~ 2026-06-18 00:00' }
       });
       const rds = new SummaryReportDataService();
@@ -331,6 +335,7 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const service = makeService();
       const result = await service.run({
         scope: { type: 'global', label: '全局' },
+        executionTimeRange: TEST_EXECUTION_TIME_RANGE,
         timeRange: { start: 1780882620, end: 1780969020, displayText: '2026-06-17 00:00 ~ 2026-06-18 00:00' }
       });
       const rds = new SummaryReportDataService();
@@ -359,6 +364,7 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const service = makeService();
       const result = await service.run({
         scope: { type: 'global', label: '全局' },
+        executionTimeRange: TEST_EXECUTION_TIME_RANGE,
         timeRange: { start: 1780882620, end: 1780969020, displayText: '2026-06-17 00:00 ~ 2026-06-18 00:00' }
       });
       const rds = new SummaryReportDataService();
@@ -388,6 +394,7 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       const service = makeService();
       const result = await service.run({
         scope: { type: 'webApplication', label: '业务', target: { groupType: 'WebApplication', groupArgument: '239web', groupLabel: '239web' } },
+        executionTimeRange: TEST_EXECUTION_TIME_RANGE,
         timeRange: { start: 1780882620, end: 1780969020, displayText: '2026-06-17 00:00 ~ 2026-06-18 00:00' }
       });
       const rds = new SummaryReportDataService();
@@ -438,26 +445,38 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
   describe('Phase H: Section Scope Filtering', () => {
     const { scopeMatches } = require('../skills/openclaw-napm-report/services/SummaryFixedTemplateService').__test__;
 
-    test('global sections include trafficTopObjects', () => {
+    test('global sections include the alert chapter and traffic rankings', () => {
       const template = new SummaryFixedTemplateService().loadTemplate();
       const globalSections = template.sections.filter(s => scopeMatches(s.scopes, 'global'));
       const ids = globalSections.map(s => s.id);
+      expect(ids).toContain('alert_heading');
+      expect(ids).toContain('alert_stats_table');
+      expect(ids).toContain('alert_trend_chart');
       expect(ids).toContain('traffic_top_ip_table');
       expect(ids).toContain('alert_top_objects_table');
+      expect(ids).toContain('alert_unresolved_table');
+      expect(ids).toContain('alert_narrative');
     });
 
-    test('webApplication sections exclude trafficTopObjects', () => {
+    test('webApplication sections exclude the alert chapter and trafficTopObjects', () => {
       const template = new SummaryFixedTemplateService().loadTemplate();
       const waSections = template.sections.filter(s => scopeMatches(s.scopes, 'webApplication'));
       const ids = waSections.map(s => s.id);
+      expect(ids).not.toContain('alert_heading');
       expect(ids).not.toContain('traffic_top_ip_table');
       expect(ids).not.toContain('alert_top_objects_table');
     });
 
-    test('alert sections exclude traffic + business chapters', () => {
+    test('alert sections include the alert chapter and exclude traffic + business chapters', () => {
       const template = new SummaryFixedTemplateService().loadTemplate();
       const alertSections = template.sections.filter(s => scopeMatches(s.scopes, 'alert'));
       const ids = alertSections.map(s => s.id);
+      expect(ids).toContain('alert_heading');
+      expect(ids).toContain('alert_stats_table');
+      expect(ids).toContain('alert_trend_chart');
+      expect(ids).toContain('alert_top_objects_table');
+      expect(ids).toContain('alert_unresolved_table');
+      expect(ids).toContain('alert_narrative');
       expect(ids).not.toContain('traffic_heading');
       expect(ids).not.toContain('business_heading');
     });

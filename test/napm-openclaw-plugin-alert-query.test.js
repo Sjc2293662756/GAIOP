@@ -367,7 +367,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
           start: 1781680980
         }
       ]
-    }, '');
+    }, plugin.__test__.getConversationKey(ctx));
 
     const result = await messageSending({
       content: '最近一小时告警主要集中在应用性能下降，建议进一步排查。'
@@ -440,7 +440,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
         ]
       },
       events: []
-    }, '');
+    }, plugin.__test__.getConversationKey(ctx));
 
     const result = await messageSending({
       content: [
@@ -521,7 +521,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
         ]
       },
       events: []
-    }, '');
+    }, plugin.__test__.getConversationKey(ctx));
 
     const result = await messageSending({
       content: [

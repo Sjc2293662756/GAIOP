@@ -1,15 +1,16 @@
 const ReportStorageService = require('./ReportStorageService');
 const ReportTemplateService = require('./ReportTemplateService');
 const PdfExportService = require('./PdfExportService');
+const {
+  findRegistration,
+  GENERIC_SECTION_TYPES,
+  listSupportedRegistrations,
+  normalizeRegistration
+} = require('./ReportTemplateRegistry');
 
-const SUPPORTED_REPORT_TYPES = new Set([
-  'quick_report',
-  'diagnostic_report',
-  'comparative_report',
-  'operation_report',
-  'inspection_report',
-  'summary_report'
-]);
+const SUPPORTED_REPORT_TYPES = new Set(
+  listSupportedRegistrations().map((registration) => registration.reportType)
+);
 
 const SUPPORTED_FORMATS = new Set(['docx']);
 
@@ -40,14 +41,25 @@ class ReportGenerationService {
       throw makeError('REPORT_DATA_INVALID', '报告生成失败：输入必须是对象。');
     }
 
-    const reportType = String(report.reportType || '').trim();
+    const registeredReport = normalizeRegistration(report);
+    const registration = findRegistration(registeredReport);
+    if (!registration) {
+      throw makeError('REPORT_TEMPLATE_NOT_FOUND', 'Report type and template are not registered.', {
+        schema: registeredReport.schema,
+        reportType: registeredReport.reportType,
+        templateId: registeredReport.templateId || null,
+        supportedRegistrations: listSupportedRegistrations()
+      });
+    }
+
+    const reportType = registeredReport.reportType;
     if (!reportType || !SUPPORTED_REPORT_TYPES.has(reportType)) {
       throw makeError('REPORT_DATA_INVALID', '报告生成失败：reportType 缺失或不受支持。', {
         supportedReportTypes: Array.from(SUPPORTED_REPORT_TYPES)
       });
     }
 
-    const format = normalizeFormat(report.format);
+    const format = normalizeFormat(registeredReport.format);
     if (!format) {
       throw makeError('REPORT_DATA_INVALID', '报告生成失败：format 缺失。');
     }
@@ -64,13 +76,18 @@ class ReportGenerationService {
 
     // Fixed-template reports (inspection, summary) define sections in the template JSON,
     // not in the reportData. Skip the sections array check for these types.
-    const usesFixedTemplate = reportType === 'inspection_report' || reportType === 'summary_report' || reportType === 'diagnostic_report';
+    const usesFixedTemplate = registration.sectionPolicy === 'fixed';
     if (!usesFixedTemplate && (!Array.isArray(report.sections) || report.sections.length === 0)) {
       throw makeError('REPORT_DATA_INVALID', '报告生成失败：缺少 sections 或查询结果为空。');
     }
 
     if (!usesFixedTemplate) {
       for (const [index, section] of (report.sections || []).entries()) {
+        if (section && typeof section === 'object' && !Array.isArray(section) && section.type && !GENERIC_SECTION_TYPES.has(section.type)) {
+          throw makeError('REPORT_DATA_INVALID', `Unsupported generic report section type: ${section.type}.`, {
+            supportedSectionTypes: Array.from(GENERIC_SECTION_TYPES)
+          });
+        }
         if (!section || typeof section !== 'object' || Array.isArray(section)) {
           throw makeError('REPORT_DATA_INVALID', `报告生成失败：sections[${index}] 必须是对象。`);
         }
@@ -87,7 +104,7 @@ class ReportGenerationService {
     }
 
     return {
-      ...report,
+      ...registeredReport,
       reportType,
       format,
       title: String(report.title || 'NAPM 分析报告').trim() || 'NAPM 分析报告'

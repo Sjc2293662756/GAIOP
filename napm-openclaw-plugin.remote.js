@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const ConversationOperationState = require('./plugin/ConversationOperationState');
 
 const NAPM_DIRECT_SKILL_MODE = true;
 const OPENCLAW_SKILLS_ROOT = process.env.OPENCLAW_SKILLS_ROOT
@@ -27,12 +28,7 @@ const napmSummarySkill = () => loadSkill('openclaw-napm-summary', 'run_summary.j
 const napmFaultDiagnosisSkill = () => loadSkill('openclaw-napm-fault-diagnosis', 'run_fault_diagnosis.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
-const napmDebugApiByPrompt = new Map();
-const napmResultByPrompt = new Map();
 const napmSentMediaByConversation = new Map();
-let latestNapmDebugApi = null;
-let latestNapmResult = null;
-let latestReportExportResult = null;
 let cachedGroupPathPlannerService = null;
 let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
@@ -47,7 +43,12 @@ let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
-let pendingAlertDisplayText = null;
+const TRUSTED_TOOL_CONTEXT_MAX_AGE_MS = REPORT_EXPORT_CACHE_MAX_AGE_MS;
+const napmOperationState = new ConversationOperationState({
+  resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
+  reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS
+});
+const napmTrustedToolContextByTraceId = new Map();
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
@@ -379,8 +380,26 @@ function isFaultDiagnosisPrompt(prompt = '') {
     return false;
   }
 
+  // ── 2026-07-16: 排行/统计类查询快速排除 ──
+  // 用户问的是"排行/哪个最多/TopN/数量多少"而不是"分析诊断某个具体业务"。
+  // 特征：疑问词 + 排序词，但没有指定具体对象名 + 分析/诊断/排查意图。
+  // 这类查询应走 napm-skill-query，不应被 isFaultDiagnosisPrompt 拦截。
+  var hasRankingPattern = /(?:哪个|哪些|谁|什么|几个).*(?:最多|最高|最少|最低|最大|最小|排行|排名|Top\s*N|前\d+)/i.test(text);
+  var hasDiagnosisIntent = /(?:分析一下|分析这个|诊断一下|排查一下|出.*报告|给.*报告|故障报告|根因|原因分析)/i.test(text);
+
+  if (hasRankingPattern && !hasDiagnosisIntent) {
+    return false;  // 纯排行查询，不是 fault diagnosis
+  }
+
+  // "XX业务 的 400/500 数量/次数/多少" — 单指标查询，不是诊断
+  if (/(?:web|业务|应用).*(?:的|的的).*(?:HTTP\s*[45]\d{2}|400|500|4xx|5xx).*(?:数量|次数|个数|多少|是多少)/i.test(text)) {
+    return false;
+  }
+
   // Direct mentions of fault/diagnosis/error analysis
-  if (/(?:故障分析|故障诊断|故障报告|错误分析|报错分析|页面错误|HTTP\s*[45]\d{2}|[45]xx)/i.test(text)) {
+  // 注：[45]xx 已移除 — "4xx"/"5xx" 在排行查询中出现太频繁（如"今天哪个业务的400报错最多？"），
+  // 不应单独作为故障诊断触发条件。HTTP 状态码相关的故障诊断由下方更精确的模式匹配。
+  if (/(?:故障分析|故障诊断|故障报告|错误分析|报错分析|页面错误|HTTP\s*[45]\d{2})/i.test(text)) {
     return true;
   }
 
@@ -1961,11 +1980,58 @@ function derivePromptGuardState(activePrompt = '', conversationState = null, gua
 }
 
 function getConversationKey(ctx = {}) {
-  return [
-    ctx.channelId || '',
-    ctx.accountId || '',
-    ctx.conversationId || ''
-  ].join(':');
+  const parts = [ctx.channelId, ctx.accountId, ctx.conversationId]
+    .map((value) => String(value || '').trim());
+  return parts.every(Boolean) ? parts.join(':') : '';
+}
+
+function pruneTrustedToolContexts() {
+  const now = Date.now();
+  for (const [traceId, record] of napmTrustedToolContextByTraceId.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > TRUSTED_TOOL_CONTEXT_MAX_AGE_MS) {
+      napmTrustedToolContextByTraceId.delete(traceId);
+    }
+  }
+  while (napmTrustedToolContextByTraceId.size > 2000) {
+    napmTrustedToolContextByTraceId.delete(napmTrustedToolContextByTraceId.keys().next().value);
+  }
+}
+
+function bindTrustedToolContext(event = {}, ctx = {}) {
+  const conversationKey = getConversationKey(ctx);
+  if (!conversationKey || !isPlainObject(event?.params)) {
+    return '';
+  }
+
+  const toolName = String(event.toolName || '').trim() || 'napm-tool';
+  const toolCallId = String(event.toolCallId || event.callId || event.id || '').trim();
+  const traceId = normalizeTraceId([
+    buildNapmTraceId(ctx, {}),
+    toolName,
+    toolCallId || Date.now().toString(36)
+  ].join('-'));
+  if (!traceId) {
+    return '';
+  }
+
+  pruneTrustedToolContexts();
+  napmTrustedToolContextByTraceId.set(traceId, {
+    conversationKey,
+    toolName,
+    updatedAt: Date.now()
+  });
+  event.params.traceId = traceId;
+  return traceId;
+}
+
+function getTrustedConversationKey(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) {
+    return '';
+  }
+  pruneTrustedToolContexts();
+  const record = napmTrustedToolContextByTraceId.get(traceId) || null;
+  return String(record?.conversationKey || '').trim();
 }
 
 function getMediaUrlsFromOutgoingEvent(event = {}) {
@@ -2009,12 +2075,12 @@ function textClaimsReportGenerated(text = '') {
     || /(报告已生成|文档已生成|Word\s*文档已生成|PDF\s*已生成|已生成.*报告|已通过\s*MEDIA\s*发送|现在发送给您|通过\s*MEDIA\s*发送)/i.test(value);
 }
 
-function isAllowedReportArtifactUrl(url = '') {
-  if (!isFreshReportExportResult()) {
+function isAllowedReportArtifactUrl(url = '', conversationKey = '') {
+  const record = getFreshReportExportResult(conversationKey);
+  if (!record) {
     return false;
   }
   const value = String(url || '').trim();
-  const record = latestReportExportResult;
   return Boolean(
     value
     && (
@@ -2040,7 +2106,10 @@ function dedupeOutgoingMediaForConversation(event = {}, ctx = {}) {
     return null;
   }
 
-  const conversationKey = getConversationKey(ctx) || 'global';
+  const conversationKey = getConversationKey(ctx);
+  if (!conversationKey) {
+    return null;
+  }
   const now = Date.now();
   const existing = napmSentMediaByConversation.get(conversationKey) || new Map();
   for (const [url, updatedAt] of existing.entries()) {
@@ -2070,20 +2139,16 @@ function getRequestUrlFromResult(result) {
 
 function rememberSkillResult(prompt, result, conversationKey = '') {
   const key = buildPromptScopeKey(prompt, conversationKey);
-  if (!key || !isPlainObject(result)) {
-    return;
+  if (!conversationKey || !key || !isPlainObject(result)) {
+    return null;
   }
-
-  const record = {
+  return napmOperationState.rememberSkillResult({
+    scope: conversationKey,
     promptKey: key,
-    conversationKey: String(conversationKey || '').trim() || null,
-    updatedAt: Date.now(),
-    requestUrl: getRequestUrlFromResult(result) || '',
-    resolvedQuery: isPlainObject(result.resolvedQuery) ? result.resolvedQuery : null,
-    result
-  };
-  napmResultByPrompt.set(key, record);
-  latestNapmResult = record;
+    result,
+    requestUrl: getRequestUrlFromResult(result),
+    resolvedQuery: result.resolvedQuery
+  });
 }
 
 function rememberDebugApi(prompt, result, conversationKey = '') {
@@ -2091,19 +2156,14 @@ function rememberDebugApi(prompt, result, conversationKey = '') {
 
   const key = buildPromptScopeKey(prompt, conversationKey);
   const requestUrl = getRequestUrlFromResult(result);
-  if (!key || !requestUrl) {
-    return;
+  if (!conversationKey || !key || !requestUrl) {
+    return null;
   }
-  const record = {
-    conversationKey: String(conversationKey || '').trim() || null,
-    requestUrl,
-    updatedAt: Date.now()
-  };
-  napmDebugApiByPrompt.set(key, record);
-  latestNapmDebugApi = {
-    ...record,
-    promptKey: key
-  };
+  return napmOperationState.rememberDebugApi({
+    scope: conversationKey,
+    promptKey: key,
+    requestUrl
+  });
 }
 
 function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversationKey = '') {
@@ -2120,28 +2180,22 @@ function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversatio
 }
 
 function rememberReportExportResult(prompt = '', result = {}, conversationKey = '') {
-  if (!isPlainObject(result) || !result.ok) {
-    return;
-  }
-  latestReportExportResult = {
-    prompt: String(prompt || '').trim() || null,
-    conversationKey: String(conversationKey || '').trim() || null,
-    updatedAt: Date.now(),
+  return napmOperationState.rememberReportExport({
+    scope: conversationKey,
+    prompt,
     result,
-    filePath: String(result.filePath || '').trim(),
-    downloadUrl: String(result.downloadUrl || '').trim(),
-    reportId: String(result.reportId || '').trim()
-  };
+    filePath: result?.filePath,
+    downloadUrl: result?.downloadUrl,
+    reportId: result?.reportId
+  });
 }
 
-function isFreshReportExportResult(record = latestReportExportResult, maxAgeMs = REPORT_EXPORT_CACHE_MAX_AGE_MS) {
-  return Boolean(
-    record
-    && Number(record.updatedAt) > 0
-    && (Date.now() - Number(record.updatedAt)) <= maxAgeMs
-    && isPlainObject(record.result)
-    && record.result.ok
-  );
+function getFreshReportExportResult(conversationKey = '') {
+  return napmOperationState.getReportExport(conversationKey);
+}
+
+function isFreshReportExportResult(conversationKey = '') {
+  return Boolean(getFreshReportExportResult(conversationKey));
 }
 
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
@@ -2152,8 +2206,8 @@ function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
   );
 }
 
-function getLatestRememberedSkillRecord(maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
-  return isFreshRememberedRecord(latestNapmResult, maxAgeMs) ? latestNapmResult : null;
+function getLatestRememberedSkillRecord(conversationKey = '') {
+  return napmOperationState.getLatestSkillResult(conversationKey);
 }
 
 function getReportDataFromRecord(record = null) {
@@ -2181,21 +2235,11 @@ function getRememberedDebugApi(prompt, conversationKey = '') {
   if (!key) {
     return '';
   }
-  const record = napmDebugApiByPrompt.get(key);
-  if (!isFreshRememberedRecord(record)) {
-    return '';
-  }
-  return String(record?.requestUrl || '').trim();
+  return String(napmOperationState.getDebugApi(key)?.requestUrl || '').trim();
 }
 
-function getRecentDebugApiFallback(maxAgeMs = 2 * 60 * 1000) {
-  if (!latestNapmDebugApi?.requestUrl || !latestNapmDebugApi?.updatedAt) {
-    return '';
-  }
-  if (Date.now() - latestNapmDebugApi.updatedAt > maxAgeMs) {
-    return '';
-  }
-  return String(latestNapmDebugApi.requestUrl || '').trim();
+function getRecentDebugApiFallback(conversationKey = '') {
+  return String(napmOperationState.getLatestDebugApi(conversationKey)?.requestUrl || '').trim();
 }
 
 function getRememberedSkillResult(prompt, conversationKey = '') {
@@ -2203,30 +2247,19 @@ function getRememberedSkillResult(prompt, conversationKey = '') {
   if (!key) {
     return null;
   }
-  const record = napmResultByPrompt.get(key) || null;
-  return isFreshRememberedRecord(record) ? record : null;
+  return napmOperationState.getSkillResult(key);
 }
 
 function getRecentRememberedSkillResult(conversationKey = '') {
-  const scopeKey = String(conversationKey || '').trim();
-  if (!latestNapmResult || !isFreshRememberedRecord(latestNapmResult)) {
-    return null;
-  }
-  if (!scopeKey) {
-    return latestNapmResult;
-  }
-  return latestNapmResult.conversationKey === scopeKey
-    ? latestNapmResult
-    : null;
+  return napmOperationState.getLatestSkillResult(conversationKey);
 }
 
 function getRememberedRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
   const metaFollowUp = isNapmMetaFollowUpPrompt(activePrompt, guardState || conversationState);
   return getRememberedSkillResult(activePrompt, conversationKey)
-    || getRememberedSkillResult(activePrompt, '')
     || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
     || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null)
-    || (metaFollowUp ? getRecentRememberedSkillResult('') : null);
+    || (metaFollowUp ? getRecentRememberedSkillResult(conversationKey) : null);
 }
 
 function isAlertSkillResultRecord(record = null) {
@@ -2252,8 +2285,7 @@ function isAlertSkillResultRecord(record = null) {
 
 function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
   const candidates = [
-    getRememberedSkillResult(activePrompt, conversationKey),
-    getRememberedSkillResult(activePrompt, '')
+    getRememberedSkillResult(activePrompt, conversationKey)
   ];
 
   const alertFollowUp = Boolean(
@@ -2264,7 +2296,6 @@ function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState 
   );
   if (alertFollowUp) {
     candidates.push(getRecentRememberedSkillResult(conversationKey));
-    candidates.push(getRecentRememberedSkillResult(''));
   }
 
   return candidates.find((record) => isFreshRememberedRecord(record) && isAlertSkillResultRecord(record)) || null;
@@ -2296,13 +2327,11 @@ function getRememberedMetricInventoryFollowUpRecord(prompt = '', conversationSta
   }
 
   return getRememberedSkillResult(canonicalPrompt, conversationKey)
-    || getRememberedSkillResult(canonicalPrompt, '')
     || (
-      latestNapmResult
-      && isFreshRememberedRecord(latestNapmResult)
-      && String(latestNapmResult?.resolvedQuery?.groups?.[0]?.type || '').trim() === groupType
-      && String(latestNapmResult?.resolvedQuery?.service || '').trim() === 'metrics'
-        ? latestNapmResult
+      getRecentRememberedSkillResult(conversationKey)
+      && String(getRecentRememberedSkillResult(conversationKey)?.resolvedQuery?.groups?.[0]?.type || '').trim() === groupType
+      && String(getRecentRememberedSkillResult(conversationKey)?.resolvedQuery?.service || '').trim() === 'metrics'
+        ? getRecentRememberedSkillResult(conversationKey)
         : null
     );
 }
@@ -2735,6 +2764,16 @@ function buildInspectionSnapshotReply(result = {}) {
 
 
 function buildAlertQueryReply(result = {}) {
+  // 🔴 2026-07-27 修复: 优先检查 ok 状态，防止 failure result 中
+  // narrationInput.displayText（"告警总数：0 条"模板）把真实错误吞噬。
+  if (!result?.ok) {
+    return String(
+      result?.error?.message
+      || result?.message
+      || '告警查询失败。'
+    ).trim();
+  }
+
   // skill 已生成 displayText → 直接透传
   const skillText = result?.narrationInput?.displayText;
   if (skillText) {
@@ -2742,14 +2781,6 @@ function buildAlertQueryReply(result = {}) {
     return requestUrl && !skillText.includes(requestUrl)
       ? `${skillText}\n\nDebug API:\n${requestUrl}`
       : skillText;
-  }
-
-  if (!result?.ok) {
-    return String(
-      result?.message
-      || result?.error?.message
-      || '告警查询失败。'
-    ).trim();
   }
 
   if (result?.explanation?.title) {
@@ -3207,7 +3238,8 @@ function buildPacketAnalysisReply(result = {}) {
 
 function buildReportDataForExport(args = {}) {
   const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
-  const rememberedRecord = getLatestRememberedSkillRecord();
+  const conversationKey = getTrustedConversationKey(args);
+  const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
   const rememberedReportData = getReportDataFromRecord(rememberedRecord);
   const sourceReportData = explicitReportData || rememberedReportData;
   if (!sourceReportData) {
@@ -3229,17 +3261,18 @@ function buildReportDataForExport(args = {}) {
       audit: {
         ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
         exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result',
+        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result',
         sourcePromptKey: rememberedRecord?.promptKey || null
       }
     },
-    source: explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result'
+    source: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result'
   };
 }
 
 function buildReportInputForExport(args = {}) {
   const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
-  const rememberedRecord = getLatestRememberedSkillRecord();
+  const conversationKey = getTrustedConversationKey(args);
+  const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
   const rememberedReportData = getReportDataFromRecord(rememberedRecord);
   const explicitSourceResult = isPlainObject(args.sourceResult)
     ? args.sourceResult
@@ -3859,7 +3892,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery already produced by OpenClaw upstream. This is the only production NAPM tool entry; use it after intent resolution, object scoping, time-range resolution, and query shaping are complete. Accepted structured input channel: ${acceptedInputs}. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -3898,9 +3931,9 @@ function createSkillToolDefinition() {
             },
             timeRange: {
               type: 'object',
-              description: 'REQUIRED: set key to last1hour|last24hours|today|yesterday|last7days|last30days. Plugin auto-computes start/end from key. Do NOT set start/end yourself.',
+              description: 'REQUIRED: set a supported key such as lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday. Plugin auto-computes start/end from key. Do NOT set start/end yourself.',
               properties: {
-                key: { type: 'string', description: 'last1hour|last24hours|today|yesterday|last7days|last30days' },
+                key: { type: 'string', description: 'lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday' },
                 displayText: { type: 'string' }
               },
               additionalProperties: false
@@ -3921,6 +3954,8 @@ function createSkillToolDefinition() {
     },
     execute: async (_toolCallId, args) => {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
+      const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
+      applyTimeOverride(preparedArgs.resolvedQuery);
       const validation = validateResolvedQueryAgainstSpec(
         preparedArgs?.resolvedQuery,
         getResolvedQueryValidationOptions(preparedArgs)
@@ -3940,7 +3975,7 @@ function createSkillToolDefinition() {
         return makeToolResult(buildResolvedQueryBoundaryFailureResult(validation, preparedArgs));
       }
       const result = await napmQuerySkill().handleSkillCall(preparedArgs);
-      rememberDebugApi(normalizePrompt(preparedArgs), result, null);
+      rememberDebugApi(normalizePrompt(preparedArgs), result, getTrustedConversationKey(preparedArgs));
       return makeToolResult(result);
     }
   };
@@ -3973,7 +4008,7 @@ function createReportExportToolDefinition() {
         };
       }
       const result = await napmReportSkill().handleSkillCall(reportInput);
-      rememberReportExportResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberReportExportResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
           {
@@ -4050,13 +4085,7 @@ function createAlertQueryToolDefinition() {
       const result = await napmAlertSkill().handleSkillCall(args || {});
       const renderedText = buildAlertQueryReply(result);
       const pi = result?.narrationInput?.packetInstruction;
-      const dt = result?.narrationInput?.displayText;
-      pendingAlertDisplayText = dt || null;
-      appendPluginAuditEvent('napm_alert_displaytext_set', {
-        hasDisplayText: Boolean(dt),
-        displayTextLen: typeof dt === 'string' ? dt.length : 0
-      });
-      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
 
       // 有 packetInstruction 时：text=AI指令, finalAnswer=摘要, details=完整数据
       if (pi && pi.callPacketAnalysis && Array.isArray(pi.candidates) && pi.candidates.length > 0) {
@@ -4116,7 +4145,7 @@ function createInspectionSnapshotToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmInspectionSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
           {
@@ -4160,8 +4189,9 @@ function createSummaryToolDefinition() {
         },
         timeRange: {
           type: 'object',
-          description: 'Time range for the summary. If omitted, defaults to last 24 hours.',
+          description: 'Time range for the summary. key supports lastNminutes|lastNhours|lastNdays|today|yesterday. If omitted, defaults to last 24 hours.',
           properties: {
+            key: { type: 'string', description: 'Relative or calendar time key. The skill resolves executable timestamps.' },
             start: { type: 'number', description: 'Unix seconds start.' },
             end: { type: 'number', description: 'Unix seconds end.' },
             displayText: { type: 'string', description: 'Human-readable time range.' }
@@ -4178,7 +4208,7 @@ function createSummaryToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmSummarySkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
           {
@@ -4196,7 +4226,7 @@ function createFaultDiagnosisToolDefinition() {
   return {
     label: 'NAPM Fault Diagnosis',
     name: 'napm-fault-diagnosis',
-    description: 'Run a standardized NAPM fault diagnosis flow. The tool automatically detects the correct analysis type and target object from the NAPM catalog. ⚠️ You MUST pass the user ORIGINAL message in BOTH prompt and description fields — do NOT modify, shorten, or reinterpret the user request. The tool uses the exact wording for name extraction.',
+    description: 'Run a standardized NAPM fault diagnosis flow for a SPECIFIC named business/application. ⚠️ DO NOT use for ranking queries (哪个XX最多/排行/TopN), single-metric lookups, or HTTP status code ranking — use napm-skill-query for those. The tool automatically detects the correct analysis type and target object from the NAPM catalog. ⚠️ You MUST pass the user ORIGINAL message in BOTH prompt and description fields — do NOT modify, shorten, or reinterpret the user request. The tool uses the exact wording for name extraction.',
     parameters: {
       type: 'object',
       properties: {
@@ -4204,8 +4234,9 @@ function createFaultDiagnosisToolDefinition() {
         description: { type: 'string', description: 'MANDATORY: Same as prompt — the exact user request. The tool uses this for flow type classification.' },
         timeRange: {
           type: 'object',
-          description: 'Fault time window. If omitted, defaults to last 24 hours.',
+          description: 'Fault time window. key supports lastNminutes|lastNhours|lastNdays|today|yesterday. If omitted, defaults to last 24 hours.',
           properties: {
+            key: { type: 'string', description: 'Relative or calendar time key. The skill resolves faultWindow.' },
             faultWindow: {
               type: 'object',
               properties: {
@@ -4237,7 +4268,7 @@ function createFaultDiagnosisToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmFaultDiagnosisSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
           {
@@ -4307,7 +4338,7 @@ function createPacketAnalysisToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmPacketSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, args?.conversationKey || '');
+      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
           {
@@ -4486,13 +4517,14 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── TOOL ROUTING TABLE (always) ──
   rules.push(
     'TOOL ROUTING — pick exactly one entry point based on user intent:',
-    '  fault/error diagnosis (故障分析/故障诊断/报错分析/错误排查/应用故障/业务故障/性能诊断/HTTP错误/4xx/5xx/应用慢/客户端慢/数据库慢) → napm-fault-diagnosis (ONLY pass description + timeRange; the tool queries NAPM catalog internally to auto-detect object type and choose the correct analysis flow) → napm-report-export',
+    '  ⚠️ RANKING/DISCOVERY queries (排行/排名/TopN/哪个最多/哪些最高/谁最少) → napm-skill-query with service=topValues. These are DATA QUERIES, NOT fault diagnosis. Examples: "今天哪个业务的400报错最多？" "丢包最高的前10个IP" "HTTP 500最多的Web应用排行".',
+    '  fault/error diagnosis for a SPECIFIC named object (分析XXweb的故障/给XX出故障诊断报告/排查XX的报错根因/XX应用慢原因分析/XX业务性能诊断) → napm-fault-diagnosis (ONLY pass description + timeRange; the tool auto-detects flowType and target from NAPM catalog) → napm-report-export',
     '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
     '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
     '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',
     '  packet capture/analysis (数据包/报文/抓包/pcap) → napm-packet-analysis',
     '  alert+packet combined (告警数据包 <eventId>) → napm-alert-query FIRST (mode=detail) → napm-packet-analysis with suggestedPacketQuery',
-    '  data query (ranking/average/trend/overview/inventory/metric-list/drilldown) → napm-skill-query',
+    '  data query (排行/排名/TopN/ranking/average/trend/overview/inventory/metric-list/drilldown) → napm-skill-query',
     '  report/export only (将以上导出Word/生成报告, no new data) → napm-report-export (consume existing reportData)',
     'Do NOT use napm-skill-query for reports, fault analysis, alerts, or packet requests. Each domain has its own tool.',
     'napm-resolve-query and napm-mainflow-query are diagnostic-only; do not use in production.',
@@ -4510,7 +4542,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'OpenClaw upstream owns resolvedQuery construction. Plugin forwards structured queries; skill executes them.',
     'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
     '',
-    'Time: set timeRange.key only (last1hour|last24hours|today|yesterday|last7days|last30days). Plugin computes start/end from server clock. Do NOT pass start/end timestamps. Example: {service:"topValues",timeRange:{key:"last1hour",displayText:"最近1小时"}}.',
+    'Time: set timeRange.key only (lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday). Plugin computes start/end from the server clock. Do NOT pass start/end timestamps. Example: {service:"topValues",timeRange:{key:"last2hours",displayText:"最近2小时"}}.',
     'Query construction rules (inventory/metric ownership/drilldown/time wording/follow-up) → skills/openclaw-napm-query/references/query-workflow-contract.md.'
   );
 
@@ -4678,12 +4710,13 @@ const plugin = {
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const toolName = String(event?.toolName || '').trim();
         const toolParams = isPlainObject(event?.params) ? event.params : {};
+        if (isSafeNapmToolName(toolName)) {
+          bindTrustedToolContext(event, ctx);
+        }
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
 
-        // ── Unified Time Override (2026-07-07) ──────────────────────────────
-        // Date.now() 无条件覆盖所有 NAPM Tool 的时间参数。
-        // 替代之前在 runSkillExecutor 中只对 napm-skill-query 生效的时间覆盖。
-        // 现在对所有需要时间的 Tool 统一生效。
+        // Query time is normalized both here and in tool execute(). The execute
+        // path is authoritative so direct invocations cannot bypass this hook.
         if (isSafeNapmToolName(toolName) && isPlainObject(event.params)) {
           try {
             const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
@@ -4693,60 +4726,6 @@ const plugin = {
               applyTimeOverride(event.params.resolvedQuery);
             }
 
-            // napm-summary / napm-fault-diagnosis: 无条件覆盖时间（2026-07-08 修复）
-            // 即使 LLM 直接传了 start/end 而没有传 timeRange.key，也必须用 Date.now() 覆盖。
-            // 否则 SummaryService._resolveTimeRange 可能使用 LLM 提供的错误时间戳。
-            if (toolName === 'napm-summary' || toolName === 'napm-fault-diagnosis') {
-              if (!isPlainObject(event.params.timeRange)) {
-                event.params.timeRange = {};
-              }
-              const now = Math.floor(Date.now() / 1000);
-              const floor = (v) => Math.floor(v / 60) * 60;
-              const timeKey = String(event.params.timeRange.key || '').trim() || 'last24hours';
-              const DURATION_MAP = { last5minutes: 300, last1hour: 3600, last24hours: 86400,
-                last1day: 86400, last7days: 604800, last30days: 2592000 };
-
-              let start, end;
-              if (timeKey === 'today') {
-                const d = new Date(now * 1000); d.setHours(0, 0, 0, 0);
-                start = floor(d.getTime() / 1000);
-                end = floor(now);
-              } else if (timeKey === 'yesterday') {
-                const d = new Date(now * 1000); d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0);
-                start = floor(d.getTime() / 1000);
-                end = floor(start + 86340);
-              } else {
-                const duration = DURATION_MAP[timeKey] || 86400;
-                start = floor(now - duration);
-                end = floor(now);
-              }
-              event.params.timeRange.start = start;
-              event.params.timeRange.end = end;
-              event.params.timeRange.key = timeKey;
-              // 同时设置根级别 start/end，兼容直接从 params 读取时间的服务
-              event.params.start = start;
-              event.params.end = end;
-            }
-
-            // napm-alert-query: 如果 criteria 有 timeRange.key，覆盖 start/end
-            // 2026-07-14: 兼容两种参数格式——
-            //   嵌套: { alertQuery: { criteria: { eventIds, ... } } }
-            //   扁平: { eventIds, mode, ... }（AI 常用此格式）
-            if (toolName === 'napm-alert-query') {
-              const criteria = (isPlainObject(event.params.alertQuery?.criteria)
-                ? event.params.alertQuery.criteria
-                : (isPlainObject(event.params.criteria)
-                  ? event.params.criteria
-                  : (isPlainObject(event.params) && !isPlainObject(event.params.alertQuery)
-                    ? event.params
-                    : null)));
-              if (criteria && !criteria.start && !criteria.end) {
-                const now = Math.floor(Date.now() / 1000);
-                const floor = (v) => Math.floor(v / 60) * 60;
-                criteria.start = floor(now - 3600);
-                criteria.end = floor(now);
-              }
-            }
           } catch (_timeOverrideError) {
             // 时间覆盖失败不影响工具调用 — 静默降级
             api.logger.warn(`[napm-openclaw-plugin] time override failed for ${toolName}: ${_timeOverrideError.message}`);
@@ -4785,9 +4764,29 @@ const plugin = {
         // 不触发故障诊断拦截。否则所有包含"用户体验时间"的深入分析都会被导向 fault-diagnosis。
         const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt);
         if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt && !activeAlertPacketPrompt) {
-          api.logger.warn(`[napm-openclaw-plugin] BLOCKED ${toolName} for fault-diagnosis prompt: ${activePrompt.slice(0, 120)}`);
-          appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
-          return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a fault/error analysis request. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with description + timeRange only. The tool auto-detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) based on the NAPM catalog. DO NOT pass flowType — let the tool decide.` };
+
+          // ── 2026-07-16: 排行/统计类查询兜底放行 ──
+          // 即使 isFaultDiagnosisPrompt 误判，如果 LLM 构造的 resolvedQuery 是全局排行
+          // （topValues + topn + 无具体对象名），说明 LLM 正确理解了这是排行查询，应该放行。
+          // 这打破了"isFaultDiagnosisPrompt 误判 → query 被 block → 只能走 fault-diagnosis"的死循环。
+          var rq = isPlainObject(event.params?.resolvedQuery) ? event.params.resolvedQuery : null;
+          var isGlobalRanking = rq
+            && rq.service === 'topValues'
+            && rq.queryModeKey === 'topn'
+            && Array.isArray(rq.groups)
+            && !rq.groups.some(function(g) { return typeof g.argument === 'string' && g.argument.length > 0; });
+
+          if (isGlobalRanking) {
+            // 全局排行查询 → 放行，这是 query 的职责，不是 fault diagnosis
+            api.logger.info(`[napm-openclaw-plugin] ALLOWED napm-skill-query for global ranking: ${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_fault_dx_ranking_allowed', { toolName: toolName, prompt: activePrompt });
+            // 不 block，继续后续逻辑
+          } else {
+            // 针对性诊断 → 仍然拦截
+            api.logger.warn(`[napm-openclaw-plugin] BLOCKED ${toolName} for fault-diagnosis prompt: ${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName: toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
+            return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a fault/error analysis request for a specific target. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with description + timeRange only. The tool auto-detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) based on the NAPM catalog. DO NOT pass flowType — let the tool decide.` };
+          }
         }
 
         if (isDirectNapmTool(toolName)) {
@@ -5075,14 +5074,6 @@ const plugin = {
     registerNapmHook(
       'message_sending',
       async (event, ctx) => {
-        // 🔴 最高优先级：如果有 pendingAlertDisplayText，直接替换整个消息
-        // 必须在所有其他逻辑之前执行，防止被 early-return 跳过
-        if (pendingAlertDisplayText) {
-          const text = pendingAlertDisplayText;
-          pendingAlertDisplayText = null;
-          appendPluginAuditEvent('napm_alert_displaytext_consumed_msg_sending', { consumed: true });
-          return { content: text };
-        }
         const mediaDedupe = dedupeOutgoingMediaForConversation(event, ctx);
         if (mediaDedupe?.original?.length > 0 && mediaDedupe.fresh.length === 0) {
           appendPluginAuditEvent('napm_plugin_duplicate_media_suppressed', {
@@ -5112,7 +5103,7 @@ const plugin = {
         const activePromptForReport = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
         const reportArtifactUrls = getReportArtifactUrlsFromOutgoingEvent(event);
         if (isReportExportPrompt(activePromptForReport) && reportArtifactUrls.length > 0) {
-          const illegalUrls = reportArtifactUrls.filter((url) => !isAllowedReportArtifactUrl(url));
+          const illegalUrls = reportArtifactUrls.filter((url) => !isAllowedReportArtifactUrl(url, conversationKey));
           if (illegalUrls.length > 0) {
             appendPluginAuditEvent('napm_report_direct_artifact_blocked', {
               conversationKey: conversationKey || null,
@@ -5155,7 +5146,7 @@ const plugin = {
             return undefined;
           }
           const leakedReasoningText = extractTextContent(event?.content);
-          if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(leakedReasoningText) && !isFreshReportExportResult()) {
+          if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(leakedReasoningText) && !isFreshReportExportResult(conversationKey)) {
             appendPluginAuditEvent('napm_report_direct_claim_blocked', {
               conversationKey: conversationKey || null,
               prompt: activePrompt,
@@ -5252,14 +5243,6 @@ const plugin = {
     registerNapmHook(
       'before_message_write',
       (event, ctx) => {
-        // 🔴 最高优先级：如果有 pendingAlertDisplayText，直接替换整个消息
-        if (pendingAlertDisplayText) {
-          const text = pendingAlertDisplayText;
-          pendingAlertDisplayText = null;
-          appendPluginAuditEvent('napm_alert_displaytext_consumed_before_write', { consumed: true });
-          const msg = event?.message;
-          return { message: buildAssistantTextMessage(text, msg) };
-        }
         const message = event?.message;
         const role = String(message?.role || '').trim();
         if (role !== 'assistant') {
@@ -5297,7 +5280,7 @@ const plugin = {
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
-        if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(existingText) && !isFreshReportExportResult()) {
+        if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(existingText) && !isFreshReportExportResult(conversationKey)) {
           appendPluginAuditEvent('napm_report_direct_claim_rewritten_before_write', {
             conversationKey: conversationKey || null,
             prompt: activePrompt,
@@ -5447,6 +5430,9 @@ module.exports.__test__ = {
   shouldReplaceWithPromptOverview,
   rememberDebugApiForPromptAliases,
   rememberSkillResult,
+  getConversationKey,
+  bindTrustedToolContext,
+  getTrustedConversationKey,
   getLatestRememberedSkillRecord,
   getReportDataFromRecord,
   prepareSkillExecutionArgs,

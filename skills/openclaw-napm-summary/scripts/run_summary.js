@@ -7,6 +7,7 @@ const path = require('path');
 const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
 const SummaryService = require('../services/SummaryService');
 const SummaryReportDataService = require('../services/SummaryReportDataService');
+const { applyToolTimeRange, applyFaultTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
 
 // ── env loading ─────────────────────────────────────────────────
 
@@ -79,21 +80,43 @@ function writeJson(value) {
 // ── main ────────────────────────────────────────────────────────
 
 async function executeSummaryQuery(payload = {}) {
+  const normalizedPayload = normalizeSummaryPayload(payload);
   const service = new SummaryService();
   const reportDataService = new SummaryReportDataService();
 
-  const result = await service.run(payload);
+  const result = await service.run(normalizedPayload);
+  if (!result.ok) {
+    return result;
+  }
   const reportData = reportDataService.buildReportData(result, {
-    format: payload.format,
-    title: payload.title,
-    systemName: payload.systemName,
-    sourceQuestion: payload.sourceQuestion || payload.prompt
+    format: normalizedPayload.format,
+    title: normalizedPayload.title,
+    systemName: normalizedPayload.systemName,
+    sourceQuestion: normalizedPayload.sourceQuestion || normalizedPayload.prompt
   });
 
   return {
     ...result,
     reportData
   };
+}
+
+function normalizeSummaryPayload(payload = {}, options = {}) {
+  const normalized = {
+    ...payload,
+    timeRange: payload.timeRange && typeof payload.timeRange === 'object'
+      ? { ...payload.timeRange }
+      : {}
+  };
+  const range = normalized.scope?.type === 'fault'
+    ? applyFaultTimeRange(normalized, { defaultKey: 'last24hours', nowMs: options.nowMs })
+    : applyToolTimeRange(normalized, { defaultKey: 'last24hours', nowMs: options.nowMs });
+  if (!range.ok) {
+    const error = new Error(range.message);
+    error.code = range.reason;
+    throw error;
+  }
+  return normalized;
 }
 
 async function main() {
@@ -152,4 +175,4 @@ async function handleSkillCall(params = {}) {
   }
 }
 
-module.exports = { executeSummaryQuery, handleSkillCall };
+module.exports = { executeSummaryQuery, handleSkillCall, normalizeSummaryPayload };

@@ -9,12 +9,7 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {
-      "gatewayBaseUrl": {
-        "type": "string",
-        "title": "NAPM Gateway Base URL"
-      }
-    }
+    "properties": {}
   },
   "contracts": {
     "tools": [
@@ -24,7 +19,9 @@
       "napm-alert-query",
       "napm-inspection-snapshot",
       "napm-summary",
-      "napm-fault-diagnosis"
+      "napm-fault-diagnosis",
+      "napm-resolve-query",
+      "napm-mainflow-query"
     ]
   }
 }

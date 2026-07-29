@@ -11,7 +11,7 @@
 
 ## NAPM 工具边界
 
-当前 7 个 OpenClaw 工具（底层 9 个 Skill），各有严格边界：
+当前生产环境启用 7 个 OpenClaw 工具（底层 9 个 Skill），各有严格边界。另有 `napm-resolve-query` 和 `napm-mainflow-query` 两个可选开发诊断契约，生产环境默认不注册：
 
 | 工具名 | 用途 | 边界 |
 |---|---|---|
@@ -35,8 +35,8 @@
 
 - OpenClaw 根目录：`/home/netinside/.openclaw`
 - 工作区：`/home/netinside/.openclaw/workspace`
-- NAPM 插件：`/home/netinside/.openclaw/workspace/napm-openclaw-plugin.remote.js`
-- 插件配置：`/home/netinside/.openclaw/workspace/openclaw.plugin.json`
+- NAPM 插件：`/home/netinside/.openclaw/extensions/napm-openclaw-plugin/napm-openclaw-plugin.remote.js`
+- 插件配置：`/home/netinside/.openclaw/extensions/napm-openclaw-plugin/openclaw.plugin.json`
 - Skills 根目录：`/home/netinside/.openclaw/workspace/skills/`
 - NAPM 审计日志：`/home/netinside/.openclaw/logs/audit.log`
 

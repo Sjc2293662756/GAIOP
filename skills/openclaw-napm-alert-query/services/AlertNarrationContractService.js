@@ -243,6 +243,53 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     lines.push('');
   }
 
+  // ── 兜底：detail 接口返回的事件 category 可能为 null，落入 unknown 桶 ──
+  const unknownEvents = eventsByCategory.get('unknown') || [];
+  if (unknownEvents.length > 0) {
+    const unkCritical = unknownEvents.filter(e => e.severity === 4).length;
+    const unkMajor = unknownEvents.filter(e => e.severity === 3).length;
+    const unkMinor = unknownEvents.filter(e => e.severity === 2).length;
+    const symIndex = Math.min(categoryOrder.length, 7);
+    lines.push(`${symbols[symIndex] || '⑧'} 其他告警 — ${unknownEvents.length} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）`);
+    lines.push('');
+
+    const groupMap = new Map();
+    for (const e of unknownEvents) {
+      const key = `${e.name || '未知告警'}||${e.severity || 0}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          name: e.name || '未知告警', severity: e.severity || 0,
+          severityLabel: e.severityLabel || '',
+          groups: new Map(), count: 0, totalPeriod: 0, firstStart: e.start,
+        });
+      }
+      const g = groupMap.get(key);
+      g.count++;
+      if (e.period > 0) g.totalPeriod += e.period;
+      if (e.start && (!g.firstStart || e.start < g.firstStart)) g.firstStart = e.start;
+      const objKey = e.group || '?';
+      g.groups.set(objKey, (g.groups.get(objKey) || 0) + 1);
+    }
+    const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
+    for (let j = 0; j < sortedGroups.length; j++) {
+      const g = sortedGroups[j];
+      const sevEmoji = g.severity === 4 ? '🔴' : g.severity === 3 ? '🟠' : '🟢';
+      const sevLabel = g.severityLabel || (g.severity === 4 ? '紧急' : g.severity === 3 ? '重大' : '轻微');
+      const topObjects = [...g.groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+      const objText = topObjects.join('、');
+      const durationText = g.totalPeriod > 0
+        ? (g.totalPeriod < 60 ? `${Math.round(g.totalPeriod * 60)}秒` : `${g.totalPeriod}分钟`)
+        : '?';
+      const startText = g.firstStart ? formatTimestamp(g.firstStart) : '?';
+      lines.push(`# ${g.name}触发（${sevEmoji} ${sevLabel}）`);
+      lines.push('');
+      lines.push(`对象 **${objText}** 触发了 **${g.count}** 次告警，持续时长为 **${durationText}**，开始时间为 **${startText}**。`);
+      lines.push('');
+      if (j < sortedGroups.length - 1) { lines.push('---'); lines.push(''); }
+    }
+    lines.push('');
+  }
+
   // ── packet 信息（仅 detail 模式显示）──
   const ph = packetHandoff || result.packetHandoff;
   if (ph && result.mode !== 'summary') {
@@ -305,7 +352,9 @@ function buildNarrationInput(result = {}) {
     schema: 'openclaw_napm_alert.v1',
     language: 'zh-CN',
     mode: result.mode || null,
-    displayText: buildDisplayText(result, packetHandoff, triggerInfo),
+    // 🔴 2026-07-27 修复: 失败结果不应生成 displayText，
+    // 防止 buildAlertQueryReply 透传误导性"告警总数：0 条"模板。
+    displayText: result.ok ? buildDisplayText(result, packetHandoff, triggerInfo) : null,
     ok: Boolean(result.ok),
     timeRange: result.timeRange || null,
     summary: result.summary || null,
@@ -466,6 +515,8 @@ function buildPacketInstruction(packetHandoff, triggerInfo = null) {
   };
 }
 
+const { GENERIC_QUERY_TEMPLATE_ID, REPORT_SCHEMA } = require('../../openclaw-napm-report/services/ReportTemplateRegistry');
+
 function buildReportData(result = {}, sourceQuestion = '') {
   const sections = [];
   const summary = result.summary || {};
@@ -494,7 +545,9 @@ function buildReportData(result = {}, sourceQuestion = '') {
   }
 
   return {
-    reportType: 'diagnostic_report',
+    schema: REPORT_SCHEMA,
+    reportType: 'quick_report',
+    templateId: GENERIC_QUERY_TEMPLATE_ID,
     format: 'docx',
     title: 'NAPM 告警分析报告',
     sourceQuestion: sourceQuestion || null,

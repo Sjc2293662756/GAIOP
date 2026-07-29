@@ -1,0 +1,751 @@
+{
+  "schema": "openclaw_napm_summary_template.v1",
+  "templateId": "napm_summary_overview_v1",
+  "version": "1.0.0",
+  "titlePath": "title",
+  "description": "NAPM 综述报告统一模板。通过 scopes 字段驱动章节显隐，一套模板覆盖全局综述、网络综述、业务综述、应用综述、业务组综述和告警综述。",
+  "page": {
+    "margin": {
+      "top": 1000,
+      "right": 900,
+      "bottom": 1000,
+      "left": 900,
+      "header": 450,
+      "footer": 450
+    },
+    "header": {
+      "leftImage": {
+        "path": "templates/inspection/company-logo.png",
+        "width": 110,
+        "height": 32,
+        "alt": "网深科技基于AI的全流量性能分析平台"
+      },
+      "left": "网深科技基于AI的全流量性能分析平台",
+      "right": "{{summary.customerName}}{{summary.projectName}}{{scope.label}}报告"
+    },
+    "footer": {
+      "center": "第 {{pageNumber}} 页 / 共 {{totalPages}} 页",
+      "right": "{{summary.reportDate}}"
+    }
+  },
+  "sections": [
+    {
+      "id": "cover",
+      "type": "cover",
+      "title": "网深科技基于AI的全流量性能分析平台",
+      "subtitle": "{{scope.label}}报告"
+    },
+    {
+      "id": "cover_date",
+      "type": "paragraphs",
+      "alignment": "center",
+      "size": 22,
+      "paragraphs": [
+        "{{summary.reportDate}}"
+      ]
+    },
+    {
+      "id": "cover_break",
+      "type": "pageBreak"
+    },
+    {
+      "id": "toc",
+      "type": "toc",
+      "title": "目录",
+      "alias": "Summary Report TOC",
+      "headingStyleRange": "1-2",
+      "hyperlink": true,
+      "updateMode": "wordField"
+    },
+    {
+      "id": "toc_break",
+      "type": "pageBreak"
+    },
+
+    {
+      "id": "overview_heading",
+      "type": "heading",
+      "title": "1 报告概述",
+      "level": 1
+    },
+    {
+      "id": "overview_scope_info",
+      "type": "paragraphs",
+      "paragraphs": [
+        "综述范围：{{scope.label}}",
+        "时间范围：{{timeRange.displayText}}"
+      ]
+    },
+    {
+      "id": "overview_scope_target",
+      "type": "paragraphs",
+      "scopes": ["webApplication", "application", "businessGroup", "network"],
+      "targetModes": ["withTarget"],
+      "paragraphs": [
+        "聚焦对象：{{scope.target.groupLabel}}（{{scope.target.groupType}}）"
+      ]
+    },
+    {
+      "id": "device_info_heading",
+      "type": "heading",
+      "title": "设备信息",
+      "level": 2
+    },
+    {
+      "id": "device_info_intro",
+      "type": "paragraphs",
+      "paragraphs": [
+        "本次综述涉及的 NetInside 基于AI的全流量性能分析平台设备信息如下："
+      ]
+    },
+    {
+      "id": "device_info_table",
+      "type": "table",
+      "rowBuilder": "summaryDeviceTable",
+      "columns": [
+        "编号",
+        "系统名称",
+        "IP地址",
+        "软件版本",
+        "序列号",
+        "启动时长"
+      ]
+    },
+
+
+    {
+      "id": "webapp_target_access_heading",
+      "type": "heading",
+      "title": "3 单个业务访问分析",
+      "level": 1,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_access_requirement",
+      "type": "paragraphs",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "paragraphs": [
+        "以下内容按照前端单个业务分析（BsAna）口径生成，覆盖访问概要、访问趋势、节点分布、资源使用、客户端响应和 HTTP 响应码统计。"
+      ]
+    },
+    {
+      "id": "webapp_target_overview_heading",
+      "type": "heading",
+      "title": "业务分析概要",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_overview_table",
+      "type": "table",
+      "rowBuilder": "businessTargetOverview",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "columns": [
+        "指标",
+        "值"
+      ]
+    },
+    {
+      "id": "webapp_target_access_slow_heading",
+      "type": "heading",
+      "title": "访问量和慢业务趋势",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_access_slow_chart",
+      "type": "chartSlot",
+      "title": "访问量和慢业务趋势图",
+      "chartId": "webapp.accessSlow",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_node_heading",
+      "type": "heading",
+      "title": "不同节点访问量和慢业务分布",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_node_table",
+      "type": "table",
+      "rowBuilder": "businessTargetNodeDistribution",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "caption": "Top 5 业务组节点",
+      "columns": [
+        "序号",
+        "业务组节点",
+        "访问数",
+        "慢访问数"
+      ]
+    },
+
+    {
+      "id": "webapp_target_resource_heading",
+      "type": "heading",
+      "title": "4 单个业务资源与 HTTP 分析",
+      "level": 1,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_resource_requirement",
+      "type": "paragraphs",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "paragraphs": [
+        "以下内容展示该业务的资源使用情况、请求/响应流量变化、慢客户端分布以及 HTTP 响应码与错误客户端统计。"
+      ]
+    },
+    {
+      "id": "webapp_target_resource_summary_heading",
+      "type": "heading",
+      "title": "业务资源使用统计",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_resource_summary_table",
+      "type": "table",
+      "rowBuilder": "businessTargetResourceSummary",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "columns": [
+        "指标",
+        "值"
+      ]
+    },
+    {
+      "id": "webapp_target_request_response_heading",
+      "type": "heading",
+      "title": "请求/响应流量趋势",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_request_response_chart",
+      "type": "chartSlot",
+      "title": "请求/响应流量趋势图",
+      "chartId": "webapp.requestResponse",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_slow_clients_heading",
+      "type": "heading",
+      "title": "最慢客户端 Top N",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_slow_clients_table",
+      "type": "table",
+      "rowBuilder": "businessTargetSlowClients",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "caption": "Top 5 最慢客户端",
+      "columns": [
+        "序号",
+        "客户端IP",
+        "响应时间(秒)"
+      ]
+    },
+    {
+      "id": "webapp_target_http_code_heading",
+      "type": "heading",
+      "title": "HTTP 响应代码统计",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_http_code_table",
+      "type": "table",
+      "rowBuilder": "businessTargetHttpCodeSummary",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "columns": [
+        "响应代码",
+        "数量"
+      ]
+    },
+    {
+      "id": "webapp_target_http400_heading",
+      "type": "heading",
+      "title": "400 错误客户端 Top N",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_http400_table",
+      "type": "table",
+      "rowBuilder": "businessTargetHttp400Clients",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "caption": "Top 5 HTTP 400 客户端",
+      "columns": [
+        "序号",
+        "客户端IP",
+        "数量"
+      ]
+    },
+    {
+      "id": "webapp_target_http500_heading",
+      "type": "heading",
+      "title": "500 错误客户端 Top N",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "webapp_target_http500_table",
+      "type": "table",
+      "rowBuilder": "businessTargetHttp500Clients",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"],
+      "caption": "Top 5 HTTP 500 客户端",
+      "columns": [
+        "序号",
+        "客户端IP",
+        "数量"
+      ]
+    },
+    {
+      "id": "webapp_target_narrative",
+      "type": "narrative",
+      "ruleGroup": "business.target.conclusion",
+      "mode": "first",
+      "scopes": ["webApplication"],
+      "targetModes": ["withTarget"]
+    },
+
+    {
+      "id": "app_target_heading",
+      "type": "heading",
+      "title": "3 应用剖析",
+      "level": 1,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_overview_heading",
+      "type": "heading",
+      "title": "应用性能概览",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_overview_table",
+      "type": "table",
+      "rowBuilder": "appTargetOverview",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["指标", "值"]
+    },
+    {
+      "id": "app_target_userexp_chart",
+      "type": "chartSlot",
+      "title": "用户体验趋势",
+      "chartId": "app.userExpTrend",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_traffic_heading",
+      "type": "heading",
+      "title": "网络流量趋势",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_traffic_chart",
+      "type": "chartSlot",
+      "title": "流量趋势图",
+      "chartId": "traffic.trend",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_slow_clients_heading",
+      "type": "heading",
+      "title": "最慢外部客户端",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_slow_clients_table",
+      "type": "table",
+      "rowBuilder": "appTargetSlowClients",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "客户端IP", "连接时间(ms)", "响应时间(ms)", "传输时间(ms)", "重传时延(ms)"]
+    },
+    {
+      "id": "app_target_ext_traffic_heading",
+      "type": "heading",
+      "title": "流量最大外部地址",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_ext_traffic_table",
+      "type": "table",
+      "rowBuilder": "appTargetExternalTraffic",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "地址", "入流量(MB)", "出流量(MB)"]
+    },
+    {
+      "id": "app_target_conv_heading",
+      "type": "heading",
+      "title": "流量最大会话",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_conv_table",
+      "type": "table",
+      "rowBuilder": "appTargetConversations",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "会话", "入流量(MB)", "出流量(MB)"]
+    },
+    {
+      "id": "app_target_int_traffic_heading",
+      "type": "heading",
+      "title": "流量最大内部地址",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withTarget"]
+    },
+    {
+      "id": "app_target_int_traffic_table",
+      "type": "table",
+      "rowBuilder": "appTargetInternalTraffic",
+      "scopes": ["application"],
+      "targetModes": ["withTarget"],
+      "columns": ["序号", "地址", "入流量(MB)", "出流量(MB)"]
+    },
+
+    {
+      "id": "traffic_heading",
+      "type": "heading",
+      "title": "3 流量总览",
+      "level": 1,
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "traffic_requirement",
+      "type": "paragraphs",
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "paragraphs": [
+        "以下数据展示报告周期内的流量与性能指标排行。"
+      ]
+    },
+    {
+      "id": "traffic_trend_heading",
+      "type": "heading",
+      "title": "流量趋势",
+      "level": 2,
+      "scopes": ["global", "network", "businessGroup"]
+    },
+    {
+      "id": "traffic_trend_chart",
+      "type": "chartSlot",
+      "title": "流量趋势图",
+      "chartId": "traffic.trend",
+      "scopes": ["global", "network", "businessGroup"]
+    },
+    {
+      "id": "traffic_quality_heading",
+      "type": "heading",
+      "title": "流量质量指标",
+      "level": 2,
+      "scopes": ["network", "businessGroup"]
+    },
+    {
+      "id": "traffic_quality_table",
+      "type": "table",
+      "rowBuilder": "trafficQualityMetrics",
+      "scopes": ["network", "businessGroup"],
+      "columns": [
+        "指标",
+        "当前值",
+        "均值",
+        "峰值",
+        "状态"
+      ]
+    },
+    {
+      "id": "traffic_top_heading",
+      "type": "heading",
+      "title": "流量对象排行",
+      "level": 2,
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "traffic_top_ip_table",
+      "type": "table",
+      "rowBuilder": "trafficTopIPs",
+      "scopes": ["global", "network"],
+      "caption": "Top 10 流量 IP",
+      "columns": [
+        "序号",
+        "IP地址",
+        "总流量(kb/s)",
+        "入流量(kb/s)",
+        "出流量(kb/s)"
+      ]
+    },
+    {
+      "id": "traffic_top_app_table",
+      "type": "table",
+      "rowBuilder": "trafficTopApps",
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 流量应用",
+      "columns": [
+        "序号",
+        "应用名称",
+        "总流量(kb/s)",
+        "入流量(kb/s)",
+        "出流量(kb/s)"
+      ]
+    },
+    {
+      "id": "traffic_drilldown_heading",
+      "type": "heading",
+      "title": "下级维度分布",
+      "level": 2,
+      "scopes": ["network", "businessGroup"]
+    },
+    {
+      "id": "traffic_drilldown_table",
+      "type": "table",
+      "rowBuilder": "trafficDrillDown",
+      "scopes": ["network", "businessGroup"],
+      "columns": [
+        "序号",
+        "对象名称",
+        "总流量",
+        "入流量",
+        "出流量"
+      ]
+    },
+    {
+      "id": "app_connections_heading",
+      "type": "heading",
+      "title": "连接数排行",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "app_connections_table",
+      "type": "table",
+      "rowBuilder": "appConnections",
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 连接数",
+      "columns": [
+        "序号",
+        "应用名称",
+        "连接数(入)",
+        "连接数(出)"
+      ]
+    },
+    {
+      "id": "app_failures_heading",
+      "type": "heading",
+      "title": "连接失败排行",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "app_failures_table",
+      "type": "table",
+      "rowBuilder": "appFailures",
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 连接失败",
+      "columns": [
+        "序号",
+        "应用名称",
+        "失败数(出)",
+        "失败数(入)"
+      ]
+    },
+    {
+      "id": "app_quality_heading",
+      "type": "heading",
+      "title": "应用质量排行",
+      "level": 2,
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "app_quality_table",
+      "type": "table",
+      "rowBuilder": "appQuality",
+      "scopes": ["application"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 丢包与延迟",
+      "columns": [
+        "序号",
+        "应用名称",
+        "丢包率(入)%",
+        "丢包率(出)%",
+        "RTT(入)ms",
+        "RTT(出)ms"
+      ]
+    },
+    {
+      "id": "traffic_narrative",
+      "type": "narrative",
+      "ruleGroup": "traffic.conclusion",
+      "mode": "first",
+      "scopes": ["global", "network", "application", "businessGroup"]
+    },
+
+    {
+      "id": "business_heading",
+      "type": "heading",
+      "title": "4 业务性能总览",
+      "level": 1,
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_requirement",
+      "type": "paragraphs",
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"],
+      "paragraphs": [
+        "以下数据展示报告周期内业务性能状况，重点关注慢访问和 HTTP 错误。"
+      ]
+    },
+    {
+      "id": "business_slow_heading",
+      "type": "heading",
+      "title": "慢访问状况",
+      "level": 2,
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_slow_chart",
+      "type": "chartSlot",
+      "title": "慢访问 Top",
+      "chartId": "business.slowAccess",
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_error_heading",
+      "type": "heading",
+      "title": "HTTP 错误状况",
+      "level": 2,
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_error_chart",
+      "type": "chartSlot",
+      "title": "HTTP 错误 Top",
+      "chartId": "business.httpErrors",
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_page_traffic_heading",
+      "type": "heading",
+      "title": "页面流量排行",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_page_traffic_table",
+      "type": "table",
+      "rowBuilder": "businessPageTraffic",
+      "scopes": ["webApplication"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 页面流量",
+      "columns": [
+        "序号",
+        "业务名称",
+        "请求流量(kb/s)",
+        "响应流量(kb/s)"
+      ]
+    },
+    {
+      "id": "business_page_views_heading",
+      "type": "heading",
+      "title": "页面访问量排行",
+      "level": 2,
+      "scopes": ["webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+    {
+      "id": "business_page_views_table",
+      "type": "table",
+      "rowBuilder": "businessPageViews",
+      "scopes": ["webApplication"],
+      "targetModes": ["withoutTarget"],
+      "caption": "Top 10 页面访问量",
+      "columns": [
+        "序号",
+        "业务名称",
+        "页面访问数"
+      ]
+    },
+    {
+      "id": "business_narrative",
+      "type": "narrative",
+      "ruleGroup": "business.conclusion",
+      "mode": "first",
+      "scopes": ["global", "webApplication"],
+      "targetModes": ["withoutTarget"]
+    },
+
+    {
+      "id": "conclusion_heading",
+      "type": "heading",
+      "title": "5 结论与建议",
+      "level": 1
+    },
+    {
+      "id": "conclusion_narrative",
+      "type": "narrative",
+      "ruleGroup": "summary.conclusion",
+      "mode": "first"
+    },
+    {
+      "id": "conclusion_recommendations",
+      "type": "dataParagraphs",
+      "label": "建议事项：",
+      "dataPath": "summary.recommendations",
+      "emptyText": "无特别建议。"
+    }
+  ]
+}

@@ -33,6 +33,28 @@ const CATEGORY_TYPE_TO_GROUP_TYPE = {
   72: 'MonInterfaceGroup',
 };
 
+// categoryType → alertCategory：detail 接口不返 category，从对象类型推导告警大类
+const CATEGORY_TYPE_TO_ALERT_CATEGORY = {
+  // 应用类 → appAlerts
+  25: 'appAlerts',  // DefinedApp
+  51: 'appAlerts',  // DefinedApp (OtherApp)
+  56: 'appAlerts',  // OtherApp
+  63: 'appAlerts',  // PageFamily
+  68: 'appAlerts',  // WebApplication
+  // 业务类 → busAlerts
+  14: 'busAlerts',  // BusinessGroup
+  27: 'busAlerts',  // ConnectedBusinessGroup
+  29: 'busAlerts',  // BusinessGroupLink
+  // 网络类 → networkAlerts
+  0:  'networkAlerts',  // TotalTraffic
+  3:  'networkAlerts',  // IPAddress
+  53: 'networkAlerts',  // IPConversation
+  58: 'networkAlerts',  // Interface
+  72: 'networkAlerts',  // MonInterfaceGroup
+  // 用户体验类 → userAlerts
+  67: 'userAlerts',     // User
+};
+
 const ALERT_TASK_TYPE_LABELS = {
   0: '静态/普通告警',
   1: '智能告警',
@@ -50,6 +72,7 @@ module.exports = {
   ALERT_CATEGORY_LABELS,
   ALERT_SEVERITY_LABELS,
   CATEGORY_TYPE_TO_GROUP_TYPE,
+  CATEGORY_TYPE_TO_ALERT_CATEGORY,
   ALERT_TASK_TYPE_LABELS,
   ALERT_LINK_TYPE_LABELS,
   TIMELINE_ORDER_WARNING,

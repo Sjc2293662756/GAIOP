@@ -17,6 +17,7 @@ const SummaryFixedTemplateService = require('./SummaryFixedTemplateService');
 const BsFaultTemplateService = require('./BsFaultTemplateService');
 const BsPerfTemplateService = require('./BsPerfTemplateService');
 const CsFaultTemplateService = require('./CsFaultTemplateService');
+const { findRegistration, listSupportedRegistrations } = require('./ReportTemplateRegistry');
 const { buildEChartsOption, renderChartPngBuffer } = require('./InspectionFixedTemplateService').__test__;
 
 function asText(value) {
@@ -454,6 +455,38 @@ function buildInspectionChildren(report = {}) {
   return children;
 }
 
+function buildGenericChildren(report = {}) {
+  const children = [
+    new Paragraph({
+      heading: HeadingLevel.TITLE,
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 260 },
+      children: [new TextRun({
+        text: asText(report.title || 'NAPM report'),
+        bold: true,
+        size: 34,
+        color: '111827'
+      })]
+    }),
+    buildKeyValue('Report type', report.reportType),
+    buildKeyValue('Data source', report.dataSource?.sourceSkill || report.dataSource?.queryService || report.dataSource?.system),
+    buildKeyValue('Time range', report.timeRange?.displayText || [report.timeRange?.start, report.timeRange?.end].filter(Boolean).join(' ~ '))
+  ];
+
+  for (const section of asArray(report.sections)) {
+    children.push(buildHeading(section.title || 'Untitled section'));
+    if (section.type === 'table') {
+      children.push(buildTable(section));
+    } else if (section.type === 'finding' || section.type === 'recommendation' || section.type === 'items') {
+      children.push(...buildList(section.items));
+    } else {
+      children.push(buildParagraph(section.content || '-'));
+    }
+    children.push(buildParagraph('', { after: 100 }));
+  }
+  return children;
+}
+
 class ReportTemplateService {
   constructor(options = {}) {
     this.inspectionFixedTemplate = options.inspectionFixedTemplate || new InspectionFixedTemplateService(options);
@@ -464,6 +497,13 @@ class ReportTemplateService {
   }
 
   async renderDocx(report = {}) {
+    const registration = findRegistration(report);
+    if (!registration) {
+      throw new Error(`REPORT_TEMPLATE_NOT_FOUND: No registered template matched reportType=${report.reportType} templateId=${report.templateId}. Supported: ${JSON.stringify(listSupportedRegistrations())}.`);
+    }
+    if (registration.renderer === 'generic') {
+      return Packer.toBuffer(new Document({ sections: [{ children: buildGenericChildren(report) }] }));
+    }
     // DIAGNOSTIC: log templateId to audit log for debugging routing
     try { require('fs').appendFileSync('/tmp/napm-render-debug.log',
       JSON.stringify({ ts: new Date().toISOString(), reportType: report.reportType, templateId: report.templateId, sections: Array.isArray(report.sections) ? report.sections.length : 'none', hasDiagnosis: !!report.diagnosis }) + '\n'); } catch (_) {}
@@ -504,6 +544,7 @@ module.exports.__test__ = {
   asText,
   normalizeRows,
   buildInspectionChildren,
+  buildGenericChildren,
   buildTrafficStatsRows,
   buildBusinessSlowRows,
   buildEvidenceRows,

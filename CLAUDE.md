@@ -37,7 +37,7 @@ WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
 
 A monolithic plugin loaded by OpenClaw Gateway. It:
 
-1. Declares 7 tool contracts in `openclaw.plugin.json`
+1. Declares 7 production tool contracts plus 2 opt-in diagnostic tool contracts in `openclaw.plugin.json`
 2. Loads each skill's `scripts/run_*.js` **in-process** via `require()` with cache-busting (`delete require.cache`) to support hot-reload on push
 3. Maintains in-memory conversation state (`napmConversationState`), result cache (90s), and guard state
 4. Applies time overrides via `before_tool_call` hook using `skills/openclaw-napm-query/src/shared/timeResolver.js`

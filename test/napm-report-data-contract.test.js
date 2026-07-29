@@ -41,6 +41,7 @@ describe('NAPM reportData contract', () => {
     expect(output.reportData).toMatchObject({
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'quick_report',
+      templateId: 'napm_generic_query_v1',
       format: 'docx',
       defaultFormat: 'docx',
       title: '丢包 Top 10',
@@ -99,7 +100,8 @@ describe('NAPM reportData contract', () => {
       forwardDisplayText: true
     });
 
-    expect(output.reportData.reportType).toBe('diagnostic_report');
+    expect(output.reportData.reportType).toBe('quick_report');
+    expect(output.reportData.templateId).toBe('napm_generic_query_v1');
     expect(output.reportData.title).toBe('应用综合分析');
     expect(output.reportData.dataSource.queryService).toBe('overview');
     expect(output.reportData.sections.some((section) => section.title === '分析模块结果')).toBe(true);

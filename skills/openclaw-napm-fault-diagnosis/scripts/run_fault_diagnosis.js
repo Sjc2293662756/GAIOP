@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const FaultDiagnosisService = require('../services/FaultDiagnosisService');
+const { applyFaultTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
 
 async function main() {
   const args = process.argv.slice(2);
@@ -34,8 +35,7 @@ async function main() {
   }
 
   try {
-    const service = new FaultDiagnosisService();
-    const result = await service.run(payload);
+    const result = await executeFaultDiagnosis(payload);
     process.stdout.write(JSON.stringify(result));
   } catch (error) {
     process.stderr.write(`[fault-diagnosis] Error: ${error.message}\n`);
@@ -61,9 +61,7 @@ async function handleSkillCall(params = {}) {
   // flowType and target are intentionally NOT passed — FaultDiagnosisService auto-detects them.
 
   try {
-    const service = new FaultDiagnosisService();
-    const result = await service.run(payload);
-    return result;
+    return await executeFaultDiagnosis(payload);
   } catch (error) {
     return {
       ok: false,
@@ -75,6 +73,28 @@ async function handleSkillCall(params = {}) {
   }
 }
 
+async function executeFaultDiagnosis(payload = {}) {
+  const normalized = normalizeFaultPayload(payload);
+  const service = new FaultDiagnosisService();
+  return service.run(normalized);
+}
+
+function normalizeFaultPayload(payload = {}, options = {}) {
+  const normalized = {
+    ...payload,
+    timeRange: payload.timeRange && typeof payload.timeRange === 'object'
+      ? { ...payload.timeRange }
+      : {}
+  };
+  const range = applyFaultTimeRange(normalized, { defaultKey: 'last24hours', nowMs: options.nowMs });
+  if (!range.ok) {
+    const error = new Error(range.message);
+    error.code = range.reason;
+    throw error;
+  }
+  return normalized;
+}
+
 // 保留 CLI 入口（本地测试用）
 if (require.main === module) {
   main().catch((err) => {
@@ -83,4 +103,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { handleSkillCall };
+module.exports = { executeFaultDiagnosis, handleSkillCall, normalizeFaultPayload };

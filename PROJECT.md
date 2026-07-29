@@ -35,7 +35,7 @@
 | openclaw-napm-fault-diagnosis | `skills/openclaw-napm-fault-diagnosis/` | 故障诊断分析（B/S业务慢/页面性能/C/S应用慢/网络慢 4种流程），自动检测 flowType |
 | echarts-chart-skill | `skills/echarts-chart-skill/` | ECharts 图表渲染（PNG 输出），供报告 skill 调用 |
 
-### OpenClaw 工具契约（7 个，定义在 openclaw.plugin.json）
+### OpenClaw 工具契约（7 个生产工具 + 2 个可选诊断工具，定义在 openclaw.plugin.json）
 
 - `napm-skill-query` — NAPM 自然语言查询
 - `napm-report-export` — 报告生成与导出
@@ -44,6 +44,11 @@
 - `napm-inspection-snapshot` — 巡检快照
 - `napm-summary` — 综述报告
 - `napm-fault-diagnosis` — 故障诊断分析
+
+开发诊断工具仅在 `NAPM_ENABLE_DEV_RESOLVER_TOOLS=true` 时注册，生产环境默认关闭：
+
+- `napm-resolve-query` — 只构造并检查 `resolvedQuery`
+- `napm-mainflow-query` — 本地解析自然语言并执行完整查询链
 
 ## 报告类型
 

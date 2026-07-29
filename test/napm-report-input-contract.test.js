@@ -53,7 +53,8 @@ describe('openclaw-napm-report input contract', () => {
 
     expect(reportData).toMatchObject({
       schema: 'openclaw_napm_report_data.v1',
-      reportType: 'diagnostic_report',
+      reportType: 'quick_report',
+      templateId: 'napm_generic_query_v1',
       format: 'docx',
       systemName: 'NAPM',
       dataSource: {
@@ -80,6 +81,7 @@ describe('openclaw-napm-report input contract', () => {
 
     expect(reportData.title).toBe('Explicit report');
     expect(reportData.reportType).toBe('quick_report');
+    expect(reportData.templateId).toBe('napm_generic_query_v1');
     expect(reportData.audit.reportInputSource).toBe('reportData');
   });
 });

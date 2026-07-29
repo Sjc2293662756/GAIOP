@@ -26,7 +26,7 @@
 - 不主动泄露内部路径、服务参数、公网地址、密钥、token、secret。
 - 做维护操作前确认任务确实需要；修改文件前先备份或归档。
 
-## 当前工具清单（7 个 OpenClaw Tool Contract，底层 9 个 Skill）
+## 当前工具清单（7 个生产 Tool，另有 2 个可选诊断 Tool Contract；底层 9 个 Skill）
 
 | 工具 | 用途 | 对应 Skill |
 |---|---|---|
@@ -39,6 +39,8 @@
 | `napm-fault-diagnosis` | 故障诊断分析（4种流程） | openclaw-napm-fault-diagnosis |
 | —（守护进程） | Syslog 告警推送 | openclaw-napm-syslog-watcher |
 | —（内部调用） | 图表渲染 | echarts-chart-skill |
+
+`napm-resolve-query` 和 `napm-mainflow-query` 仅供开发诊断，只有在 `NAPM_ENABLE_DEV_RESOLVER_TOOLS=true` 时注册；生产环境默认关闭。
 
 ## 文档职责
 

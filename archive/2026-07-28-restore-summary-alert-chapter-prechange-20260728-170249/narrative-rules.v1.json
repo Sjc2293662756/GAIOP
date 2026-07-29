@@ -1,0 +1,92 @@
+{
+  "schema": "openclaw_napm_summary_narrative_rules.v1",
+  "groups": {
+    "traffic.conclusion": [
+      {
+        "when": "summary.trafficSummary.trend.stats.missingPointCount > 0",
+        "scopes": ["global"],
+        "text": "总流量趋势存在 {{summary.trafficSummary.trend.stats.missingPointCount}} 个疑似缺失点，建议检查采集代理和镜像链路状态。"
+      },
+      {
+        "when": "summary.trafficSummary.trend.stats.missingPointCount > 0",
+        "scopes": ["webApplication", "application", "businessGroup", "network"],
+        "text": "{{scope.target.groupLabel}} 的流量趋势存在 {{summary.trafficSummary.trend.stats.missingPointCount}} 个疑似缺失点，建议检查对应时段的采集状态。"
+      },
+      {
+        "when": "summary.trafficSummary.trend.stats.spikeCount > 0",
+        "text": "流量趋势存在 {{summary.trafficSummary.trend.stats.spikeCount}} 个疑似尖峰，建议关注对应时间点的业务突增或异常流量。"
+      },
+      {
+        "when": "summary.trafficSummary.trend.stats.zeroSegmentCount > 0",
+        "text": "流量趋势存在 {{summary.trafficSummary.trend.stats.zeroSegmentCount}} 个零流量片段，应确认是否存在采集停顿。"
+      },
+      {
+        "when": "summary.trafficSummary.topIPs.length > 0",
+        "scopes": ["global"],
+        "text": "流量主要集中在 {{summary.trafficSummary.topIPs.0.IPAddress}} 等 IP。"
+      },
+      {
+        "when": "default",
+        "text": "流量趋势连续，分布正常，未发现明显异常。"
+      }
+    ],
+    "business.conclusion": [
+      {
+        "when": "summary.businessSummary.slowAccess.length > 0",
+        "scopes": ["global"],
+        "text": "慢访问方面，{{summary.businessSummary.slowAccess.0.businessName}} 慢访问占比 {{summary.businessSummary.slowAccess.0.ratio}}，建议深入排查后端服务响应时间。"
+      },
+      {
+        "when": "summary.businessSummary.slowAccess.length > 0",
+        "scopes": ["webApplication"],
+        "text": "慢访问方面，{{summary.businessSummary.slowAccess.0.businessName}} 慢访问占比 {{summary.businessSummary.slowAccess.0.ratio}}，慢访问 {{summary.businessSummary.slowAccess.0.slowCount}} 次，建议深入排查。"
+      },
+      {
+        "when": "summary.businessSummary.httpErrors.length > 0",
+        "text": "HTTP 错误方面，{{summary.businessSummary.httpErrors.0.businessName}} 存在 HTTP 400/500 错误（400: {{summary.businessSummary.httpErrors.0.http400}} 次, 500: {{summary.businessSummary.httpErrors.0.http500}} 次），建议结合应用日志定位。"
+      },
+      {
+        "when": "summary.businessSummary.slowAccess.length == 0 AND summary.businessSummary.httpErrors.length == 0",
+        "text": "本期未发现明显的慢访问或 HTTP 错误，业务性能状况良好。"
+      },
+      {
+        "when": "default",
+        "text": "业务性能详情见上方图表数据。"
+      }
+    ],
+    "summary.conclusion": [
+      {
+        "when": "summary.conclusion exists",
+        "text": "{{summary.conclusion}}"
+      },
+      {
+        "when": "summary.overallStatus == critical",
+        "scopes": ["global"],
+        "text": "综合评定：系统存在紧急级别问题，建议立即组织排查。请重点关注紧急告警项，按优先级依次处理。"
+      },
+      {
+        "when": "summary.overallStatus == critical",
+        "scopes": ["webApplication", "application", "businessGroup", "network"],
+        "text": "综合评定：{{scope.target.groupLabel}} 存在紧急级别问题，建议立即组织排查。"
+      },
+      {
+        "when": "summary.overallStatus == warning",
+        "scopes": ["global"],
+        "text": "综合评定：系统整体运行基本正常，部分指标需要关注。建议优先处理重大及以上级别的告警，并持续关注慢访问业务和流量异常点。"
+      },
+      {
+        "when": "summary.overallStatus == warning",
+        "scopes": ["webApplication", "application", "businessGroup", "network"],
+        "text": "综合评定：{{scope.target.groupLabel}} 整体运行基本正常，部分指标需要关注。"
+      },
+      {
+        "when": "summary.overallStatus == ok",
+        "text": "综合评定：报告周期内运行稳定，各维度指标正常，无需特别关注。"
+      },
+      {
+        "when": "default",
+        "text": "本期综述完成，详细数据请参阅以上各章节。"
+      }
+    ]
+  }
+}

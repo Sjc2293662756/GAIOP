@@ -28,6 +28,7 @@ const {
   explainEventFields,
 } = require('../services/AlertNotificationExplainerService');
 const { discoverForEvents } = require('../services/AlertIndirectPacketDiscoveryService');
+const { resolveExecutionTime } = require('../../openclaw-napm-query/src/shared/timeResolver');
 
 if (require.main === module) {
   main().catch((error) => {
@@ -57,14 +58,42 @@ async function main() {
 }
 
 async function executeAlertQuery(payload = {}, options = {}) {
+  const prompt = payload.prompt || payload.userQuery || (payload.alertQuery && payload.alertQuery.prompt) || '';
+  const promptTimeRange = resolveRelativeTimeRangeFromPrompt(prompt, options.nowMs);
+  const criteria = getMutableCriteria(payload);
+  const originalStart = criteria?.start || null;
+  const originalEnd = criteria?.end || null;
+  if (criteria) {
+    const range = resolveExecutionTime({
+      timeRangeKey: promptTimeRange?.key || criteria.timeRange?.key,
+      start: criteria.start,
+      end: criteria.end,
+      nowSeconds: options.nowMs ? Math.floor(options.nowMs / 1000) : undefined,
+      defaultKey: 'last1hour'
+    });
+    if (!range.ok) {
+      return buildFailureResult(null, { code: range.reason, message: range.message }, null);
+    }
+    criteria.start = range.start;
+    criteria.end = range.end;
+    criteria.timeRange = {
+      ...(criteria.timeRange && typeof criteria.timeRange === 'object' ? criteria.timeRange : {}),
+      key: range.key,
+      displayText: promptTimeRange?.displayText || criteria.timeRange?.displayText || range.displayText
+    };
+  }
+
   const validation = validateAlertQuery(payload.alertQuery || payload);
   if (!validation.ok) {
     return buildFailureResult(validation.query?.mode || null, validation.error, validation.query);
   }
 
   const { query } = validation;
-  const prompt = payload.prompt || payload.userQuery || query.prompt || '';
-  const timeRangeAdjustment = applyPromptRelativeTimeRange(query, prompt, options);
+  const timeRangeAdjustment = applyPromptRelativeTimeRange(query, prompt, {
+    ...options,
+    originalStart,
+    originalEnd,
+  });
   const categoryAdjustment = applyPromptCategoryFilter(query, prompt);
 
   if (query.mode === 'explain_notification') {
@@ -190,8 +219,8 @@ function applyPromptRelativeTimeRange(query = {}, prompt = '', options = {}) {
     return null;
   }
 
-  const originalStart = query.criteria.start || null;
-  const originalEnd = query.criteria.end || null;
+  const originalStart = options.originalStart ?? query.criteria.start ?? null;
+  const originalEnd = options.originalEnd ?? query.criteria.end ?? null;
   query.criteria.start = resolved.start;
   query.criteria.end = resolved.end;
   query.criteria.timeRange = {
@@ -212,6 +241,19 @@ function applyPromptRelativeTimeRange(query = {}, prompt = '', options = {}) {
     start: resolved.start,
     end: resolved.end,
   };
+}
+
+function getMutableCriteria(payload = {}) {
+  if (payload.alertQuery && typeof payload.alertQuery.criteria === 'object' && !Array.isArray(payload.alertQuery.criteria)) {
+    return payload.alertQuery.criteria;
+  }
+  if (payload.criteria && typeof payload.criteria === 'object' && !Array.isArray(payload.criteria)) {
+    return payload.criteria;
+  }
+  if (payload.alertQuery && typeof payload.alertQuery === 'object' && !Array.isArray(payload.alertQuery)) {
+    return payload.alertQuery;
+  }
+  return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
 }
 
 function applyPromptCategoryFilter(query = {}, prompt = '') {
@@ -295,6 +337,13 @@ function resolveRelativeTimeRangeFromPrompt(prompt = '', nowMs = Date.now()) {
     return null;
   }
 
+  if (/(今天|今日|当天|\btoday\b)/i.test(text)) {
+    return resolveExecutionTime({ timeRangeKey: 'today', nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000) });
+  }
+  if (/(昨天|昨日|\byesterday\b)/i.test(text)) {
+    return resolveExecutionTime({ timeRangeKey: 'yesterday', nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000) });
+  }
+
   const match = text.match(/(?:最近|近|过去|前)\s*([0-9一二两三四五六七八九十半]+)\s*(分钟|分|小时|时|天|日)/);
   if (!match) {
     return null;
@@ -310,15 +359,13 @@ function resolveRelativeTimeRangeFromPrompt(prompt = '', nowMs = Date.now()) {
     ? 60
     : (/天|日/.test(unit) ? 86400 : 3600);
   const durationSeconds = Math.max(60, Math.floor(amount * secondsPerUnit));
-  const end = Math.floor(Number(nowMs || Date.now()) / 1000 / 60) * 60;
-  const start = end - durationSeconds;
-
-  return {
-    key: `last_${durationSeconds}s`,
-    start,
-    end,
-    displayText: `最近${match[1]}${unit}`,
-  };
+  const range = resolveExecutionTime({
+    timeRangeKey: `last${durationSeconds}seconds`,
+    nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000)
+  });
+  return range.ok
+    ? { ...range, displayText: `最近${match[1]}${unit}` }
+    : null;
 }
 
 function parseChineseNumber(value = '') {
@@ -673,4 +720,8 @@ module.exports = {
   fetchMetricSeries,
   mergeIndirectDiscoveryResult,
   findDiscoveryMatch,
+  __test__: {
+    getMutableCriteria,
+    resolveRelativeTimeRangeFromPrompt,
+  },
 };

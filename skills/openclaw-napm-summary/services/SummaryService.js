@@ -2,6 +2,8 @@
 
 const SummaryClient = require('./SummaryClient');
 const { aggregateAlertsSummary, aggregateAlertsTimeline } = require('./SummaryClient').__test__;
+const { requireExecutionTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
+const { evaluateSettledPlan } = require('../../shared/ExecutionOutcome');
 
 // ── helpers ─────────────────────────────────────────────────────
 
@@ -377,7 +379,7 @@ class SummaryService {
    */
   async run(input = {}) {
     const scope = isPlainObject(input.scope) ? input.scope : { type: 'global', label: '全局' };
-    const timeRange = this._resolveTimeRange(input.timeRange || input, scope);
+    const timeRange = requireExecutionTimeRange(input.executionTimeRange, 'SummaryService');
 
     // All non-global/non-alert scopes support both "整体" (no target) and "单个对象" (with target).
 
@@ -392,7 +394,32 @@ class SummaryService {
       }
     } catch (_) { /* metadata service unavailable — proceed with plan as-is */ }
 
-    const rawData = await this.execute(plan);
+    const execution = await this.execute(plan);
+    const rawData = execution.data;
+    const audit = {
+      sourceSkill: 'openclaw-napm-summary',
+      requestHistory: this.client.requestHistory || [],
+      queriesPerformed: plan.map((p) => p.label),
+      outcomes: execution.outcomes,
+      completeness: execution.completeness
+    };
+
+    if (execution.completeness.status === 'failed') {
+      return {
+        ok: false,
+        partial: false,
+        schema: 'openclaw_napm_summary_result.v1',
+        scope,
+        timeRange,
+        error: {
+          code: 'SUMMARY_REQUIRED_DATA_UNAVAILABLE',
+          message: 'All required summary queries failed. No health conclusion was generated.'
+        },
+        completeness: execution.completeness,
+        failures: execution.completeness.failures,
+        audit
+      };
+    }
 
     // ── Fault diagnosis: different aggregation and output shape ──
     if (scope.type === 'fault') {
@@ -407,6 +434,7 @@ class SummaryService {
 
       return {
         ok: true,
+        partial: execution.completeness.partial,
         schema: 'openclaw_napm_fault_diagnosis_result.v1',
         scope,
         timeRange,
@@ -416,11 +444,9 @@ class SummaryService {
         businessAnalysis: faultResult.businessAnalysis,
         reportData: null, // built downstream by SummaryReportDataService
         narrationInput: this._buildFaultNarrationInput(faultResult, scope, timeRange),
-        audit: {
-          sourceSkill: 'openclaw-napm-summary',
-          requestHistory: this.client.requestHistory || [],
-          queriesPerformed: plan.map((p) => p.label)
-        }
+        completeness: execution.completeness,
+        failures: execution.completeness.failures,
+        audit
       };
     }
 
@@ -433,29 +459,31 @@ class SummaryService {
     }
 
     // Overall status
-    summary.overallStatus = computeOverallStatus(
-      summary.alertSummary || {},
-      summary.trafficSummary?.trend || {},
-      summary.businessSummary || {},
-      summary.singleBusinessAnalysis || {}
-    );
+    summary.overallStatus = execution.completeness.partial || execution.completeness.allRequiredEmpty
+      ? 'unknown'
+      : computeOverallStatus(
+        summary.alertSummary || {},
+        summary.trafficSummary?.trend || {},
+        summary.businessSummary || {},
+        summary.singleBusinessAnalysis || {}
+      );
 
     summary.reportDate = this._formatReportDate();
     summary.timeRange = timeRange;
 
     return {
       ok: true,
+      partial: execution.completeness.partial,
+      empty: execution.completeness.allRequiredEmpty,
       schema: 'openclaw_napm_summary_result.v1',
       scope,
       timeRange,
       summary,
       reportData: null, // built downstream by SummaryReportDataService
       narrationInput: this._buildNarrationInput(summary, scope, timeRange),
-      audit: {
-        sourceSkill: 'openclaw-napm-summary',
-        requestHistory: this.client.requestHistory || [],
-        queriesPerformed: plan.map((p) => p.label)
-      }
+      completeness: execution.completeness,
+      failures: execution.completeness.failures,
+      audit
     };
   }
 
@@ -725,19 +753,12 @@ class SummaryService {
   // ── Query execution ────────────────────────────────────────
 
   async execute(plan = []) {
-    const results = {};
-    // Execute in parallel
-    const settled = await Promise.allSettled(plan.map((p) => p.fn()));
-    plan.forEach((p, i) => {
-      const result = settled[i];
-      if (result.status === 'fulfilled') {
-        results[p.label] = result.value;
-      } else {
-        console.error(`[SummaryService] Query "${p.label}" failed:`, result.reason?.message || result.reason);
-        results[p.label] = null;
-      }
-    });
-    return results;
+    const normalizedPlan = plan.map((entry) => ({
+      ...entry,
+      required: entry.required !== false && entry.label !== 'applianceInfo'
+    }));
+    const settled = await Promise.allSettled(normalizedPlan.map((entry) => entry.fn()));
+    return evaluateSettledPlan(normalizedPlan, settled);
   }
 
   // ── Data aggregation ───────────────────────────────────────
@@ -1326,46 +1347,6 @@ class SummaryService {
   }
 
   // ── Helpers ────────────────────────────────────────────────
-
-  _resolveTimeRange(input = {}, scope = {}) {
-    // Fault scope: support nested faultWindow + baselineWindow
-    if (scope.type === 'fault' && isPlainObject(input.faultWindow)) {
-      const fw = input.faultWindow;
-      const bw = input.baselineWindow || null;
-      const now = Math.floor(Date.now() / 1000);
-      const faultStart = Number(fw.start) || (now - 7200);
-      const faultEnd = Number(fw.end) || now;
-      const result = {
-        start: faultStart,
-        end: faultEnd,
-        displayText: input.displayText || this._formatTimeRange(faultStart, faultEnd),
-        faultWindow: { start: faultStart, end: faultEnd },
-        baselineWindow: null
-      };
-      if (bw && (bw.start || bw.end)) {
-        const bs = Number(bw.start) || (faultStart - 86400);
-        const be = Number(bw.end) || faultStart;
-        result.baselineWindow = { start: bs, end: be };
-      }
-      return result;
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const MAX_PAST_SEC = 365 * 86400; // 1 year sanity bound
-
-    let start = Number(input.start) || 0;
-    let end = Number(input.end) || 0;
-
-    // Sanity check: reject timestamps more than 1 year in the past or 1 day in the future
-    if (!start || start < now - MAX_PAST_SEC || start > now + 86400) {
-      start = now - 86400;
-    }
-    if (!end || end < now - MAX_PAST_SEC || end > now + 86400) {
-      end = now;
-    }
-    const displayText = input.displayText || this._formatTimeRange(start, end);
-    return { start, end, displayText };
-  }
 
   _formatTimeRange(start, end) {
     const s = new Date(Number(start) * 1000);

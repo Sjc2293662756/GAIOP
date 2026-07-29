@@ -8,7 +8,7 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -84,7 +84,9 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     expect(result.blockReason).toContain('timeRange.start/timeRange.end');
   });
 
-  test('should allow minute-aligned root start/end for executable data query', async () => {
+  test('should recompute a keyed window instead of trusting stale root timestamps', async () => {
+    jest.useFakeTimers().setSystemTime(new Date(1779677977000));
+    try {
     const { hooks } = createHarness();
     const ctx = {
       channelId: 'wecom',
@@ -126,9 +128,12 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
       resolvedQuery: {
         service: 'topValues',
         start: 1779638400,
-        end: 1779724740
+        end: 1779677940
       }
     });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('tool execute should return boundary error before calling skill for malformed time contract', async () => {

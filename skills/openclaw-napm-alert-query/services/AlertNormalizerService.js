@@ -4,6 +4,7 @@ const {
   ALERT_CATEGORY_LABELS,
   ALERT_SEVERITY_LABELS,
   CATEGORY_TYPE_TO_GROUP_TYPE,
+  CATEGORY_TYPE_TO_ALERT_CATEGORY,
   ALERT_TASK_TYPE_LABELS,
   ALERT_LINK_TYPE_LABELS,
   TIMELINE_ORDER_WARNING,
@@ -34,8 +35,9 @@ function normalizeEvent(rawEvent = {}, context = {}) {
 
   return {
     id: rawEvent.id != null ? String(rawEvent.id) : null,
-    category: context.category || null,
-    categoryLabel: ALERT_CATEGORY_LABELS[context.category] || context.category || null,
+    // detail 接口不返 category，从 categoryType 推导告警大类
+    category: context.category || CATEGORY_TYPE_TO_ALERT_CATEGORY[categoryType] || null,
+    categoryLabel: ALERT_CATEGORY_LABELS[context.category || CATEGORY_TYPE_TO_ALERT_CATEGORY[categoryType]] || context.category || null,
     group,
     severity,
     severityLabel: ALERT_SEVERITY_LABELS[severity] || null,

@@ -4,4 +4,5 @@
 - [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（5层分析法、多日志关联、reqId追踪、Agent内部阶段拆解、Prompt大小分析、常见排查场景）
 - [time-handling-analysis](docs/2026-07-06-项目时间处理全面分析文档.md) — 项目时间处理全面分析：分层架构（基础工具→时间描述解析→插件主防线→契约校验→Skill防线）、时区策略（Asia/Shanghai）、各Skill时间使用方式
 - [hybrid-query-architecture](docs/2026-06-23-混合查询架构设计方案.md) — 混合查询架构设计方案：LLM轻量实体提取(~1s) + 规则引擎精确构造(9ms) + 三级回退
-- [report-empty-data-fix](docs/2026-07-08-报告数据为空问题排查与修复.md) — 报告时间覆盖铁律：before_tool_call Hook中summary/fault时间无条件覆盖+默认24h+根级别双保险（依赖timeRange.key存在的条件判断已废弃）
+- [routing-ranking-vs-diagnosis](memory/2026-07-16-routing-correction.md) — 排行查询与故障诊断的路由区分规则（用户两次纠正后的经验：哪个XX最多/排行/TopN → query，分析具体对象 → fault-diagnosis）
+- [routing-fix-plan](docs/2026-07-16-路由错误与数据捏造-根因分析与整改方案.md) — 路由错误+数据捏造根因分析与整改方案（5根因、8方案、10测试用例）

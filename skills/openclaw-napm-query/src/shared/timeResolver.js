@@ -1,31 +1,7 @@
 'use strict';
 
-/**
- * NAPM Unified Time Resolver
- *
- * Extracted from napm-openclaw-plugin.remote.js (line 2618-2648).
- * Centralizes time override logic so it can be applied from a single
- * location (before_tool_call Hook) to all 7 NAPM Tools.
- *
- * Strategy (2026-06-29): "时间描述替代时间戳" — LLM only passes
- * timeRange.key, this module unconditionally computes start/end
- * using Date.now().
- */
+const TimeRangeService = require('../../services/ResolvedQueryTimeRangeService');
 
-const DURATION_MAP = {
-  last5minutes: 300,
-  last1hour: 3600,
-  last24hours: 86400,
-  last1day: 86400,
-  last7days: 604800,
-  last30days: 2592000,
-};
-
-/**
- * Servers that require executable start/end timestamps.
- * Other servers (metricInventory, objectInventory, groups, etc.)
- * do not need time and should NOT be modified.
- */
 const NEEDS_TIME = new Set([
   'topValues',
   'averageValues',
@@ -34,86 +10,262 @@ const NEEDS_TIME = new Set([
   'topValues_multi_protocol',
 ]);
 
-/**
- * Floor a Unix timestamp (in seconds) to the nearest minute boundary.
- * @param {number} v
- * @returns {number}
- */
-function floorToMinute(v) {
-  return Math.floor(v / 60) * 60;
+const EXECUTION_TIME_RANGE = Symbol('napm.executionTimeRange');
+const SYSTEM_CLOCK = Object.freeze({
+  nowSeconds: () => Math.floor(Date.now() / 1000)
+});
+
+function floorToMinute(value) {
+  return Math.floor(Number(value) / 60) * 60;
 }
 
-/**
- * Resolve a timeRange key into concrete start/end timestamps.
- * Mirrors the inline logic from Plugin line 2628-2641 exactly.
- *
- * @param {string} timeKey - e.g. 'today', 'yesterday', 'last1hour', 'last7days'
- * @param {number} nowSeconds - current Unix time in seconds (from Date.now())
- * @returns {{ start: number, end: number, key: string }}
- */
+function toUnixSeconds(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric >= 100000000000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+}
+
+function normalizeTimeKey(value = '') {
+  return String(value || '').trim();
+}
+
+function resolveNowSeconds(options = {}) {
+  const explicitNow = toUnixSeconds(options.nowSeconds);
+  if (explicitNow != null) return explicitNow;
+
+  const clock = options.clock || SYSTEM_CLOCK;
+  if (!clock || typeof clock.nowSeconds !== 'function') {
+    throw new Error('Clock must provide nowSeconds().');
+  }
+  const nowSeconds = toUnixSeconds(clock.nowSeconds());
+  if (nowSeconds == null) {
+    throw new Error('Clock returned an invalid Unix timestamp.');
+  }
+  return nowSeconds;
+}
+
+function createExecutionTimeRange(range = {}) {
+  const start = floorToMinute(toUnixSeconds(range.start));
+  const end = floorToMinute(toUnixSeconds(range.end));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) {
+    throw new Error('ExecutionTimeRange requires minute-aligned start/end with end greater than start.');
+  }
+
+  const immutableRange = {
+    ...range,
+    ok: true,
+    start,
+    end,
+    alignment: 'minute_floor'
+  };
+  Object.defineProperty(immutableRange, EXECUTION_TIME_RANGE, { value: true });
+  return Object.freeze(immutableRange);
+}
+
+function isExecutionTimeRange(range) {
+  return Boolean(
+    range
+    && range[EXECUTION_TIME_RANGE] === true
+    && Object.isFrozen(range)
+    && Number.isFinite(Number(range.start))
+    && Number.isFinite(Number(range.end))
+    && Number(range.start) % 60 === 0
+    && Number(range.end) % 60 === 0
+    && Number(range.end) > Number(range.start)
+  );
+}
+
+function requireExecutionTimeRange(range, consumer = 'service') {
+  if (isExecutionTimeRange(range)) return range;
+  const error = new Error(`${consumer} requires an immutable ExecutionTimeRange from TimeRangeResolver.`);
+  error.code = 'EXECUTION_TIME_RANGE_REQUIRED';
+  throw error;
+}
+
+function createFaultExecutionTimeRange(range, baselineRange = null) {
+  const primaryRange = requireExecutionTimeRange(range, 'Fault time normalization');
+  const baseline = baselineRange
+    ? requireExecutionTimeRange(baselineRange, 'Fault baseline time normalization')
+    : null;
+  const immutableRange = {
+    ...primaryRange,
+    faultWindow: Object.freeze({ start: primaryRange.start, end: primaryRange.end }),
+    baselineWindow: baseline
+      ? Object.freeze({ start: baseline.start, end: baseline.end })
+      : null
+  };
+  Object.defineProperty(immutableRange, EXECUTION_TIME_RANGE, { value: true });
+  return Object.freeze(immutableRange);
+}
+
+function resolveExecutionTime(options = {}) {
+  const nowSeconds = resolveNowSeconds(options);
+  const key = normalizeTimeKey(options.timeRangeKey || options.key);
+  const start = toUnixSeconds(options.start);
+  const end = toUnixSeconds(options.end);
+
+  if (key) {
+    const resolved = TimeRangeService.resolveKnownTimeRangeKey(key, nowSeconds);
+    if (!resolved) {
+      return {
+        ok: false,
+        reason: 'unsupported_time_range_key',
+        message: `Unsupported timeRange.key: ${key}.`,
+        requestedKey: key
+      };
+    }
+    return createExecutionTimeRange({ ...resolved, requestedKey: key });
+  }
+
+  if (start != null || end != null) {
+    if (start == null || end == null || end <= start) {
+      return {
+        ok: false,
+        reason: 'invalid_explicit_time_range',
+        message: 'Explicit start/end must both be valid Unix timestamps and end must be greater than start.'
+      };
+    }
+    return createExecutionTimeRange({
+      ok: true,
+      key: 'custom',
+      displayText: '自定义时间范围',
+      start: floorToMinute(start),
+      end: floorToMinute(end),
+      source: 'explicit_execution_time',
+      alignment: 'minute_floor'
+    });
+  }
+
+  const defaultKey = normalizeTimeKey(options.defaultKey) || 'last1hour';
+  const resolved = TimeRangeService.resolveKnownTimeRangeKey(defaultKey, nowSeconds);
+  if (!resolved) {
+    throw new Error(`Invalid default time range key: ${defaultKey}`);
+  }
+  return createExecutionTimeRange({ ...resolved, requestedKey: defaultKey });
+}
+
 function resolveTimeFromKey(timeKey, nowSeconds) {
-  const now = Number.isFinite(nowSeconds) && nowSeconds > 0
-    ? nowSeconds
-    : Math.floor(Date.now() / 1000);
-
-  if (timeKey === 'today') {
-    const d = new Date(now * 1000);
-    d.setHours(0, 0, 0, 0);
-    const start = floorToMinute(d.getTime() / 1000);
-    return { start, end: floorToMinute(now), key: 'today' };
-  }
-
-  if (timeKey === 'yesterday') {
-    const d = new Date(now * 1000);
-    d.setDate(d.getDate() - 1);
-    d.setHours(0, 0, 0, 0);
-    const start = floorToMinute(d.getTime() / 1000);
-    return { start, end: floorToMinute(start + 86340), key: 'yesterday' };
-  }
-
-  const duration = DURATION_MAP[timeKey] || 3600; // default: 1 hour
-  const start = floorToMinute(now - duration);
-  const end = floorToMinute(now);
-  return { start, end, key: timeKey || 'last1hour' };
+  const resolved = resolveExecutionTime({ timeRangeKey: timeKey, nowSeconds, defaultKey: 'last1hour' });
+  if (resolved.ok) return resolved;
+  return resolveExecutionTime({ nowSeconds, defaultKey: 'last1hour' });
 }
 
-/**
- * Apply unified time override to a resolvedQuery object.
- * Unconditionally overwrites start/end based on timeRange.key
- * using Date.now(). Only applies to servers that need timestamps.
- *
- * @param {object} resolvedQuery - The resolvedQuery from tool args (mutated in place)
- * @param {number} [overrideNowMs] - Optional test override for Date.now() (in milliseconds)
- * @returns {object} The resolvedQuery (same object, mutated)
- */
 function applyTimeOverride(resolvedQuery, overrideNowMs) {
   if (!resolvedQuery || typeof resolvedQuery !== 'object') return resolvedQuery;
+  if (!NEEDS_TIME.has(String(resolvedQuery.service || '').trim())) return resolvedQuery;
 
-  const service = String(resolvedQuery.service || '').trim();
-  if (!NEEDS_TIME.has(service)) return resolvedQuery;
+  const hasNestedExecutionTime = resolvedQuery.timeRange
+    && typeof resolvedQuery.timeRange === 'object'
+    && (resolvedQuery.timeRange.start != null || resolvedQuery.timeRange.end != null);
+  if (!resolvedQuery.timeRange?.key && !resolvedQuery.start && !resolvedQuery.end && hasNestedExecutionTime) {
+    return resolvedQuery;
+  }
 
-  const nowMs = overrideNowMs || Date.now();
-  const now = Math.floor(nowMs / 1000);
-  const timeKey = String(
-    (resolvedQuery.timeRange && resolvedQuery.timeRange.key) || ''
-  ).trim() || 'last1hour';
-
-  const range = resolveTimeFromKey(timeKey, now);
+  const range = resolveExecutionTime({
+    timeRangeKey: resolvedQuery.timeRange?.key,
+    start: resolvedQuery.start,
+    end: resolvedQuery.end,
+    nowSeconds: overrideNowMs ? Math.floor(overrideNowMs / 1000) : undefined,
+    defaultKey: 'last1hour'
+  });
+  if (!range.ok) return resolvedQuery;
 
   resolvedQuery.start = range.start;
   resolvedQuery.end = range.end;
-  if (!resolvedQuery.timeRange || typeof resolvedQuery.timeRange !== 'object') {
-    resolvedQuery.timeRange = {};
-  }
-  resolvedQuery.timeRange.key = timeKey;
-
+  resolvedQuery.executionTimeRange = range;
+  resolvedQuery.timeRange = {
+    ...(resolvedQuery.timeRange && typeof resolvedQuery.timeRange === 'object' ? resolvedQuery.timeRange : {}),
+    key: range.key,
+    displayText: resolvedQuery.timeRange?.displayText || range.displayText
+  };
   return resolvedQuery;
 }
 
+function applyToolTimeRange(params = {}, options = {}) {
+  const target = params && typeof params === 'object' ? params : {};
+  const current = target.timeRange && typeof target.timeRange === 'object' ? target.timeRange : {};
+  const range = resolveExecutionTime({
+    timeRangeKey: current.key || target.timeRangeKey,
+    start: current.start ?? target.start,
+    end: current.end ?? target.end,
+    nowSeconds: options.nowMs ? Math.floor(options.nowMs / 1000) : undefined,
+    defaultKey: options.defaultKey || 'last24hours'
+  });
+  if (!range.ok) return range;
+
+  target.start = range.start;
+  target.end = range.end;
+  target.executionTimeRange = range;
+  target.timeRange = {
+    ...current,
+    key: range.key,
+    displayText: current.displayText || range.displayText,
+    start: range.start,
+    end: range.end
+  };
+  return range;
+}
+
+function applyFaultTimeRange(params = {}, options = {}) {
+  const target = params && typeof params === 'object' ? params : {};
+  const current = target.timeRange && typeof target.timeRange === 'object' ? target.timeRange : {};
+  const faultWindow = current.faultWindow && typeof current.faultWindow === 'object' ? current.faultWindow : {};
+  const range = resolveExecutionTime({
+    timeRangeKey: current.key || target.timeRangeKey,
+    start: faultWindow.start ?? current.start ?? target.start,
+    end: faultWindow.end ?? current.end ?? target.end,
+    nowSeconds: options.nowMs ? Math.floor(options.nowMs / 1000) : undefined,
+    defaultKey: options.defaultKey || 'last24hours'
+  });
+  if (!range.ok) return range;
+
+  const baselineWindow = current.baselineWindow && typeof current.baselineWindow === 'object'
+    ? current.baselineWindow
+    : null;
+  const hasBaselineStart = baselineWindow?.start;
+  const hasBaselineEnd = baselineWindow?.end;
+  let baselineRange = null;
+  if (hasBaselineStart != null || hasBaselineEnd != null) {
+    baselineRange = resolveExecutionTime({
+      start: hasBaselineStart,
+      end: hasBaselineEnd,
+      nowSeconds: options.nowMs ? Math.floor(options.nowMs / 1000) : undefined
+    });
+    if (!baselineRange.ok) return baselineRange;
+  }
+
+  const executionTimeRange = createFaultExecutionTimeRange(range, baselineRange);
+
+  target.start = executionTimeRange.start;
+  target.end = executionTimeRange.end;
+  target.executionTimeRange = executionTimeRange;
+  target.timeRange = {
+    ...current,
+    key: executionTimeRange.key,
+    displayText: current.displayText || executionTimeRange.displayText,
+    start: executionTimeRange.start,
+    end: executionTimeRange.end,
+    faultWindow: { ...faultWindow, start: executionTimeRange.start, end: executionTimeRange.end },
+    baselineWindow: executionTimeRange.baselineWindow
+      ? { ...baselineWindow, ...executionTimeRange.baselineWindow }
+      : baselineWindow
+  };
+  return executionTimeRange;
+}
+
 module.exports = {
-  DURATION_MAP,
   NEEDS_TIME,
+  SYSTEM_CLOCK,
   floorToMinute,
+  toUnixSeconds,
+  resolveNowSeconds,
+  createExecutionTimeRange,
+  isExecutionTimeRange,
+  requireExecutionTimeRange,
+  createFaultExecutionTimeRange,
+  resolveExecutionTime,
   resolveTimeFromKey,
   applyTimeOverride,
+  applyToolTimeRange,
+  applyFaultTimeRange,
 };

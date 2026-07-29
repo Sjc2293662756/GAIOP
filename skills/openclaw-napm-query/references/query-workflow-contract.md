@@ -87,7 +87,7 @@ OpenClaw should resolve time before calling this skill.
 
 Time wording:
 
-- `今天` / `today`: local-day start `00:00:00`, local-day end `23:59:00`.
+- `今天` / `today`: Shanghai local-day start `00:00:00`, end at the current server minute. Do not query a future end time.
 - `昨天` / `yesterday`: previous local-day start `00:00:00`, previous local-day end `23:59:00`.
 - `最近一小时` / `过去一小时`: `last1hour`.
 - `最近24小时` / `过去一天` / `最近一天`: `last24hours`.

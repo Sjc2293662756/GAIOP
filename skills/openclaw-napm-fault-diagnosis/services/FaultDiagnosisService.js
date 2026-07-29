@@ -3,15 +3,13 @@
 const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClient');
 const { classify, getFlow, isPerfDescription, extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
+const { requireExecutionTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
+const { evaluateSettledPlan } = require('../../shared/ExecutionOutcome');
 
 // ── helpers ─────────────────────────────────────────────────────────
 
 function isPlainObject(v) {
   return Boolean(v && typeof v === 'object' && !Array.isArray(v));
-}
-
-function nowUnix() {
-  return Math.floor(Date.now() / 1000);
 }
 
 /**
@@ -88,6 +86,21 @@ class FaultDiagnosisService {
         }
       }
       const stepResult = await this.executeStep(session, flow.steps[i]);
+      if (!stepResult.ok) {
+        return {
+          ...stepResult,
+          reportReady: false,
+          flowType: session.flowType,
+          flowLabel: session.flowLabel,
+          steps: session.completedSteps.map((step) => ({
+            stepId: step.stepId,
+            description: step.description,
+            hints: step.hints,
+            analysisFlags: step.analysisFlags,
+            completeness: step.execution?.completeness || null
+          }))
+        };
+      }
       session = stepResult.session;
     }
 
@@ -98,8 +111,13 @@ class FaultDiagnosisService {
         ? this._buildBsPerfTemplateData(session)
         : this._buildBsTemplateData(session);
 
+    const stepCompletions = session.completedSteps.map((step) => step.execution?.completeness).filter(Boolean);
+    const failures = stepCompletions.flatMap((completeness) => completeness.failures || []);
+    const partial = stepCompletions.some((completeness) => completeness.partial);
+
     return {
       ok: true,
+      partial,
       reportReady: true,
       reportData,
       flowType: session.flowType,
@@ -108,8 +126,10 @@ class FaultDiagnosisService {
         stepId: s.stepId,
         description: s.description,
         hints: s.hints,
-        analysisFlags: s.analysisFlags
-      }))
+        analysisFlags: s.analysisFlags,
+        completeness: s.execution?.completeness || null
+      })),
+      failures
     };
   }
 
@@ -132,6 +152,7 @@ class FaultDiagnosisService {
    */
   async start(input = {}) {
     const description = String(input.description || input.fault?.description || '');
+    const timeRange = requireExecutionTimeRange(input.executionTimeRange, 'FaultDiagnosisService');
 
     // ── Resolve flowType — catalog ALWAYS wins ──
     // The tool fully controls flowType and target. External input (e.g. AI guesses) is ignored.
@@ -167,7 +188,6 @@ class FaultDiagnosisService {
 
     const flow = getFlow(flowType);
     const target = resolvedTarget;
-    const timeRange = this._resolveTimeRange(input.timeRange || input);
     const faultInput = isPlainObject(input.fault) ? input.fault : {};
 
     const session = {
@@ -203,7 +223,59 @@ class FaultDiagnosisService {
 
     // Build and execute NAPM queries for this step
     const plan = this.steps.buildQueries(flowType, stepId, context);
-    const rawData = await this._executeQueries(plan.queries);
+    const execution = await this._executeQueries(plan.queries);
+    const rawData = execution.data;
+    const missingRequiredEvidence = execution.outcomes.filter(
+      (outcome) => outcome.required && outcome.status === 'empty'
+    );
+    const failedRequiredQueries = execution.completeness.status === 'failed';
+
+    if (failedRequiredQueries || missingRequiredEvidence.length > 0) {
+      const error = failedRequiredQueries
+        ? {
+          code: 'FAULT_DIAGNOSIS_REQUIRED_DATA_UNAVAILABLE',
+          message: `Required diagnostic queries failed for ${stepId}.`
+        }
+        : {
+          code: 'FAULT_DIAGNOSIS_REQUIRED_EVIDENCE_EMPTY',
+          message: `Required diagnostic evidence was empty for ${stepId}.`
+        };
+      if (missingRequiredEvidence.length > 0) {
+        execution.completeness = {
+          ...execution.completeness,
+          status: 'failed',
+          partial: false,
+          missingEvidence: missingRequiredEvidence.map((outcome) => ({
+            label: outcome.label,
+            required: true,
+            status: 'empty'
+          }))
+        };
+      }
+      session.completedSteps.push({
+        stepId,
+        flowType,
+        description: plan.description,
+        rawData,
+        analysisFlags: {},
+        hints: [],
+        execution
+      });
+      return {
+        ok: false,
+        reportReady: false,
+        session,
+        step: {
+          stepId,
+          flowType,
+          description: plan.description,
+          completeness: execution.completeness
+        },
+        error,
+        completeness: execution.completeness,
+        failures: execution.completeness.failures
+      };
+    }
 
     // Analyze data for hint matching
     const analysisFlags = this.steps.analyzeStepData(flowType, stepId, rawData, context);
@@ -212,13 +284,22 @@ class FaultDiagnosisService {
     const hints = matchHints(flowType, stepId, analysisFlags);
 
     session.completedSteps.push({
-      stepId, flowType, description: plan.description, rawData, analysisFlags, hints
+      stepId, flowType, description: plan.description, rawData, analysisFlags, hints, execution
     });
 
     const result = {
       ok: true,
+      partial: execution.completeness.partial,
       session,
-      step: { stepId, flowType, description: plan.description, analysisFlags, hints }
+      step: {
+        stepId,
+        flowType,
+        description: plan.description,
+        analysisFlags,
+        hints,
+        completeness: execution.completeness
+      },
+      failures: execution.completeness.failures
     };
 
     return result;
@@ -270,6 +351,15 @@ class FaultDiagnosisService {
    * Build the final diagnostic report data.
    */
   buildReportData(session) {
+    if (session.flowType === 'cs_app_slow') {
+      return this._buildCsTemplateData(session);
+    }
+    if (session.flowType === 'bs_page_perf') {
+      return this._buildBsPerfTemplateData(session);
+    }
+    return this._buildBsTemplateData(session);
+
+    /*
     const report = {
       schema: 'openclaw_napm_report_data.v1',
       reportType: 'diagnostic_report',
@@ -314,23 +404,14 @@ class FaultDiagnosisService {
     };
 
     return report;
+    */
   }
 
   // ── Internal ──────────────────────────────────────────────────
 
   async _executeQueries(queries = []) {
-    const results = {};
     const settled = await Promise.allSettled(queries.map((q) => q.fn()));
-    queries.forEach((q, i) => {
-      const result = settled[i];
-      if (result.status === 'fulfilled') {
-        results[q.label] = result.value;
-      } else {
-        console.error(`[FaultDiagnosis] Query "${q.label}" failed:`, result.reason?.message || result.reason);
-        results[q.label] = null;
-      }
-    });
-    return results;
+    return evaluateSettledPlan(queries, settled);
   }
 
   /**
@@ -872,39 +953,39 @@ class FaultDiagnosisService {
   }
 
   _buildReportResult(session) {
+    const failedStep = (session.completedSteps || []).find(
+      (step) => step.execution?.completeness?.status === 'failed'
+    );
+    if (failedStep) {
+      const missingEvidence = failedStep.execution.completeness.missingEvidence || [];
+      return {
+        ok: false,
+        reportReady: false,
+        session,
+        step: null,
+        error: {
+          code: missingEvidence.length > 0
+            ? 'FAULT_DIAGNOSIS_REQUIRED_EVIDENCE_EMPTY'
+            : 'FAULT_DIAGNOSIS_REQUIRED_DATA_UNAVAILABLE',
+          message: missingEvidence.length > 0
+            ? `Required diagnostic evidence was empty for ${failedStep.stepId}.`
+            : `Required diagnostic queries failed for ${failedStep.stepId}.`
+        },
+        completeness: failedStep.execution.completeness,
+        failures: failedStep.execution.completeness.failures
+      };
+    }
     return {
       ok: true,
       session,
       step: null,
       reportReady: true,
-      reportData: this.buildReportData(session)
+      reportData: session.flowType === 'cs_app_slow'
+        ? this._buildCsTemplateData(session)
+        : session.flowType === 'bs_page_perf'
+          ? this._buildBsPerfTemplateData(session)
+          : this._buildBsTemplateData(session)
     };
-  }
-
-  _resolveTimeRange(input = {}) {
-    const now = nowUnix();
-    if (isPlainObject(input.faultWindow)) {
-      const fw = input.faultWindow;
-      const bw = input.baselineWindow || null;
-      const faultStart = Number(fw.start) || (now - 7200);
-      const faultEnd = Number(fw.end) || now;
-      const result = {
-        start: faultStart,
-        end: faultEnd,
-        faultWindow: { start: faultStart, end: faultEnd },
-        baselineWindow: null
-      };
-      if (bw && (bw.start || bw.end)) {
-        result.baselineWindow = {
-          start: Number(bw.start) || (faultStart - 86400),
-          end: Number(bw.end) || faultStart
-        };
-      }
-      return result;
-    }
-    const start = Number(input.start) || (now - 86400);
-    const end = Number(input.end) || now;
-    return { start, end, faultWindow: { start, end }, baselineWindow: null };
   }
 
   _autoGranularity(start, end) {

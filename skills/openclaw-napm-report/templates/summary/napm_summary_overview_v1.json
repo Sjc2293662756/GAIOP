@@ -112,6 +112,105 @@
       ]
     },
 
+    {
+      "id": "alert_heading",
+      "type": "heading",
+      "title": "2 告警态势",
+      "level": 1,
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_requirement",
+      "type": "paragraphs",
+      "scopes": ["global", "alert"],
+      "paragraphs": [
+        "以下数据来源于 NetInside 基于AI的全流量性能分析平台告警模块，统计报告周期内产生的告警记录。"
+      ]
+    },
+    {
+      "id": "alert_stats_heading",
+      "type": "heading",
+      "title": "告警概览",
+      "level": 2,
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_stats_table",
+      "type": "table",
+      "rowBuilder": "alertCategoryStats",
+      "scopes": ["global", "alert"],
+      "columns": [
+        "告警类别",
+        "总数",
+        "紧急",
+        "重大",
+        "轻微"
+      ]
+    },
+    {
+      "id": "alert_trend_heading",
+      "type": "heading",
+      "title": "告警趋势",
+      "level": 2,
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_trend_chart",
+      "type": "chartSlot",
+      "title": "告警趋势图",
+      "chartId": "alert.timeline",
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_top_objects_heading",
+      "type": "heading",
+      "title": "Top 告警对象",
+      "level": 2,
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_top_objects_table",
+      "type": "table",
+      "rowBuilder": "alertTopObjects",
+      "scopes": ["global", "alert"],
+      "columns": [
+        "对象名称",
+        "对象类型",
+        "告警总数",
+        "紧急",
+        "重大",
+        "轻微"
+      ]
+    },
+    {
+      "id": "alert_unresolved_heading",
+      "type": "heading",
+      "title": "未恢复告警",
+      "level": 2,
+      "scopes": ["global", "alert"]
+    },
+    {
+      "id": "alert_unresolved_table",
+      "type": "table",
+      "rowBuilder": "unresolvedAlerts",
+      "scopes": ["global", "alert"],
+      "columns": [
+        "告警ID",
+        "告警名称",
+        "级别",
+        "类别",
+        "对象",
+        "开始时间"
+      ]
+    },
+    {
+      "id": "alert_narrative",
+      "type": "narrative",
+      "ruleGroup": "alert.conclusion",
+      "mode": "first",
+      "scopes": ["global", "alert"]
+    },
+
 
     {
       "id": "webapp_target_access_heading",

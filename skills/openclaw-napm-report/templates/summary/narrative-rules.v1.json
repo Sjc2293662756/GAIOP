@@ -1,6 +1,33 @@
 {
   "schema": "openclaw_napm_summary_narrative_rules.v1",
   "groups": {
+    "alert.conclusion": [
+      {
+        "when": "summary.alertSummary.critical > 0",
+        "scopes": ["global", "alert"],
+        "text": "本期存在 {{summary.alertSummary.critical}} 条紧急告警和 {{summary.alertSummary.major}} 条重大告警，需立即按告警级别和影响对象安排排查处理。"
+      },
+      {
+        "when": "summary.alertSummary.total > 10",
+        "scopes": ["global", "alert"],
+        "text": "本期告警总量 {{summary.alertSummary.total}} 条，数量偏高，建议检查是否存在集中爆发或基线漂移。"
+      },
+      {
+        "when": "summary.alertSummary.total > 0",
+        "scopes": ["global", "alert"],
+        "text": "本期告警主要集中在 {{summary.alertSummary.byCategory.0.categoryLabel}}，建议按优先级逐条确认。"
+      },
+      {
+        "when": "summary.alertSummary.total == 0",
+        "scopes": ["global", "alert"],
+        "text": "本期未产生告警，告警态势平稳。"
+      },
+      {
+        "when": "default",
+        "scopes": ["global", "alert"],
+        "text": "本期告警态势详见上方图表和表格数据。"
+      }
+    ],
     "traffic.conclusion": [
       {
         "when": "summary.trafficSummary.trend.stats.missingPointCount > 0",

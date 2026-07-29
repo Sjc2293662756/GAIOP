@@ -148,6 +148,13 @@ class SummaryClient {
       entry.statusCode = response.status;
     }
 
+    if (!response || Number(response.status) < 200 || Number(response.status) >= 300) {
+      const error = new Error(`NAPM ${type} request failed with HTTP ${response?.status || 'unknown'}.`);
+      error.code = 'NAPM_HTTP_STATUS_ERROR';
+      error.statusCode = response?.status || null;
+      throw error;
+    }
+
     return parseMaybeJson(response.data || '');
   }
 
@@ -333,28 +340,6 @@ function aggregateAlertsSummary(rawSummary) {
     topObjects,
     unresolvedAlerts
   };
-}
-
-/**
- * Format a Unix timestamp (seconds) to "YYYY-MM-DD HH:mm:ss" in Asia/Shanghai.
- */
-function formatTimestamp(seconds) {
-  const numeric = Number(seconds);
-  if (!Number.isFinite(numeric)) return String(seconds ?? '');
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
-    if (part.type !== 'literal') acc[part.type] = part.value;
-    return acc;
-  }, {});
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 function aggregateAlertsTimeline(rawTimeline) {

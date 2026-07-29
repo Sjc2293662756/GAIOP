@@ -12,6 +12,7 @@ const REPORTABLE_RESPONSE_TYPES = new Set([
   'comprehensive_analysis_with_discovery',
   'overview'
 ]);
+const { GENERIC_QUERY_TEMPLATE_ID, REPORT_SCHEMA } = require('../../openclaw-napm-report/services/ReportTemplateRegistry');
 
 function asText(value) {
   if (value === null || value === undefined) {
@@ -33,13 +34,6 @@ function compact(values = []) {
 }
 
 function normalizeReportType(responseType = '') {
-  const type = String(responseType || '').trim();
-  if (type === 'comprehensive_analysis' || type === 'comprehensive_analysis_with_discovery') {
-    return 'diagnostic_report';
-  }
-  if (type === 'topn') {
-    return 'quick_report';
-  }
   return 'quick_report';
 }
 
@@ -227,8 +221,9 @@ function buildReportData(context = {}) {
   }
 
   return {
-    schema: 'openclaw_napm_report_data.v1',
+    schema: REPORT_SCHEMA,
     reportType: normalizeReportType(responseType),
+    templateId: GENERIC_QUERY_TEMPLATE_ID,
     format: 'docx',
     defaultFormat: 'docx',
     title: buildTitle(context),

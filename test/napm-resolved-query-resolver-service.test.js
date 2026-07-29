@@ -155,7 +155,7 @@ describe('NapmResolvedQueryResolverService', () => {
       metric: 'TPIO',
       topCount: 10,
       start: 1779638400,
-      end: 1779724740,
+      end: 1779677940,
       timeRange: {
         key: 'today',
         displayText: '今天'

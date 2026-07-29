@@ -6,6 +6,7 @@
  */
 
 const DEFAULT_NOW_SECONDS = () => Math.floor(Date.now() / 1000);
+const SHANGHAI_OFFSET_SECONDS = 8 * 60 * 60;
 
 function alignToMinute(seconds = DEFAULT_NOW_SECONDS()) {
   const raw = Number(seconds) > 0 ? Math.floor(Number(seconds)) : DEFAULT_NOW_SECONDS();
@@ -34,12 +35,21 @@ function buildRelativeTimeRange(key, seconds, nowSeconds = DEFAULT_NOW_SECONDS()
 }
 
 function buildLocalDayTimeRange(key, dayOffset, nowSeconds = DEFAULT_NOW_SECONDS(), displayText = '') {
-  const day = new Date(alignToMinute(nowSeconds) * 1000);
-  day.setDate(day.getDate() + Number(dayOffset || 0));
-  day.setHours(0, 0, 0, 0);
-
-  const start = alignToMinute(Math.floor(day.getTime() / 1000));
-  const end = alignToMinute(start + (24 * 60 * 60) - 60);
+  const instant = new Date(alignToMinute(nowSeconds) * 1000);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(instant).reduce((result, part) => {
+    if (part.type !== 'literal') result[part.type] = Number(part.value);
+    return result;
+  }, {});
+  const shanghaiDayStart = Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 1000) - SHANGHAI_OFFSET_SECONDS;
+  const start = alignToMinute(shanghaiDayStart + Number(dayOffset || 0) * 24 * 60 * 60);
+  const end = Number(dayOffset || 0) === 0
+    ? alignToMinute(nowSeconds)
+    : alignToMinute(start + (24 * 60 * 60) - 60);
   return {
     key,
     displayText: displayText || key,
@@ -106,6 +116,14 @@ function resolveKnownTimeRangeKey(key = '', nowSeconds = DEFAULT_NOW_SECONDS()) 
     const days = Number(daysMatch[1]);
     if (Number.isFinite(days) && days > 0) {
       return buildRelativeTimeRange(`last${days}days`, days * 24 * 60 * 60, nowSeconds, `\u6700\u8fd1${days}\u5929`);
+    }
+  }
+
+  const secondsMatch = normalized.match(/^last(\d{1,7})seconds?$/);
+  if (secondsMatch) {
+    const seconds = Number(secondsMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return buildRelativeTimeRange(`last${seconds}seconds`, seconds, nowSeconds, `最近${seconds}秒`);
     }
   }
 
@@ -218,6 +236,7 @@ function autoCorrectTimestampIfStale(timestamp, nowSeconds = DEFAULT_NOW_SECONDS
 }
 
 module.exports = {
+  SHANGHAI_OFFSET_SECONDS,
   alignToMinute,
   buildRelativeTimeRange,
   buildLocalDayTimeRange,

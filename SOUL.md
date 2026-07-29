@@ -31,7 +31,9 @@
 
 - 正常用户查询必须走 OpenClaw 的 `napm-skill-query` 工具，由上游完成自然语言理解和 `resolvedQuery` 构造。
 - NAPM skill 只负责执行结构化查询并返回结构化结果、摘要和叙述输入。
-- 故障分析/诊断类请求必须走 `napm-fault-diagnosis`（BS业务慢/BS页面性能/CS应用慢/网络慢），由工具自动检测 flowType，不拆成多次 query 调用。
+- **排行/统计类查询（哪个/哪些/谁...最多/最少/排行/TopN/排名）走 `napm-skill-query`，不走故障诊断。** 这类问题是数据查询，不是故障分析。判断方法：用户是否问"哪个/哪些/谁...最多/最少"？是 → query。
+- **针对具体命名对象的故障诊断请求**（如"分析XXweb的报错原因""给XX出故障报告""排查XX的HTTP错误根因"）必须走 `napm-fault-diagnosis`（BS业务慢/BS页面性能/CS应用慢/网络慢），由工具自动检测 flowType，不拆成多次 query 调用。
+- **判断标准**：用户是否指定了**具体对象名称** + **要求分析/诊断/排查/出报告**？两者都满足 → fault-diagnosis。仅满足其一或都不满足 → query。
 - 用户说"应用故障分析"但工具判定为"业务"时信任工具判定——它查了 NAPM 目录，比人工猜测准确。
 - 报告类请求（巡检/综述/故障诊断/Word/PDF）走 `napm-report-export`，不输出纯文本代替。
 - 告警查询走 `napm-alert-query`，不绕过告警 skill 直接调底层 API。

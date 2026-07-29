@@ -1,3 +1,5 @@
+const { GENERIC_QUERY_TEMPLATE_ID, normalizeRegistration } = require('./ReportTemplateRegistry');
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -268,7 +270,7 @@ function buildInspectionReportData(result = {}, options = {}) {
   };
 }
 
-function buildPacketReportData(result = {}, options = {}) {
+function buildPacketReportDataLegacy(result = {}, options = {}) {
   if (!isPacketSourceResult(result)) {
     return null;
   }
@@ -433,6 +435,16 @@ function buildPacketReportData(result = {}, options = {}) {
   };
 }
 
+function buildPacketReportData(result = {}, options = {}) {
+  const reportData = buildPacketReportDataLegacy(result, options);
+  if (!reportData) return null;
+  return {
+    ...reportData,
+    reportType: 'quick_report',
+    templateId: GENERIC_QUERY_TEMPLATE_ID
+  };
+}
+
 function buildSummaryReportData(result = {}, options = {}) {
   if (!isSummarySourceResult(result)) {
     return null;
@@ -564,14 +576,14 @@ function normalizeReportInput(input = {}, options = {}) {
     });
 
   if (!sourceReportData) {
-    return {
+    return normalizeRegistration({
       ...payload,
-      reportType: payload.reportType || 'diagnostic_report',
+      reportType: payload.reportType || 'quick_report',
       format: normalizeFormat(payload.format || options.format),
       systemName: String(payload.systemName || options.systemName || '').trim() || undefined,
       faultName: String(payload.faultName || options.faultName || '').trim() || undefined,
       sections: Array.isArray(payload.sections) ? payload.sections : []
-    };
+    });
   }
 
   const format = normalizeFormat(payload.format || options.format || sourceReportData.format || sourceReportData.defaultFormat);
@@ -584,8 +596,12 @@ function normalizeReportInput(input = {}, options = {}) {
   const faultName = String(
     payload.faultName || options.faultName || sourceReportData.faultName || ''
   ).trim() || undefined;
-  return {
+  return normalizeRegistration({
     ...sourceReportData,
+    reportType: isPacketSourceResult(sourceResult) ? 'quick_report' : sourceReportData.reportType,
+    templateId: isPacketSourceResult(sourceResult)
+      ? GENERIC_QUERY_TEMPLATE_ID
+      : sourceReportData.templateId,
     format,
     systemName: systemName || sourceReportData.systemName,
     faultName: faultName || sourceReportData.faultName,
@@ -605,7 +621,7 @@ function normalizeReportInput(input = {}, options = {}) {
         ? 'reportData'
         : (isPlainObject(sourceResult?.reportData) ? 'sourceResult.reportData' : 'sourceResult.packetAnalysis')
     }
-  };
+  });
 }
 
 module.exports = {
