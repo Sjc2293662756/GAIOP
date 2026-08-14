@@ -9,7 +9,7 @@ metadata:
 
 - **地址**: `101.254.114.237`
 - **用户名**: `netinside`
-- **密码**: `netinside_123`
+- **认证**: 使用当前受控凭据，不在仓库中保存口令
 - **项目根目录**: `/home/netinside/.openclaw/workspace/`
 - **Plugin 实际加载目录**: `/home/netinside/.openclaw/extensions/napm-openclaw-plugin/`
   - `index.mjs` 是 ESM wrapper，先尝试 `require('./index.js')`，失败后回退到 `require('./napm-openclaw-plugin.remote.js')`
@@ -18,7 +18,7 @@ metadata:
 
 ## 推送方式
 
-使用 `pscp`（PuTTY SCP，路径 `/d/PUTTY/pscp`）逐个文件推送，`-pw` 传入密码。
+使用 `pscp`（PuTTY SCP，路径 `/d/PUTTY/pscp`）逐个文件推送，认证信息从受控环境获取，不写入命令模板或文档。
 
 本地项目根目录 = `g:/my_file/项目测试/观枢·智维平台-GAIOP/project_3/NAPM_skill`
 
@@ -30,12 +30,12 @@ metadata:
 
 ```bash
 # Skill 脚本 → workspace/skills/
-cd "<project>" && pscp -pw netinside_123 "<local-relative-path>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-relative-dir>/"
+cd "<project>" && pscp "<local-relative-path>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-relative-dir>/"
 
 # Plugin + manifest + timeResolver → extensions 目录 (Gateway 实际加载位置)
-cd "<project>" && pscp -pw netinside_123 "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-cd "<project>" && pscp -pw netinside_123 "openclaw.plugin.json" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-cd "<project>" && pscp -pw netinside_123 "skills/openclaw-napm-query/src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/skills/openclaw-napm-query/src/shared/"
+cd "<project>" && pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
+cd "<project>" && pscp "openclaw.plugin.json" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
+cd "<project>" && pscp "skills/openclaw-napm-query/src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/skills/openclaw-napm-query/src/shared/"
 ```
 
 目标路径末尾必须带 `/` 表示目录，否则多文件推送会报 `not a directory` 错误。
@@ -43,17 +43,18 @@ cd "<project>" && pscp -pw netinside_123 "skills/openclaw-napm-query/src/shared/
 ## 验证命令
 
 ```bash
-echo y | plink -ssh -pw netinside_123 netinside@101.254.114.237 "<command>"
+plink -ssh netinside@101.254.114.237 "<command>"
 ```
 
 - `plink` 路径: `/d/PUTTY/plink`
-- 使用 `echo y` 绕过 host key 确认
+- 首次连接应人工核对并接受 host key，不使用自动确认绕过校验
 
 ## 服务信息
 
 - OpenClaw Gateway 进程: `openclaw/index.js gateway --port 18789`
-- 服务动态加载 skills 和 plugin，推送后一般不需要重启
-- systemd 服务 `openclaw.service` 存在但当前通过 PM2/直接 node 进程运行
+- Gateway 由用户级 systemd 服务 `openclaw-gateway.service` 管理
+- extension 插件、共享运行时或查询执行链变更后，使用 `systemctl --user restart openclaw-gateway.service` 受控重启
+- 重启后检查服务状态、18789 端口、插件加载和企业微信认证，再执行生产 Skill 验收
 
 **Why:** 用户希望将本地修改推送到远端测试服务器时使用统一的推送方式。采用 pscp 而非 git push 是因为远端不具备 git 拉取条件，且推送只需覆盖被修改文件。
 

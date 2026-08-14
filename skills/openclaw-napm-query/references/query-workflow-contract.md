@@ -17,7 +17,9 @@ Use this skill for:
 
 Do not use this skill for:
 
+- Alert summary, timeline, detail, notification-field, or alert-event analysis. Use `openclaw-napm-alert-query`.
 - Packet capture or packet-file analysis. Use `openclaw-napm-packet-analysis`.
+- Analysis, diagnosis, troubleshooting, or root-cause requests for a specific named business, application, page, or IP. Use `openclaw-napm-fault-diagnosis` whether or not a report is requested.
 - Report file generation. Use `openclaw-napm-report`.
 - General system operations, deployment, shell, SQL, or unrelated Q&A.
 
@@ -31,13 +33,11 @@ Accepted input channel:
 {
   "resolvedQuery": {
     "service": "topValues",
-    "queryModeKey": "direct",
+    "queryModeKey": "topn",
     "groups": [{ "type": "IPAddress" }],
     "metrics": ["PLI", "PLO"],
     "topMetric": "PLI",
     "topCount": 10,
-    "start": 1780882620,
-    "end": 1780886220,
     "timeRange": {
       "key": "last1hour",
       "displayText": "最近一小时"
@@ -49,11 +49,12 @@ Accepted input channel:
 Rules:
 
 - `resolvedQuery.service` is required.
-- For executable data services, root-level `start` and `end` are required.
-- `timeRange` is declarative metadata only.
-- Do not place executable timestamps only in `timeRange.start` / `timeRange.end`.
-- `start` and `end` must be Unix seconds, not milliseconds.
-- `start` and `end` must be aligned to 60-second minute boundaries.
+- `prompt` and `userQuery` are optional trace fields and must never supply missing query semantics.
+- Relative-time queries provide one concrete supported `timeRange.key`; plugin `execute()` materializes root-level `start` and `end` from the server clock.
+- Fixed-time queries provide root-level Unix-second `start` and `end`, aligned to minute boundaries, with `executionOptions.timeMode="fixed"`.
+- Never place executable timestamps in `timeRange.start` / `timeRange.end`.
+- Placeholder keys such as `lastNminutes` are invalid.
+- Missing time in an executable data query is an error, not an implicit default.
 
 Bad:
 
@@ -72,8 +73,11 @@ Good:
 ```json
 {
   "service": "topValues",
-  "start": 1780882620,
-  "end": 1780886220,
+  "queryModeKey": "topn",
+  "groups": [{ "type": "IPAddress" }],
+  "metrics": ["PLI"],
+  "topMetric": "PLI",
+  "topCount": 10,
   "timeRange": {
     "key": "last1hour",
     "displayText": "最近一小时"
@@ -83,7 +87,7 @@ Good:
 
 ## 3. Time Resolution Contract
 
-OpenClaw should resolve time before calling this skill.
+OpenClaw resolves the user's time semantics to a concrete key or an explicitly fixed range. The plugin `execute()` entry owns relative timestamp materialization.
 
 Time wording:
 
@@ -91,7 +95,7 @@ Time wording:
 - `昨天` / `yesterday`: previous local-day start `00:00:00`, previous local-day end `23:59:00`.
 - `最近一小时` / `过去一小时`: `last1hour`.
 - `最近24小时` / `过去一天` / `最近一天`: `last24hours`.
-- Missing time in metric queries: default to `last1hour`, unless the active conversation context gives a more specific current time scope.
+- Missing time in metric queries: ask for or inherit an explicit time scope; never silently default in the plugin or Skill.
 
 Required hint:
 
@@ -361,6 +365,17 @@ Expected behavior:
 Do not answer from stale memory when a fresh query is required.
 
 ## 10. Boundary With Other Skills
+
+Alert boundary:
+
+- Any alert summary, alert timeline, alert detail, event-field, notification-field, or alert-event request belongs to `openclaw-napm-alert-query`.
+
+Fault-diagnosis boundary:
+
+- A request belongs to `openclaw-napm-fault-diagnosis` only when it contains both a specific named target and an analysis/diagnosis/troubleshooting/root-cause intent.
+- Global ranking/statistics such as “哪个业务报错最多” remain `openclaw-napm-query`.
+- Single-metric reads such as “支付业务的400数量” remain `openclaw-napm-query`.
+- The presence or absence of a report request does not decide fault-diagnosis routing.
 
 Packet boundary:
 

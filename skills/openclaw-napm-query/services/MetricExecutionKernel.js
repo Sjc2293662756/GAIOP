@@ -9,7 +9,6 @@ class MetricExecutionKernel {
   async execute(queryRequest = {}, helpers = {}, requestContext = null) {
     const {
       response,
-      buildGatewayRequestSummary,
       buildExecutionDataSummary
     } = helpers;
     const {
@@ -57,17 +56,24 @@ class MetricExecutionKernel {
     response.requestUrl = url;
 
     logAudit('napm_metric_api_request_built', {
-      gatewayRequest: buildGatewayRequestSummary(queryRequest),
-      params: maskSensitiveParams(fullParams),
-      url
+      service: queryRequest.service,
+      start: queryRequest.start,
+      end: queryRequest.end,
+      metricCount: String(params.metrics || '').split(',').filter(Boolean).length,
+      groupCount: Number(params.numGroups || 0),
+      groupTypes: Array.isArray(queryRequest.groups)
+        ? queryRequest.groups.map((group) => String(group?.type || '').trim()).filter(Boolean)
+        : [],
+      parameterNames: Object.keys(params)
     }, requestContext);
 
     logger.info('正在请求 metric kernel URL...');
     const rawPayload = await napmClient.get(params);
     const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
-    logger.info('请求到的数据:');
-    logger.info(typeof rawPayload === 'string' ? rawPayload.substring(0, 200) + (rawPayload.length > 200 ? '...' : '') : JSON.stringify(rawPayload).substring(0, 200));
-    logger.info('数据长度:', csvText.length);
+    logger.info('Metric kernel response received', {
+      payloadType: Array.isArray(rawPayload) ? 'array' : typeof rawPayload,
+      payloadLength: csvText.length
+    });
 
     const data = parseNapmPayload(rawPayload);
     response.ok = true;
@@ -75,7 +81,9 @@ class MetricExecutionKernel {
     response.data = data;
 
     logAudit('napm_metric_execution_completed', {
-      gatewayRequest: buildGatewayRequestSummary(queryRequest),
+      service: queryRequest.service,
+      start: queryRequest.start,
+      end: queryRequest.end,
       execution: buildExecutionDataSummary(data)
     }, requestContext);
 

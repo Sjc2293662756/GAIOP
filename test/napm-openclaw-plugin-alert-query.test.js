@@ -58,33 +58,25 @@ describe('napm-openclaw-plugin alert query integration', () => {
 
     expect(Array.from(tools.keys()).sort()).toEqual([
       'napm-alert-query',
+      'napm-fault-diagnosis',
       'napm-inspection-snapshot',
       'napm-packet-analysis',
       'napm-report-export',
-      'napm-skill-query'
+      'napm-skill-query',
+      'napm-summary'
     ]);
   });
 
-  test('should build alert executor payload from top-level criteria', () => {
-    const payload = plugin.__test__.buildAlertExecutorPayload({
-      prompt: '最近一小时有哪些紧急告警',
-      mode: 'summary',
-      criteria: {
-        start: 1781488800,
-        end: 1781492400,
-        severities: [4]
-      }
-    });
+  test('should expose top-level alert criteria in the production schema', () => {
+    const tool = plugin.__test__.createAlertQueryToolDefinition();
 
-    expect(payload.prompt).toBe('最近一小时有哪些紧急告警');
-    expect(payload.alertQuery).toMatchObject({
-      mode: 'summary',
-      criteria: {
-        start: 1781488800,
-        end: 1781492400,
-        severities: [4]
-      }
+    expect(tool.parameters.properties.mode.enum).toContain('summary');
+    expect(tool.parameters.properties.criteria.properties).toMatchObject({
+      start: { type: 'number', description: expect.any(String) },
+      end: { type: 'number', description: expect.any(String) },
+      severities: { type: 'array', items: { type: 'number' }, description: expect.any(String) }
     });
+    expect(tool.parameters.properties.alertQuery.type).toBe('object');
   });
 
   test('should expose alert query tool definition schema', () => {
@@ -94,17 +86,16 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(tool.parameters.properties.mode.enum).toContain('detail_with_timeseries');
     expect(tool.description).toContain('read-only');
     expect(String(tool.execute)).toContain('finalAnswer');
-    expect(String(tool.execute)).toContain('verbatim_final_answer');
-    expect(String(tool.execute)).not.toContain('details:');
+    expect(String(tool.execute)).toContain('displayText');
+    expect(String(tool.execute)).toContain('packetInstruction');
   });
 
   test('should instruct model to output alert finalAnswer verbatim', () => {
     const context = plugin.__test__.buildNapmRoutingSystemContext();
 
-    expect(context).toContain('Alert final-answer contract');
-    expect(context).toContain('output that text verbatim');
-    expect(context).toContain('do not regroup by severity');
-    expect(context).toContain('① 应用性能告警 — N 条');
+    expect(context).toContain('Alert answer: output result verbatim');
+    expect(context).toContain('Do NOT add');
+    expect(context).toContain('tables/bullet lists or any modification');
   });
 
   test('should render fixed alert summary table reply', () => {
@@ -138,8 +129,8 @@ describe('napm-openclaw-plugin alert query integration', () => {
     });
 
     expect(text).toContain('告警总数：2 条');
-    expect(text).toContain('🔴 紧急：1 条');
-    expect(text).toContain('🟠 重大：1 条');
+    expect(text).toContain('🔴 紧急 1 条');
+    expect(text).toContain('🟠 重大 1 条');
     expect(text).toContain('| 级别 | 类型 | 对象 | 描述 |');
     expect(text).toContain('| 🔴 紧急 | 网络性能 | 192.168.1.16 | 吞吐过高 |');
     expect(text).toContain('| 🟠 重大 | 应用性能 | HTTPS | 外部应用性能下降 |');
@@ -205,17 +196,15 @@ describe('napm-openclaw-plugin alert query integration', () => {
       events: []
     });
 
-    expect(text).toContain('最近一小时告警汇总：共 3 条');
+    expect(text).toContain('最近一小时 告警查询结果');
+    expect(text).toContain('告警总数：3 条');
     expect(text).toContain('① 网络性能告警 — 2 条');
     expect(text).toContain('🔴 紧急 1 条 | 🟢 轻微 1 条');
     expect(text).toContain('对象：192.168.1.16（吞吐过高）');
     expect(text).toContain('② 应用性能告警 — 1 条');
     expect(text).toContain('🟠 重大 1 条');
-    expect(text).toContain('- 🔴 吞吐过高触发：对象 192.168.1.16 触发了 2 次告警，持续时长为 2 分钟，开始时间为 2026-06-17 15:23。');
-    expect(text).toContain('- 🟠 外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
-    expect(text).toContain('吞吐过高触发：对象 192.168.1.16 触发了 2 次告警，持续时长为 2 分钟，开始时间为 2026-06-17 15:23。');
-    expect(text).toContain('外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
-    expect(text).not.toContain('告警总数：3 条');
+    expect(text).toContain('🔴 吞吐过高 — 192.168.1.16（紧急，持续 2 分钟）');
+    expect(text).toContain('🟠 外部应用性能下降 — HTTPS（重大，持续 1 分钟）');
   });
 
   test('should keep global alert table when an alert type is specified', () => {
@@ -376,8 +365,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(result).toBeTruthy();
     expect(result.content).toContain('① 应用性能告警 — 1 条');
     expect(result.content).toContain('② 网络异常告警 — 1 条');
-    expect(result.content).toContain('- 🔴 外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
-    expect(result.content).toContain('外部应用性能下降触发：对象 HTTPS 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).toContain('🔴 外部应用性能下降 — HTTPS（紧急，持续 1 分钟）');
     expect(result.content).not.toContain('建议进一步排查。');
   });
 
@@ -458,7 +446,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(result.content).toContain('② 安全事件告警 — 1 条');
     expect(result.content).toContain('🔴 紧急 1 条 | 🟠 重大 1 条');
     expect(result.content).toContain('🟢 轻微 1 条');
-    expect(result.content).toContain('服务器疑似遭受攻击触发：对象 101.254.114.242 触发了 1 次告警，持续时长为 1 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).toContain('🟢 服务器疑似遭受攻击 — 101.254.114.242（轻微，持续 1 分钟）');
     expect(result.content).not.toContain('🔴 紧急告警（6个）');
   });
 
@@ -534,10 +522,11 @@ describe('napm-openclaw-plugin alert query integration', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.content).toContain('最近一小时告警汇总：共 2 条');
+    expect(result.content).toContain('最近一小时 告警查询结果');
+    expect(result.content).toContain('告警总数：2 条');
     expect(result.content).toContain('① 应用性能告警 — 1 条');
     expect(result.content).toContain('② 网络异常告警 — 1 条');
-    expect(result.content).toContain('数据库上传数据异常监控触发：对象 101.254.114.237 触发了 1 次告警，持续时长为 5 分钟，开始时间为 2026-06-17 15:23。');
+    expect(result.content).toContain('🟠 数据库上传数据异常监控 — 101.254.114.237（重大，持续 5 分钟）');
     expect(result.content).not.toContain('Now: Wed');
     expect(result.content).not.toContain('当前最需要关注');
   });

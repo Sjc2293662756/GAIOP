@@ -15,17 +15,18 @@ For detailed query construction, inventory, metric-ownership, drilldown, time, f
 
 Use this skill for NAPM metric, metadata, inventory, hierarchy, and result-interpretation questions, including:
 
-- 吞吐、流量、丢包、重传、响应时间、连接数、失败数、告警等指标查询。
+- 吞吐、流量、丢包、重传、响应时间、连接数、失败数等性能指标查询。
 - TopN 排行、均值、趋势、时间序列、综合分析。
 - 系统中有哪些业务、业务组、工作组、应用、已定义应用、自动识别应用。
 - 某对象支持哪些指标、某对象支持哪些下钻路径。
 - 对 NAPM 查询结果进行中文解释和诊断。
 
-Do not use this skill for packet-capture, fault-report-generation, or report-export tasks:
+Do not use this skill for alert-event queries, packet-capture, targeted fault diagnosis, or report-export tasks:
 
+- 告警摘要、告警时间线、告警详情、告警通知字段 -> use `openclaw-napm-alert-query`.
 - 数据包、报文、抓包、原始包、pcap、cap、packetsPreview、packetsDown、DownServlet -> use `openclaw-napm-packet-analysis`.
 - 生成报告、导出 Word/docx/PDF、将以上整理成文档 -> use `openclaw-napm-report`.
-- **给指定业务/应用出故障诊断报告（如"分析XXweb的故障情况，给出故障报告"） → use `openclaw-napm-fault-diagnosis`.** 它会自动执行完整的标准化诊断流程（4xx/5xx → 页面错误Top20 → 状态码详情），然后配合 `napm-report-export` 出 Word。注意：单个报错查询（如"哪个业务报错最多""XX业务的400数量"）仍然用本 skill —— 只有"分析故障+出报告"这个组合意图才需要 fault-diagnosis。
+- **针对具体命名业务、应用、页面或 IP 的分析、诊断、排查和根因请求 -> use `openclaw-napm-fault-diagnosis`，无论用户是否要求报告。** 例如“分析支付web的报错原因”“排查 10.0.0.1 网络慢”。纯排行/统计（如“哪个业务报错最多”）和单指标读取（如“支付业务的400数量”）仍使用本 Skill。
 
 Do not reinterpret packet wording as `topValues`, `timeValues`, `averageValues`, `overview`, `BusinessGroup`, or `DefinedApp` metric queries. For example, `分析 101.254.114.238 最近一天的数据包 数据情况` is not a metric query; it belongs to `openclaw-napm-packet-analysis`.
 
@@ -40,8 +41,11 @@ Object wording contract:
 Core structured-query contract:
 
 - Production execution requires a complete `resolvedQuery`.
-- Executable data services must use root-level `start` and `end`.
-- `timeRange` is declarative metadata only; never rely on `timeRange.start` / `timeRange.end` as execution timestamps.
+- `prompt` and `userQuery` are trace-only. The plugin must never construct, complete, or repair `resolvedQuery` from their text.
+- Relative-time queries must provide a concrete supported `timeRange.key`; the plugin `execute()` entry materializes root-level `start` and `end` from the server clock.
+- Fixed-time queries must provide minute-aligned root-level `start` and `end` with `executionOptions.timeMode="fixed"`.
+- `timeRange.start` / `timeRange.end` are never execution timestamps. Placeholder keys such as `lastNminutes` are invalid.
+- Executable data queries without either a supported relative key or valid fixed timestamps must fail; do not assign a default window.
 - Object inventory uses `groups` with `queryModeKey="metadata"`.
 - Metric inventory uses `metrics` with `queryModeKey="metadata"`.
 - Drilldown hierarchy uses `drilldownCatalog`.
@@ -125,18 +129,19 @@ Prefer the OpenClaw tool command `napm-skill-query` when it is available.
 Fallback command:
 
 ```bash
-node skills/openclaw-napm-query/scripts/run_napm_query.js --resolvedQuery "{\"service\":\"groups\",\"groups\":[{\"type\":\"WebApplication\"}],\"format\":\"json\"}"
+node skills/openclaw-napm-query/scripts/run_napm_query.js --resolvedQuery "{\"service\":\"groups\",\"queryModeKey\":\"metadata\",\"groups\":[{\"type\":\"WebApplication\"}],\"format\":\"json\"}"
 ```
 
 Supported payload fields:
 
 - `resolvedQuery`: required fully resolved query
+- `prompt`: optional trace and narration text; never a query-construction input
 - `session`: optional continuation state
 - `sessionState`: optional alias for continuation state
 - `decision`: optional hint from OpenClaw
 - `intent`: optional structured intent
 
-The executor requires executable `resolvedQuery`. A missing `decision` must not block execution, but a missing `resolvedQuery` must return a Chinese fallback contract instead of exposing low-level English errors to the user.
+The executor requires executable `resolvedQuery`. A missing `decision` must not block execution, but a missing or incomplete `resolvedQuery` must return a Chinese fallback contract instead of being reconstructed from `prompt` or exposing low-level English errors to the user.
 
 ## Drilldown Hierarchy Questions
 
@@ -202,7 +207,7 @@ High-priority reminders:
 - Report-export wording belongs to `openclaw-napm-report`.
 - `报错` / `错误` / `异常` / `失败` (without explicit HTTP/connection context):
   - On `WebApplication` / `业务` → default to `PGHTTP400` + `PGHTTP500` (HTTP error codes). **Never map to `PLI`/`PLO`.**
-  - **例外：如果用户意图是"出故障分析报告"（如"分析XXweb的故障情况，给出故障报告"），不要把意图拆成多次单指标查询来拼报告——应使用 `openclaw-napm-fault-diagnosis` 一次性完成。单个报错查询不受影响。**
+  - **例外：如果用户指定了具体对象并要求分析、诊断、排查或根因定位，不要拆成多次单指标查询——应使用 `openclaw-napm-fault-diagnosis` 一次性完成；是否要求报告不影响路由。单个指标读取不受影响。**
   - On `BusinessGroup` / `业务组` → default to `RFCI` + `RFCO` (TCP connection failures).
   - On `IPAddress` / `Prefix24` → default to `RFCI` + `RFCO`.
 - `丢包` / `packet loss` → `PLI` / `PLO`. Only use these when the user explicitly mentions packet loss.

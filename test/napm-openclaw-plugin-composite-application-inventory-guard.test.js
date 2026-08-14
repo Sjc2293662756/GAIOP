@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -116,16 +116,7 @@ describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toBeTruthy();
-    expect(result.params).toMatchObject({
-      prompt,
-      userQuery: prompt,
-      resolvedQuery: {
-        service: 'groups',
-        queryModeKey: 'metadata',
-        groups: [{ type: 'CompositeApplication' }]
-      }
-    });
+    expect(result).toBeUndefined();
   });
 
   test('should reject CompositeApplication inventory resolvedQuery with argument all', async () => {

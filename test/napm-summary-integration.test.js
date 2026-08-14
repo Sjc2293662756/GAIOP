@@ -118,12 +118,20 @@ class MockSummaryClient {
   async getAlertsSummary() { return MOCK_ALERTS_SUMMARY; }
   async getAlertsTimeline() { return MOCK_ALERTS_TIMELINE; }
   async getTimeValues() { return MOCK_TRAFFIC_TREND; }
+  async getAverageValues(start, end, metrics) {
+    return [{
+      metricValues: String(metrics || '').split(',').filter(Boolean).map((metric, index) => ({
+        metric: { id: metric },
+        value: index + 1
+      }))
+    }];
+  }
   async getTopValues(start, end, metrics, topMetric, topCount, groups) {
     const groupType = groups?.[0]?.type || '';
     if (metrics?.includes?.('PGSLPCT') || metrics?.includes?.('PGNSLPGE')) return MOCK_SLOW_ACCESS;
     if (metrics?.includes?.('PGHTTP400') || metrics?.includes?.('PGHTTP500')) return MOCK_HTTP_ERRORS;
     if (groupType === 'IPAddress') return MOCK_TOP_IPS;
-    if (groupType === 'WebApplication') return MOCK_TOP_APPS;
+    if (groupType === 'WebApplication' || groupType === 'DefinedApp') return MOCK_TOP_APPS;
     return MOCK_TOP_IPS; // drillDown default
   }
   async getApplianceInfo() { return MOCK_APPLIANCE_INFO; }
@@ -159,16 +167,18 @@ describe('NAPM Summary Report — Full Integration Pipeline', () => {
       ]);
     });
 
-    test('webApplication scope → 7 queries', () => {
+    test('webApplication scope → 12 queries', () => {
       const service = makeService();
       const plan = service.plan(
         { type: 'webApplication', label: '业务', target: { groupType: 'WebApplication', groupArgument: '239web', groupLabel: '239web' } },
         { start: 1780882620, end: 1780969020 }
       );
-      expect(plan).toHaveLength(7);
+      expect(plan).toHaveLength(12);
       expect(plan.map(p => p.label)).toEqual([
-        'alertsSummary', 'alertsTimeline', 'trafficTrend',
-        'drillDown', 'slowAccess', 'httpErrors', 'applianceInfo'
+        'alertsSummary', 'alertsTimeline', 'businessOverview',
+        'accessSlowTrend', 'nodeDistribution', 'resourceSummary',
+        'requestResponseTrend', 'slowClients', 'httpCodeSummary',
+        'http400Clients', 'http500Clients', 'applianceInfo'
       ]);
     });
 

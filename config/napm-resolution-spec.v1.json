@@ -26,10 +26,11 @@
       "candidateSpec.hints.time_range"
     ],
     "constructionRules": [
-      "All executable data and analysis resolvedQuery objects must put effective execution timestamps at root-level start/end.",
-      "start/end must be Unix timestamps in seconds and aligned to 60-second minute boundaries before calling napm-skill-query.",
-      "timeRange is declarative metadata for key/display text only and must not be used as the executable timestamp carrier.",
-      "timeRange.start/timeRange.end are not accepted as substitutes for root-level start/end."
+      "Production calls must provide resolvedQuery; prompt and userQuery are trace-only and must never construct or repair a query.",
+      "Relative-time queries declare one concrete supported timeRange.key and omit start/end; napm-skill-query execute materializes root-level timestamps from the server clock.",
+      "Fixed-time queries provide root-level start/end as Unix seconds aligned to 60-second minute boundaries and set executionOptions.timeMode=fixed.",
+      "timeRange.start/timeRange.end are never accepted as executable timestamps, and placeholder keys such as lastNminutes are invalid.",
+      "Executable data and analysis requests without either a supported relative key or valid fixed start/end must fail instead of receiving a default time window."
     ],
     "defaultFormat": "json"
   },

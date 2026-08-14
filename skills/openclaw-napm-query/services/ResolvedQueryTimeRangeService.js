@@ -177,9 +177,21 @@ function resolveTimeRange(input = '', options = {}) {
     : normalizeText(input);
 
   const key = explicitKey || inferTimeRangeKeyFromPrompt(prompt);
-  const resolved = resolveKnownTimeRangeKey(key, nowSeconds) || buildLast1HourTimeRange(nowSeconds);
+  const resolved = resolveKnownTimeRangeKey(key, nowSeconds);
+  if (explicitKey && !resolved) {
+    return {
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      message: `Unsupported timeRange.key: ${explicitKey}.`,
+      key: explicitKey,
+      requestedKey: explicitKey,
+      prompt
+    };
+  }
+  const effectiveRange = resolved || buildLast1HourTimeRange(nowSeconds);
   return {
-    ...resolved,
+    ...effectiveRange,
+    ok: true,
     key,
     requestedKey: key,
     prompt

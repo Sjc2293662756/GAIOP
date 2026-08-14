@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -33,7 +33,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(resolvedQuery).toBeNull();
   });
 
-  test('should auto-resolve raw packet loss prompt before skill execution', () => {
+  test('should not auto-resolve raw packet loss prompt before skill execution', () => {
     const testApi = plugin.__test__;
     const prompt = '\u54ea\u4e2a\u5ba2\u6237\u7aefIP\u4e22\u5305\u6700\u9ad8\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
@@ -44,20 +44,14 @@ describe('napm-openclaw-plugin packet loss guard', () => {
 
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
-    expect(prepared.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      queryModeKey: 'topn',
-      metric: 'PLI',
-      metrics: ['PLI'],
-      topMetric: 'PLI',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 1,
-      start: 1779346800,
-      end: 1779350400
+    expect(prepared.resolvedQuery).toBeUndefined();
+    expect(testApi.validateResolvedQueryAgainstSpec(prepared.resolvedQuery)).toMatchObject({
+      ok: false,
+      reason: 'missing_resolved_query'
     });
   });
 
-  test('should repair model-written packet loss resolvedQuery before boundary validation', () => {
+  test('should preserve an explicit invalid metric instead of repairing it from prompt text', () => {
     const testApi = plugin.__test__;
     const prompt = '\u6700\u8fd1\u4e22\u5305\u7387\u6700\u9ad8\u7684\u524d10\u4e2aIP\u90fd\u6709\u8c01\uff1f';
     const prepared = testApi.prepareSkillExecutionArgs({
@@ -79,15 +73,14 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(prepared.resolvedQuery).toMatchObject({
       service: 'topValues',
       queryModeKey: 'topn',
-      metric: 'PLI',
-      metrics: ['PLI'],
-      topMetric: 'PLI',
+      metric: 'packetLossRate',
+      metrics: ['packetLossRate'],
+      topMetric: 'packetLossRate',
       groups: [{ type: 'IPAddress' }],
       topCount: 10,
-      start: 1780970460,
-      end: 1780974060
+      start: 1717891200,
+      end: 1717923600
     });
-    expect(testApi.validateResolvedQueryAgainstSpec(prepared.resolvedQuery).ok).toBe(true);
   });
 
   test('should normalize topValues queryModeKey to topn without replacing valid explicit query', () => {
@@ -300,7 +293,7 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     expect(result).toBeUndefined();
   });
 
-  test('before_tool_call should rewrite missing resolvedQuery to resolver output', async () => {
+  test('before_tool_call should block a missing resolvedQuery instead of invoking the resolver', async () => {
     const hooks = new Map();
     const api = {
       config: {},
@@ -344,16 +337,8 @@ describe('napm-openclaw-plugin packet loss guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result.params.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      queryModeKey: 'topn',
-      metric: 'PLI',
-      metrics: ['PLI'],
-      topMetric: 'PLI',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 10,
-      start: 1780970460,
-      end: 1780974060
-    });
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('structured resolvedQuery');
+    expect(result.blockReason).toContain('construct resolvedQuery first');
   });
 });

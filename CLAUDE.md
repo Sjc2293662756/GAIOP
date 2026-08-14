@@ -94,14 +94,14 @@ Push to remote server `101.254.114.237` via `pscp` (not git push — remote has 
 
 ```bash
 # Skill files → workspace
-/d/PUTTY/pscp -pw netinside_123 "<local-file>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-path>/"
+/d/PUTTY/pscp "<local-file>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-path>/"
 
 # Plugin → both workspace and extensions
-/d/PUTTY/pscp -pw netinside_123 "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/"
-/d/PUTTY/pscp -pw netinside_123 "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
+/d/PUTTY/pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/"
+/d/PUTTY/pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
 ```
 
-Create remote directories first with plink if needed: `echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "mkdir -p <path>"`. Full details in `memory/deploy-push-config.md`.
+Create remote directories first with plink if needed: `/d/PUTTY/plink -ssh netinside@101.254.114.237 "mkdir -p <path>"`. Obtain authentication from the controlled environment and verify the host key manually on first connection. Full details in `memory/deploy-push-config.md`.
 
 ### Key constraints
 

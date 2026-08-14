@@ -84,7 +84,7 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     expect(result.blockReason).toContain('timeRange.start/timeRange.end');
   });
 
-  test('should recompute a keyed window instead of trusting stale root timestamps', async () => {
+  test('before_tool_call should leave time materialization to tool execute', async () => {
     jest.useFakeTimers().setSystemTime(new Date(1779677977000));
     try {
     const { hooks } = createHarness();
@@ -128,12 +128,81 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
       resolvedQuery: {
         service: 'topValues',
         start: 1779638400,
-        end: 1779677940
+        end: 1779724740,
+        executionOptions: { timeMode: 'relative' }
       }
     });
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  test('tool schema requires resolvedQuery and marks prompt as trace-only', () => {
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) { tools.set(definition.name, definition); },
+      registerCommand() {},
+      registerHook() {}
+    };
+    plugin.register(api);
+
+    const definition = tools.get('napm-skill-query');
+    expect(definition.parameters.required).toEqual(['resolvedQuery']);
+    expect(definition.parameters.properties.prompt.description).toContain('traceability');
+    expect(definition.description).toContain('trace-only');
+  });
+
+  test('tool execute rejects prompt-only input without invoking semantic repair', async () => {
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) { tools.set(definition.name, definition); },
+      registerCommand() {},
+      registerHook() {}
+    };
+    plugin.register(api);
+
+    const result = await tools.get('napm-skill-query').execute('tool-prompt-only', {
+      prompt: '查询过去1小时总流量最高的5个IP'
+    });
+
+    expect(result.details.ok).toBe(false);
+    expect(result.details.error.code).toBe('UPSTREAM_RESOLVED_QUERY_INVALID');
+    expect(result.details.error.reason).toBe('missing_resolved_query');
+    expect(result.details.resolvedQuery).toBeNull();
+  });
+
+  test('tool execute rejects data queries with no declared time instead of defaulting to last1hour', async () => {
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) { tools.set(definition.name, definition); },
+      registerCommand() {},
+      registerHook() {}
+    };
+    plugin.register(api);
+
+    const result = await tools.get('napm-skill-query').execute('tool-missing-time', {
+      prompt: '查询总流量最高的5个IP',
+      resolvedQuery: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'IPAddress' }],
+        metrics: ['BYTIO'],
+        topMetric: 'BYTIO',
+        topCount: 5,
+        format: 'json'
+      }
+    });
+
+    expect(result.details.ok).toBe(false);
+    expect(result.details.error.reason).toBe('incomplete_resolved_query');
+    expect(result.details.resolvedQuerySummary.start).toBeNull();
+    expect(result.details.resolvedQuerySummary.end).toBeNull();
   });
 
   test('tool execute should return boundary error before calling skill for malformed time contract', async () => {

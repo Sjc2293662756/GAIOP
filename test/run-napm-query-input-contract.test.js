@@ -155,6 +155,53 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
+  test('should preserve the canonical fixed Top 5 parameter set at the execution boundary', async () => {
+    const input = await __test__.resolveInput({
+      prompt: '按 BYTIO 查询固定时间窗口内流量最高的 5 个 IP'
+    }, {
+      resolvedQuery: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        metric: 'BYTIO',
+        metrics: ['BYTI', 'BYTO', 'BYTIO'],
+        topMetric: 'BYTIO',
+        groups: [{ type: 'IPAddress' }],
+        topCount: 5,
+        start: 1785310980,
+        end: 1785314580,
+        format: 'json',
+        executionOptions: { timeMode: 'fixed' }
+      }
+    });
+
+    expect(input.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      metric: 'BYTIO',
+      metrics: ['BYTI', 'BYTO', 'BYTIO'],
+      topMetric: 'BYTIO',
+      groups: [{ type: 'IPAddress' }],
+      topCount: 5,
+      start: 1785310980,
+      end: 1785314580,
+      format: 'json',
+      executionOptions: { timeMode: 'fixed' }
+    });
+  });
+
+  test('should retain the full metric set in the execution summary', () => {
+    const summary = __test__.buildSummary('topValues', {
+      service: 'topValues',
+      metric: 'BYTIO',
+      metrics: ['BYTI', 'BYTO', 'BYTIO'],
+      topMetric: 'BYTIO',
+      groups: [{ type: 'IPAddress' }]
+    }, [{ object: '192.0.2.1' }]);
+
+    expect(summary.metrics).toEqual(['BYTI', 'BYTO', 'BYTIO']);
+    expect(summary.topMetric).toBe('BYTIO');
+    expect(summary.highlights).toContain('指标：BYTI,BYTO,BYTIO');
+  });
+
   test('should minute-align root resolvedQuery timestamps and strip nested timeRange execution timestamps before execution', async () => {
     process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
 

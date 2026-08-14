@@ -7,8 +7,16 @@ const { __test__: storageTest } = require('../skills/openclaw-napm-report/servic
 const { __test__: templateTest } = require('../skills/openclaw-napm-report/services/ReportTemplateService');
 
 function makeReportPayload(overrides = {}) {
+  const reportType = overrides.reportType || 'diagnostic_report';
+  const templateIds = {
+    quick_report: 'napm_generic_query_v1',
+    inspection_report: 'napm_traffic_health_inspection_v1',
+    summary_report: 'napm_summary_overview_v1',
+    diagnostic_report: 'napm_bs_fault_diagnosis_v2'
+  };
   return {
-    reportType: 'diagnostic_report',
+    reportType,
+    templateId: overrides.templateId || templateIds[reportType],
     format: 'docx',
     title: '最近一天丢包严重 IP 分析报告',
     sourceQuestion: '生成最近一天丢包最严重 IP 的分析报告',

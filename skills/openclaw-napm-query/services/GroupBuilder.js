@@ -47,7 +47,10 @@ class GroupBuilder {
     });
 
     params.numGroups = groups.length;
-    logger.info('Group parameters built', { params });
+    logger.info('Group parameters built', {
+      groupCount: groups.length,
+      groupTypes: groups.map((group) => String(group?.type || '').trim()).filter(Boolean)
+    });
     return params;
   }
 

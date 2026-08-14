@@ -83,19 +83,10 @@ function findAliasMatch(text = '', aliasMap = {}, options = {}) {
 // 向下取整到分钟，保证生成的时间窗口对齐执行层常用时间粒度。
 function alignToMinute(seconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.alignToMinute(seconds);
-  const rawEnd = Number(seconds) > 0 ? Math.floor(Number(seconds)) : Math.floor(Date.now() / 1000);
-  return Math.floor(rawEnd / 60) * 60;
 }
 
 function buildRelativeTimeRange(key, seconds, nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildRelativeTimeRange(key, seconds, nowSeconds);
-  const end = alignToMinute(nowSeconds);
-  const start = alignToMinute(end - seconds);
-  return {
-    key,
-    start,
-    end
-  };
 }
 
 function normalizeResolvedQueryTimeRange(resolvedQuery = {}) {
@@ -159,12 +150,10 @@ function validateResolvedQueryTimeContract(resolvedQuery = {}) {
 
 function buildLast1HourTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildLast1HourTimeRange(nowSeconds);
-  return buildRelativeTimeRange('last1hour', 60 * 60, nowSeconds);
 }
 
 function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildLast24HoursTimeRange(nowSeconds);
-  return buildRelativeTimeRange('last24hours', 24 * 60 * 60, nowSeconds);
 }
 
 /**
@@ -173,50 +162,20 @@ function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
  */
 function inferTimeRange(prompt = '', nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.resolveTimeRange(prompt, { nowSeconds });
-  const text = normalizeText(prompt);
-  const lower = normalizeLower(text);
-
-  const minuteMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,3})\s*(?:分钟|分|minutes?|mins?)/i);
-  if (minuteMatch) {
-    const minutes = Number(minuteMatch[1]);
-    if (Number.isFinite(minutes) && minutes > 0) {
-      return buildRelativeTimeRange(`last${minutes}minutes`, minutes * 60, nowSeconds);
-    }
-  }
-
-  if (/(?:最近|近|过去)\s*(?:一|1)\s*(?:小时|个小时)|last\s*(?:1\s*)?hour|past\s*(?:1\s*)?hour/i.test(text)) {
-    return buildLast1HourTimeRange(nowSeconds);
-  }
-
-  const hourMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,3})\s*(?:小时|个小时|hours?|hrs?)/i);
-  if (hourMatch) {
-    const hours = Number(hourMatch[1]);
-    if (Number.isFinite(hours) && hours > 0) {
-      return buildRelativeTimeRange(`last${hours}hours`, hours * 60 * 60, nowSeconds);
-    }
-  }
-
-  if (/(?:最近|近|过去)\s*(?:一|1)\s*(?:天|日)|(?:最近|过去)\s*24\s*(?:小时|个小时)|last\s*(?:1\s*)?day|past\s*(?:1\s*)?day|last\s*24\s*hours?|past\s*24\s*hours?/i.test(text)) {
-    return buildLast24HoursTimeRange(nowSeconds);
-  }
-
-  const dayMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,2})\s*(?:天|日|days?)/i);
-  if (dayMatch) {
-    const days = Number(dayMatch[1]);
-    if (Number.isFinite(days) && days > 0) {
-      return buildRelativeTimeRange(`last${days}days`, days * 24 * 60 * 60, nowSeconds);
-    }
-  }
-
-  return buildLast1HourTimeRange(nowSeconds);
 }
 
 // 从问句中推断 TopN 数量；若更像“谁最高/哪个最多”，则默认返回 1。
 function inferTopCount(prompt = '') {
   const text = normalizeText(prompt);
-  const topMatch = text.match(/(?:top|前)\s*(\d{1,2})/i);
-  if (topMatch) {
-    const parsed = Number(topMatch[1]);
+  const explicitPatterns = [
+    /\btopCount\s*[:=]\s*(\d{1,3})/i,
+    /(?:top|前)\s*(\d{1,3})/i,
+    /(?:最大|最高|最多|最小|最低|最少)(?:的)?\s*(\d{1,3})\s*(?:个|条|项|名)?/i,
+    /(?:返回|展示|列出|查询)\s*(\d{1,3})\s*(?:个|条|项|名)/i
+  ];
+  for (const pattern of explicitPatterns) {
+    const match = text.match(pattern);
+    const parsed = Number(match?.[1]);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
     }
@@ -680,7 +639,8 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     },
     ...(targetGroups.pathPlanning ? { pathPlanning: targetGroups.pathPlanning } : {}),
     executionOptions: {
-      allowPathRepair: true
+      allowPathRepair: true,
+      timeMode: 'relative'
     },
     resolutionHints: {
       constructedBy: 'openclaw_mainflow_resolver',

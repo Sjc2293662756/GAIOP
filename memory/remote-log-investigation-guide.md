@@ -13,7 +13,7 @@ metadata:
 |------|-----|
 | 地址 | `101.254.114.237` |
 | 用户名 | `netinside` |
-| 密码 | `netinside_123` |
+| 认证 | 使用当前受控凭据，不在仓库中保存口令 |
 | SSH 方式 | plink（`/d/PUTTY/plink`） |
 
 ## 日志文件体系
@@ -84,59 +84,59 @@ metadata:
 
 ### 通用 SSH 命令格式
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "<远程命令>" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "<远程命令>" 2>&1
 ```
 
 ### 按时间窗口查主日志
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'HH:MM' /tmp/openclaw/openclaw-YYYY-MM-DD.log | head -N" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'HH:MM' /tmp/openclaw/openclaw-YYYY-MM-DD.log | head -N" 2>&1
 ```
 
 ### 查用户消息到达
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'aibot_msg_callback.*content' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'aibot_msg_callback.*content' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
 ```
 
 ### 查 NAPM 边界检测
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'napm-boundary' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'napm-boundary' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
 ```
 
 ### 查 LLM 回复内容
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'openclaw.*plugin.*kind=final' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'openclaw.*plugin.*kind=final' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep 'HH:MM'" 2>&1
 ```
 
 ### 查 Agent 工具调用（API 层）
 ```bash
 # audit.log — Plugin 审计事件
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'HH:MM' /home/netinside/.openclaw/logs/audit.log | grep -v 'napm_api_request_built'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'HH:MM' /home/netinside/.openclaw/logs/audit.log | grep -v 'napm_api_request_built'" 2>&1
 
 # combined.log — Skill 内部 API 调用
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'HH:MM' /home/netinside/.openclaw/logs/combined.log | grep -E 'request|response|error|failed'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'HH:MM' /home/netinside/.openclaw/logs/combined.log | grep -E 'request|response|error|failed'" 2>&1
 ```
 
 ### 查 Gateway 启动/加载状态
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "tail -30 /home/netinside/.openclaw/logs/gateway.out.log" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "tail -30 /home/netinside/.openclaw/logs/gateway.out.log" 2>&1
 ```
 
 ### 查日志文件基本信息
 ```bash
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "ls -la /tmp/openclaw/ && echo '---' && ls -la /home/netinside/.openclaw/logs/" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "ls -la /tmp/openclaw/ && echo '---' && ls -la /home/netinside/.openclaw/logs/" 2>&1
 ```
 
 ### 【新增】按 reqId 追踪完整请求链路
 ```bash
 # Step 1: 从用户消息中提取 reqId
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'aibot_msg_callback.*content.*<关键词>' /tmp/openclaw/openclaw-YYYY-MM-DD.log" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'aibot_msg_callback.*content.*<关键词>' /tmp/openclaw/openclaw-YYYY-MM-DD.log" 2>&1
 # → 从输出的 JSON 中提取 reqId（如 lB0uXUrQRVCyaP4XKivM_AAA）
 
 # Step 2: 按 reqId 追踪该请求的所有频道层事件
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep '<reqId>' /tmp/openclaw/openclaw-YYYY-MM-DD.log" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep '<reqId>' /tmp/openclaw/openclaw-YYYY-MM-DD.log" 2>&1
 
 # Step 3: 提取该请求的关键生命周期事件
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep '<reqId>' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep -E 'aibot_msg_callback|kind=final|streamId|napm-boundary|dynamic-routing|Reply message sent|Reply ack'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep '<reqId>' /tmp/openclaw/openclaw-YYYY-MM-DD.log | grep -E 'aibot_msg_callback|kind=final|streamId|napm-boundary|dynamic-routing|Reply message sent|Reply ack'" 2>&1
 ```
 
 ### 【新增】多日志关联查询（同一时间窗口）
@@ -155,22 +155,22 @@ grep '09:4[0-5]' /home/netinside/.openclaw/logs/combined.log | grep -E 'request|
 ### 【新增】查 NAPM API 调用成功/失败
 ```bash
 # 查所有 API 请求
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'Making NAPM API request' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'Making NAPM API request' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
 
 # 查所有 API 失败（400/500）
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'NAPM API request failed' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'NAPM API request failed' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
 
 # 查所有 API 成功
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'NAPM API response received' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'NAPM API response received' /home/netinside/.openclaw/logs/combined.log | grep 'HH:MM'" 2>&1
 ```
 
 ### 【新增】查 Gateway 合约/加载问题
 ```bash
 # 合约声明检查
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'contracts.tools\|failed to load\|plugin must declare' /home/netinside/.openclaw/logs/gateway.out.log" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'contracts.tools\|failed to load\|plugin must declare' /home/netinside/.openclaw/logs/gateway.out.log" 2>&1
 
 # 插件加载状态
-echo y | /d/PUTTY/plink -ssh -pw netinside_123 netinside@101.254.114.237 "grep 'listening.*plugins\|plugin(s) failed' /home/netinside/.openclaw/logs/gateway.out.log | tail -5" 2>&1
+/d/PUTTY/plink -ssh netinside@101.254.114.237 "grep 'listening.*plugins\|plugin(s) failed' /home/netinside/.openclaw/logs/gateway.out.log | tail -5" 2>&1
 ```
 
 ## 日志字段解读

@@ -278,7 +278,11 @@ function buildSensitiveCredentialRefusalText() {
 
 function buildSummary(service, resolvedQuery, data, extra = {}) {
   const rows = Array.isArray(data) ? data : [];
-  const metric = resolvedQuery?.metric || (Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '');
+  const metrics = Array.isArray(resolvedQuery?.metrics)
+    ? resolvedQuery.metrics.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const metric = resolvedQuery?.metric || metrics[0] || '';
+  const metricText = metrics.length > 0 ? metrics.join(',') : metric;
   const topMetric = String(resolvedQuery?.topMetric || '').trim();
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
@@ -293,7 +297,7 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '未知端口流量排行',
       highlights: [
-        metric ? `查询指标：${metric}` : null,
+        metricText ? `查询指标：${metricText}` : null,
         topMetric ? `排序指标：${topMetric}` : null,
         protocolLabels.length > 0 ? `协议范围：${protocolLabels.join(' / ')}` : null
       ].filter(Boolean),
@@ -327,7 +331,7 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u672a\u67e5\u5230\u6570\u636e',
       highlights: [
-        metric ? `\u67e5\u8be2\u6307\u6807\uff1a${metric}` : null,
+        metricText ? `\u67e5\u8be2\u6307\u6807\uff1a${metricText}` : null,
         groupPath ? `\u67e5\u8be2\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: 0,
@@ -340,13 +344,13 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u6392\u884c\u7ed3\u679c',
       highlights: [
-        metric ? `\u6307\u6807\uff1a${metric}` : null,
+        metricText ? `\u6307\u6807\uff1a${metricText}` : null,
         topMetric ? `\u6392\u5e8f\u6307\u6807\uff1a${topMetric}` : null,
         groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
-      metrics: metric ? [metric] : [],
+      metrics: metrics.length > 0 ? metrics : (metric ? [metric] : []),
       topMetric: topMetric || null
     };
   }
@@ -356,12 +360,12 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u8d8b\u52bf\u7ed3\u679c',
       highlights: [
-        metric ? `\u6307\u6807\uff1a${metric}` : null,
+        metricText ? `\u6307\u6807\uff1a${metricText}` : null,
         groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
-      metrics: metric ? [metric] : []
+      metrics: metrics.length > 0 ? metrics : (metric ? [metric] : [])
     };
   }
 
@@ -369,12 +373,12 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
     mode: extra.mode || 'GO_DIRECT_QUERY',
     title: '\u67e5\u8be2\u7ed3\u679c',
     highlights: [
-      metric ? `\u6307\u6807\uff1a${metric}` : null,
+      metricText ? `\u6307\u6807\uff1a${metricText}` : null,
       groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
     ].filter(Boolean),
     rowCount: rows.length,
     empty: false,
-    metrics: metric ? [metric] : []
+    metrics: metrics.length > 0 ? metrics : (metric ? [metric] : [])
   };
 }
 
@@ -1595,8 +1599,6 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
     }
   } else if (explicitGroups.length > 0 && shouldDrilldown && shouldAllowExecutionPathRepair(query)) {
     query.groups = inferDrilldownPathFromPrompt(explicitGroups, prompt);
-  } else if (continuationInstruction.inheritGroups && explicitGroups.length === 0 && sessionGroups.length > 0) {
-    query.groups = sessionGroups;
   }
 
   if (continuationInstruction.inheritMetric && sessionState.last_metric) {
@@ -2174,7 +2176,7 @@ async function main() {
       service: 'drilldownCatalog',
       resolvedQuery,
       resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-      ok: !Boolean(hierarchyCatalogPayload?.notFound),
+      ok: !hierarchyCatalogPayload?.notFound,
       responseType: 'drilldown_catalog',
       hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null
     }, traceId);
@@ -2367,7 +2369,7 @@ async function handleSkillCall(params = {}) {
       logSkillAudit('napm_skill_execution_completed', {
         traceId, prompt, service: 'drilldownCatalog', resolvedQuery,
         resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-        ok: !Boolean(hierarchyCatalogPayload?.notFound),
+        ok: !hierarchyCatalogPayload?.notFound,
         responseType: 'drilldown_catalog',
         hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null,
       }, traceId);
@@ -2451,6 +2453,7 @@ module.exports = {
     normalizeResolvedQueryTimeRange,
     hasExplicitRankingMetricInText,
     normalizeResolvedQueryShape,
+    buildSummary,
     normalizeSessionState,
     extractContinuationInstruction,
     isDrilldownPrompt,

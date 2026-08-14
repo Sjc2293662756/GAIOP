@@ -76,6 +76,82 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.narrationStructure.items[0].metric).toBe('PLI');
   });
 
+  test('should cap TopN output at the requested count and display the sort metric', () => {
+    const rows = Array.from({ length: 10 }, (_, index) => ({
+      object: `ip-${index + 1}`,
+      values: {
+        BYTI: 100 - index,
+        BYTIO: 1000 - index * 10
+      },
+      units: {
+        BYTI: 'bytes',
+        BYTIO: 'bytes'
+      }
+    }));
+    const payload = buildOpenClawReplyContract({
+      service: 'topValues',
+      resolvedQuery: {
+        service: 'topValues',
+        metric: 'BYTI',
+        metrics: ['BYTI', 'BYTIO'],
+        topMetric: 'BYTIO',
+        topCount: 5,
+        groups: [{ type: 'IPAddress' }]
+      },
+      summary: {
+        title: '排行结果',
+        rowCount: 10,
+        topMetric: 'BYTIO'
+      },
+      rows
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.items).toHaveLength(5);
+    expect(payload.narrationStructure.items[0]).toMatchObject({
+      metric: 'BYTIO',
+      rawValue: 1000
+    });
+    expect(payload.narrationStructure).toMatchObject({
+      requestedTopCount: 5,
+      returnedRowCount: 10,
+      reachedRequestLimit: true,
+      sortMetric: 'BYTIO',
+      sortDirection: 'desc',
+      sortConsistent: true
+    });
+    expect(payload.narrationStructure.executionFacts).toMatchObject({
+      service: 'topValues',
+      metrics: ['BYTI', 'BYTIO'],
+      topMetric: 'BYTIO',
+      topCount: 5,
+      returnedRowCount: 10
+    });
+  });
+
+  test('should warn when returned rows do not follow the requested sort metric', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'topValues',
+      resolvedQuery: {
+        service: 'topValues',
+        metrics: ['BYTIO'],
+        topMetric: 'BYTIO',
+        topCount: 3,
+        groups: [{ type: 'IPAddress' }]
+      },
+      rows: [
+        { object: 'ip-1', values: { BYTIO: 100 } },
+        { object: 'ip-2', values: { BYTIO: 300 } },
+        { object: 'ip-3', values: { BYTIO: 200 } }
+      ]
+    }, { forwardDisplayText: false });
+
+    expect(payload.narrationStructure.sortConsistent).toBe(false);
+    expect(payload.narrationStructure.sortWarning).toContain('不应生成可信排名结论');
+    expect(payload.narrationStructure.explanation).toContain('不应生成可信排名结论');
+  });
+
   test('should bind TopN object labels with metric values for RFCI narration', () => {
     const payload = buildOpenClawReplyContract({
       service: 'topValues',

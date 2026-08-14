@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -152,7 +152,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       summary: {
         displayText: '系统中目前有 9 个业务系统（WebApplication，applications Type=3）'
       }
-    }, '');
+    }, testApi.getConversationKey(ctx));
 
     messageReceived({ content: '这个你是怎么查询的呢？' }, ctx);
     await beforePromptBuild({ prompt: '这个你是怎么查询的呢？' }, ctx);
@@ -208,7 +208,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       summary: {
         displayText: '系统中目前有 9 个业务系统（WebApplication，applications Type=3）。'
       }
-    }, '');
+    }, testApi.getConversationKey(ctx));
 
     messageReceived({ content: 'python过滤输出是什么？谁在做？' }, ctx);
     await beforePromptBuild({ prompt: 'python过滤输出是什么？谁在做？' }, ctx);
@@ -255,7 +255,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       summary: {
         displayText
       }
-    }, '');
+    }, testApi.getConversationKey(ctx));
 
     const result = await messageSending({
       content: '现在系统中有 9 个业务系统，通过 type=applications 接口查询，返回近期有活跃流量的业务应用。'
@@ -267,7 +267,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
     expect(result.content).not.toContain('近期有活跃流量');
   });
 
-  test('should not rewrite first-answer business inventory bypass without skill record', async () => {
+  test('should rewrite first-answer business inventory bypass without skill record', async () => {
     const { hooks } = createApiHarness();
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
@@ -288,8 +288,6 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       ].join('\n')
     }, ctx);
 
-    expect(result).toBeUndefined();
-    return;
     expect(result).toBeTruthy();
     expect(result.content).toContain('NAPM skill');
     expect(result.content).toContain('未拿到有效 skill 结果');

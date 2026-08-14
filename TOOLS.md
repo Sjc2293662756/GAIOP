@@ -38,7 +38,8 @@
 - NAPM 插件：`/home/netinside/.openclaw/extensions/napm-openclaw-plugin/napm-openclaw-plugin.remote.js`
 - 插件配置：`/home/netinside/.openclaw/extensions/napm-openclaw-plugin/openclaw.plugin.json`
 - Skills 根目录：`/home/netinside/.openclaw/workspace/skills/`
-- NAPM 审计日志：`/home/netinside/.openclaw/logs/audit.log`
+- 插件审计日志：`/home/netinside/.openclaw/logs/audit.log`
+- Query Skill 审计日志：`/home/netinside/.openclaw/workspace/skills/openclaw-napm-query/logs/audit.log`
 
 ### 各 Skill 执行器
 
@@ -56,18 +57,23 @@
 
 ## 服务维护命令
 
-Gateway 当前通过 PM2 或直接 node 进程运行（端口 18789），不依赖 systemd。
+Gateway 当前由用户级 systemd 服务 `openclaw-gateway.service` 管理，监听端口 18789。
 
 ```bash
-# 查看 Gateway 进程
-ps aux | grep -E 'openclaw|gateway' | grep -v grep
+# 查看/重启 Gateway
+systemctl --user status openclaw-gateway.service --no-pager
+systemctl --user restart openclaw-gateway.service
+
+# 查看 Gateway 日志
+journalctl --user -u openclaw-gateway.service -n 200 --no-pager
 
 # 日志排查
 tail -f /home/netinside/.openclaw/logs/*.log
 tail -f /home/netinside/.openclaw/logs/audit.log
+tail -f /home/netinside/.openclaw/workspace/skills/openclaw-napm-query/logs/audit.log
 ```
 
-重启服务前确认当前运行方式，避免误用 systemd 命令。
+重启后检查服务状态、18789 端口、插件加载和企业微信认证状态。
 
 ## 部署推送
 
@@ -77,7 +83,7 @@ tail -f /home/netinside/.openclaw/logs/audit.log
 pscp -pw <pw> "<local-file>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-path>/"
 ```
 
-推送后服务动态加载 skills 和 plugin，一般不需要重启。
+仅文档变更无需重启。修改 extension 插件、共享运行时或查询执行链后，应通过 `systemctl --user restart openclaw-gateway.service` 受控重启并完成生产 Skill 验收。
 
 ## 报告模板
 

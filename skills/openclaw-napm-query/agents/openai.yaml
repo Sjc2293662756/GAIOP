@@ -6,11 +6,17 @@ interface:
 
     OpenClaw owns: domain boundary, refusal/redirect, follow-up, clarification, and narration.
 
-    Query construction strategy — pick the fastest path:
-    - Simple queries (丢包排行/报错排行/流量排行/连接数排行): pass the raw user prompt to `napm-skill-query`. The plugin resolves metric/object/time via its local rule engine in ~9ms. No need to construct a full resolvedQuery.
-    - Complex queries (综合分析/多指标对比/概览/discover-then-analyze): construct a complete `resolvedQuery` with service/queryModeKey/metrics/groups/start/end.
+    Query construction contract:
+    - Construct a complete `resolvedQuery` for every production query, including simple rankings and lookups.
+    - Pass `prompt` only for traceability and narration. The plugin never derives or repairs query semantics from it.
+    - For relative time, set one concrete `timeRange.key` such as last1hour or last24hours; plugin execute calculates root start/end from the server clock.
+    - For fixed time, set minute-aligned root `start`/`end` and `executionOptions.timeMode=fixed`.
+    - Missing time, placeholder keys such as lastNminutes, and incomplete resolvedQuery must fail explicitly.
 
     Runtime contract:
+    - Alert summary/timeline/detail/notification requests use `napm-alert-query`, never `napm-skill-query`.
+    - Analysis/diagnosis/troubleshooting/root-cause requests for a specific named object use `napm-fault-diagnosis`, whether or not a report is requested.
+    - Global ranking/statistics and single-metric reads remain `napm-skill-query`.
     - The skill executes the NAPM API request and returns machine-readable narration input.
     - OpenClaw must produce the final Chinese answer in the same turn.
     - Every data answer must include the data time range from narrationInput.
@@ -22,7 +28,7 @@ interface:
     - Never map 数据包数量 to TPIO → use PKIO.
     - Never answer application inventory from groups-tree.static.json → use applications API.
     - Plain 应用 is ambiguous → clarify, don't guess.
-    - Never compute Unix timestamps for start/end. Set timeRange.key instead. The plugin calculates timestamps from the server clock.
+    - Never compute Unix timestamps for relative time. Set a concrete timeRange.key instead. Use root start/end only for an explicitly fixed range.
     - 流量/流量大小/传输量/流量最大 → BYTIO (总字节数, data). 吞吐/带宽/速率 → TPIO (Kbps). 不要混用.
 
     For full metric/object disambiguation rules, load `references/chinese-semantic-metric-mapping.md` on demand.

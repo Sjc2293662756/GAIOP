@@ -3,8 +3,10 @@ const path = require('node:path');
 const ConversationOperationState = require('./plugin/ConversationOperationState');
 
 const NAPM_DIRECT_SKILL_MODE = true;
+const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
+const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
 const OPENCLAW_SKILLS_ROOT = process.env.OPENCLAW_SKILLS_ROOT
-  || path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
+  || (fs.existsSync(LOCAL_SKILLS_ROOT) ? LOCAL_SKILLS_ROOT : DEPLOYED_SKILLS_ROOT);
 
 // ── In-process Skill loaders (2026-07-07) ─────────────────────────────────
 // 替代 execFileAsync subprocess spawn，改为同进程 require() 调用。
@@ -369,7 +371,28 @@ function isAlertSkillMetaFollowUpPrompt(prompt = '', previousState = null) {
   );
 }
 
-function isFaultDiagnosisPrompt(prompt = '') {
+function hasSpecificFaultDiagnosisTarget(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) return false;
+  if (/(?:^|[^\d])(?:\d{1,3}\.){3}\d{1,3}(?:[^\d]|$)/.test(text)) return true;
+  if (/[“"'‘][^”"'’\n]{2,64}[”"'’]/.test(text)) return true;
+
+  const patterns = [
+    /(?:分析|诊断|排查|检查|查看|定位|针对|给)\s*(?:一下\s*)?([^，。！？\n]{1,40}?)(?:web|业务|应用|网站|系统|页面)/i,
+    /([A-Za-z0-9\u4e00-\u9fa5._-]{2,40}?)(?:web|业务|应用|网站|系统|页面)(?:的)?(?:故障|错误|报错|异常|加载慢|响应慢|打开慢|卡顿|延时|延迟|性能)/i
+  ];
+  const genericTargets = /^(?:某个?|这个|当前|所有|全部|任意|哪个|哪些|什么|整体|全局|网络|页面|业务|应用|系统)$/i;
+  return patterns.some((pattern) => {
+    const match = text.match(pattern);
+    if (!match) return false;
+    const candidate = String(match[1] || '')
+      .replace(/^(?:请|帮我|麻烦|分析|诊断|排查|检查|查看|定位|针对|给|一下)+/i, '')
+      .trim();
+    return candidate.length >= 2 && !genericTargets.test(candidate);
+  });
+}
+
+function isFaultDiagnosisPrompt(prompt = '', options = {}) {
   const text = String(prompt || '').trim();
   if (!text) return false;
 
@@ -385,9 +408,9 @@ function isFaultDiagnosisPrompt(prompt = '') {
   // 特征：疑问词 + 排序词，但没有指定具体对象名 + 分析/诊断/排查意图。
   // 这类查询应走 napm-skill-query，不应被 isFaultDiagnosisPrompt 拦截。
   var hasRankingPattern = /(?:哪个|哪些|谁|什么|几个).*(?:最多|最高|最少|最低|最大|最小|排行|排名|Top\s*N|前\d+)/i.test(text);
-  var hasDiagnosisIntent = /(?:分析一下|分析这个|诊断一下|排查一下|出.*报告|给.*报告|故障报告|根因|原因分析)/i.test(text);
+  var hasStrongDiagnosisIntent = /(?:分析一下|分析这个|诊断一下|排查一下|出.*报告|给.*报告|故障报告|根因|原因分析)/i.test(text);
 
-  if (hasRankingPattern && !hasDiagnosisIntent) {
+  if (hasRankingPattern && !hasStrongDiagnosisIntent) {
     return false;  // 纯排行查询，不是 fault diagnosis
   }
 
@@ -396,42 +419,16 @@ function isFaultDiagnosisPrompt(prompt = '') {
     return false;
   }
 
-  // Direct mentions of fault/diagnosis/error analysis
-  // 注：[45]xx 已移除 — "4xx"/"5xx" 在排行查询中出现太频繁（如"今天哪个业务的400报错最多？"），
-  // 不应单独作为故障诊断触发条件。HTTP 状态码相关的故障诊断由下方更精确的模式匹配。
-  if (/(?:故障分析|故障诊断|故障报告|错误分析|报错分析|页面错误|HTTP\s*[45]\d{2})/i.test(text)) {
-    return true;
-  }
+  const hasDiagnosisIntent = Boolean(
+    /(?:故障分析|故障诊断|故障报告|错误分析|报错分析|原因分析|根因|诊断|排查)/i.test(text)
+    || /(?:分析|查看|检查|排查|定位|给出).*(?:故障|错误|报错|异常|慢|延时|延迟|性能|问题|原因|报告)/i.test(text)
+    || /(?:页面性能|性能分析|性能诊断|页面加载|加载慢|页面慢|访问慢|响应慢|打开慢|延时分析|卡顿|转圈|首屏|白屏|渲染慢|servBusyTime|netBusyTime|pageTime|加载时间|用户体验时间)/i.test(text)
+    || /(?:服务器|服务端).*(?:网络).*(?:慢|延时|延迟|问题)/i.test(text)
+    || /(?:延时|延迟).*(?:拆分|分解|成分|来源|服务端|服务器|网络)/i.test(text)
+  );
+  if (!hasDiagnosisIntent) return false;
 
-  // "XXweb 的 400/500 报错" or "XXweb 的错误情况"
-  if (/(?:web|业务|应用|系统).*(?:故障|错误|报错|异常|400|500)[^，。！？\n]{0,30}(?:分析|报告|诊断|排查|情况)/i.test(text)) {
-    return true;
-  }
-
-  // "分析XXweb的故障" or "排查XXweb报错"
-  if (/(?:分析|查看|检查|排查|给出).*(?:web|业务|应用).*(?:故障|错误|报错|异常|情况|报告)/i.test(text)) {
-    return true;
-  }
-
-  // PgPerf: page performance analysis (页面性能分析)
-  if (/(?:页面性能|性能分析|性能诊断|页面加载|加载慢|页面慢|访问慢|响应慢|打开慢|延时分析|卡顿|转圈|首屏|白屏|渲染慢|servBusyTime|netBusyTime|pageTime|加载时间|用户体验时间)/i.test(text)) {
-    return true;
-  }
-
-  // "XXweb加载慢" / "XX业务页面延时" / "服务端还是网络慢"
-  if (/(?:web|业务|网站|应用|页面).*(?:加载慢|延时|延迟|响应慢|打开慢|卡顿|转圈|性能)[^，。！？\n]{0,30}(?:分析|报告|诊断|排查|原因|情况|问题)/i.test(text)) {
-    return true;
-  }
-
-  // 延时根因定位: "服务器慢还是网络慢" / "服务端还是网络" / "延时拆分"
-  if (/(?:服务器|服务端).*(?:网络).*(?:慢|延时|延迟|问题)/i.test(text)) {
-    return true;
-  }
-  if (/(?:延时|延迟).*(?:拆分|分解|成分|来源|服务端|服务器|网络)/i.test(text)) {
-    return true;
-  }
-
-  return false;
+  return Boolean(options.hasExplicitTarget || hasSpecificFaultDiagnosisTarget(text));
 }
 
 function isSummaryPrompt(prompt = '') {
@@ -1105,12 +1102,127 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     next.service = serviceName;
   }
 
-  const normalizedQueryModeKey = normalizeQueryModeKeyForService(serviceName, next.queryModeKey);
+  const defaultQueryModeByService = {
+    topValues: 'topn',
+    topValues_multi_protocol: 'topn',
+    averageValues: 'average',
+    timeValues: 'timeseries',
+    overview: 'overview',
+    groups: 'metadata',
+    metrics: 'metadata',
+    drilldownCatalog: 'metadata',
+    security_refusal: 'decision'
+  };
+  const normalizedQueryModeKey = normalizeQueryModeKeyForService(
+    serviceName,
+    next.queryModeKey || defaultQueryModeByService[serviceName]
+  );
   if (normalizedQueryModeKey) {
     next.queryModeKey = normalizedQueryModeKey;
   }
 
+  if (!Array.isArray(next.groups) || next.groups.length === 0) {
+    const declaredCount = Number(next.numGroups);
+    const indexedGroupFields = Object.keys(next)
+      .map((key) => key.match(/^groupType(\d+)$/i))
+      .filter(Boolean)
+      .map((match) => Number(match[1]));
+    const groupCount = Number.isInteger(declaredCount) && declaredCount > 0
+      ? declaredCount
+      : Math.max(0, ...indexedGroupFields);
+    const groups = [];
+    for (let index = 1; index <= groupCount; index += 1) {
+      const type = String(next[`groupType${index}`] || '').trim();
+      if (!type) continue;
+      const argument = next[`groupArgument${index}`];
+      groups.push(argument == null || String(argument).trim() === ''
+        ? { type }
+        : { type, argument });
+    }
+    if (groups.length > 0) {
+      next.groups = groups;
+    }
+  }
+
+  const metricList = Array.isArray(next.metrics)
+    ? next.metrics
+    : (typeof next.metrics === 'string' ? next.metrics.split(',') : []);
+  const normalizedMetrics = [...new Set(metricList
+    .map((metric) => String(metric || '').trim())
+    .filter(Boolean))];
+  if (normalizedMetrics.length > 0) {
+    next.metrics = normalizedMetrics;
+  } else if (String(next.metric || '').trim()) {
+    next.metrics = [String(next.metric).trim()];
+  }
+
+  if (String(next.topMetric || '').trim()) {
+    next.topMetric = String(next.topMetric).trim();
+  }
+  if (!String(next.metric || '').trim()) {
+    next.metric = next.topMetric || next.metrics?.[0] || next.metric;
+  } else {
+    next.metric = String(next.metric).trim();
+  }
+  if (serviceName === 'topValues' && !next.topMetric) {
+    next.topMetric = next.metric || next.metrics?.[0];
+  }
+
+  ['start', 'end', 'topCount', 'granularity'].forEach((field) => {
+    if (next[field] == null || next[field] === '') return;
+    const numeric = Number(next[field]);
+    if (Number.isFinite(numeric)) {
+      next[field] = numeric;
+    }
+  });
+
+  const hasExplicitTime = Number.isFinite(Number(next.start))
+    && Number(next.start) > 0
+    && Number.isFinite(Number(next.end))
+    && Number(next.end) > Number(next.start);
+  const relativeTimeKey = String(next?.timeRange?.key || next.timeRangeKey || '').trim();
+  next.executionOptions = isPlainObject(next.executionOptions)
+    ? { ...next.executionOptions }
+    : {};
+  const declaredTimeMode = String(next.executionOptions.timeMode || '').trim();
+  if (declaredTimeMode === 'fixed' && hasExplicitTime) {
+    next.executionOptions.timeMode = 'fixed';
+  } else if (isSupportedRelativeTimeRangeKey(relativeTimeKey)) {
+    next.executionOptions.timeMode = 'relative';
+  } else if (hasExplicitTime) {
+    next.executionOptions.timeMode = 'fixed';
+  }
+  if (Object.keys(next.executionOptions).length === 0) {
+    delete next.executionOptions;
+  }
+
+  if (serviceName) {
+    next.format = 'json';
+  }
+  delete next.csv;
+  delete next.json;
+  delete next.numGroups;
+  Object.keys(next).forEach((key) => {
+    if (/^group(?:Type|Argument)\d+$/i.test(key)) {
+      delete next[key];
+    }
+  });
+
   return next;
+}
+
+function isSupportedRelativeTimeRangeKey(value = '') {
+  const key = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  return key === 'today'
+    || key === 'yesterday'
+    || key === 'lastonehour'
+    || /^last\d{1,7}(?:seconds?|minutes?|hours?|days?)$/.test(key);
+}
+
+function hasValidExplicitTimeRange(resolvedQuery = {}) {
+  const start = Number(resolvedQuery.start);
+  const end = Number(resolvedQuery.end);
+  return Number.isFinite(start) && start > 0 && Number.isFinite(end) && end > start;
 }
 
 function getRelativeTimeRangeKey(resolvedQuery = {}) {
@@ -1143,11 +1255,23 @@ function getExpectedResolvedTimeRange(timeRangeKey = '', options = {}) {
 }
 
 function validateRelativeTimeRangeFreshness(resolvedQuery = {}, options = {}) {
+  const timeRangeKey = getRelativeTimeRangeKey(resolvedQuery);
+  const normalizedTimeRangeKey = String(timeRangeKey || '').trim().toLowerCase();
+  if (normalizedTimeRangeKey === 'custom' && hasValidExplicitTimeRange(resolvedQuery)) {
+    return { ok: true };
+  }
+  if (timeRangeKey && !isSupportedRelativeTimeRangeKey(timeRangeKey)) {
+    return {
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      message: `Unsupported resolvedQuery timeRange.key=${timeRangeKey}; provide a concrete key such as last60minutes.`,
+      details: { timeRangeKey }
+    };
+  }
   if (!options || !Number.isFinite(Number(options.nowSeconds))) {
     return { ok: true };
   }
 
-  const timeRangeKey = getRelativeTimeRangeKey(resolvedQuery);
   if (!timeRangeKey) {
     return { ok: true };
   }
@@ -1187,7 +1311,7 @@ function validateRelativeTimeRangeFreshness(resolvedQuery = {}, options = {}) {
   };
 }
 
-function validateResolvedQueryAgainstSpec(resolvedQuery = {}, options = {}) {
+function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
   if (!isPlainObject(resolvedQuery)) {
     return {
       ok: false,
@@ -1229,6 +1353,22 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}, options = {}) {
   const nestedEnd = Number(normalizedResolvedQuery?.timeRange?.end);
   const hasNestedStart = Number.isFinite(nestedStart) && nestedStart > 0;
   const hasNestedEnd = Number.isFinite(nestedEnd) && nestedEnd > 0;
+  const declaredTimeKey = getRelativeTimeRangeKey(normalizedResolvedQuery);
+  const hasSupportedDeclarativeTime = Boolean(declaredTimeKey)
+    && isSupportedRelativeTimeRangeKey(declaredTimeKey);
+  const allowUnmaterializedRelativeTime = options?.phase === 'construction'
+    && hasSupportedDeclarativeTime
+    && !hasNestedStart
+    && !hasNestedEnd;
+
+  if (declaredTimeKey && declaredTimeKey !== 'custom' && !hasSupportedDeclarativeTime) {
+    return {
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      message: `Unsupported resolvedQuery timeRange.key=${declaredTimeKey}; provide a concrete key such as last60minutes.`,
+      details: { timeRangeKey: declaredTimeKey }
+    };
+  }
 
   if ((requiresRootStart || requiresRootEnd) && (!hasValidRootStart || !hasValidRootEnd) && (hasNestedStart || hasNestedEnd)) {
     return {
@@ -1248,6 +1388,10 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}, options = {}) {
 
   const missingFields = [];
   requiredFields.forEach((field) => {
+    if ((field === 'start' || field === 'end') && allowUnmaterializedRelativeTime) {
+      return;
+    }
+
     if (field === 'timeRange') {
       const start = Number(normalizedResolvedQuery.start);
       const end = Number(normalizedResolvedQuery.end);
@@ -1289,6 +1433,49 @@ function validateResolvedQueryAgainstSpec(resolvedQuery = {}, options = {}) {
       ok: false,
       reason: 'incomplete_resolved_query',
       message: `resolvedQuery is missing required fields for service=${serviceName}: ${missingFields.join(', ')}.`
+    };
+  }
+
+  if (serviceName === 'topValues') {
+    const topCount = normalizedResolvedQuery.topCount;
+    if (topCount != null && (!Number.isInteger(Number(topCount)) || Number(topCount) <= 0)) {
+      return {
+        ok: false,
+        reason: 'invalid_top_count',
+        message: `resolvedQuery.topCount must be a positive integer; received ${topCount}.`
+      };
+    }
+    const metrics = Array.isArray(normalizedResolvedQuery.metrics)
+      ? normalizedResolvedQuery.metrics.map((metric) => String(metric || '').trim())
+      : [];
+    const topMetric = String(normalizedResolvedQuery.topMetric || '').trim();
+    if (topMetric && !metrics.includes(topMetric)) {
+      return {
+        ok: false,
+        reason: 'top_metric_not_in_metrics',
+        message: `resolvedQuery.topMetric=${topMetric} must also be present in resolvedQuery.metrics.`,
+        details: { topMetric, metrics }
+      };
+    }
+  }
+
+  const groups = Array.isArray(normalizedResolvedQuery.groups) ? normalizedResolvedQuery.groups : [];
+  const terminalGroupType = String(groups[groups.length - 1]?.type || '').trim();
+  const targetObjectType = String(normalizedResolvedQuery?.semanticConstraints?.targetObjectType || '').trim();
+  const targetAliases = {
+    ClientIPs: 'IPAddress',
+    ServerIPs: 'IPAddress',
+    MemberIPs: 'IPAddress',
+    ExternalIPs: 'IPAddress',
+    InternalIPs: 'IPAddress'
+  };
+  const normalizedTargetObjectType = targetAliases[targetObjectType] || targetObjectType;
+  if (terminalGroupType && normalizedTargetObjectType && terminalGroupType !== normalizedTargetObjectType) {
+    return {
+      ok: false,
+      reason: 'target_group_mismatch',
+      message: `resolvedQuery semantic target=${targetObjectType} does not match terminal group=${terminalGroupType}.`,
+      details: { targetObjectType, terminalGroupType }
     };
   }
 
@@ -1757,103 +1944,9 @@ function shouldReplaceWithPromptOverview(resolvedQuery = {}, overviewResolvedQue
   return actualScene !== expectedScene;
 }
 
-const RESOLVED_QUERY_AUTO_REPAIR_REASONS = new Set([
-  'missing_resolved_query',
-  'missing_service',
-  'unknown_service',
-  'incomplete_resolved_query',
-  'relative_time_range_stale_or_miscalculated'
-]);
-
 function getResolvedQueryValidationOptions(args = {}) {
   return {
     nowSeconds: args?.nowSeconds
-  };
-}
-
-function shouldAttemptResolvedQueryAutoRepair(validation = {}, args = {}) {
-  const prompt = normalizePrompt(args);
-  if (!prompt || validation?.ok) {
-    return false;
-  }
-
-  return RESOLVED_QUERY_AUTO_REPAIR_REASONS.has(String(validation?.reason || '').trim());
-}
-
-function maybeAutoRepairResolvedQuery(prepared = {}) {
-  const prompt = normalizePrompt(prepared);
-  if (isPlainObject(prepared.resolvedQuery)) {
-    prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
-  }
-
-  const validationOptions = getResolvedQueryValidationOptions(prepared);
-  const validation = validateResolvedQueryAgainstSpec(prepared.resolvedQuery, validationOptions);
-  if (validation.ok) {
-    if (isPlainObject(validation.resolvedQuery)) {
-      prepared.resolvedQuery = validation.resolvedQuery;
-    }
-    return {
-      repaired: false,
-      validation
-    };
-  }
-
-  if (!shouldAttemptResolvedQueryAutoRepair(validation, prepared)) {
-    return {
-      repaired: false,
-      validation
-    };
-  }
-
-  const originalResolvedQuery = isPlainObject(prepared.resolvedQuery)
-    ? cloneJsonObject(prepared.resolvedQuery)
-    : null;
-  const repaired = buildResolvedQueryForPrompt(prompt, prepared);
-  if (!isPlainObject(repaired.resolvedQuery)) {
-    appendPluginAuditEvent('napm_plugin_resolved_query_auto_repair_failed', {
-      traceId: normalizeTraceId(prepared?.traceId) || buildNapmTraceId({}, prepared),
-      prompt,
-      reason: validation.reason || null,
-      message: validation.message || null,
-      source: repaired.source || null,
-      resolverReason: repaired.result?.reason || null,
-      resolverMessage: repaired.result?.message || null,
-      originalResolvedQuery: normalizeObject(originalResolvedQuery) || null,
-      originalResolvedQuerySummary: summarizeResolvedQueryForAudit(originalResolvedQuery),
-      diagnostics: normalizeObject(repaired.result?.diagnostics) || null
-    });
-    return {
-      repaired: false,
-      validation,
-      resolverResult: repaired.result || null
-    };
-  }
-
-  prepared.resolvedQuery = repaired.resolvedQuery;
-  const repairedValidation = validateResolvedQueryAgainstSpec(prepared.resolvedQuery, validationOptions);
-  appendPluginAuditEvent('napm_plugin_resolved_query_auto_repaired', {
-    traceId: normalizeTraceId(prepared?.traceId) || buildNapmTraceId({}, prepared),
-    prompt,
-    reason: validation.reason || null,
-    message: validation.message || null,
-    source: repaired.source || null,
-    originalResolvedQuery: normalizeObject(originalResolvedQuery) || null,
-    originalResolvedQuerySummary: summarizeResolvedQueryForAudit(originalResolvedQuery),
-    repairedResolvedQuery: normalizeObject(prepared.resolvedQuery) || null,
-    repairedResolvedQuerySummary: summarizeResolvedQueryForAudit(prepared.resolvedQuery),
-    validation: {
-      ok: Boolean(repairedValidation.ok),
-      reason: repairedValidation.reason || null,
-      message: repairedValidation.message || null
-    },
-    intent: normalizeObject(repaired.result?.intent) || null,
-    diagnostics: normalizeObject(repaired.result?.diagnostics) || null
-  });
-
-  return {
-    repaired: repairedValidation.ok,
-    validation: repairedValidation.ok ? repairedValidation : validation,
-    resolverResult: repaired.result || null
   };
 }
 
@@ -1864,7 +1957,9 @@ function prepareSkillExecutionArgs(args = {}) {
     prepared.userQuery = prompt;
   }
 
-  maybeAutoRepairResolvedQuery(prepared);
+  if (isPlainObject(prepared.resolvedQuery)) {
+    prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
+  }
 
   return applyPathPreflightToSkillArgs(prepared);
 }
@@ -1873,7 +1968,7 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
   const prompt = String(activePrompt || '').trim();
   const nextParams = isPlainObject(toolParams) ? { ...toolParams } : {};
   if (!prompt) {
-    return applyPathPreflightToSkillArgs(nextParams);
+    return prepareSkillExecutionArgs(nextParams);
   }
 
   nextParams.prompt = prompt;
@@ -1992,6 +2087,7 @@ function pruneTrustedToolContexts() {
       napmTrustedToolContextByTraceId.delete(traceId);
     }
   }
+
   while (napmTrustedToolContextByTraceId.size > 2000) {
     napmTrustedToolContextByTraceId.delete(napmTrustedToolContextByTraceId.keys().next().value);
   }
@@ -3892,7 +3988,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -3902,7 +3998,7 @@ function createSkillToolDefinition() {
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
         resolvedQuery: {
           type: 'object',
-          description: 'Required fully resolved query payload. For executable data services such as topValues, averageValues, timeValues, overview, and topValues_multi_protocol, put Unix-second execution timestamps at root-level start and end, aligned to 60-second minute boundaries. Do not put executable timestamps only in timeRange.start/timeRange.end; timeRange is declarative metadata only.',
+          description: 'Required fully resolved semantic query. For relative time, provide a concrete timeRange.key and let plugin execute materialize root-level start/end from the server clock. For fixed time, provide minute-aligned Unix-second root-level start/end and executionOptions.timeMode=fixed. prompt is never used to fill missing query fields.',
           properties: {
             service: { type: 'string' },
             queryModeKey: { type: 'string' },
@@ -3923,17 +4019,17 @@ function createSkillToolDefinition() {
             topCount: { type: 'number' },
             start: {
               type: 'number',
-              description: 'Auto-filled by plugin from timeRange.key. Do NOT calculate or fill this yourself.'
+              description: 'Fixed-time queries only: minute-aligned Unix timestamp in seconds. Omit for relative time.'
             },
             end: {
               type: 'number',
-              description: 'Auto-filled by plugin from timeRange.key. Do NOT calculate or fill this yourself.'
+              description: 'Fixed-time queries only: minute-aligned Unix timestamp in seconds. Omit for relative time.'
             },
             timeRange: {
               type: 'object',
-              description: 'REQUIRED: set a supported key such as lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday. Plugin auto-computes start/end from key. Do NOT set start/end yourself.',
+              description: 'Relative-time declaration. Set one concrete supported key such as last30minutes, last1hour, last24hours, last7days, today, or yesterday. Placeholder keys such as lastNminutes are invalid. Do not put start/end inside timeRange.',
               properties: {
-                key: { type: 'string', description: 'lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday' },
+                key: { type: 'string', description: 'Concrete relative key: last<number>seconds|minutes|hours|days, last1hour, today, or yesterday.' },
                 displayText: { type: 'string' }
               },
               additionalProperties: false
@@ -3950,6 +4046,7 @@ function createSkillToolDefinition() {
         clarificationContext: { type: 'object', description: 'Optional clarification state.', additionalProperties: true },
         policyAction: { type: 'string', description: 'Optional upstream policy action override.' }
       },
+      required: ['resolvedQuery'],
       additionalProperties: false
     },
     execute: async (_toolCallId, args) => {
@@ -4004,10 +4101,11 @@ function createReportExportToolDefinition() {
       const reportInput = buildReportInputForExport(args);
       if (!reportInput.ok) {
         return {
-          content: [{ type: 'text', text: reportInput.message || 'REPORT_DATA_NOT_FOUND: 未找到可导出的 NAPM 结果。请先完成一次故障分析或查询。' }]
+          content: [{ type: 'text', text: reportInput.message || 'REPORT_DATA_NOT_FOUND: 未找到可导出的 NAPM 结果。请先完成一次故障分析或查询。' }],
+          details: reportInput
         };
       }
-      const result = await napmReportSkill().handleSkillCall(reportInput);
+      const result = await napmReportSkill().handleSkillCall(reportInput.reportInput);
       rememberReportExportResult(normalizePrompt(args), result, getTrustedConversationKey(args));
       return {
         content: [
@@ -4542,7 +4640,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'OpenClaw upstream owns resolvedQuery construction. Plugin forwards structured queries; skill executes them.',
     'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
     '',
-    'Time: set timeRange.key only (lastNseconds|lastNminutes|lastNhours|lastNdays|today|yesterday). Plugin computes start/end from the server clock. Do NOT pass start/end timestamps. Example: {service:"topValues",timeRange:{key:"last2hours",displayText:"最近2小时"}}.',
+    'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
     'Query construction rules (inventory/metric ownership/drilldown/time wording/follow-up) → skills/openclaw-napm-query/references/query-workflow-contract.md.'
   );
 
@@ -4715,23 +4813,6 @@ const plugin = {
         }
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
 
-        // Query time is normalized both here and in tool execute(). The execute
-        // path is authoritative so direct invocations cannot bypass this hook.
-        if (isSafeNapmToolName(toolName) && isPlainObject(event.params)) {
-          try {
-            const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
-
-            // napm-skill-query: 覆盖 resolvedQuery.start/end
-            if (toolName === 'napm-skill-query' && isPlainObject(event.params.resolvedQuery)) {
-              applyTimeOverride(event.params.resolvedQuery);
-            }
-
-          } catch (_timeOverrideError) {
-            // 时间覆盖失败不影响工具调用 — 静默降级
-            api.logger.warn(`[napm-openclaw-plugin] time override failed for ${toolName}: ${_timeOverrideError.message}`);
-          }
-        }
-
         const fallbackPrompt = normalizePrompt(toolParams);
         const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
         const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
@@ -4762,7 +4843,13 @@ const plugin = {
         // ── Fault diagnosis guard (MUST be first) ──
         // 2026-07-14: 当 prompt 明确是"告警数据包"请求时（activeAlertPacketPrompt=true），
         // 不触发故障诊断拦截。否则所有包含"用户体验时间"的深入分析都会被导向 fault-diagnosis。
-        const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt);
+        const hasResolvedFaultTarget = Array.isArray(event.params?.resolvedQuery?.groups)
+          && event.params.resolvedQuery.groups.some((group) => (
+            group?.argument != null && String(group.argument).trim().length > 0
+          ));
+        const activeFaultDiagnosisPrompt = Boolean(activePrompt) && isFaultDiagnosisPrompt(activePrompt, {
+          hasExplicitTarget: hasResolvedFaultTarget
+        });
         if ((toolName === 'napm-skill-query' || toolName === 'napm-alert-query') && activeFaultDiagnosisPrompt && !activeAlertPacketPrompt) {
 
           // ── 2026-07-16: 排行/统计类查询兜底放行 ──
@@ -4858,9 +4945,7 @@ const plugin = {
           return undefined;
         }
 
-        // 2026-07-14: packet prompt 场景下禁止 napm-skill-query，
-        // 否则 auto-repair 会把包请求修成错误的 metric query，
-        // AI 连续失败后就会绕过 skill 用 exec/curl。
+        // Packet prompts belong to the packet-analysis skill and must not enter metric-query execution.
         if (toolName === 'napm-skill-query' && activeNapmPrompt && activePrompt && !activePacketPrompt) {
           setGuardState(ctx, {
             ...activePromptState,
@@ -4881,7 +4966,10 @@ const plugin = {
           const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
           const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
-          const resolvedQueryValidation = validateResolvedQueryAgainstSpec(canonicalSkillParams?.resolvedQuery);
+          const resolvedQueryValidation = validateResolvedQueryAgainstSpec(
+            canonicalSkillParams?.resolvedQuery,
+            { phase: 'construction' }
+          );
           if (isPlainObject(resolvedQueryValidation.resolvedQuery)) {
             canonicalSkillParams.resolvedQuery = resolvedQueryValidation.resolvedQuery;
           }
@@ -5412,6 +5500,8 @@ module.exports.__test__ = {
   isBusinessObjectInventoryPrompt,
   isHierarchyCatalogPrompt,
   isAlertEventPrompt,
+  hasSpecificFaultDiagnosisTarget,
+  isFaultDiagnosisPrompt,
   isSummaryPrompt,
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,

@@ -69,6 +69,36 @@ describe('execution time resolver', () => {
     });
   });
 
+  test('preserves fixed start/end even when a relative key is also present', () => {
+    const query = {
+      service: 'topValues',
+      start: 1785310980,
+      end: 1785314580,
+      timeRange: { key: 'last1hour' },
+      executionOptions: { timeMode: 'fixed' },
+    };
+
+    applyTimeOverride(query, NOW_MS);
+
+    expect(query.start).toBe(1785310980);
+    expect(query.end).toBe(1785314580);
+    expect(query.executionTimeRange).toMatchObject({
+      key: 'custom',
+      source: 'explicit_execution_time',
+    });
+  });
+
+  test('rejects unsupported relative time keys instead of defaulting to one hour', () => {
+    expect(resolveExecutionTime({
+      timeRangeKey: 'lastNminutes',
+      nowSeconds: NOW_SECONDS,
+    })).toMatchObject({
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      requestedKey: 'lastNminutes',
+    });
+  });
+
   test('does not turn deprecated nested timestamps into an implicit default query', () => {
     const query = {
       service: 'topValues',
@@ -79,6 +109,26 @@ describe('execution time resolver', () => {
 
     expect(query.start).toBeUndefined();
     expect(query.end).toBeUndefined();
+  });
+
+  test('does not assign a default window when a data query declares no time', () => {
+    const query = { service: 'topValues' };
+
+    applyTimeOverride(query, NOW_MS);
+
+    expect(query.start).toBeUndefined();
+    expect(query.end).toBeUndefined();
+    expect(query.executionTimeRange).toBeUndefined();
+  });
+
+  test('resolveTimeFromKey preserves unsupported-key failure', () => {
+    const { resolveTimeFromKey } = require('../skills/openclaw-napm-query/src/shared/timeResolver');
+
+    expect(resolveTimeFromKey('lastNminutes', NOW_SECONDS)).toMatchObject({
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      requestedKey: 'lastNminutes',
+    });
   });
 
   test('summary and fault direct calls use the same relative window', () => {

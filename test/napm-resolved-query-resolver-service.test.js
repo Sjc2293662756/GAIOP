@@ -2,6 +2,17 @@ const ResolverService = require('../skills/openclaw-napm-query/services/NapmReso
 const PromptRoutingService = require('../skills/openclaw-napm-query/services/PromptRoutingService');
 
 describe('NapmResolvedQueryResolverService', () => {
+  test.each([
+    ['查询过去1小时总流量最高的5个IP', 5],
+    ['查询总流量最大的 8 个 IP', 8],
+    ['返回3条吞吐量最高的IP', 3],
+    ['topCount=7，按总流量查询IP', 7],
+    ['topCount: 6，按总流量查询IP', 6],
+    ['总流量最高的IP是谁', 1]
+  ])('should infer explicit TopN quantity from %s', (prompt, expected) => {
+    expect(ResolverService.inferTopCount(prompt)).toBe(expected);
+  });
+
   test('should resolve packet loss top IP prompt into strict topValues resolvedQuery', () => {
     const result = ResolverService.resolvePrompt('丢包最大的IP地址是谁？', {
       nowSeconds: 1779350400

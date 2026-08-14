@@ -8,7 +8,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -42,16 +42,15 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
         warn() {},
         error() {}
       },
+      on(name, handler) {
+        hooks.set(name, handler);
+      },
       registerTool(def) {
         tools.set(def.name, def);
       },
       registerCommand() {},
-      registerHook(name, handler) {
-        if (Array.isArray(name)) {
-          name.forEach((item) => hooks.set(item, handler));
-          return;
-        }
-        hooks.set(name, handler);
+      registerHook() {
+        throw new Error('production typed hooks must register through api.on');
       }
     };
 
@@ -109,6 +108,126 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     expect(result).toEqual({ cancel: true });
   });
 
+  test('should cancel a non-streaming tool preamble while the NAPM tool call is pending on wecom', async () => {
+    const { hooks } = createApiHarness();
+    const messageSending = hooks.get('message_sending');
+    const ctx = createChannelCtx('wecom', 'tool-preamble');
+    const prompt = '查询过去1小时总流量最高的5个IP';
+
+    await primeNapmTurn(hooks, ctx, prompt);
+
+    const result = await messageSending({
+      content: '这是一个排行查询（TopN），走 `napm-skill-query`。'
+    }, ctx);
+
+    expect(result).toEqual({ cancel: true });
+  });
+
+  test('should block a wecom preamble before the NAPM tool call and preserve the final skill reply', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const beforeToolCall = hooks.get('before_tool_call');
+    const afterToolCall = hooks.get('after_tool_call');
+    const ctx = createChannelCtx('wecom', 'pretool-write');
+    const prompt = '查询过去1小时总流量最高的5个IP';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+
+    const preambleResult = beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '我会调用 NAPM 查询工具。' }]
+      }
+    }, ctx);
+    expect(preambleResult).toEqual({ block: true });
+
+    await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: { prompt, userQuery: prompt }
+    }, ctx);
+    await afterToolCall({
+      toolName: 'napm-skill-query',
+      result: {
+        details: {
+          ok: true,
+          displayText: '过去1小时总流量最高的5个IP已查询完成。',
+          resolvedQuery: {
+            service: 'topValues',
+            metric: 'BYTIO',
+            groups: [{ type: 'IPAddress' }]
+          }
+        }
+      }
+    }, ctx);
+
+    const finalResult = beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '原始模型文本。' }]
+      }
+    }, ctx);
+    expect(finalResult?.message?.content?.[0]?.text).toContain('过去1小时总流量最高的5个IP已查询完成。');
+  });
+
+  test('should find a skill result through the original WECOM scope when message writing has a reduced context', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const testApi = plugin.__test__;
+    const sourceCtx = { ...createChannelCtx('wecom', 'scope-bridge'), agentId: 'main' };
+    const deliveryCtx = {
+      channelId: 'wecom',
+      sessionKey: sourceCtx.sessionKey,
+      agentId: sourceCtx.agentId
+    };
+    const prompt = '查询过去1小时总流量最高的5个IP';
+
+    messageReceived({ content: prompt }, sourceCtx);
+    await beforePromptBuild({ prompt }, sourceCtx);
+    await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: { prompt, userQuery: prompt }
+    }, sourceCtx);
+    testApi.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '已从原始企业微信会话范围取回真实查询结果。',
+      resolvedQuery: {
+        service: 'topValues',
+        metric: 'BYTIO',
+        groups: [{ type: 'IPAddress' }]
+      }
+    }, testApi.getConversationKey(sourceCtx));
+
+    const result = beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '原始模型文本。' }]
+      }
+    }, deliveryCtx);
+
+    expect(result?.message?.content?.[0]?.text).toContain('已从原始企业微信会话范围取回真实查询结果。');
+  });
+
+  test('should preserve the core /new confirmation instead of rewriting it as out of scope', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const ctx = createChannelCtx('wecom', 'session-command');
+
+    messageReceived({ content: '系统中有哪些业务？' }, ctx);
+    await beforePromptBuild({ prompt: '系统中有哪些业务？' }, ctx);
+    messageReceived({ content: '/new' }, ctx);
+    await beforePromptBuild({ prompt: '/new' }, ctx);
+
+    await expect(messageSending({ content: '已开始新会话。' }, ctx)).resolves.toBeUndefined();
+  });
+
   test('should cancel leaked english reasoning preview without streaming metadata on wecom', async () => {
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
@@ -148,7 +267,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
       }
     };
 
-    testApi.rememberSkillResult(prompt, rememberedResult, '');
+    testApi.rememberSkillResult(prompt, rememberedResult, testApi.getConversationKey(ctx));
 
     const leakedPreview = [
       'Previously I checked WebApplication traffic.',
@@ -172,7 +291,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
   test('should allow leaked reasoning preview when temporary preview flag is enabled on non-wecom channels', async () => {
     process.env.NAPM_ALLOW_REASONING_PREVIEW = 'true';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
 
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
@@ -201,7 +320,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
   test('should still cancel leaked reasoning preview on wecom even when preview flag is enabled', async () => {
     process.env.NAPM_ALLOW_REASONING_PREVIEW = 'true';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
 
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');

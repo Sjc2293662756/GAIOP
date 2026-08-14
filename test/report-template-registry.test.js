@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 const {
   GENERIC_QUERY_TEMPLATE_ID,
   REPORT_SCHEMA,
@@ -8,6 +11,25 @@ const ReportGenerationService = require('../skills/openclaw-napm-report/services
 const FaultDiagnosisService = require('../skills/openclaw-napm-fault-diagnosis/services/FaultDiagnosisService');
 
 describe('report template registry', () => {
+  test('fixed report templates do not include a table-of-contents page', () => {
+    const templateFiles = [
+      path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'templates', 'inspection', 'napm_traffic_health_inspection_v1.json'),
+      path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'templates', 'summary', 'napm_summary_overview_v1.json'),
+      path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'templates', 'diagnostic', 'napm_bs_fault_diagnosis_v2.json'),
+      path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'templates', 'diagnostic', 'napm_bs_page_perf_v1.json'),
+      path.join(__dirname, '..', 'skills', 'openclaw-napm-report', 'templates', 'diagnostic', 'napm_cs_fault_diagnosis_v1.json')
+    ];
+
+    for (const filePath of templateFiles) {
+      const template = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(template.sections.some((section) => (
+        section?.id === 'toc'
+        || section?.id === 'toc_break'
+        || section?.type === 'toc'
+      ))).toBe(false);
+    }
+  });
+
   test('applies the only safe default to generic query reports', () => {
     expect(normalizeRegistration({ reportType: 'quick_report' })).toMatchObject({
       schema: REPORT_SCHEMA,

@@ -60,4 +60,17 @@ describe('ResolvedQueryTimeRangeService', () => {
       end: 1779677940
     });
   });
+
+  test('should reject an unsupported explicit key without falling back', () => {
+    expect(TimeRangeService.resolveTimeRange({
+      timeRangeKey: 'lastNminutes',
+      prompt: '过去1小时'
+    }, {
+      nowSeconds: 1779677977
+    })).toMatchObject({
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      requestedKey: 'lastNminutes'
+    });
+  });
 });

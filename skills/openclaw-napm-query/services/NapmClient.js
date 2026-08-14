@@ -7,7 +7,7 @@
 const axios = require('axios');
 const https = require('https');
 const logger = require('../src/utils/logger');
-const { maskSensitiveParams, buildSafeUrl, buildOrderedParams } = require('../src/utils/auditLogger');
+const { buildOrderedParams, redactSensitiveText } = require('../src/utils/auditLogger');
 class NapmClient {
   // 初始化 axios 客户端，并按环境变量决定是否关闭 TLS 证书校验。
   constructor() {
@@ -28,8 +28,8 @@ class NapmClient {
     });
     
     logger.info('NapmClient initialized', {
-      baseUrl: this.baseUrl,
-      username: this.username
+      transport: this.baseUrl.startsWith('https://') ? 'https' : 'http',
+      tlsVerification: this.tlsInsecure ? 'disabled' : 'enabled'
     });
   }
 
@@ -57,8 +57,9 @@ class NapmClient {
 
     try {
       logger.info('Making NAPM API request', {
-        queryParams: maskSensitiveParams(queryParams),
-        url: buildSafeUrl(this.baseUrl, queryParams)
+        method: 'GET',
+        service: String(queryParams.type || '').trim() || null,
+        parameterNames: Object.keys(queryParams).filter((key) => !['UserName', 'Password'].includes(key))
       });
 
       const response = await this.client.get('', {
@@ -73,9 +74,11 @@ class NapmClient {
       return response.data;
     } catch (error) {
       logger.error('NAPM API request failed', {
-        error: error.message,
-        params: maskSensitiveParams(queryParams),
-        response: error.response ? error.response.data : null
+        error: redactSensitiveText(error.message),
+        code: error.code || null,
+        status: error.response?.status || null,
+        service: String(queryParams.type || '').trim() || null,
+        responseLength: typeof error.response?.data === 'string' ? error.response.data.length : null
       });
       throw new Error(`NAPM API error: ${error.message}`);
     }
@@ -93,7 +96,9 @@ class NapmClient {
 
     try {
       logger.info('Making NAPM API POST request', {
-        requestData: maskSensitiveParams(requestData)
+        method: 'POST',
+        service: String(requestData.type || '').trim() || null,
+        parameterNames: Object.keys(requestData).filter((key) => !['UserName', 'Password'].includes(key))
       });
 
       const response = await this.client.post('', requestData);
@@ -105,8 +110,11 @@ class NapmClient {
       return response.data;
     } catch (error) {
       logger.error('NAPM API POST request failed', {
-        error: error.message,
-        data: maskSensitiveParams(requestData)
+        error: redactSensitiveText(error.message),
+        code: error.code || null,
+        status: error.response?.status || null,
+        service: String(requestData.type || '').trim() || null,
+        responseLength: typeof error.response?.data === 'string' ? error.response.data.length : null
       });
       throw new Error(`NAPM API error: ${error.message}`);
     }

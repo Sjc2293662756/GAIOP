@@ -125,12 +125,11 @@ describe('InspectionFixedTemplateService', () => {
     expect(template.page.header.leftImage.path).toBe('templates/inspection/company-logo.png');
     expect(template.page.header.left).toBe('网深科技基于AI的全流量性能分析平台');
     expect(template.page.footer.center).toContain('{{pageNumber}}');
-    const tocSection = template.sections.find((section) => section.id === 'toc');
-    expect(tocSection.headingStyleRange).toBe('1-2');
-    expect(tocSection.hyperlink).toBe(true);
-    expect(tocSection.items).toBeUndefined();
+    expect(template.sections.find((section) => section.id === 'toc')).toBeUndefined();
+    expect(template.sections.find((section) => section.id === 'toc_break')).toBeUndefined();
+    expect(service.renderSection({ type: 'toc' })).toEqual([]);
+    expect(service.renderSection({ id: 'toc_break', type: 'pageBreak' })).toEqual([]);
     expect(template.sections.map((section) => section.id)).toEqual(expect.arrayContaining([
-      'toc',
       'document_description_heading',
       'check_items_table',
       'basic_info_heading',
@@ -218,10 +217,8 @@ describe('InspectionFixedTemplateService', () => {
     expect(footerXml).toContain('2026-06-16');
     expect(footerXml).toContain('PAGE');
     expect(footerXml).toContain('NUMPAGES');
-    expect(documentXml).toContain('TOC \\h \\o &quot;1-2&quot;');
+    expect(documentXml).not.toContain('TOC \\h \\o');
     expect(settingsXml).toContain('w:updateFields');
-    expect(stylesXml).toContain('w:styleId="TOC1"');
-    expect(stylesXml).toContain('w:styleId="TOC2"');
     expect(reportXml).toContain('Microsoft YaHei');
     expect(reportXml).toContain('w:val="000000"');
     expect(reportXml).toContain('1 文档说明');

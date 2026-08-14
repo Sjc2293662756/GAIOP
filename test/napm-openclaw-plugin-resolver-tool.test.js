@@ -12,7 +12,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
       delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     }
     jest.resetModules();
-    return require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    return require('../napm-openclaw-plugin.remote.js');
   }
 
   afterAll(() => {
@@ -49,9 +49,13 @@ describe('napm-openclaw-plugin resolver tools', () => {
     plugin.register(api);
 
     expect(Array.from(tools.keys()).sort()).toEqual([
+      'napm-alert-query',
+      'napm-fault-diagnosis',
+      'napm-inspection-snapshot',
       'napm-packet-analysis',
       'napm-report-export',
-      'napm-skill-query'
+      'napm-skill-query',
+      'napm-summary'
     ]);
     expect(tools.has('napm-resolve-query')).toBe(false);
     expect(tools.has('napm-mainflow-query')).toBe(false);

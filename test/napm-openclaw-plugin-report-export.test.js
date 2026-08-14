@@ -49,13 +49,30 @@ describe('napm-openclaw-plugin report export', () => {
   let outputDir;
   let plugin;
 
+  function bindToolArgs(toolName, args, suffix) {
+    const ctx = {
+      channelId: 'wecom',
+      accountId: `report-${suffix}`,
+      conversationId: `report-${suffix}`
+    };
+    plugin.__test__.bindTrustedToolContext({
+      toolName,
+      toolCallId: suffix,
+      params: args
+    }, ctx);
+    return {
+      args,
+      conversationKey: plugin.__test__.getConversationKey(ctx)
+    };
+  }
+
   beforeEach(() => {
     outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-plugin-report-'));
     process.env.NAPM_REPORT_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-report/scripts/generate_napm_report.js');
     process.env.NAPM_REPORT_OUTPUT_DIR = outputDir;
     delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -88,7 +105,15 @@ describe('napm-openclaw-plugin report export', () => {
       registerHook() {}
     });
 
-    expect(Array.from(tools.keys()).sort()).toEqual(['napm-packet-analysis', 'napm-report-export', 'napm-skill-query']);
+    expect(Array.from(tools.keys()).sort()).toEqual([
+      'napm-alert-query',
+      'napm-fault-diagnosis',
+      'napm-inspection-snapshot',
+      'napm-packet-analysis',
+      'napm-report-export',
+      'napm-skill-query',
+      'napm-summary'
+    ]);
   });
 
   test('should export explicitly provided reportData to docx', async () => {
@@ -107,23 +132,31 @@ describe('napm-openclaw-plugin report export', () => {
   });
 
   test('should export latest remembered skill reportData when args omit reportData', async () => {
+    const exportArgs = {
+      prompt: '将以上以 Word 形式导出',
+      format: 'docx'
+    };
+    const bound = bindToolArgs('napm-report-export', exportArgs, 'remembered-query');
     plugin.__test__.rememberSkillResult('最近一天丢包最高的 IP', {
       ok: true,
       resolvedQuery: { service: 'topValues' },
       reportData: makeReportData({ title: '上一轮报告' })
-    });
+    }, bound.conversationKey);
 
-    const result = await plugin.__test__.runReportExecutor({
-      prompt: '将以上以 Word 形式导出',
-      format: 'docx'
-    });
+    const result = await plugin.__test__.createReportExportToolDefinition()
+      .execute('report-tool-remembered-query', bound.args);
 
-    expect(result.ok).toBe(true);
-    expect(result.title).toBe('上一轮报告');
-    expect(fs.existsSync(result.filePath)).toBe(true);
+    expect(result.details.ok).toBe(true);
+    expect(result.details.title).toBe('上一轮报告');
+    expect(fs.existsSync(result.details.filePath)).toBe(true);
   });
 
   test('should export latest remembered packet analysis result as reportData', async () => {
+    const exportArgs = {
+      prompt: '将以上总结为报告以word的形式给我',
+      format: 'docx'
+    };
+    const bound = bindToolArgs('napm-report-export', exportArgs, 'remembered-packet');
     plugin.__test__.rememberSkillResult('分析 101.254.114.238 最近一天的数据包 数据情况', {
       ok: true,
       mode: 'preview_download_analyze',
@@ -150,7 +183,7 @@ describe('napm-openclaw-plugin report export', () => {
           { address: '203.0.113.10', packets: 100, bytes: 2048 }
         ]
       }
-    });
+    }, bound.conversationKey);
 
     const built = normalizeReportInput({
       prompt: '将以上总结为报告以word的形式给我',
@@ -179,39 +212,38 @@ describe('napm-openclaw-plugin report export', () => {
       }
     });
 
-    expect(built.reportType).toBe('diagnostic_report');
+    expect(built.reportType).toBe('quick_report');
     expect(built.dataSource.sourceSkill).toBe('openclaw-napm-packet-analysis');
     expect(built.sections.some((section) => section.title === 'Top 对端')).toBe(true);
 
-    const result = await plugin.__test__.runReportExecutor({
-      prompt: '将以上总结为报告以word的形式给我',
-      format: 'docx'
-    });
+    const result = await plugin.__test__.createReportExportToolDefinition()
+      .execute('report-tool-remembered-packet', bound.args);
 
-    expect(result.ok).toBe(true);
-    expect(fs.existsSync(result.filePath)).toBe(true);
+    expect(result.details.ok).toBe(true);
+    expect(fs.existsSync(result.details.filePath)).toBe(true);
   });
 
   test('should block export when no reportData is available', async () => {
-    const result = await plugin.__test__.runReportExecutor({
+    const result = await plugin.__test__.createReportExportToolDefinition().execute('report-tool-empty', {
       prompt: '将以上以 Word 形式导出',
       format: 'docx'
     });
 
-    expect(result).toMatchObject({
+    expect(result.details).toMatchObject({
       ok: false,
       errorCode: 'REPORT_DATA_NOT_FOUND'
     });
+    expect(result.content[0].text).toContain('未找到可导出');
   });
 
   test('should not silently downgrade pdf to docx', async () => {
-    const result = await plugin.__test__.runReportExecutor({
+    const result = await plugin.__test__.createReportExportToolDefinition().execute('report-tool-pdf', {
       prompt: '将以上以 PDF 形式导出',
       format: 'pdf',
       reportData: makeReportData()
     });
 
-    expect(result).toMatchObject({
+    expect(result.details).toMatchObject({
       ok: false,
       errorCode: 'REPORT_PDF_EXPORT_UNAVAILABLE'
     });

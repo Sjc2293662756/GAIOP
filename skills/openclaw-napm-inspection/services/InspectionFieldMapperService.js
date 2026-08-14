@@ -118,11 +118,13 @@ function appendSuffix(value, suffix) {
   return text.endsWith(suffix) ? text : `${text}${suffix}`;
 }
 
-function formatSerialNumber(value = '') {
+function formatSerialNumber(value = '', productVersion = '') {
   const text = asText(value);
   if (!text) return '';
-  // 通用前缀替换：将原始前缀（如 ARXVXA、ARX3800）统一替换为 NAPM
-  return text.replace(/^[A-Z0-9]+-/i, 'NAPM-');
+  const normalized = text.replace(/^[A-Z0-9]+-/i, 'NAPM-');
+  const version = asText(productVersion);
+  if (!version) return normalized;
+  return `NetInside NAPM ${version}-${normalized.replace(/^NAPM-/i, '')}`;
 }
 
 function parseSysVersion(aboutHtml = '') {
@@ -171,8 +173,17 @@ class InspectionFieldMapperService {
     const systemName = firstValue(source, ['properties.hostname', 'properties.BoxName', 'boxName']);
     const ipAddress = firstValue(source, ['properties.ipAddress', 'properties.IpAddress', 'address']);
     const DEFAULT_SOFTWARE_VERSION = '5.0';
-    const softwareVersion = asText(options.softwareVersion || DEFAULT_SOFTWARE_VERSION);
-    const serialNumber = formatSerialNumber(firstValue(source, ['properties.SerialNumber', 'properties.serialNumber', 'serialNumber']));
+    const softwareVersion = asText(
+      options.softwareVersion
+      || parseSysVersion(aboutHtml)
+      || source.uiVersion
+      || source.mktVersion
+      || DEFAULT_SOFTWARE_VERSION
+    );
+    const serialNumber = formatSerialNumber(
+      firstValue(source, ['properties.SerialNumber', 'properties.serialNumber', 'serialNumber']),
+      source.mktVersion
+    );
     return {
       index: Number(options.index || 1),
       systemName: asText(systemName),

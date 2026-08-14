@@ -54,7 +54,7 @@ class TimeUtils {
    */
   static getYesterdayStart() {
     const start = this.getDayStart(-1);
-    logger.info('Yesterday start:', this.formatDate(start));
+    logger.info('Yesterday start', { value: this.formatDate(start) });
     return start;
   }
 
@@ -65,7 +65,7 @@ class TimeUtils {
    */
   static getYesterdayEnd() {
     const end = this.getDayEndExclusive(-1);
-    logger.info('Yesterday end:', this.formatDate(end));
+    logger.info('Yesterday end', { value: this.formatDate(end) });
     return end;
   }
 
@@ -346,7 +346,7 @@ class TimeUtils {
       case '最近24小时':
         return this.getRelativeRange(24 * 3600);
       default:
-        logger.warn('Unknown time range:', timeRange);
+        logger.warn('Unknown time range', { timeRange });
         return {
           start: this.getYesterdayStart(),
           end: this.getYesterdayEnd()

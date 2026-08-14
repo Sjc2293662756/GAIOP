@@ -193,7 +193,7 @@ class RequirementParserService {
 
       return [];
     } catch (error) {
-      logger.warn('Failed to load stable query templates:', error.message);
+      logger.warn('Failed to load stable query templates', { error: error.message });
       return [];
     }
   }
@@ -1050,7 +1050,7 @@ class RequirementParserService {
       logger.info('========================================\n');
       return kernelResult;
     } catch (error) {
-      logger.error('结构化查询执行失败:', error.message);
+      logger.error('结构化查询执行失败', { error: error.message });
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
       if (upstreamGuard) {
         response.error = upstreamGuard;
@@ -2411,7 +2411,7 @@ class RequirementParserService {
   // 以下是 topN / 排名类问句的辅助解析逻辑。
   roundToNearestMinute(timestamp) {
     const adjustedTimestamp = Math.floor(timestamp / 60) * 60;
-    logger.info('时间戳调整', `${timestamp} -> ${adjustedTimestamp}`);
+    logger.info('时间戳调整', { timestamp, adjustedTimestamp });
     return adjustedTimestamp;
   }
 
@@ -2565,7 +2565,7 @@ class RequirementParserService {
     if (!this.metricMappingService.isValidMetricCode(metric) || !metrics.includes(metric)) {
       if (metrics.length > 0) {
         const newMetric = metrics[0];
-        logger.info('topMetric 无效，使用 metrics 中的第一个指标:', newMetric);
+        logger.info('topMetric 无效，使用 metrics 中的第一个指标', { topMetric: newMetric });
         return newMetric;
       }
     }

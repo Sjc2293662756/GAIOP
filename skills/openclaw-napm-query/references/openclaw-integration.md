@@ -27,11 +27,14 @@ Do not require a hard NAPM keyword match when there is an active NAPM session an
 
 ## Runtime Policy
 
-1. Prefer structured `resolvedQuery` from OpenClaw as the standard contract.
+1. Require structured `resolvedQuery` from OpenClaw for every production query.
 2. Use continuation context when present.
 3. Treat `decision` and `intent` as optional hints, but do not require them for execution.
 4. Require executable `resolvedQuery` for normal query execution.
 5. Return a machine-readable result for OpenClaw final narration.
+6. Treat `prompt` and `userQuery` as trace-only; never use them to construct or repair query fields.
+7. For relative time, pass a concrete `timeRange.key`; plugin `execute()` is the only place that materializes root-level `start/end`.
+8. For fixed time, pass minute-aligned root-level `start/end` with `executionOptions.timeMode=fixed`.
 
 ## Recommended Tool
 

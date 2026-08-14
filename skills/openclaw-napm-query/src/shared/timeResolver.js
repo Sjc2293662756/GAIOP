@@ -145,9 +145,7 @@ function resolveExecutionTime(options = {}) {
 }
 
 function resolveTimeFromKey(timeKey, nowSeconds) {
-  const resolved = resolveExecutionTime({ timeRangeKey: timeKey, nowSeconds, defaultKey: 'last1hour' });
-  if (resolved.ok) return resolved;
-  return resolveExecutionTime({ nowSeconds, defaultKey: 'last1hour' });
+  return resolveExecutionTime({ timeRangeKey: timeKey, nowSeconds });
 }
 
 function applyTimeOverride(resolvedQuery, overrideNowMs) {
@@ -161,12 +159,19 @@ function applyTimeOverride(resolvedQuery, overrideNowMs) {
     return resolvedQuery;
   }
 
+  const fixedTimeMode = String(resolvedQuery?.executionOptions?.timeMode || '').trim() === 'fixed';
+  const declaredTimeKey = normalizeTimeKey(resolvedQuery.timeRange?.key || resolvedQuery.timeRangeKey);
+  const hasExplicitStart = toUnixSeconds(resolvedQuery.start) != null;
+  const hasExplicitEnd = toUnixSeconds(resolvedQuery.end) != null;
+  if (!declaredTimeKey && !hasExplicitStart && !hasExplicitEnd) {
+    return resolvedQuery;
+  }
+
   const range = resolveExecutionTime({
-    timeRangeKey: resolvedQuery.timeRange?.key,
+    timeRangeKey: fixedTimeMode ? '' : declaredTimeKey,
     start: resolvedQuery.start,
     end: resolvedQuery.end,
-    nowSeconds: overrideNowMs ? Math.floor(overrideNowMs / 1000) : undefined,
-    defaultKey: 'last1hour'
+    nowSeconds: overrideNowMs ? Math.floor(overrideNowMs / 1000) : undefined
   });
   if (!range.ok) return resolvedQuery;
 
@@ -176,7 +181,7 @@ function applyTimeOverride(resolvedQuery, overrideNowMs) {
   resolvedQuery.timeRange = {
     ...(resolvedQuery.timeRange && typeof resolvedQuery.timeRange === 'object' ? resolvedQuery.timeRange : {}),
     key: range.key,
-    displayText: resolvedQuery.timeRange?.displayText || range.displayText
+    displayText: fixedTimeMode ? range.displayText : (resolvedQuery.timeRange?.displayText || range.displayText)
   };
   return resolvedQuery;
 }

@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -18,7 +18,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should not rewrite overview reply when output layer is skill-display-only', async () => {
+  test('should replace an overview free-form reply with the remembered skill result', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -66,22 +66,15 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
-    await skillTool.execute('tool-call-1', {
-      prompt,
-      userQuery: prompt,
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '应用整体概览结果',
       resolvedQuery: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        metric: 'BYTIO',
-        metrics: ['BYTIO'],
-        groups: [{ type: 'BusinessGroup' }],
-        start: 1778227800,
-        end: 1778314200,
-        topMetric: 'BYTIO',
-        topCount: 5,
-        format: 'json'
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'application'
       }
-    });
+    }, plugin.__test__.getConversationKey(ctx));
 
     const beforeWriteResult = await beforeMessageWrite({
       message: {
@@ -90,6 +83,6 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       }
     }, ctx);
 
-    expect(beforeWriteResult).toBeUndefined();
+    expect(beforeWriteResult.message.content[0].text).toBe('应用整体概览结果');
   }, 30000);
 });

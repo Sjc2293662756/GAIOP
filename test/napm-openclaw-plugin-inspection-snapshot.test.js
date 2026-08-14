@@ -79,39 +79,47 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
 
     expect(Array.from(tools.keys()).sort()).toEqual([
       'napm-alert-query',
+      'napm-fault-diagnosis',
       'napm-inspection-snapshot',
       'napm-packet-analysis',
       'napm-report-export',
-      'napm-skill-query'
+      'napm-skill-query',
+      'napm-summary'
     ]);
   });
 
-  test('should build inspection executor payload from top-level args', () => {
-    const payload = plugin.__test__.buildInspectionExecutorPayload({
-      prompt: '生成北京烟草巡检报告',
-      customerName: '北京烟草',
-      reportDate: '2026-06-16',
-      source: makeInspectionSource()
-    });
+  test('should expose inspection inputs in the production schema', () => {
+    const tool = plugin.__test__.createInspectionSnapshotToolDefinition();
 
-    expect(payload).toMatchObject({
-      prompt: '生成北京烟草巡检报告',
-      customerName: '北京烟草',
-      reportDate: '2026-06-16',
-      format: 'docx'
+    expect(tool.parameters.properties).toMatchObject({
+      prompt: { type: 'string', description: expect.any(String) },
+      customerName: { type: 'string', description: expect.any(String) },
+      reportDate: { type: 'string', description: expect.any(String) },
+      source: { type: 'object', description: expect.any(String), additionalProperties: true }
     });
-    expect(payload.source.applianceInfo.properties[0].key).toBe('hostname');
+    expect(tool.parameters.additionalProperties).toBe(false);
   });
 
   test('should execute inspection snapshot and remember reportData', async () => {
     const tool = plugin.__test__.createInspectionSnapshotToolDefinition();
-
-    const result = await tool.execute('inspection-1', {
+    const args = {
       prompt: '生成北京烟草巡检报告',
       customerName: '北京烟草',
       reportDate: '2026-06-16',
       source: makeInspectionSource()
-    });
+    };
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'inspection-test',
+      conversationId: 'inspection-test'
+    };
+    plugin.__test__.bindTrustedToolContext({
+      toolName: 'napm-inspection-snapshot',
+      toolCallId: 'inspection-1',
+      params: args
+    }, ctx);
+
+    const result = await tool.execute('inspection-1', args);
 
     expect(result.details.ok).toBe(true);
     expect(result.details.reportData).toMatchObject({
@@ -119,7 +127,52 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
       templateId: 'napm_traffic_health_inspection_v1'
     });
     expect(result.content[0].text).toContain('巡检数据已生成');
-    expect(plugin.__test__.getLatestRememberedSkillRecord().result.reportData.reportType).toBe('inspection_report');
+    const conversationKey = plugin.__test__.getConversationKey(ctx);
+    expect(plugin.__test__.getLatestRememberedSkillRecord(conversationKey).result.reportData.reportType).toBe('inspection_report');
+  });
+
+  test('should persist snapshot reportData when execute receives hook-returned trace params', async () => {
+    const hooks = new Map();
+    plugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool() {},
+      registerCommand() {},
+      on(name, handler) {
+        hooks.set(name, handler);
+      },
+      registerHook() {
+        throw new Error('production typed hooks must register through api.on');
+      }
+    });
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'inspection-hook-trace',
+      conversationId: 'inspection-hook-trace',
+      sessionKey: 'inspection-hook-trace',
+      runId: 'inspection-hook-trace'
+    };
+    const prompt = '\u7ed9\u6211\u6700\u8fd1\u4e00\u5929\u7cfb\u7edf\u7684\u5de1\u68c0\u62a5\u544a';
+    const snapshotEvent = {
+      toolName: 'napm-inspection-snapshot',
+      toolCallId: 'inspection-hook-trace-call',
+      params: { prompt, source: makeInspectionSource() }
+    };
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const hookResult = await hooks.get('before_tool_call')(snapshotEvent, ctx);
+
+    expect(hookResult).toMatchObject({
+      params: expect.objectContaining({ traceId: expect.any(String) })
+    });
+    const result = await plugin.__test__.createInspectionSnapshotToolDefinition()
+      .execute('inspection-hook-trace-call', hookResult.params);
+    const conversationKey = plugin.__test__.getConversationKey(ctx);
+
+    expect(result.details.ok).toBe(true);
+    expect(plugin.__test__.getLatestRememberedSkillRecord(conversationKey).result.reportData.reportType)
+      .toBe('inspection_report');
   });
 
   test('should expose user-facing inspection snapshot reply', () => {

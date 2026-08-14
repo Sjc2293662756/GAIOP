@@ -21,9 +21,6 @@
     { "id": "cover_info", "type": "paragraphs", "alignment": "center", "size": 22, "paragraphs": ["{{title}}"] },
     { "id": "cover_date", "type": "paragraphs", "alignment": "center", "size": 20, "paragraphs": ["{{diagnosis.reportDate}}"] },
     { "id": "cover_break", "type": "pageBreak" },
-    { "id": "toc", "type": "toc", "title": "目录", "alias": "CS Fault Report TOC", "headingStyleRange": "1-2", "hyperlink": true, "updateMode": "wordField" },
-    { "id": "toc_break", "type": "pageBreak" },
-
     { "id": "basic_heading", "type": "heading", "title": "1 基本信息", "level": 1 },
     { "id": "basic_info", "type": "staticTable", "columns": ["项目", "内容"], "rows": [
       ["故障名称", "{{diagnosis.description}}"],

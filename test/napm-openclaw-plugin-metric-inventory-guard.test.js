@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -35,7 +35,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(testApi.isMetricInventoryDetailPrompt('业务都可以查哪些指标？')).toBe(false);
   });
 
-  test('should leave before_message_write as a synchronous non-refresh hook', async () => {
+  test('should block a WECOM metric inventory reply when no matching skill result exists', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -84,23 +84,6 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
-    await skillTool.execute('tool-call-1', {
-      prompt,
-      userQuery: prompt,
-      resolvedQuery: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        metric: 'TPIO',
-        metrics: ['TPIO'],
-        groups: [{ type: 'BusinessGroup' }],
-        start: 1778227800,
-        end: 1778314200,
-        topMetric: 'TPIO',
-        topCount: 5,
-        format: 'json'
-      }
-    });
-
     const result = await beforeMessageWrite({
       message: {
         role: 'assistant',
@@ -108,10 +91,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result).toEqual({ block: true });
   }, 30000);
 
-  test('should require upstream resolvedQuery instead of rewriting metric inventory reply during async message_sending path', async () => {
+  test('should require a matching skill result during async message_sending', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -160,28 +143,12 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
-    await skillTool.execute('tool-call-2', {
-      prompt,
-      userQuery: prompt,
-      resolvedQuery: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        metric: 'TPIO',
-        metrics: ['TPIO'],
-        groups: [{ type: 'BusinessGroup' }],
-        start: 1778227800,
-        end: 1778314200,
-        topMetric: 'TPIO',
-        topCount: 5,
-        format: 'json'
-      }
-    });
-
     const result = await messageSending({
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result.content).toContain('NAPM skill');
+    expect(result.content).toContain('未拿到有效 skill 结果');
   }, 30000);
 
   test('should require upstream resolvedQuery when model never called tool', async () => {
@@ -231,10 +198,11 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result.content).toContain('NAPM skill');
+    expect(result.content).toContain('未拿到有效 skill 结果');
   }, 30000);
 
-  test('should not rewrite business metric inventory reply during before_message_write', async () => {
+  test('should block a business metric inventory reply during before_message_write without evidence', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -286,7 +254,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result).toEqual({ block: true });
   }, 30000);
 
   test('should block metric inventory skill call without upstream resolvedQuery', async () => {
@@ -539,6 +507,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'This is a NAPM metric inquiry — let me query the skill to get a clear picture.'
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result.content).toContain('NAPM skill');
+    expect(result.content).toContain('未拿到有效 skill 结果');
   }, 30000);
 });

@@ -334,6 +334,23 @@ function extractMetricValue(row, metricId = null) {
   return toFiniteNumber(row?.rawValue ?? row?.value);
 }
 
+function hasExplicitMetricValue(row, metricId = null) {
+  if (!row || typeof row !== 'object' || !metricId) {
+    return false;
+  }
+  if (Array.isArray(row.metricValues) && row.metricValues.some((item) => {
+    const currentMetricId = String(item?.metric?.id || item?.metric?.Id || '').trim();
+    return currentMetricId === metricId;
+  })) {
+    return true;
+  }
+  return Boolean(
+    (row.values && typeof row.values === 'object' && Object.prototype.hasOwnProperty.call(row.values, metricId))
+    || row.metric === metricId
+    || Object.prototype.hasOwnProperty.call(row, metricId)
+  );
+}
+
 function findMetricValueRecord(row, metricId = null) {
   const metricValues = Array.isArray(row?.metricValues) ? row.metricValues : [];
   if (metricValues.length === 0) {
@@ -436,11 +453,18 @@ function resolveResponseType(payload = {}, hasResultData = false) {
  * 构造 TopN / 排名类 narration 结构。
  */
 function buildTopnStructure(payload, rows, followUpPrompts) {
-  const metricId = extractMetricId(payload);
   const sortMetricId = extractSortMetricId(payload);
+  const queryMetricId = extractMetricId(payload);
+  const sortValuesAvailable = Boolean(sortMetricId) && rows.some((row) => hasExplicitMetricValue(row, sortMetricId));
+  const metricId = sortValuesAvailable ? sortMetricId : queryMetricId;
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
-  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
-  const displayLimit = Math.max(Number(payload?.resolvedQuery?.topCount) || 10, rows.length > 0 ? Math.min(rows.length, 50) : 10);
+  const groups = Array.isArray(payload?.resolvedQuery?.groups) ? payload.resolvedQuery.groups : [];
+  const objectType = String(groups[groups.length - 1]?.type || '').trim() || null;
+  const requestedTopCount = Number.isInteger(Number(payload?.resolvedQuery?.topCount))
+    && Number(payload.resolvedQuery.topCount) > 0
+    ? Number(payload.resolvedQuery.topCount)
+    : null;
+  const displayLimit = requestedTopCount || Math.min(rows.length, 50);
   const items = rows.slice(0, displayLimit).map((row, index) => {
     const rawValue = extractMetricValue(row, metricId);
     const unit = extractMetricUnit(row, metricId);
@@ -451,23 +475,60 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
       metric: metricId,
       metricLabel: extractMetricLabel(row, metricId),
       rawValue,
-      value: row?.value || formatMetricValue(rawValue, unit),
+      value: formatMetricValue(rawValue, unit),
       formattedValue: formatMetricValue(rawValue, unit),
       unit,
       groupPath: row?.groupPath || null
     };
   });
-  const explanationMetricText = metricId && sortMetricId && metricId !== sortMetricId
-    ? `查询指标为 ${metricId}，排序指标为 ${sortMetricId}`
+  const explanationMetricText = queryMetricId && sortMetricId && queryMetricId !== sortMetricId
+    ? `查询指标为 ${queryMetricId}，排序指标为 ${sortMetricId}`
     : (metricId ? `围绕 ${metricId} 指标` : null);
+  const sortDirection = String(payload?.resolvedQuery?.semanticConstraints?.direction || '').trim()
+    || (payload?.resolvedQuery?.semanticConstraints?.operation === 'rank_bottom' ? 'asc' : 'desc');
+  const sortableValues = items
+    .map((item) => toFiniteNumber(item.rawValue))
+    .filter((value) => value !== null);
+  const sortConsistent = sortValuesAvailable
+    ? sortableValues.every((value, index) => index === 0
+      || (sortDirection === 'asc' ? sortableValues[index - 1] <= value : sortableValues[index - 1] >= value))
+    : null;
+  const sortWarning = !sortValuesAvailable
+    ? `结果未返回排序指标 ${sortMetricId || 'unknown'} 的值，无法核验排行顺序。`
+    : (!sortConsistent
+      ? `结果顺序与排序指标 ${sortMetricId} 的 ${sortDirection} 顺序不一致，不应生成可信排名结论。`
+      : null);
+  const reachedRequestLimit = requestedTopCount != null && rows.length >= requestedTopCount;
+  const limitExplanation = requestedTopCount != null
+    ? `请求 Top ${requestedTopCount}，实际返回 ${rows.length} 条；达到请求上限不代表后端没有更多数据。`
+    : `实际返回 ${rows.length} 条。`;
   return {
     responseType: 'topn',
     title: payload?.summary?.title || '排行结果',
     explanation: objectType && explanationMetricText
-      ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。请直接概括前列对象、领先程度和明显差距。`
-      : '这是一个排行结果。请直接概括前列对象、领先程度和明显差距。',
+      ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。${limitExplanation}${sortWarning ? ` ${sortWarning}` : ''}`
+      : `这是一个排行结果。${limitExplanation}${sortWarning ? ` ${sortWarning}` : ''}`,
     timeRange,
     objectType,
+    requestedTopCount,
+    returnedRowCount: rows.length,
+    reachedRequestLimit,
+    hasMoreRowsThanDisplayed: rows.length > items.length,
+    sortMetric: sortMetricId,
+    sortDirection,
+    sortValuesAvailable,
+    sortConsistent,
+    sortWarning,
+    executionFacts: {
+      service: String(payload?.resolvedQuery?.service || payload?.service || '').trim() || null,
+      start: toFiniteNumber(payload?.resolvedQuery?.start),
+      end: toFiniteNumber(payload?.resolvedQuery?.end),
+      metrics: Array.isArray(payload?.resolvedQuery?.metrics) ? payload.resolvedQuery.metrics : [],
+      topMetric: sortMetricId,
+      groups,
+      topCount: requestedTopCount,
+      returnedRowCount: rows.length
+    },
     displayText: buildTopnDisplayText({ responseType: 'topn', objectType, timeRange, items }),
     items,
     nextActions: followUpPrompts
