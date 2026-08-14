@@ -361,6 +361,50 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.summary.displayText).toContain('不是中文名称过滤');
   });
 
+  test('should render a complete DefinedApp catalog instead of a generic title', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'groups',
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'DefinedApp' }],
+        semanticConstraints: {
+          operation: 'metadata_list',
+          workflowType: 'object_inventory',
+          targetObjectType: 'DefinedApp'
+        }
+      },
+      metadata: {
+        requestedObjectType: 'DefinedApp',
+        effectiveObjectType: 'DefinedApp',
+        providerType: 'applications',
+        apiType: 'applications',
+        applicationTypeFilter: [2],
+        applicationCatalogRole: 'defined_application'
+      },
+      summary: {
+        title: '对象列表',
+        rowCount: 3,
+        empty: false
+      },
+      rows: [
+        { label: '回溯238', value: '回溯238', type: 'DefinedApp', applicationType: 2 },
+        { label: 'Esxi-local', value: 'Esxi-local', type: 'DefinedApp', applicationType: 2 },
+        { label: 'HIS系统1', value: 'HIS系统1', type: 'DefinedApp', applicationType: 2 }
+      ]
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.responseType).toBe('group_list');
+    expect(payload.narrationStructure.displayText).toContain('3 个已定义应用');
+    expect(payload.summary.displayText).toContain('DefinedApp');
+    expect(payload.summary.displayText).toContain('applications Type=2');
+    expect(payload.summary.displayText).toContain('回溯238');
+    expect(payload.summary.displayText).toContain('Esxi-local');
+    expect(payload.summary.displayText).not.toBe('对象列表');
+  });
+
   test('should constrain WebApplication metric-list narration to returned web metrics only', () => {
     const payload = buildOpenClawReplyContract({
       service: 'metrics',

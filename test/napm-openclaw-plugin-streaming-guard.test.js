@@ -1,14 +1,24 @@
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('path');
 
 describe('napm-openclaw-plugin streaming preview guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
   const originalAllowReasoningPreview = process.env.NAPM_ALLOW_REASONING_PREVIEW;
+  const originalAuditLogPath = process.env.NAPM_AUDIT_LOG_PATH;
+  const originalReportSourceDir = process.env.NAPM_REPORT_SOURCE_DIR;
+  const originalTrustedContextDir = process.env.NAPM_TRUSTED_CONTEXT_DIR;
+  let baseDir;
   let plugin = null;
 
   beforeAll(() => {
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-streaming-guard-'));
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    process.env.NAPM_AUDIT_LOG_PATH = path.join(baseDir, 'audit.log');
+    process.env.NAPM_REPORT_SOURCE_DIR = path.join(baseDir, 'report-sources');
+    process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(baseDir, 'trusted-contexts');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -22,6 +32,22 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     } else {
       process.env.NAPM_ALLOW_REASONING_PREVIEW = originalAllowReasoningPreview;
     }
+    if (originalAuditLogPath === undefined) {
+      delete process.env.NAPM_AUDIT_LOG_PATH;
+    } else {
+      process.env.NAPM_AUDIT_LOG_PATH = originalAuditLogPath;
+    }
+    if (originalReportSourceDir === undefined) {
+      delete process.env.NAPM_REPORT_SOURCE_DIR;
+    } else {
+      process.env.NAPM_REPORT_SOURCE_DIR = originalReportSourceDir;
+    }
+    if (originalTrustedContextDir === undefined) {
+      delete process.env.NAPM_TRUSTED_CONTEXT_DIR;
+    } else {
+      process.env.NAPM_TRUSTED_CONTEXT_DIR = originalTrustedContextDir;
+    }
+    fs.rmSync(baseDir, { recursive: true, force: true });
   });
 
   afterEach(() => {
@@ -130,7 +156,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     expect(result).toEqual({ cancel: true });
   });
 
-  test('should rewrite leaked english reasoning to remembered skill reply when skill result already exists', async () => {
+  test('should cancel leaked english reasoning when a current result already exists', async () => {
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
     const testApi = plugin.__test__;
@@ -148,7 +174,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
       }
     };
 
-    testApi.rememberSkillResult(prompt, rememberedResult, '');
+    testApi.rememberSkillResult(prompt, rememberedResult, testApi.getConversationKey(ctx));
 
     const leakedPreview = [
       'Previously I checked WebApplication traffic.',
@@ -159,20 +185,13 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
       content: leakedPreview
     }, ctx);
 
-    if (result) {
-      expect(typeof result.content).toBe('string');
-      expect(result.content).toContain('\u6700\u8fd1\u4e00\u5929\u6d41\u91cf\u6700\u5927\u7684\u4e1a\u52a1\u5e94\u7528');
-      expect(result.content).not.toContain('Previously I checked WebApplication traffic');
-      return;
-    }
-
-    expect(result).toBeUndefined();
+    expect(result).toEqual({ cancel: true });
   });
 
   test('should allow leaked reasoning preview when temporary preview flag is enabled on non-wecom channels', async () => {
     process.env.NAPM_ALLOW_REASONING_PREVIEW = 'true';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
 
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
@@ -201,7 +220,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
   test('should still cancel leaked reasoning preview on wecom even when preview flag is enabled', async () => {
     process.env.NAPM_ALLOW_REASONING_PREVIEW = 'true';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
 
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');

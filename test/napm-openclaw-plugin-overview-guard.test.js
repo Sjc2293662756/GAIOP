@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -45,6 +45,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
     const beforeMessageWrite = hooks.get('before_message_write');
     const skillTool = tools.get('napm-skill-query');
     expect(typeof messageReceived).toBe('function');
@@ -66,22 +67,28 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
-    await skillTool.execute('tool-call-1', {
-      prompt,
-      userQuery: prompt,
-      resolvedQuery: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        metric: 'BYTIO',
-        metrics: ['BYTIO'],
-        groups: [{ type: 'BusinessGroup' }],
-        start: 1778227800,
-        end: 1778314200,
-        topMetric: 'BYTIO',
-        topCount: 5,
-        format: 'json'
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'overview',
+          queryModeKey: 'overview',
+          overviewScene: 'application',
+          start: 1778227800,
+          end: 1778314200,
+          format: 'json'
+        }
       }
-    });
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '应用整体状态正常。',
+      resolvedQuery: bound.params.resolvedQuery
+    }, scope, 'napm-skill-query', turnId);
 
     const beforeWriteResult = await beforeMessageWrite({
       message: {

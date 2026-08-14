@@ -60,4 +60,35 @@ describe('ResolvedQueryTimeRangeService', () => {
       end: 1779677940
     });
   });
+
+  test.each([
+    ['最近三小时的告警情况', 'last3hours', 3 * 60 * 60],
+    ['最近3小时的告警情况', 'last3hours', 3 * 60 * 60],
+    ['最近七小时的告警情况', 'last7hours', 7 * 60 * 60],
+    ['最近90分钟的告警情况', 'last90minutes', 90 * 60],
+    ['最近半小时的告警情况', 'last30minutes', 30 * 60],
+    ['最近七天的告警情况', 'last7days', 7 * 24 * 60 * 60],
+    ['最近一周的 HTTP 500 情况', 'last7days', 7 * 24 * 60 * 60],
+    ['近两周的 HTTP 400 情况', 'last14days', 14 * 24 * 60 * 60]
+  ])('should infer %s as the canonical key %s', (prompt, key, durationSeconds) => {
+    const result = TimeRangeService.resolveTimeRange(prompt, {
+      nowSeconds: 1786093000
+    });
+
+    expect(result).toMatchObject({
+      key,
+      start: 1786092960 - durationSeconds,
+      end: 1786092960
+    });
+  });
+
+  test('should keep legacy lastNseconds keys executable at the shared boundary', () => {
+    const result = TimeRangeService.resolveKnownTimeRangeKey('last10800seconds', 1786093000);
+
+    expect(result).toMatchObject({
+      key: 'last10800seconds',
+      start: 1786082160,
+      end: 1786092960
+    });
+  });
 });

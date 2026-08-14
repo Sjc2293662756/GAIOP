@@ -8,9 +8,10 @@
 const {
   isBusinessObjectType,
   getMetricCategoriesForObjectType
-} = require('../../../src/constants/objectMetricOwnership');
+} = require('../src/constants/objectMetricOwnership');
 const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
+const { buildReportData } = require('./ReportDataContractService');
 
 // 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
 function toFiniteNumber(value) {
@@ -650,14 +651,71 @@ function buildWebApplicationCatalogDisplayText(rows = []) {
   return lines.join('\n');
 }
 
+function resolveGroupListDescriptor(objectType = '', metadata = {}) {
+  const typeFilter = Array.isArray(metadata?.applicationTypeFilter)
+    ? metadata.applicationTypeFilter.map(Number).filter(Number.isFinite)
+    : [];
+  const descriptors = {
+    DefinedApp: { label: '已定义应用', detail: 'DefinedApp，applications Type=2' },
+    WebApplication: { label: '业务系统', detail: 'WebApplication，applications Type=3' },
+    BuiltinApplication: { label: '内置应用', detail: 'BuiltinApplication，applications Type=1' },
+    CompositeApplication: { label: '自动识别应用', detail: 'CompositeApplication，applications Type=4' },
+    OtherApp: { label: '未知应用', detail: 'OtherApp' },
+    BusinessGroup: { label: '业务组', detail: 'BusinessGroup' }
+  };
+  const descriptor = descriptors[objectType] || {
+    label: objectType || '对象',
+    detail: objectType || null
+  };
+  if (metadata?.providerType === 'applications' && typeFilter.length === 1) {
+    return {
+      ...descriptor,
+      detail: `${objectType || descriptor.detail}，applications Type=${typeFilter[0]}`
+    };
+  }
+  return descriptor;
+}
+
+function buildGroupListDisplayText(payload = {}, rows = [], explicitObjectType = '', explicitMetadata = null) {
+  const metadata = explicitMetadata && typeof explicitMetadata === 'object'
+    ? explicitMetadata
+    : (payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {});
+  const objectType = String(
+    explicitObjectType
+    || metadata.effectiveObjectType
+    || metadata.requestedObjectType
+    || payload?.resolvedQuery?.groups?.[0]?.type
+    || ''
+  ).trim();
+  const descriptor = resolveGroupListDescriptor(objectType, metadata);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return `当前没有返回${descriptor.label}。`;
+  }
+
+  const detail = descriptor.detail ? `（${descriptor.detail}）` : '';
+  const lines = [`系统中目前有 ${rows.length} 个${descriptor.label}${detail}：`];
+  rows.forEach((row, index) => {
+    const value = String(getListItemValue(row, 'label') || '').trim();
+    if (value) {
+      lines.push(`${index + 1}. ${value}`);
+    }
+  });
+  return lines.join('\n');
+}
+
 // 构造清单类 narration 结构，适用于对象列表与指标列表两类元数据结果。
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const listTypeLabel = responseType === 'group_list' ? '对象列表' : '指标列表';
-  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
   const metadata = payload?.metadata && typeof payload.metadata === 'object'
     ? payload.metadata
     : null;
+  const objectType = String(
+    metadata?.effectiveObjectType
+    || metadata?.requestedObjectType
+    || payload?.resolvedQuery?.groups?.[0]?.type
+    || ''
+  ).trim() || null;
   const webApplicationCatalogList = isWebApplicationCatalogList(payload, responseType, objectType);
   const itemIds = rows.map((row) => String(row?.id || '').trim()).filter(Boolean);
   const sampleMetricIds = itemIds.slice(0, 12);
@@ -693,7 +751,7 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
   }));
   const displayText = webApplicationCatalogList
     ? buildWebApplicationCatalogDisplayText(rows)
-    : null;
+    : (responseType === 'group_list' ? buildGroupListDisplayText(payload, rows, objectType, metadata) : null);
 
   return {
     responseType,
@@ -888,6 +946,20 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     summary.displayText = narrationStructure.displayText;
   }
   const followUpPrompts = normalizeFollowUpPrompts(data);
+  const responseType = data.responseType || narrationStructure?.responseType || null;
+  const reportData = data.reportData && typeof data.reportData === 'object'
+    ? data.reportData
+    : buildReportData({
+        ...data,
+        service,
+        responseType,
+        summary,
+        timeRange,
+        requestUrl,
+        narrationStructure,
+        followUpPrompts,
+        followUpActions: Array.isArray(data.followUpActions) ? data.followUpActions : []
+      });
 
   return {
     ...data,
@@ -900,6 +972,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     responseMode: displayText ? 'verbatim_display_text' : 'machine_narration_input',
     narrationBy: 'openclaw',
     narrationStructure,
+    reportData,
     narrationInput: {
       schema: 'openclaw_napm_narration.v1',
       narrationBy: 'openclaw',
@@ -907,7 +980,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       answerMode,
       type: hasResultData ? 'query_result' : 'decision_result',
       service,
-      responseType: data.responseType || narrationStructure?.responseType || null,
+      responseType,
       failureClassification,
       decision: data.assistantDecision || data.decision || null,
       intent: data.intentResult || data.intent || null,
@@ -943,6 +1016,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
 }
 
 module.exports = {
+  buildGroupListDisplayText,
   buildOpenClawReplyContract,
   buildNarrationStructure,
   normalizeNarrationRows,

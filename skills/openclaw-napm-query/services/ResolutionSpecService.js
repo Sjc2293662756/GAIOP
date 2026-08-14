@@ -8,9 +8,9 @@ const path = require('node:path');
  */
 
 // 基于当前服务目录回溯到技能根目录，用于统一拼接配置文件路径。
-const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
+const skillRoot = path.resolve(__dirname, '..');
 // Resolution Spec 是语义解析阶段的核心配置，这里固定指向版本化的 JSON 文件。
-const specPath = path.join(workspaceRoot, 'config', 'napm-resolution-spec.v1.json');
+const specPath = path.join(skillRoot, 'config', 'napm-resolution-spec.v1.json');
 
 // 进程级缓存：避免每次读取配置时都重复访问磁盘。
 let cachedSpec = null;
@@ -47,6 +47,11 @@ function getServiceSpec(serviceName = '') {
   // 统一清理输入空白，避免因为前后空格导致服务键无法命中。
   const normalized = String(serviceName || '').trim();
   return cloneJson(spec?.services?.[normalized] || null);
+}
+
+function getServiceNames() {
+  const spec = loadResolutionSpec();
+  return Object.keys(spec?.services || {});
 }
 
 // 读取查询契约定义，用于约束整体查询对象的结构与字段语义。
@@ -155,6 +160,7 @@ function resetCache() {
 module.exports = {
   loadResolutionSpec,
   getServiceSpec,
+  getServiceNames,
   getQueryContract,
   getObjectAliases,
   getRoutingRules,

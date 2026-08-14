@@ -1,0 +1,35 @@
+{
+  "schema": "openclaw_napm_cs_fault_narrative_rules.v1",
+  "groups": {
+    "cs.root_cause": [
+      {
+        "when": "diagnosis.step1.performanceSummary.RDTO > 200 AND diagnosis.step1.performanceSummary.TRTI > diagnosis.step1.performanceSummary.RDTO",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的重传时延（{{diagnosis.step1.performanceSummary.RDTO}} ms）较高，且服务器响应时间（{{diagnosis.step1.performanceSummary.TRTI}} ms）是主导成分。这表明服务端处理存在瓶颈，同时网络层面存在重传加剧了体验劣化。建议优先排查服务端应用日志、数据库和中间件状态，同时检查链路丢包情况。"
+      },
+      {
+        "when": "diagnosis.step1.performanceSummary.RDTO > 200",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的重传时延（{{diagnosis.step1.performanceSummary.RDTO}} ms）较高，链路可能存在丢包或网络质量问题。重传会显著增加端到端时延，建议转入网络质量专项分析，检查丢包率和往返时间。"
+      },
+      {
+        "when": "diagnosis.step1.performanceSummary.CSTI > 200 AND diagnosis.step1.performanceSummary.TRTI < 500",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的建连时间（{{diagnosis.step1.performanceSummary.CSTI}} ms）占用户体验时间的主要部分，而服务器响应时间（{{diagnosis.step1.performanceSummary.TRTI}} ms）相对正常。TCP 握手阶段延迟明显，可能原因包括：网络路径较远、防火墙/策略设备处理延迟、服务端连接队列积压。建议检查网络路径和中间设备状态。"
+      },
+      {
+        "when": "diagnosis.step1.performanceSummary.TRTI > 1000",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的服务器响应时间（{{diagnosis.step1.performanceSummary.TRTI}} ms）显著偏高，服务端处理能力不足或后端依赖异常。建议优先排查服务端应用日志、数据库连接池和中间件状态。"
+      },
+      {
+        "when": "diagnosis.step2.uetTrend exists AND diagnosis.step1.performanceSummary.UEII > 500",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的用户体感指数（UEII={{diagnosis.step1.performanceSummary.UEII}} ms）偏高。结合用户体验时序数据中检测到的波峰，可以进一步定位异常时刻的客户端分布。若波峰集中在特定客户端 IP，建议排查客户端环境；若波峰分散在多个客户端，更倾向于服务端或网络侧问题。"
+      },
+      {
+        "when": "diagnosis.step1.performanceSummary.UEII > 2000",
+        "text": "综合判断：应用 {{diagnosis.targetLabel}} 的用户体感指数严重偏高（UEII={{diagnosis.step1.performanceSummary.UEII}} ms），用户体验存在明显劣化。建议结合时间成分拆分和波峰客户端数据，从建连、服务端响应、数据传输、重传四个维度逐一定位瓶颈成分。"
+      },
+      {
+        "when": "default",
+        "text": "综合判断：已完成应用 {{diagnosis.targetLabel}} 的标准化故障分析流程，各维度数据请参阅以上章节。建议结合用户体验时间成分拆分和波峰客户端分布数据做进一步定位。"
+      }
+    ]
+  }
+}

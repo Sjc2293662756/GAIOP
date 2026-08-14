@@ -27,7 +27,7 @@ function hasOverviewIntent(text = '') {
 }
 
 function hasRankingIntent(text = '') {
-  return /(最大|最高|最多|最小|最低|最少|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
+  return /(最大|最高|最多|较多|更多|偏多|最小|最低|最少|较少|更少|偏少|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
 }
 
 function hasTrendIntent(text = '') {
@@ -36,6 +36,15 @@ function hasTrendIntent(text = '') {
 
 function hasAverageIntent(text = '') {
   return /(平均|均值|average|avg)/i.test(text);
+}
+
+function matchAlertPacketIntent(text = '') {
+  if (!/告警/i.test(text) || !/(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text)) {
+    return null;
+  }
+  const eventMatch = text.match(/\bevent\s*id\s*[:=]?\s*(\d+)\b/i)
+    || text.match(/告警(?:事件)?\s*(?:id\s*[:=]?)?\s*(\d{3,})/i);
+  return eventMatch ? { eventId: eventMatch[1] } : null;
 }
 
 function inferInventoryObjectType(text = '') {
@@ -58,6 +67,16 @@ function classifyWorkflow(prompt = '') {
     };
   }
 
+  const alertPacketIntent = matchAlertPacketIntent(text);
+  if (alertPacketIntent) {
+    return {
+      workflowType: 'alert_packet_analysis',
+      confidence: 1,
+      eventId: alertPacketIntent.eventId,
+      reason: 'alert_packet_event_intent'
+    };
+  }
+
   if (hasDrilldownIntent(text)) {
     return {
       workflowType: 'drilldown_catalog',
@@ -76,19 +95,10 @@ function classifyWorkflow(prompt = '') {
     };
   }
 
-  if (hasInventoryIntent(text)) {
-    return {
-      workflowType: 'object_inventory',
-      confidence: 0.92,
-      targetObjectType: inferInventoryObjectType(text),
-      reason: 'object_inventory_intent'
-    };
-  }
-
   if (hasTrendIntent(text)) {
     return {
       workflowType: 'metric_timeseries',
-      confidence: 0.75,
+      confidence: 0.85,
       targetObjectType: inferInventoryObjectType(text),
       reason: 'trend_intent'
     };
@@ -97,7 +107,7 @@ function classifyWorkflow(prompt = '') {
   if (hasAverageIntent(text)) {
     return {
       workflowType: 'metric_average',
-      confidence: 0.75,
+      confidence: 0.85,
       targetObjectType: inferInventoryObjectType(text),
       reason: 'average_intent'
     };
@@ -106,9 +116,18 @@ function classifyWorkflow(prompt = '') {
   if (hasRankingIntent(text)) {
     return {
       workflowType: 'metric_topn',
-      confidence: 0.75,
+      confidence: 0.85,
       targetObjectType: inferInventoryObjectType(text),
       reason: 'ranking_intent'
+    };
+  }
+
+  if (hasInventoryIntent(text)) {
+    return {
+      workflowType: 'object_inventory',
+      confidence: 0.92,
+      targetObjectType: inferInventoryObjectType(text),
+      reason: 'object_inventory_intent'
     };
   }
 

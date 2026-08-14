@@ -8,7 +8,7 @@ describe('napm-openclaw-plugin path preflight', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -90,7 +90,7 @@ describe('napm-openclaw-plugin path preflight', () => {
   test('should still preserve explicit resolvedQuery in strict boundary mode', () => {
     process.env.NAPM_RESOLUTION_BOUNDARY_MODE = 'strict';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
 
     const testApi = plugin.__test__;
     const next = testApi.prepareSkillExecutionArgs({

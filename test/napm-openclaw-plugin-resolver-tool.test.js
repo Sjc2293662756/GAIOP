@@ -12,7 +12,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
       delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     }
     jest.resetModules();
-    return require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    return require('../napm-openclaw-plugin.remote.js');
   }
 
   afterAll(() => {
@@ -29,7 +29,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
     }
   });
 
-  test('should register only napm-skill-query in production by default', () => {
+  test('should omit diagnostic resolver tools from the production tool set by default', () => {
     const plugin = loadPlugin();
     const tools = new Map();
     const api = {
@@ -48,7 +48,11 @@ describe('napm-openclaw-plugin resolver tools', () => {
 
     plugin.register(api);
 
-    expect(Array.from(tools.keys())).toEqual(['napm-skill-query']);
+    expect(tools.has('napm-skill-query')).toBe(true);
+    expect(tools.has('napm-summary')).toBe(true);
+    expect(tools.has('napm-report-export')).toBe(true);
+    expect(tools.has('napm-resolve-query')).toBe(false);
+    expect(tools.has('napm-mainflow-query')).toBe(false);
   });
 
   test('should register resolver and mainflow tools only when diagnostic flag is enabled', () => {
@@ -130,7 +134,8 @@ describe('napm-openclaw-plugin resolver tools', () => {
       params: { prompt }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result?.params?.traceId).toMatch(/^napm-/);
+    expect(result?.params?.prompt).toBe(prompt);
   });
 
   test('before_tool_call should block non-NAPM tools and redirect to production skill entry', async () => {

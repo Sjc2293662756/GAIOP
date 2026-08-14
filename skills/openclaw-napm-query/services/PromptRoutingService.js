@@ -135,7 +135,9 @@ function isPlainApplicationInventoryPrompt(prompt = '') {
   if (!hasInventoryIntent) {
     return false;
   }
-  return classifyApplicationCatalogPrompt(text).ambiguous === true;
+  const classification = classifyApplicationCatalogPrompt(text);
+  return classification.objectType === 'DefinedApp'
+    && classification.matchedPattern === 'PlainApplication';
 }
 
 // 推断概览类问句更偏向哪个业务场景。
@@ -264,6 +266,31 @@ function buildBusinessObjectInventoryRoute(prompt = '') {
   };
 }
 
+function buildDefinedApplicationInventoryRoute(prompt = '') {
+  const text = normalizePromptText(prompt);
+  if (!isPlainApplicationInventoryPrompt(text)) {
+    return null;
+  }
+
+  return {
+    routeType: 'defined_application_inventory',
+    prompt: text,
+    timeRangeKey: inferOverviewTimeRangeKey(text),
+    query: {
+      service: 'groups',
+      queryModeKey: 'metadata',
+      semanticConstraints: {
+        operation: 'metadata_list',
+        workflowType: 'object_inventory',
+        targetObjectType: 'DefinedApp'
+      },
+      groups: [{ type: 'DefinedApp' }],
+      format: 'json',
+      userRequirement: text
+    }
+  };
+}
+
 // 构造“系统/业务/网络概览”快捷路由。
 function buildOverviewRoute(prompt = '') {
   const text = normalizePromptText(prompt);
@@ -320,15 +347,9 @@ function resolvePromptRoute(prompt = '', options = {}) {
     return businessObjectInventoryRoute;
   }
 
-  if (isPlainApplicationInventoryPrompt(text)) {
-    return {
-      routeType: 'ambiguous_application_inventory',
-      prompt: text,
-      clarification: {
-        reason: 'plain_application_inventory_is_ambiguous',
-        candidates: ['WebApplication', 'DefinedApp', 'BuiltinApplication', 'CompositeApplication', 'OtherApp']
-      }
-    };
+  const definedApplicationInventoryRoute = buildDefinedApplicationInventoryRoute(text);
+  if (definedApplicationInventoryRoute) {
+    return definedApplicationInventoryRoute;
   }
 
   if (includeUnknownPort && unknownPortRouteBuilder) {
@@ -406,6 +427,7 @@ function materializePromptRouteResolvedQuery(route = null, options = {}) {
 
 module.exports = {
   buildBusinessObjectInventoryRoute,
+  buildDefinedApplicationInventoryRoute,
   buildMetricInventoryRoute,
   buildOverviewRoute,
   inferMetricInventoryGroup,

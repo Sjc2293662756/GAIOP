@@ -1,0 +1,81 @@
+{
+  "schema": "openclaw_napm_bs_fault_template.v2",
+  "templateId": "napm_bs_fault_diagnosis_v2",
+  "version": "2.0.0",
+  "titlePath": "title",
+  "description": "NAPM B/S 业务故障分析报告固定模板。按公司 §8 结构：基本信息→分析过程→证据→根因→建议→验证。3 步固定流程：4xx/5xx 报错→页面错误 Top20→状态码详情。",
+  "page": {
+    "margin": { "top": 1000, "right": 900, "bottom": 1000, "left": 900, "header": 450, "footer": 450 },
+    "header": {
+      "leftImage": { "path": "templates/inspection/company-logo.png", "width": 110, "height": 32, "alt": "网深科技基于AI的全流量性能分析平台" },
+      "left": "网深科技基于AI的全流量性能分析平台",
+      "right": "{{diagnosis.targetLabel}}业务故障分析报告"
+    },
+    "footer": {
+      "center": "第 {{pageNumber}} 页 / 共 {{totalPages}} 页",
+      "right": "{{diagnosis.reportDate}}"
+    }
+  },
+  "sections": [
+    { "id": "cover", "type": "cover", "title": "网深科技基于AI的全流量性能分析平台", "subtitle": "业务故障分析报告" },
+    { "id": "cover_info", "type": "paragraphs", "alignment": "center", "size": 22, "paragraphs": ["{{title}}"] },
+    { "id": "cover_date", "type": "paragraphs", "alignment": "center", "size": 20, "paragraphs": ["{{diagnosis.reportDate}}"] },
+    { "id": "cover_break", "type": "pageBreak" },
+    { "id": "toc", "type": "toc", "title": "目录", "alias": "BS Fault Report TOC", "headingStyleRange": "1-2", "hyperlink": true, "updateMode": "wordField" },
+    { "id": "toc_break", "type": "pageBreak" },
+
+    { "id": "basic_heading", "type": "heading", "title": "1 基本信息", "level": 1 },
+    { "id": "basic_info", "type": "staticTable", "columns": ["项目", "内容"], "rows": [
+      ["故障名称", "{{diagnosis.description}}"],
+      ["分析类型", "{{diagnosis.flowLabel}}"],
+      ["分析时间", "{{timeRange.displayText}}"],
+      ["分析对象", "{{diagnosis.targetLabel}}（{{diagnosis.targetType}}）"],
+      ["故障级别", "{{diagnosis.severityLabel}}"],
+      ["执行步骤数", "{{diagnosis.stepCount}}"]
+    ]},
+
+    { "id": "process_heading", "type": "heading", "title": "2 分析过程", "level": 1 },
+    { "id": "process_intro", "type": "paragraphs", "paragraphs": [
+      "本次分析按照【整体错误总览 — 页面级定位 — 请求明细下钻】的思路展开，先判断业务是否存在 HTTP 错误集中现象，再定位具体页面和客户端来源，逐步形成可复核的故障证据链。"
+    ]},
+
+    { "id": "step1_heading", "type": "heading", "title": "2.1 查询业务 4xx/5xx 报错情况", "level": 2 },
+    { "id": "step1_desc", "type": "paragraphs", "paragraphs": [
+      "分析先从业务整体的 HTTP 状态码入手。对于 B/S 架构业务来说，4xx 和 5xx 错误是判断访问异常的重要入口：4xx 更多指向访问路径、请求参数、权限校验或客户端访问方式异常；5xx 则更多反映服务端处理失败、应用异常或后端服务不可用。通过业务维度汇总这几类错误，可以先判断异常是否集中在 HTTP 错误层面，也为后续是否需要继续下钻到页面级和客户端来源分析提供依据。"
+    ]},
+    { "id": "step1_query_info", "type": "paragraphs", "paragraphs": [
+      "查询时间范围：{{timeRange.displayText}}"
+    ]},
+    { "id": "step1_error_table", "type": "table", "rowBuilder": "bsErrorOverview", "columns": ["指标", "数值"] },
+    { "id": "step1_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step1Hints", "emptyText": "本次查询未发现显著异常。" },
+
+    { "id": "step2_heading", "type": "heading", "title": "2.2 页面错误分析（按访问数排序 Top 20）", "level": 2 },
+    { "id": "step2_desc", "type": "paragraphs", "paragraphs": [
+      "在整体错误情况明确后，需要把业务拆到具体页面查看。总览指标只能说明业务是否存在异常，无法直接指出错误集中在哪些 URL、哪些页面影响更大。该表按页面访问数排序，并同时展示页面访问、响应及各类状态码分布，便于观察高访问页面是否伴随错误、错误是否集中在少数页面，以及异常页面是否具备进一步下钻分析的必要。"
+    ]},
+    { "id": "step2_page_table", "type": "table", "rowBuilder": "bsPageErrors", "columns": ["名称", "访问次数[次]", "响应次数[次]", "200错误次数[次]", "300错误次数[次]", "400错误次数[次]", "500错误次数[次]"] },
+    { "id": "step2_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step2Hints", "emptyText": "页面级数据查询未返回有效结果。" },
+
+    { "id": "step3_heading", "type": "heading", "title": "2.3 页面状态码详情分析", "level": 2 },
+    { "id": "step3_desc", "type": "paragraphs", "paragraphs": [
+      "页面级统计已经把问题范围收敛到具体 URL，下一步需要查看这些请求在什么时间发生、由哪些客户端发起、最终返回了什么状态码。该表将异常页面、客户端 IP、状态码和响应次数关联在一起，用于还原异常请求的来源和发生过程。通过明细可以观察异常是否来自固定客户端、是否集中在某个时间段、是否存在同一客户端反复访问特定路径等现象，从而区分真实业务异常、客户端请求错误、外部探测或扫描流量。"
+    ]},
+    { "id": "step3_detail_table", "type": "table", "rowBuilder": "bsPageDetails", "columns": ["开始时间", "页面", "客户端IP", "状态码", "200错误", "400错误", "500错误", "响应数"] },
+    { "id": "step3_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step3Hints", "emptyText": "页面详情数据未查询到或无需关注的异常页面。" },
+
+    { "id": "evidence_heading", "type": "heading", "title": "3 证据项", "level": 1 },
+    { "id": "evidence_intro", "type": "paragraphs", "paragraphs": [
+      "本节汇总本次分析过程中使用的主要数据来源和下钻结果，便于对分析路径进行复核。证据项从业务整体指标、页面级统计到状态码访问明细逐层展开，能够支撑后续根因判断和处置建议。"
+    ]},
+    { "id": "evidence_table", "type": "table", "rowBuilder": "bsEvidence", "columns": ["步骤", "查询指标", "数据量"] },
+
+    { "id": "rootcause_heading", "type": "heading", "title": "4 根因判断", "level": 1 },
+    { "id": "rootcause_narrative", "type": "narrative", "ruleGroup": "bs.root_cause", "mode": "first" },
+
+    { "id": "recommend_heading", "type": "heading", "title": "5 处置建议", "level": 1 },
+    { "id": "recommend_list", "type": "dataParagraphs", "dataPath": "diagnosis.recommendations", "emptyText": "建议优先核查错误集中的页面路径和客户端来源，确认相关访问是否属于正常业务请求。若发现异常来源集中或访问路径具有扫描特征，可结合访问控制、应用日志和数据包进一步验证；若异常来自正常业务客户端，则应继续排查前端请求构造、接口参数、权限配置及后端处理逻辑。" },
+
+    { "id": "verify_heading", "type": "heading", "title": "6 验证方式", "level": 1 },
+    { "id": "verify_list", "type": "dataParagraphs", "dataPath": "diagnosis.prevention", "emptyText": "处置完成后，可在相同业务维度和相近时间窗口重新观察 HTTP 状态码、页面访问量、错误页面分布及客户端来源变化。若异常错误下降、业务页面访问恢复稳定，且未再出现集中异常请求，可作为问题收敛或修复有效的验证依据。" }
+  ]
+}

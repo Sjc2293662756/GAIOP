@@ -1,4 +1,4 @@
-const logger = require('../../../src/utils/logger');
+const logger = require('../src/utils/logger');
 
 const VALID_SERVICES = new Set([
   'topValues',

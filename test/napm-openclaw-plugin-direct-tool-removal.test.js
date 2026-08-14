@@ -9,7 +9,7 @@ describe('napm-openclaw-plugin direct tool removal', () => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -26,7 +26,7 @@ describe('napm-openclaw-plugin direct tool removal', () => {
     }
   });
 
-  test('should register only production resolvedQuery-first NAPM tool/command', () => {
+  test('should register the production NAPM tool set without legacy direct metric tools', () => {
     const hooks = new Map();
     const tools = new Map();
     const commands = new Map();
@@ -54,8 +54,17 @@ describe('napm-openclaw-plugin direct tool removal', () => {
 
     plugin.register(api);
 
-    expect(Array.from(tools.keys())).toEqual(['napm-skill-query']);
-    expect(Array.from(commands.keys())).toEqual(['napm-skill-query']);
+    expect(Array.from(tools.keys())).toEqual([
+      'napm-skill-query',
+      'napm-report-export',
+      'napm-alert-query',
+      'napm-alert-packet-analysis',
+      'napm-inspection-snapshot',
+      'napm-summary',
+      'napm-fault-diagnosis',
+      'napm-packet-analysis'
+    ]);
+    expect(Array.from(commands.keys())).toEqual([]);
     expect(tools.has('napm-topn')).toBe(false);
     expect(tools.has('napm-average')).toBe(false);
     expect(tools.has('napm-timeseries')).toBe(false);

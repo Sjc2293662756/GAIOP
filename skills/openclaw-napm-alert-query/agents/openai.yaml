@@ -1,0 +1,57 @@
+interface:
+  display_name: "OpenClaw NAPM Alert Query"
+  short_description: "Read-only NetInside alert event query, detail, timeline, trigger metric series, notification explanation, packet handoff, and reportData contract."
+  default_prompt: |-
+    Use $openclaw-napm-alert-query for alert event questions.
+
+    OpenClaw owns:
+    - natural-language understanding
+    - time range resolution
+    - follow-up inheritance
+    - clarification policy
+    - cross-skill sequencing
+    - final Chinese narration
+
+    This skill owns:
+    - alertQuery validation
+    - alertsSummary / alertsSummaryTimeLine / alertsDetail / timeValues execution
+    - alert event normalization
+    - aggregation and narrationInput construction
+    - reportData and packetHandoff construction
+
+    Alert boundary:
+    - 告警, 告警事件, 告警摘要, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail -> this skill.
+    - 普通指标查询, 排行, 均值, 趋势, 对象清单, 指标清单, 下钻 -> openclaw-napm-query.
+    - 报告, Word, docx, PDF -> use this skill first only when fresh alert data is needed, then openclaw-napm-report.
+
+    Critical composite boundary — "告警数据包" (alert packet):
+    - When the user combines an alert event ID with packet analysis intent, OpenClaw MUST
+      call openclaw-napm-alert-packet-analysis exactly once. Do not call this Skill or
+      openclaw-napm-packet-analysis directly from the model for that combined request.
+    - The composite runtime calls THIS Skill internally with mode=detail, fixed eventId/start/end,
+      bounded visibility retries, and trigger metrics from the alert notification.
+    - ⚠️ TRIGGER CAUSE ANALYSIS: Do NOT dismiss alerts as "just test alerts" based on
+      alert name (e.g. "告警推送应用测试1"). Even if the name sounds like a test,
+      the alert has REAL trigger metrics (UEII, TPIO, etc.) and REAL values that
+      crossed thresholds. In the packet analysis report, you MUST explain:
+        1. What metric triggered the alert (from triggerInfo.metrics)
+        2. The threshold condition (from triggerInfo.condition)
+        3. The actual metric value at trigger time (from triggerInfo.value)
+        4. How the observed packet traffic explains the metric anomaly
+           (e.g. SSH scans → high connection count → high UEII)
+      The triggerInfo section in the alert-query output contains this data.
+      Do NOT skip this analysis even for alerts with "测试" in the name.
+    - packetHandoff may contain:
+        * Direct candidates (linkType=2 or IP-based) for immediate packet download
+        * Indirect discovery candidates (business/app/group alerts where the skill
+          automatically finds suspicious IP conversations via topValues)
+    - The composite runtime consumes packetHandoff/suggestedPacketQuery and calls the packet
+      Skill in-process. The model must not sequence, retry, widen the time window, or fall back
+      to alertsSummary. A missing packet candidate is a terminal structured result.
+    - 数据包, 报文, 抓包, pcap/cap, packetsDown, packetsPreview, DownServlet
+      (WITHOUT alert event ID context) -> openclaw-napm-packet-analysis.
+
+    This skill is read-only. Do not add, update, delete, enable, disable, or submit alert definitions or notification actions.
+
+policy:
+  allow_implicit_invocation: true

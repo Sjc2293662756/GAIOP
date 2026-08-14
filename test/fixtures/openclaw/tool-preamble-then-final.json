@@ -1,0 +1,48 @@
+{
+  "schema": "openclaw_tool_turn_fixture.v1",
+  "prompt": "现在系统都有哪些告警？",
+  "turn": {
+    "sessionId": "fixture-session",
+    "runId": "fixture-run",
+    "messages": [
+      {
+        "role": "assistant",
+        "stopReason": "toolUse",
+        "content": [
+          {
+            "type": "text",
+            "text": "I'll query the current alert summary for the system."
+          },
+          {
+            "type": "toolCall",
+            "id": "alert-call-1",
+            "name": "napm-alert-query",
+            "arguments": {
+              "mode": "summary"
+            }
+          }
+        ]
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "alert-call-1",
+        "ok": true
+      },
+      {
+        "role": "assistant",
+        "stopReason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "查询完成，以下是当前告警汇总。"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "progressDeliveries": 0,
+    "terminalLogicalReplies": 1,
+    "terminalTextParts": 1
+  }
+}

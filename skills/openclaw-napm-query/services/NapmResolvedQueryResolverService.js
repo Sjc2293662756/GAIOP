@@ -330,14 +330,6 @@ function isMetricInventoryPrompt(prompt = '') {
   return includesAny(prompt, ['哪些指标', '什么指标', '可查哪些指标', '可以查哪些指标', '支持哪些指标', '指标列表']);
 }
 
-function isPlainApplicationCatalogPrompt(prompt = '') {
-  const text = normalizeText(prompt);
-  if (!isMetadataListPrompt(text)) {
-    return false;
-  }
-  return classifyApplicationCatalogPrompt(text).ambiguous === true;
-}
-
 function inferApplicationCatalogGroup(prompt = '', fallbackGroup = 'WebApplication') {
   const text = normalizeText(prompt);
   const classification = classifyApplicationCatalogPrompt(text);
@@ -381,9 +373,15 @@ function isRankingPrompt(prompt = '') {
     '最大',
     '最高',
     '最多',
+    '较多',
+    '更多',
+    '偏多',
     '最小',
     '最低',
     '最少',
+    '较少',
+    '更少',
+    '偏少',
     'top',
     'TopN',
     '排行',
@@ -517,25 +515,6 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
   }
 
   if (workflow.workflowType === 'object_inventory' || isMetadataListPrompt(prompt)) {
-    if (isPlainApplicationCatalogPrompt(prompt)) {
-      return failure(
-        prompt,
-        'ambiguous_application_catalog',
-        'Cannot construct resolvedQuery because plain application inventory is ambiguous. Ask for business/WebApplication, defined applications, builtin applications, composite applications, or unknown applications.',
-        {
-          phase: 'object_resolution',
-          ambiguousObject: 'Application',
-          candidates: [
-            'WebApplication',
-            'DefinedApp',
-            'BuiltinApplication',
-            'CompositeApplication',
-            'OtherApp'
-          ]
-        }
-      );
-    }
-
     const explicitBusinessGroup = /工作组|业务组|BusinessGroup/i.test(prompt);
     const resolvedGroupType = explicitBusinessGroup
       ? 'BusinessGroup'
@@ -564,7 +543,8 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
  * 会尝试同时收敛指标、对象、时间范围、排序方向和 topCount。
  */
 function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
-  if (!isRankingPrompt(prompt)) {
+  const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
+  if (workflow.workflowType !== 'metric_topn' && !isRankingPrompt(prompt)) {
     return null;
   }
 
@@ -648,14 +628,14 @@ function resolvePrompt(prompt = '', options = {}) {
   }
 
   const spec = options.spec ? cloneJson(options.spec) : loadResolutionSpec();
-  const metadataResult = resolveMetadataPrompt(normalizedPrompt, spec);
-  if (metadataResult) {
-    return metadataResult;
-  }
-
   const topValuesResult = resolveTopValuesPrompt(normalizedPrompt, spec, options);
   if (topValuesResult) {
     return topValuesResult;
+  }
+
+  const metadataResult = resolveMetadataPrompt(normalizedPrompt, spec);
+  if (metadataResult) {
+    return metadataResult;
   }
 
   return failure(

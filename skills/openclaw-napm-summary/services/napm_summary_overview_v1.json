@@ -1,0 +1,409 @@
+{
+  "schema": "openclaw_napm_summary_template.v1",
+  "templateId": "napm_summary_overview_v1",
+  "version": "1.0.0",
+  "titlePath": "title",
+  "description": "NAPM 综述报告统一模板。通过 scopes 字段驱动章节显隐，一套模板覆盖全局综述、网络综述、业务综述、应用综述、业务组综述和告警综述。",
+  "page": {
+    "margin": {
+      "top": 1000,
+      "right": 900,
+      "bottom": 1000,
+      "left": 900,
+      "header": 450,
+      "footer": 450
+    },
+    "header": {
+      "leftImage": {
+        "path": "templates/inspection/company-logo.png",
+        "width": 110,
+        "height": 32,
+        "alt": "网深科技流量分析系统"
+      },
+      "left": "网深科技流量分析系统",
+      "right": "{{summary.customerName}}{{summary.projectName}}{{scope.label}}报告"
+    },
+    "footer": {
+      "center": "第 {{pageNumber}} 页 / 共 {{totalPages}} 页",
+      "right": "{{summary.reportDate}}"
+    }
+  },
+  "sections": [
+    {
+      "id": "cover",
+      "type": "cover",
+      "title": "网深科技流量分析系统",
+      "subtitle": "{{scope.label}}报告"
+    },
+    {
+      "id": "cover_date",
+      "type": "paragraphs",
+      "alignment": "center",
+      "size": 22,
+      "paragraphs": [
+        "{{summary.reportDate}}"
+      ]
+    },
+    {
+      "id": "cover_break",
+      "type": "pageBreak"
+    },
+    {
+      "id": "toc",
+      "type": "toc",
+      "title": "目录",
+      "alias": "Summary Report TOC",
+      "headingStyleRange": "1-2",
+      "hyperlink": true,
+      "updateMode": "wordField"
+    },
+    {
+      "id": "toc_break",
+      "type": "pageBreak"
+    },
+
+    {
+      "id": "overview_heading",
+      "type": "heading",
+      "title": "1 报告概述",
+      "level": 1
+    },
+    {
+      "id": "overview_scope_info",
+      "type": "paragraphs",
+      "paragraphs": [
+        "综述范围：{{scope.label}}",
+        "时间范围：{{timeRange.displayText}}"
+      ]
+    },
+    {
+      "id": "overview_scope_target",
+      "type": "paragraphs",
+      "scopes": ["webApplication", "application", "businessGroup", "network"],
+      "paragraphs": [
+        "聚焦对象：{{scope.target.groupLabel}}（{{scope.target.groupType}}）"
+      ]
+    },
+    {
+      "id": "device_info_heading",
+      "type": "heading",
+      "title": "1.1 设备信息",
+      "level": 2
+    },
+    {
+      "id": "device_info_intro",
+      "type": "paragraphs",
+      "paragraphs": [
+        "本次综述涉及的 NetInside 流量分析系统设备信息如下："
+      ]
+    },
+    {
+      "id": "device_info_table",
+      "type": "table",
+      "rowBuilder": "summaryDeviceTable",
+      "columns": [
+        "编号",
+        "系统名称",
+        "IP地址",
+        "软件版本",
+        "序列号",
+        "启动时长"
+      ]
+    },
+    {
+      "id": "health_heading",
+      "type": "heading",
+      "title": "1.2 综合健康评估",
+      "level": 2
+    },
+    {
+      "id": "health_table",
+      "type": "table",
+      "rowBuilder": "healthSummary",
+      "columns": [
+        "评估维度",
+        "状态",
+        "说明"
+      ]
+    },
+    {
+      "id": "health_narrative",
+      "type": "narrative",
+      "ruleGroup": "overview.health",
+      "mode": "first"
+    },
+
+    {
+      "id": "alert_heading",
+      "type": "heading",
+      "title": "2 告警态势",
+      "level": 1
+    },
+    {
+      "id": "alert_requirement",
+      "type": "paragraphs",
+      "paragraphs": [
+        "以下数据来源于 NetInside 流量分析系统的告警模块，统计周期内产生的所有告警记录。告警类别包括：网络性能告警、网络异常告警、应用性能告警、业务故障告警、用户体验告警、安全事件告警、智能分析告警。"
+      ]
+    },
+    {
+      "id": "alert_stats_heading",
+      "type": "heading",
+      "title": "2.1 告警概览",
+      "level": 2
+    },
+    {
+      "id": "alert_stats_table",
+      "type": "table",
+      "rowBuilder": "alertCategoryStats",
+      "columns": [
+        "告警类别",
+        "总数",
+        "紧急",
+        "重大",
+        "轻微"
+      ]
+    },
+    {
+      "id": "alert_trend_heading",
+      "type": "heading",
+      "title": "2.2 告警趋势",
+      "level": 2
+    },
+    {
+      "id": "alert_trend_chart",
+      "type": "chartSlot",
+      "title": "告警趋势图",
+      "chartId": "alert.timeline"
+    },
+    {
+      "id": "alert_top_objects_heading",
+      "type": "heading",
+      "title": "2.3 Top 告警对象",
+      "level": 2,
+      "scopes": ["global"]
+    },
+    {
+      "id": "alert_top_objects_table",
+      "type": "table",
+      "rowBuilder": "alertTopObjects",
+      "scopes": ["global"],
+      "columns": [
+        "对象名称",
+        "对象类型",
+        "告警总数",
+        "紧急",
+        "重大",
+        "轻微"
+      ]
+    },
+    {
+      "id": "alert_unresolved_heading",
+      "type": "heading",
+      "title": "2.4 未恢复告警",
+      "level": 2
+    },
+    {
+      "id": "alert_unresolved_table",
+      "type": "table",
+      "rowBuilder": "unresolvedAlerts",
+      "columns": [
+        "告警ID",
+        "告警名称",
+        "级别",
+        "类别",
+        "对象",
+        "开始时间"
+      ]
+    },
+    {
+      "id": "alert_narrative",
+      "type": "narrative",
+      "ruleGroup": "alert.conclusion",
+      "mode": "first"
+    },
+
+    {
+      "id": "traffic_heading",
+      "type": "heading",
+      "title": "3 流量总览",
+      "level": 1,
+      "scopes": ["global", "network", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_requirement",
+      "type": "paragraphs",
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "paragraphs": [
+        "以下数据展示报告周期内的流量趋势。全局综述展示总流量（TotalTraffic）趋势，分类综述展示聚焦对象的流量趋势。"
+      ]
+    },
+    {
+      "id": "traffic_trend_heading",
+      "type": "heading",
+      "title": "3.1 流量趋势",
+      "level": 2,
+      "scopes": ["global", "network", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_trend_chart",
+      "type": "chartSlot",
+      "title": "流量趋势图",
+      "chartId": "traffic.trend",
+      "scopes": ["global", "network", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_quality_heading",
+      "type": "heading",
+      "title": "3.2 流量质量指标",
+      "level": 2,
+      "scopes": ["network", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_quality_table",
+      "type": "table",
+      "rowBuilder": "trafficQualityMetrics",
+      "scopes": ["network", "application", "businessGroup"],
+      "columns": [
+        "指标",
+        "当前值",
+        "均值",
+        "峰值",
+        "状态"
+      ]
+    },
+    {
+      "id": "traffic_top_heading",
+      "type": "heading",
+      "title": "3.3 流量对象排行",
+      "level": 2,
+      "scopes": ["global", "network", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_top_ip_table",
+      "type": "table",
+      "rowBuilder": "trafficTopIPs",
+      "scopes": ["global", "network"],
+      "caption": "Top 10 流量 IP",
+      "columns": [
+        "序号",
+        "IP地址",
+        "总流量(kb/s)",
+        "入流量(kb/s)",
+        "出流量(kb/s)"
+      ]
+    },
+    {
+      "id": "traffic_top_app_table",
+      "type": "table",
+      "rowBuilder": "trafficTopApps",
+      "scopes": ["global", "network", "application", "businessGroup"],
+      "caption": "Top 10 流量应用",
+      "columns": [
+        "序号",
+        "应用名称",
+        "总流量(kb/s)",
+        "入流量(kb/s)",
+        "出流量(kb/s)"
+      ]
+    },
+    {
+      "id": "traffic_drilldown_heading",
+      "type": "heading",
+      "title": "3.4 下级维度分布",
+      "level": 2,
+      "scopes": ["network", "webApplication", "application", "businessGroup"]
+    },
+    {
+      "id": "traffic_drilldown_table",
+      "type": "table",
+      "rowBuilder": "trafficDrillDown",
+      "scopes": ["network", "webApplication", "application", "businessGroup"],
+      "columns": [
+        "序号",
+        "对象名称",
+        "总流量",
+        "入流量",
+        "出流量"
+      ]
+    },
+    {
+      "id": "traffic_narrative",
+      "type": "narrative",
+      "ruleGroup": "traffic.conclusion",
+      "mode": "first",
+      "scopes": ["global", "network", "webApplication", "application", "businessGroup"]
+    },
+
+    {
+      "id": "business_heading",
+      "type": "heading",
+      "title": "4 业务性能总览",
+      "level": 1,
+      "scopes": ["global", "webApplication"]
+    },
+    {
+      "id": "business_requirement",
+      "type": "paragraphs",
+      "scopes": ["global", "webApplication"],
+      "paragraphs": [
+        "以下数据展示报告周期内业务性能状况，重点关注慢访问和 HTTP 错误。"
+      ]
+    },
+    {
+      "id": "business_slow_heading",
+      "type": "heading",
+      "title": "4.1 慢访问状况",
+      "level": 2,
+      "scopes": ["global", "webApplication"]
+    },
+    {
+      "id": "business_slow_chart",
+      "type": "chartSlot",
+      "title": "慢访问 Top",
+      "chartId": "business.slowAccess",
+      "scopes": ["global", "webApplication"]
+    },
+    {
+      "id": "business_error_heading",
+      "type": "heading",
+      "title": "4.2 HTTP 错误状况",
+      "level": 2,
+      "scopes": ["global", "webApplication"]
+    },
+    {
+      "id": "business_error_chart",
+      "type": "chartSlot",
+      "title": "HTTP 错误 Top",
+      "chartId": "business.httpErrors",
+      "scopes": ["global", "webApplication"]
+    },
+    {
+      "id": "business_narrative",
+      "type": "narrative",
+      "ruleGroup": "business.conclusion",
+      "mode": "first",
+      "scopes": ["global", "webApplication"]
+    },
+
+    {
+      "id": "conclusion_heading",
+      "type": "heading",
+      "title": "5 结论与建议",
+      "level": 1
+    },
+    {
+      "id": "conclusion_narrative",
+      "type": "narrative",
+      "ruleGroup": "summary.conclusion",
+      "mode": "first"
+    },
+    {
+      "id": "conclusion_recommendations",
+      "type": "dataParagraphs",
+      "label": "建议事项：",
+      "dataPath": "summary.recommendations",
+      "emptyText": "无特别建议。"
+    }
+  ]
+}

@@ -55,10 +55,10 @@ function classifyApplicationCatalogPrompt(prompt = '') {
 
   if (APPLICATION_CATALOG_PATTERNS.PlainApplication.test(text)) {
     return {
-      objectType: null,
-      ambiguous: true,
-      reason: 'plain_application_inventory_is_ambiguous',
-      candidates: ObjectOntologyService.getPlainApplicationCandidates()
+      objectType: ObjectOntologyService.getPlainApplicationDefault(),
+      ambiguous: false,
+      reason: 'plain_application_defaults_to_defined_app',
+      matchedPattern: 'PlainApplication'
     };
   }
 
@@ -70,7 +70,7 @@ function classifyApplicationCatalogPrompt(prompt = '') {
 }
 
 function isPlainApplicationCatalogPrompt(prompt = '') {
-  return classifyApplicationCatalogPrompt(prompt).ambiguous === true;
+  return classifyApplicationCatalogPrompt(prompt).matchedPattern === 'PlainApplication';
 }
 
 module.exports = {

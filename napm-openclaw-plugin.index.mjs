@@ -1,13 +1,20 @@
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const pluginModule = require('./index.js');
+let plugin;
+try {
+  plugin = require('./index.js');
+} catch (error) {
+  if (error?.code !== 'MODULE_NOT_FOUND') {
+    throw error;
+  }
+  plugin = require('./napm-openclaw-plugin.remote.js');
+}
+const resolvedPlugin = plugin?.default || plugin;
 
-const plugin = pluginModule?.default || pluginModule;
+export const id = resolvedPlugin.id;
+export const name = resolvedPlugin.name;
+export const description = resolvedPlugin.description;
+export const register = resolvedPlugin.register?.bind(resolvedPlugin);
 
-export const register = plugin.register.bind(plugin);
-export const id = plugin.id;
-export const name = plugin.name;
-export const description = plugin.description;
-
-export default plugin;
+export default resolvedPlugin;

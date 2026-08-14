@@ -2,6 +2,10 @@ process.env.NETINSIDE_HOST = process.env.NETINSIDE_HOST || 'https://example.inva
 process.env.NETINSIDE_USERNAME = process.env.NETINSIDE_USERNAME || 'test-user';
 process.env.NETINSIDE_PASSWORD = process.env.NETINSIDE_PASSWORD || 'test-password';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 jest.mock('../skills/openclaw-napm-query/scripts/overview-module', () => {
   const actual = jest.requireActual('../skills/openclaw-napm-query/scripts/overview-module');
   return {
@@ -153,6 +157,25 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.overviewScene).toBe('application');
     expect(input.resolvedQuery.start).toBe(1777982400);
     expect(input.resolvedQuery.end).toBe(1777986000);
+  });
+
+  test('should read resolvedQuery from a UTF-8 BOM JSON file', async () => {
+    const filePath = path.join(os.tmpdir(), `napm-rq-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(filePath, `\uFEFF${JSON.stringify({
+      service: 'drilldownCatalog',
+      groups: [{ type: 'BusinessGroup' }],
+      format: 'json'
+    })}`, 'utf8');
+
+    try {
+      const args = __test__.parseArgs(['--resolvedQueryFile', filePath]);
+      const input = await __test__.resolveInput(args, {});
+
+      expect(input.resolvedQuery.service).toBe('drilldownCatalog');
+      expect(input.resolvedQuery.groups[0].type).toBe('BusinessGroup');
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
   });
 
   test('should minute-align root resolvedQuery timestamps and strip nested timeRange execution timestamps before execution', async () => {

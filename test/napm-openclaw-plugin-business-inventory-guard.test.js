@@ -2,15 +2,19 @@ const path = require('path');
 
 describe('napm-openclaw-plugin business inventory guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalSemanticGuardMode = process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
   let plugin = null;
 
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = 'enforce';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
+    if (originalSemanticGuardMode === undefined) delete process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
+    else process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = originalSemanticGuardMode;
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
       return;
@@ -53,6 +57,29 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
     expect(prepared.resolvedQuery).toBeUndefined();
+  });
+
+  test('should canonicalize legacy Application group type to DefinedApp', () => {
+    const testApi = plugin.__test__;
+    const normalized = testApi.normalizeResolvedQueryForPlugin({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'Application' }],
+      semanticConstraints: {
+        operation: 'metadata_list',
+        workflowType: 'object_inventory',
+        targetObjectType: 'Application'
+      }
+    });
+
+    expect(normalized).toMatchObject({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'DefinedApp' }],
+      semanticConstraints: {
+        targetObjectType: 'DefinedApp'
+      }
+    });
   });
 
   test('should block business inventory skill call without upstream resolvedQuery', async () => {
@@ -108,7 +135,7 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(result).toBeTruthy();
     expect(result.block).toBe(true);
     expect(result.blockReason).toContain('resolvedQuery');
-    expect(result.blockReason).toContain('OpenClaw must construct resolvedQuery first');
+    expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
   }, 30000);
 
   test('should allow business-group inventory skill call with upstream resolvedQuery', async () => {
@@ -183,7 +210,10 @@ describe('napm-openclaw-plugin business inventory guard', () => {
         groups: [{ type: 'BusinessGroup' }]
       }
     });
-    expect(result.params.traceId).toContain('napm-run-business-group-allow');
+    expect(result.params.traceId).toMatch(/^napm-/);
+    expect(plugin.__test__.getTrustedConversationKey(result.params)).toBe(
+      'session:session-business-group-allow'
+    );
   }, 30000);
 
   test('should reject business-group inventory when resolvedQuery drifts to topValues', async () => {

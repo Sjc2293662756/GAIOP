@@ -1,0 +1,81 @@
+{
+  "schema": "openclaw_napm_bs_perf_template.v1",
+  "templateId": "napm_bs_page_perf_v1",
+  "version": "1.0.0",
+  "titlePath": "title",
+  "description": "NAPM B/S 页面性能分析报告固定模板。§8 结构：基本信息→分析过程→证据→根因→建议→验证。3 步固定流程：页面性能总览→页面延时 Top20→延时成分拆分（服务器 vs 网络）。",
+  "page": {
+    "margin": { "top": 1000, "right": 900, "bottom": 1000, "left": 900, "header": 450, "footer": 450 },
+    "header": {
+      "leftImage": { "path": "templates/inspection/company-logo.png", "width": 110, "height": 32, "alt": "网深科技基于AI的全流量性能分析平台" },
+      "left": "网深科技基于AI的全流量性能分析平台",
+      "right": "{{diagnosis.targetLabel}}页面性能分析报告"
+    },
+    "footer": {
+      "center": "第 {{pageNumber}} 页 / 共 {{totalPages}} 页",
+      "right": "{{diagnosis.reportDate}}"
+    }
+  },
+  "sections": [
+    { "id": "cover", "type": "cover", "title": "网深科技基于AI的全流量性能分析平台", "subtitle": "页面性能分析报告" },
+    { "id": "cover_info", "type": "paragraphs", "alignment": "center", "size": 22, "paragraphs": ["{{title}}"] },
+    { "id": "cover_date", "type": "paragraphs", "alignment": "center", "size": 20, "paragraphs": ["{{diagnosis.reportDate}}"] },
+    { "id": "cover_break", "type": "pageBreak" },
+    { "id": "toc", "type": "toc", "title": "目录", "alias": "BS Perf Report TOC", "headingStyleRange": "1-2", "hyperlink": true, "updateMode": "wordField" },
+    { "id": "toc_break", "type": "pageBreak" },
+
+    { "id": "basic_heading", "type": "heading", "title": "1 基本信息", "level": 1 },
+    { "id": "basic_info", "type": "staticTable", "columns": ["项目", "内容"], "rows": [
+      ["故障名称", "{{diagnosis.description}}"],
+      ["分析类型", "{{diagnosis.flowLabel}}"],
+      ["分析时间", "{{timeRange.displayText}}"],
+      ["分析对象", "{{diagnosis.targetLabel}}（{{diagnosis.targetType}}）"],
+      ["故障级别", "{{diagnosis.severityLabel}}"],
+      ["执行步骤数", "{{diagnosis.stepCount}}"]
+    ]},
+
+    { "id": "process_heading", "type": "heading", "title": "2 分析过程", "level": 1 },
+    { "id": "process_intro", "type": "paragraphs", "paragraphs": [
+      "本次分析按照【整体性能总览 → 页面级延时定位 → 延时成分拆分】的思路展开，先判断业务是否存在页面加载缓慢现象，再定位具体慢页面和延时来源，逐步形成可复核的性能故障证据链。核心目标是区分页面延时的根因是应用服务器处理慢还是网络传输慢。"
+    ]},
+
+    { "id": "step1_heading", "type": "heading", "title": "2.1 页面性能总览", "level": 2 },
+    { "id": "step1_desc", "type": "paragraphs", "paragraphs": [
+      "分析从业务整体的页面性能指标入手。对于 B/S 架构业务，页面延时（PGTME）、慢页面数量（PGNSLPGE）和慢页面占比（PGSLPCT）是判断访问体验的重要指标。通过业务维度的平均延时和慢页面比例，可以先判断是否存在整体性能退化，并确定是否需要继续下钻到页面级分析。"
+    ]},
+    { "id": "step1_query_info", "type": "paragraphs", "paragraphs": [
+      "查询时间范围：{{timeRange.displayText}}"
+    ]},
+    { "id": "step1_perf_table", "type": "table", "rowBuilder": "bsPerfOverview", "columns": ["指标", "数值"] },
+    { "id": "step1_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step1Hints", "emptyText": "本次查询未发现显著性能异常。" },
+
+    { "id": "step2_heading", "type": "heading", "title": "2.2 页面延时分析（按慢页面数排序 Top 20）", "level": 2 },
+    { "id": "step2_desc", "type": "paragraphs", "paragraphs": [
+      "在整体性能情况明确后，需要把业务拆到具体页面查看。整体指标只能说明业务是否存在性能问题，无法直接指出哪些 URL 延时最高、哪些页面影响更大。该表按慢页面数排序，展示各页面的访问次数、平均延时、慢页面数量和慢页面占比，便于定位延时集中的页面。"
+    ]},
+    { "id": "step2_page_table", "type": "table", "rowBuilder": "bsPerfPageDelay", "columns": ["页面", "访问次数[次]", "平均延时[s]", "慢页面数[次]", "慢页面率[%]"] },
+    { "id": "step2_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step2Hints", "emptyText": "页面级延时数据查询未返回有效结果。" },
+
+    { "id": "step3_heading", "type": "heading", "title": "2.3 延时成分分析（服务器 vs 网络）", "level": 2 },
+    { "id": "step3_desc", "type": "paragraphs", "paragraphs": [
+      "页面级统计已经把问题范围收敛到具体 URL，下一步需要查看每次访问的延时成分拆分。对于每次页面访问，PageTime（页面总耗时）≈ ServBusyTime（服务器处理耗时）+ NetBusyTime（网络传输耗时）。通过对比服务器耗时和网络耗时的占比，可以判断页面慢的根因：ServBusyTime 占比高→应用服务器处理慢；NetBusyTime 占比高→网络传输慢。明细同时关联客户端 IP 和访问时间，用于分析慢访问的来源和时序分布。"
+    ]},
+    { "id": "step3_detail_table", "type": "table", "rowBuilder": "bsPerfPageDetails", "columns": ["开始时间", "页面", "客户端IP", "页面总耗时[s]", "服务器耗时[s]", "网络耗时[s]", "服务器占比", "网络占比", "响应数"] },
+    { "id": "step3_hint", "type": "dataParagraphs", "label": "分析提示：", "dataPath": "diagnosis.step3Hints", "emptyText": "页面延时详情数据未查询到或无需关注的页面。" },
+
+    { "id": "evidence_heading", "type": "heading", "title": "3 证据项", "level": 1 },
+    { "id": "evidence_intro", "type": "paragraphs", "paragraphs": [
+      "本节汇总本次分析过程中使用的主要数据来源和下钻结果，便于对分析路径进行复核。证据项从业务整体性能指标、页面级延时统计到逐次访问的延时成分拆分逐层展开，能够支撑后续根因判断和处置建议。"
+    ]},
+    { "id": "evidence_table", "type": "table", "rowBuilder": "bsPerfEvidence", "columns": ["步骤", "查询指标", "数据量"] },
+
+    { "id": "rootcause_heading", "type": "heading", "title": "4 根因判断", "level": 1 },
+    { "id": "rootcause_narrative", "type": "narrative", "ruleGroup": "bs_perf.root_cause", "mode": "first" },
+
+    { "id": "recommend_heading", "type": "heading", "title": "5 处置建议", "level": 1 },
+    { "id": "recommend_list", "type": "dataParagraphs", "dataPath": "diagnosis.recommendations", "emptyText": "若服务器耗时占比高，建议优先排查后端接口响应时间、数据库慢查询和应用日志；若网络耗时占比高，建议检查链路带宽、网络质量和客户端接入路径。同时结合访问时间分布和客户端来源，判断是否存在时段性拥塞或个别客户端链路问题。" },
+
+    { "id": "verify_heading", "type": "heading", "title": "6 验证方式", "level": 1 },
+    { "id": "verify_list", "type": "dataParagraphs", "dataPath": "diagnosis.prevention", "emptyText": "处置完成后，可在相同业务维度和相近时间窗口重新观察页面平均延时、慢页面占比及延时成分拆分变化。若页面延时下降、慢页面占比恢复至正常水平，且延时成分分布趋于合理，可作为问题收敛或修复有效的验证依据。" }
+  ]
+}

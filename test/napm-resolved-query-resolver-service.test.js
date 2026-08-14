@@ -251,21 +251,18 @@ describe('NapmResolvedQueryResolverService', () => {
     });
   });
 
-  test('should reject plain application inventory prompt as ambiguous', () => {
+  test('should resolve plain application inventory prompt into DefinedApp metadata_list', () => {
     const result = ResolverService.resolvePrompt('系统中有哪些应用？');
 
-    expect(result).toMatchObject({
-      ok: false,
-      reason: 'ambiguous_application_catalog',
-      diagnostics: {
-        ambiguousObject: 'Application',
-        candidates: expect.arrayContaining([
-          'WebApplication',
-          'DefinedApp',
-          'BuiltinApplication',
-          'CompositeApplication',
-          'OtherApp'
-        ])
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'DefinedApp' }],
+      semanticConstraints: {
+        operation: 'metadata_list',
+        workflowType: 'object_inventory',
+        targetObjectType: 'DefinedApp'
       }
     });
   });
@@ -275,7 +272,18 @@ describe('NapmResolvedQueryResolverService', () => {
     expect(PromptRoutingService.inferMetricInventoryGroup('自动识别的应用都可以查哪些指标？')).toBe('CompositeApplication');
     expect(PromptRoutingService.normalizeHierarchyQuestionTarget('CompositeApplication 可以往下钻到哪里？')).toBe('CompositeApplication');
     expect(PromptRoutingService.resolvePromptRoute('系统中有哪些应用？')).toMatchObject({
-      routeType: 'ambiguous_application_inventory'
+      routeType: 'defined_application_inventory',
+      query: {
+        service: 'groups',
+        groups: [{ type: 'DefinedApp' }]
+      }
+    });
+    expect(PromptRoutingService.resolvePromptRoute('系统中有哪些业务？')).toMatchObject({
+      routeType: 'business_object_inventory',
+      query: {
+        service: 'groups',
+        groups: [{ type: 'WebApplication' }]
+      }
     });
   });
 
@@ -290,6 +298,24 @@ describe('NapmResolvedQueryResolverService', () => {
       semanticConstraints: {
         operation: 'drilldown_catalog'
       }
+    });
+  });
+
+  test('should resolve mixed inventory wording with HTTP 500 comparison into WebApplication TopN', () => {
+    const result = ResolverService.resolvePrompt(
+      '最近一周有哪些业务出现较多 HTTP 500 错误？',
+      { nowSeconds: 1786676400 }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      metrics: ['PGHTTP500'],
+      topMetric: 'PGHTTP500',
+      groups: [{ type: 'WebApplication' }],
+      timeRange: { key: 'last7days' },
+      semanticConstraints: { operation: 'rank_top' }
     });
   });
 });

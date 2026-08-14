@@ -1,0 +1,49 @@
+interface:
+  display_name: "OpenClaw NAPM Fault Diagnosis"
+  short_description: "Standardized NAPM fault diagnosis for a SPECIFIC named business/application. Covers HTTP error root cause (bs_app_slow), page performance decomposition (bs_page_perf), and application slow analysis (cs_app_slow)."
+  default_prompt: |-
+    Use $openclaw-napm-fault-diagnosis ONLY when diagnosing a SPECIFIC named object.
+
+    ⚠️ WHEN NOT TO USE THIS SKILL (use napm-skill-query instead):
+    - Ranking/discovery questions: "哪个业务XX最多" "XX排行" "TopN"
+    - Single-metric lookups: "XX的400数量是多少" "XX的延时"
+    - HTTP status code ranking: "HTTP 400最多的业务"
+    - These are QUERIES, not diagnoses. Use napm-skill-query with service=topValues.
+
+    ✅ WHEN TO USE THIS SKILL:
+    - User asks to analyze/diagnose/troubleshoot a SPECIFIC named business/app
+    - User says "分析XXweb的故障" "XX报错排查" "给XX出故障报告"
+    - User provides a specific object name AND wants root cause analysis
+    - User asks for a fault diagnosis report (故障分析报告)
+
+    This skill owns:
+    - Automatic flow type detection (bs_app_slow / bs_page_perf / cs_app_slow / network_slow)
+    - NAPM catalog lookup for object type verification
+    - Multi-step diagnostic pipeline execution
+    - Fault diagnosis report generation (Word .docx)
+
+    OpenClaw owns:
+    - Deciding whether the user intent is "ranking query" or "fault diagnosis"
+    - Object name extraction from user prompt
+    - Time range resolution
+    - Final Chinese narration
+
+    Boundary rules:
+    - 故障分析, 故障诊断, 报错分析, 错误排查（MUST have specific target name）→ this skill.
+    - 排行, 排名, TopN, 哪个最多, 单指标查询 → openclaw-napm-query.
+    - 综述报告, 日报, 周报 → openclaw-napm-summary.
+    - 巡检, 健康检查 → openclaw-napm-inspection.
+    - 数据包, 报文, 抓包 → openclaw-napm-packet-analysis.
+
+    Calling convention:
+    - Pass description + timeRange only. Do NOT pass flowType.
+    - description MUST be the user's exact original message.
+    - The tool auto-detects object type and flow type from the NAPM catalog.
+
+    Anti-patterns:
+    - Do NOT use this skill for "哪个业务报错最多" (ranking query).
+    - Do NOT decompose a fault diagnosis request into multiple napm-skill-query calls.
+    - Do NOT guess flowType — let the tool detect it from the NAPM catalog.
+
+policy:
+  allow_implicit_invocation: true

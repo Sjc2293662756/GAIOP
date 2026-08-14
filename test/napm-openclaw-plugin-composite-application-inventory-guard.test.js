@@ -2,15 +2,19 @@ const path = require('path');
 
 describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalSemanticGuardMode = process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
   let plugin = null;
 
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = 'enforce';
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
+    if (originalSemanticGuardMode === undefined) delete process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
+    else process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = originalSemanticGuardMode;
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
       return;

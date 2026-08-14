@@ -1,4 +1,4 @@
-const pluginModule = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+const pluginModule = require('../napm-openclaw-plugin.remote.js');
 
 describe('napm-openclaw-plugin overview scene guards', () => {
   const originalBoundaryMode = process.env.NAPM_RESOLUTION_BOUNDARY_MODE;

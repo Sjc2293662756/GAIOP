@@ -1,0 +1,106 @@
+'use strict';
+
+/**
+ * NAPM Fault Diagnosis CLI entry point.
+ *
+ * Runs the diagnostic flow only. Report generation is handled separately
+ * by napm-report-export in the plugin pipeline.
+ *
+ * Usage:
+ *   node run_fault_diagnosis.js --queryFile <path-to-json>
+ *
+ * Output: JSON to stdout with { ok, reportReady, reportData, steps }
+ */
+
+const fs = require('fs');
+const FaultDiagnosisService = require('../services/FaultDiagnosisService');
+const { applyFaultTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  let payload = null;
+  const queryFileIdx = args.indexOf('--queryFile');
+  if (queryFileIdx >= 0 && args[queryFileIdx + 1]) {
+    const filePath = args[queryFileIdx + 1];
+    if (!fs.existsSync(filePath)) {
+      process.stderr.write(`[fault-diagnosis] File not found: ${filePath}\n`);
+      process.exit(1);
+    }
+    payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  }
+
+  if (!payload) {
+    payload = { description: '未命名故障', flowType: 'bs_app_slow' };
+  }
+
+  try {
+    const result = await executeFaultDiagnosis(payload);
+    process.stdout.write(JSON.stringify(result));
+  } catch (error) {
+    process.stderr.write(`[fault-diagnosis] Error: ${error.message}\n`);
+    process.stdout.write(JSON.stringify({
+      ok: false,
+      error: { code: 'FAULT_DIAGNOSIS_CRASH', message: error.message }
+    }));
+  }
+}
+
+/**
+ * Plugin 通过 require() 同进程调用的入口。
+ * params 已经是 JavaScript 对象，无需 JSON 解析。
+ */
+async function handleSkillCall(params = {}) {
+  const payload = {
+    description: params.description || params.prompt || '',
+    prompt: params.prompt || params.description || '',  // original user text for name extraction
+    timeRange: params.timeRange || undefined,
+    fault: params.fault || { description: params.description || params.prompt || '' },
+    traceId: params.traceId || undefined,
+  };
+  // flowType and target are intentionally NOT passed — FaultDiagnosisService auto-detects them.
+
+  try {
+    return await executeFaultDiagnosis(payload);
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: error.code || 'FAULT_DIAGNOSIS_ERROR',
+        message: error.message || String(error),
+      },
+    };
+  }
+}
+
+async function executeFaultDiagnosis(payload = {}) {
+  const normalized = normalizeFaultPayload(payload);
+  const service = new FaultDiagnosisService();
+  return service.run(normalized);
+}
+
+function normalizeFaultPayload(payload = {}, options = {}) {
+  const normalized = {
+    ...payload,
+    timeRange: payload.timeRange && typeof payload.timeRange === 'object'
+      ? { ...payload.timeRange }
+      : {}
+  };
+  const range = applyFaultTimeRange(normalized, { defaultKey: 'last24hours', nowMs: options.nowMs });
+  if (!range.ok) {
+    const error = new Error(range.message);
+    error.code = range.reason;
+    throw error;
+  }
+  return normalized;
+}
+
+// 保留 CLI 入口（本地测试用）
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`[fault-diagnosis] Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { executeFaultDiagnosis, handleSkillCall, normalizeFaultPayload };

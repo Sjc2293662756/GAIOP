@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 __pycache__/
 
 # Environment variables
@@ -20,6 +19,18 @@ tmp_remote/
 .deploy_ts
 .codex-temp/
 .claude/
+
+# Local runtime and deployment artifacts
+.openclaw/
+archive/
+backups/
+output/
+*.bak
+*.bak-*
+*.tar
+*.tgz
+*.zip
+*.docx
 
 # OS
 .DS_Store

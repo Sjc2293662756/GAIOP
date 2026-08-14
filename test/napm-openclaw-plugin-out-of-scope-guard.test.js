@@ -7,7 +7,7 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
     jest.resetModules();
-    plugin = require('../.codex-temp/napm-openclaw-plugin.remote.js');
+    plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
@@ -55,6 +55,110 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
       runId: `run-${suffix}`
     };
   }
+
+  test.each([
+    '你好？',
+    '您好！',
+    '嗨',
+    '哈喽',
+    'Hello',
+    '早上好',
+    '下午好',
+    '晚上好',
+    '在吗？',
+    '你是谁？',
+    '你叫什么名字？',
+    '你的身份是什么？',
+    '你是做什么的？',
+    '你能做什么？',
+    '你有哪些能力？',
+    '你运行在哪里？',
+    '你基于什么平台？',
+    '请介绍一下你自己。'
+  ])('should classify %s as a platform identity prompt', (prompt) => {
+    expect(plugin.__test__.isPlatformIdentityPrompt(prompt)).toBe(true);
+  });
+
+  test.each([
+    '今天天气怎么样？',
+    '讲个笑话。',
+    '你好，今天天气怎么样？',
+    '您好，讲个笑话。',
+    '你好，帮我查一下现在系统情况。',
+    '你能帮我查一下现在系统情况吗？',
+    '系统支持哪些指标？'
+  ])('should not classify %s as a platform identity prompt', (prompt) => {
+    expect(plugin.__test__.isPlatformIdentityPrompt(prompt)).toBe(false);
+  });
+
+  test.each([
+    ['greeting', '你好？'],
+    ['time-greeting', '早上好'],
+    ['identity', '你是谁？'],
+    ['capability', '你能做什么？'],
+    ['platform', '你运行在哪里？']
+  ])('should preserve the model answer for a %s prompt in both outgoing hooks', async (suffix, prompt) => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const ctx = createWeComCtx(suffix);
+    const identityReply = '我是观枢AI，运行在 OpenClaw 上，面向观枢 GAIOP / NAPM 提供智能运维服务。';
+
+    messageReceived({ content: prompt }, ctx);
+    const promptBuildResult = await beforePromptBuild({ prompt }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('IDENTITY.md');
+    expect(promptBuildResult.appendSystemContext).toContain('不得调用 NAPM skill');
+    await expect(messageSending({ content: identityReply }, ctx)).resolves.toBeUndefined();
+    expect(beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: identityReply }]
+      }
+    }, ctx)).toBeUndefined();
+  });
+
+  test('should preserve a greeting immediately after /new', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('new-then-greeting');
+    const greetingReply = '你好，我是观枢AI。';
+
+    hooks.get('message_received')({ content: '/new' }, ctx);
+    await expect(hooks.get('message_sending')({
+      content: 'New session started.'
+    }, ctx)).resolves.toBeUndefined();
+
+    hooks.get('message_received')({ content: '你好？' }, ctx);
+    const promptBuildResult = await hooks.get('before_prompt_build')({ prompt: '你好？' }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('IDENTITY.md');
+    await expect(hooks.get('message_sending')({ content: greetingReply }, ctx)).resolves.toBeUndefined();
+    expect(hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: greetingReply }]
+      }
+    }, ctx)).toBeUndefined();
+  });
+
+  test('should restore the general out-of-scope guard on the next ordinary turn', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('identity-then-weather');
+
+    hooks.get('message_received')({ content: '你是谁？' }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: '你是谁？' }, ctx);
+    await expect(hooks.get('message_sending')({
+      content: '我是观枢AI，面向观枢 GAIOP / NAPM。'
+    }, ctx)).resolves.toBeUndefined();
+
+    hooks.get('message_received')({ content: '今天天气怎么样？' }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: '今天天气怎么样？' }, ctx);
+    const weatherReply = await hooks.get('message_sending')({ content: '今天晴。' }, ctx);
+
+    expect(weatherReply.content).toContain('像天气、闲聊、泛问答这类内容不在当前技能范围内');
+  });
 
   test('should rewrite weather prompt during message_sending', async () => {
     const { hooks } = createApiHarness();

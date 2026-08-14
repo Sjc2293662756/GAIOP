@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 
 const path = require('path');
+const fs = require('fs');
 
-const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
+const skillRoot = path.resolve(__dirname, '..');
 
 function loadDotenv() {
   const candidates = [
-    path.join(workspaceRoot, 'node_modules', 'dotenv'),
+    path.join(skillRoot, 'node_modules', 'dotenv'),
+    path.join(skillRoot, '..', '..', 'node_modules', 'dotenv'),
     'dotenv'
   ];
 
   for (const candidate of candidates) {
     try {
       require(candidate).config({
-        path: path.join(workspaceRoot, '.env')
+        path: path.join(skillRoot, '.env')
       });
       return;
     } catch (_error) {
@@ -24,17 +26,17 @@ function loadDotenv() {
 
 loadDotenv();
 
-const RequirementParserService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/RequirementParserService'));
-const MetricMappingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/MetricMappingService'));
-const NapmMetadataService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/NapmMetadataService'));
-const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/GroupPathPlannerService'));
-const PromptRoutingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/PromptRoutingService'));
-const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolutionSpecService'));
-const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
-const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ExecutionFailureClassifier'));
+const RequirementParserService = require(path.join(skillRoot, 'services/RequirementParserService'));
+const MetricMappingService = require(path.join(skillRoot, 'services/MetricMappingService'));
+const NapmMetadataService = require(path.join(skillRoot, 'services/NapmMetadataService'));
+const GroupPathPlannerService = require(path.join(skillRoot, 'services/GroupPathPlannerService'));
+const PromptRoutingService = require(path.join(skillRoot, 'services/PromptRoutingService'));
+const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionSpecService'));
+const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
+const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
-const TimeUtils = require(path.join(workspaceRoot, 'src/utils/TimeUtils'));
-const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'src/utils/auditLogger'));
+const TimeUtils = require(path.join(skillRoot, 'src/utils/TimeUtils'));
+const { buildSafeUrl, logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -163,8 +165,14 @@ function parseArgs(argv) {
     } else if (arg === '--queryJson') {
       args.queryJson = argv[index + 1];
       index += 1;
+    } else if (arg === '--queryJsonFile' || arg === '--resolvedQueryFile') {
+      args.resolvedQueryFile = argv[index + 1];
+      index += 1;
     } else if (arg === '--payload') {
       args.payload = argv[index + 1];
+      index += 1;
+    } else if (arg === '--payloadFile') {
+      args.payloadFile = argv[index + 1];
       index += 1;
     } else if (arg === '--resolvedQuery') {
       args.resolvedQuery = argv[index + 1];
@@ -186,9 +194,26 @@ function parseArgs(argv) {
   return args;
 }
 
+function readJsonFileArg(name, value) {
+  if (!value) {
+    return null;
+  }
+
+  const filePath = path.isAbsolute(value)
+    ? value
+    : path.resolve(process.cwd(), value);
+  const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+  return parseJsonArg(name, raw);
+}
+
 function parseJsonArg(name, value) {
   if (!value) {
     return null;
+  }
+
+  // CLI arguments are JSON strings; in-process plugin calls already carry objects.
+  if (typeof value === 'object') {
+    return value;
   }
 
   try {
@@ -1545,7 +1570,8 @@ async function resolveInput(args, payload) {
     };
   }
 
-  const explicitResolvedQuery = coerceJsonObject(args.queryJson)
+  const explicitResolvedQuery = readJsonFileArg('--resolvedQueryFile', args.resolvedQueryFile)
+    || coerceJsonObject(args.queryJson)
     || parseJsonArg('--resolvedQuery', args.resolvedQuery)
     || payload?.resolvedQuery
     || null;
@@ -1570,7 +1596,7 @@ async function resolveInput(args, payload) {
   const error = new Error('Structured resolvedQuery is required in upstream-execution mode; local prompt parsing is disabled.');
   error.code = 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
   error.details = {
-    acceptedInputs: ['--queryJson', '--resolvedQuery', 'payload.resolvedQuery'],
+    acceptedInputs: ['--queryJson', '--queryJsonFile', '--resolvedQuery', '--resolvedQueryFile', 'payload.resolvedQuery'],
     promptReceived: Boolean(prompt),
     boundaryMode: getBoundaryMode()
   };
@@ -1871,9 +1897,9 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
   return result;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const payload = parseJsonArg('--payload', args.payload) || {};
+async function executeSkillCall(args = {}, payload = {}) {
+  args = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+  payload = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {};
   const traceId = buildTraceIdFromPayload(payload, args);
   payload.traceId = traceId;
   const input = await resolveInput(args, payload);
@@ -1916,8 +1942,7 @@ async function main() {
       semanticResolutionResult,
       supportedMetrics: MetricMappingService.getAllMetricCodes().length
     });
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
@@ -1941,8 +1966,7 @@ async function main() {
       assistantDecision: clarificationGate,
       supportedMetrics: MetricMappingService.getAllMetricCodes().length
     }, clarificationGate);
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
@@ -1972,8 +1996,7 @@ async function main() {
         replyText: item?.value || item?.label
       }))
     });
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
@@ -1988,8 +2011,7 @@ async function main() {
       hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null
     }, traceId);
     const output = buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
@@ -2022,70 +2044,101 @@ async function main() {
     includeRequestUrl: false
   });
 
-  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  return output;
 }
 
-if (require.main === module) {
-  main().catch((error) => {
-    const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
-    if (isMissingResolvedQuery) {
-      logSkillAudit('napm_skill_missing_resolved_query', {
-        traceId: null,
-        error: {
-          code: error.code || null,
-          message: error.message
-        },
-        details: error.details || null
-      }, null);
-      const output = buildMissingResolvedQueryContract({
-        prompt: null,
-        service: null,
-        resolvedQuery: null,
-        rows: [],
-        data: [],
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length
-      });
-      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-      return;
-    }
-
-    logSkillAudit('napm_skill_execution_failed', {
+function buildSkillExecutionFailureContract(error) {
+  const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
+  if (isMissingResolvedQuery) {
+    logSkillAudit('napm_skill_missing_resolved_query', {
       traceId: null,
       error: {
-        code: error.code || 'SKILL_EXECUTION_ERROR',
+        code: error.code || null,
         message: error.message
-      }
+      },
+      details: error.details || null
     }, null);
-
-    const failureClassification = ExecutionFailureClassifier.classify(error, {});
-    const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
-    const output = buildOpenClawReplyContract({
-      ok: false,
+    return buildMissingResolvedQueryContract({
+      prompt: null,
       service: null,
       resolvedQuery: null,
       rows: [],
       data: [],
-      summary,
-      error: {
-        code: error.code || 'SKILL_EXECUTION_ERROR',
-        message: error.message,
-        failureClassification,
-        userMessage: failureClassification.userMessage
-      },
-      responseType: 'decision_result',
-      displayText: failureClassification.userMessage
-    }, {
-      forwardDisplayText: false,
-      appendRequestUrlToDisplayText,
-      includeRequestUrl: false
+      supportedMetrics: MetricMappingService.getAllMetricCodes().length
     });
+  }
 
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    process.exit(1);
+  logSkillAudit('napm_skill_execution_failed', {
+    traceId: null,
+    error: {
+      code: error.code || 'SKILL_EXECUTION_ERROR',
+      message: error.message
+    }
+  }, null);
+
+  const failureClassification = ExecutionFailureClassifier.classify(error, {});
+  const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
+  return buildOpenClawReplyContract({
+    ok: false,
+    service: null,
+    resolvedQuery: null,
+    rows: [],
+    data: [],
+    summary,
+    error: {
+      code: error.code || 'SKILL_EXECUTION_ERROR',
+      message: error.message,
+      failureClassification,
+      userMessage: failureClassification.userMessage
+    },
+    responseType: 'decision_result',
+    displayText: failureClassification.userMessage
+  }, {
+    forwardDisplayText: false,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
   });
 }
 
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const payload = readJsonFileArg('--payloadFile', args.payloadFile)
+    || parseJsonArg('--payload', args.payload)
+    || {};
+
+  try {
+    const output = await executeSkillCall(args, payload);
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  } catch (error) {
+    const output = buildSkillExecutionFailureContract(error);
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * The plugin calls Skill scripts in-process and passes ordinary objects.
+ */
+async function handleSkillCall(params = {}) {
+  const input = params && typeof params === 'object' && !Array.isArray(params) ? params : {};
+  const payload = {
+    ...(input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload) ? input.payload : {}),
+    ...input
+  };
+
+  try {
+    return await executeSkillCall(input, payload);
+  } catch (error) {
+    return buildSkillExecutionFailureContract(error);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
 module.exports = {
+  handleSkillCall,
   __test__: {
     getBoundaryMode,
     isStrictBoundaryMode,
@@ -2104,10 +2157,13 @@ module.exports = {
     normalizeDrilldownQuestionTarget,
     buildDrilldownCatalogDisplayText,
     buildHierarchyCatalogPayloadFromResolvedQuery,
+    parseArgs,
     resolveInput,
     buildFocusedOverviewResolvedQuery,
     deriveDiscoveryFocusSelection,
     executeUnknownPortDualProtocolQuery,
-    executeResolvedQuery
+    executeResolvedQuery,
+    executeSkillCall,
+    buildSkillExecutionFailureContract
   }
 };

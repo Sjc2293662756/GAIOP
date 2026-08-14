@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
-const logger = require('../../../src/utils/logger');
+const logger = require('../src/utils/logger');
 const NodeCache = require('node-cache');
 
 /**
@@ -57,7 +57,7 @@ class MetricMappingService {
    */
   loadMetricsFromConfigFile() {
     try {
-      const configPath = path.join(__dirname, '../../../config/metrics-config.yml');
+      const configPath = path.join(__dirname, '../config/metrics-config.yml');
 
       if (fs.existsSync(configPath)) {
         const fileContents = fs.readFileSync(configPath, 'utf8');

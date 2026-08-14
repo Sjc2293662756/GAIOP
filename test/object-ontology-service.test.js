@@ -66,11 +66,16 @@ describe('ObjectOntologyService', () => {
     });
   });
 
-  test('should expose plain application ambiguity candidates from ontology', () => {
+  test('should default plain application wording to DefinedApp', () => {
     expect(classifyApplicationCatalogPrompt('系统中有哪些应用')).toMatchObject({
-      objectType: null,
-      ambiguous: true,
-      candidates: ['WebApplication', 'DefinedApp', 'BuiltinApplication', 'CompositeApplication', 'OtherApp']
+      objectType: 'DefinedApp',
+      ambiguous: false,
+      reason: 'plain_application_defaults_to_defined_app'
+    });
+    expect(ObjectOntologyService.classifyObjectText('系统中有哪些应用')).toMatchObject({
+      objectType: 'DefinedApp',
+      ambiguous: false,
+      reason: 'plain_application_defaults_to_defined_app'
     });
   });
 });

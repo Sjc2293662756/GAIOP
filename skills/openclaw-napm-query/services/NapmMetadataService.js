@@ -14,7 +14,19 @@ const NapmClient = require('./NapmClient');
 const DimensionMappingService = require('./DimensionMappingService');
 const MetadataTruthSourcePolicy = require('./MetadataTruthSourcePolicy');
 const ObjectMetadataRegistry = require('./ObjectMetadataRegistry');
-const logger = require('../../../src/utils/logger');
+const logger = require('../src/utils/logger');
+
+const skillRoot = path.resolve(__dirname, '..');
+
+function resolveSkillLocalPath(filePath = '') {
+  const text = String(filePath || '').trim();
+  if (!text) {
+    return '';
+  }
+  return path.isAbsolute(text)
+    ? text
+    : path.resolve(skillRoot, text);
+}
 
 /**
  * NAPM 元数据服务类
@@ -31,8 +43,8 @@ class NapmMetadataService {
     this.cache = new NodeCache({ stdTTL: 600 });
     this.groupsTreeMode = String(process.env.NAPM_GROUPS_TREE_MODE || 'static').toLowerCase();
     this.staticGroupsTreeFile = process.env.NAPM_STATIC_GROUPS_TREE_FILE
-      ? path.resolve(process.env.NAPM_STATIC_GROUPS_TREE_FILE)
-      : path.resolve(__dirname, '../../../config/groups-tree.static.json');
+      ? resolveSkillLocalPath(process.env.NAPM_STATIC_GROUPS_TREE_FILE)
+      : path.join(skillRoot, 'config', 'groups-tree.static.json');
     this.staticGroupsTreeRaw = null;
   }
 

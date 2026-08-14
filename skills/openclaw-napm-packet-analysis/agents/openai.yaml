@@ -1,0 +1,4 @@
+interface:
+  display_name: "NAPM Packet Analysis"
+  short_description: "Preview, download, and analyze NetInside packet captures."
+  default_prompt: "Preview, download, or analyze NAPM packet captures using structured packet query input. Never append credentials to URLs; use .env/runtime authentication."
