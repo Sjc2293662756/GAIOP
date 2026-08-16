@@ -136,10 +136,12 @@ class TrustedToolContextStore {
   _delete(traceIdHash) {
     try {
       fs.unlinkSync(this._filePath(traceIdHash));
+      return true;
     } catch (error) {
-      if (error?.code !== 'ENOENT') {
+      if (!['ENOENT', 'EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) {
         throw error;
       }
+      return false;
     }
   }
 

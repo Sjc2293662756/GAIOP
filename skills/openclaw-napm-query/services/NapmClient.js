@@ -99,9 +99,9 @@ class NapmClient {
       return response.data;
     } catch (error) {
       logger.error('NAPM API request failed', {
-        error: error.message,
+        errorCode: error.code || error.name || 'NAPM_API_ERROR',
         params: maskSensitiveParams(queryParams),
-        response: error.response ? error.response.data : null
+        responseStatus: error.response?.status || null
       });
       throw new Error(`NAPM API error: ${error.message}`);
     }

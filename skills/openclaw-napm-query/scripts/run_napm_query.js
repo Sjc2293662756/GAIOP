@@ -35,8 +35,7 @@ const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionS
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
-const TimeUtils = require(path.join(skillRoot, 'src/utils/TimeUtils'));
-const { buildSafeUrl, logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
+const { logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -249,7 +248,7 @@ function coerceJsonObject(value) {
   }
 }
 
-function appendRequestUrlToDisplayText(displayText, requestUrl) {
+function appendRequestUrlToDisplayText(displayText, _requestUrl) {
   const text = String(displayText || '').trim();
   if (!text) {
     return null;
@@ -257,7 +256,7 @@ function appendRequestUrlToDisplayText(displayText, requestUrl) {
   return text;
 }
 
-function buildDisplayText(summary = {}, payload = {}) {
+function buildDisplayText(summary = {}, _payload = {}) {
   if (summary?.displayText) {
     return summary.displayText;
   }
@@ -811,37 +810,6 @@ function buildDrilldownCatalogSummary(result = null) {
   };
 }
 
-async function buildHierarchyCatalogPayload(prompt = '') {
-  if (!isHierarchyCatalogPrompt(prompt)) {
-    return null;
-  }
-
-  const targetGroupType = normalizeDrilldownQuestionTarget(prompt);
-  if (!targetGroupType) {
-    const catalog = await NapmMetadataService.getTopLevelDrilldownCatalog({ maxDepth: 2 });
-    return {
-      service: 'drilldownCatalog',
-      targetGroupType: null,
-      catalog
-    };
-  }
-
-  const result = await NapmMetadataService.getDrilldownPathsForGroupType(targetGroupType, { maxDepth: 2 });
-  if (!result) {
-    return {
-      service: 'drilldownCatalog',
-      targetGroupType,
-      notFound: true
-    };
-  }
-
-  return {
-    service: 'drilldownCatalog',
-    targetGroupType,
-    ...result
-  };
-}
-
 async function buildHierarchyCatalogPayloadFromResolvedQuery(resolvedQuery = null) {
   if (!resolvedQuery || resolvedQuery.service !== 'drilldownCatalog') {
     return null;
@@ -988,160 +956,6 @@ function buildHierarchyCatalogContract(prompt = '', payload = null) {
         ]
       }
     }
-  }, {
-    forwardDisplayText: true,
-    appendRequestUrlToDisplayText,
-    includeRequestUrl: false
-  });
-}
-
-function isQueryConstructionExplanationPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hasApiIntent = /(?:api|url|参数|param|request)/i.test(text);
-  const hasExplainIntent = /(?:思路|构成|构造|怎么查|如何查|怎么拼|怎么组|来源|依据|为什么这样|返回给我|最终的?|最终api|方法来源)/i.test(text);
-  const hasReferenceIntent = /(?:这个|这个查询|刚才|上一条|上一个|刚刚|该查询|这次)/i.test(text);
-
-  return hasApiIntent && (hasExplainIntent || hasReferenceIntent);
-}
-
-function cloneQueryGroups(groups = []) {
-  return Array.isArray(groups)
-    ? groups.map((group) => ({
-      type: group?.type || null,
-      argument: group?.argument ?? null
-    })).filter((group) => group.type)
-    : [];
-}
-
-function buildRequestUrlFromRememberedQuery(rememberedQuery = null) {
-  if (!rememberedQuery || typeof rememberedQuery !== 'object') {
-    return null;
-  }
-
-  const requestParamsJson = rememberedQuery.requestParamsJson && typeof rememberedQuery.requestParamsJson === 'object'
-    ? rememberedQuery.requestParamsJson
-    : null;
-  if (!requestParamsJson) {
-    return null;
-  }
-
-  const baseUrl = String(process.env.NETINSIDE_HOST || '').trim();
-  const username = String(process.env.NETINSIDE_USERNAME || '').trim();
-  const password = String(process.env.NETINSIDE_PASSWORD || '').trim();
-  if (!baseUrl || !username || !password) {
-    return null;
-  }
-
-  return buildSafeUrl(baseUrl, {
-    UserName: username,
-    Password: password,
-    ...requestParamsJson
-  });
-}
-
-function buildGroupPathExplanation(groups = []) {
-  const normalizedGroups = cloneQueryGroups(groups);
-  if (normalizedGroups.length === 0) {
-    return '当前查询没有显式 group path。';
-  }
-
-  return normalizedGroups.map((group) => (
-    group.argument ? `${group.type}(${group.argument})` : group.type
-  )).join(' -> ');
-}
-
-function buildQueryConstructionExplanationText(prompt = '', rememberedQuery = null) {
-  const context = rememberedQuery && typeof rememberedQuery === 'object'
-    ? rememberedQuery
-    : null;
-  if (!context) {
-    return '';
-  }
-
-  const resolvedQuery = context.resolvedQuery && typeof context.resolvedQuery === 'object'
-    ? context.resolvedQuery
-    : {};
-  const requestParamsJson = context.requestParamsJson && typeof context.requestParamsJson === 'object'
-    ? context.requestParamsJson
-    : null;
-  const requestUrl = String(
-    context.requestUrl
-    || buildRequestUrlFromRememberedQuery(context)
-    || ''
-  ).trim();
-  const metricsText = Array.isArray(resolvedQuery.metrics) && resolvedQuery.metrics.length > 0
-    ? resolvedQuery.metrics.join(', ')
-    : (resolvedQuery.metric ? String(resolvedQuery.metric) : '');
-  const lines = [];
-
-  if (resolvedQuery.start && resolvedQuery.end) {
-    lines.push(`数据时间：${TimeUtils.formatDate(resolvedQuery.start)} 至 ${TimeUtils.formatDate(resolvedQuery.end)}`);
-  }
-  lines.push('这次查询实际走的是项目内 skill 执行链，不是临时用外部 python3 去解析。');
-  lines.push('构造思路：先按项目内的 group path 规则确定查询层级，再由项目代码拼成 NetInside 参数。');
-  lines.push(`本次 group path：${buildGroupPathExplanation(resolvedQuery.groups)}`);
-  if (metricsText) {
-    lines.push(`指标：${metricsText}`);
-  }
-  if (resolvedQuery.service) {
-    lines.push(`service：${resolvedQuery.service}`);
-  }
-  lines.push('方法来源：');
-  lines.push('1. 项目内静态维度树与路径规划逻辑。');
-  lines.push('2. 项目内 RequirementParserService / GroupBuilder 的参数拼装规则。');
-  lines.push('3. 项目内 NapmClient 对 NetInside WebService 的真实请求。');
-  if (requestParamsJson) {
-    lines.push(`最终请求参数：${JSON.stringify(requestParamsJson, null, 2)}`);
-  } else {
-    lines.push('最终请求参数：当前上下文里没有保留下来。');
-  }
-  if (requestUrl) {
-    lines.push(`最终 API：${requestUrl}`);
-  }
-
-  return lines.join('\n');
-}
-
-function buildQueryConstructionExplanationContract(prompt = '', rememberedQuery = null) {
-  const text = buildQueryConstructionExplanationText(prompt, rememberedQuery);
-  if (!text) {
-    return null;
-  }
-
-  const resolvedQuery = rememberedQuery?.resolvedQuery && typeof rememberedQuery.resolvedQuery === 'object'
-    ? rememberedQuery.resolvedQuery
-    : {
-      service: 'query_explanation',
-      userRequirement: prompt
-    };
-  const requestParamsJson = rememberedQuery?.requestParamsJson && typeof rememberedQuery.requestParamsJson === 'object'
-    ? rememberedQuery.requestParamsJson
-    : null;
-  const requestUrl = String(
-    rememberedQuery?.requestUrl
-    || buildRequestUrlFromRememberedQuery(rememberedQuery)
-    || ''
-  ).trim() || null;
-  const summary = buildDecisionSummary('查询构造说明', text, 'ANSWER_CONCEPTUALLY');
-
-  return buildOpenClawReplyContract({
-    ok: true,
-    prompt,
-    service: 'query_explanation',
-    resolvedQuery,
-    rows: [],
-    data: [],
-    summary,
-    error: null,
-    requestUrl,
-    requestParamsJson,
-    displayText: text,
-    followUpActions: [],
-    responseType: 'decision_result'
   }, {
     forwardDisplayText: true,
     appendRequestUrlToDisplayText,
@@ -1470,8 +1284,6 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
     }
   } else if (explicitGroups.length > 0 && shouldDrilldown && shouldAllowExecutionPathRepair(query)) {
     query.groups = inferDrilldownPathFromPrompt(explicitGroups, prompt);
-  } else if (continuationInstruction.inheritGroups && explicitGroups.length === 0 && sessionGroups.length > 0) {
-    query.groups = sessionGroups;
   }
 
   if (continuationInstruction.inheritMetric && sessionState.last_metric) {
@@ -2006,7 +1818,7 @@ async function executeSkillCall(args = {}, payload = {}) {
       service: 'drilldownCatalog',
       resolvedQuery,
       resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-      ok: !Boolean(hierarchyCatalogPayload?.notFound),
+      ok: !hierarchyCatalogPayload?.notFound,
       responseType: 'drilldown_catalog',
       hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null
     }, traceId);

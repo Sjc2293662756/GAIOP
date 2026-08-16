@@ -13,9 +13,6 @@
  * - 文件中仍保留较多 `gatewayRequest` 历史命名，当前表示“运行时执行查询对象”，
  *   不代表旧项目级 gateway 仍是现行主链。
  */
-const fs = require('fs');
-const path = require('path');
-
 const MetricMappingService = require('./MetricMappingService');
 const NapmClient = require('./NapmClient');
 const GroupBuilder = require('./GroupBuilder');
@@ -32,7 +29,7 @@ const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 const CsvParser = require('../src/utils/CsvParser');
 const TimeUtils = require('../src/utils/TimeUtils');
 const logger = require('../src/utils/logger');
-const { logAudit, buildSafeUrl, maskSensitiveParams, buildOrderedParams } = require('../src/utils/auditLogger');
+const { logAudit, buildSafeUrl, maskSensitiveParams } = require('../src/utils/auditLogger');
 const {
   filterMetricsForObjectType,
   rankMetricIdsForObjectType,
@@ -193,7 +190,9 @@ class RequirementParserService {
 
       return [];
     } catch (error) {
-      logger.warn('Failed to load stable query templates:', error.message);
+      logger.warn('Failed to load stable query templates', {
+        errorCode: error.code || error.name || 'TEMPLATE_LOAD_FAILED'
+      });
       return [];
     }
   }
@@ -1050,7 +1049,9 @@ class RequirementParserService {
       logger.info('========================================\n');
       return kernelResult;
     } catch (error) {
-      logger.error('网关请求执行失败:', error.message);
+      logger.error('网关请求执行失败', {
+        errorCode: error.code || error.name || 'QUERY_EXECUTION_FAILED'
+      });
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
       if (upstreamGuard) {
         response.error = upstreamGuard;
@@ -2411,7 +2412,7 @@ class RequirementParserService {
   // 以下是 topN / 排名类问句的辅助解析逻辑。
   roundToNearestMinute(timestamp) {
     const adjustedTimestamp = Math.floor(timestamp / 60) * 60;
-    logger.info('时间戳调整', `${timestamp} -> ${adjustedTimestamp}`);
+    logger.info('时间戳调整', { timestamp, adjustedTimestamp });
     return adjustedTimestamp;
   }
 
@@ -2811,4 +2812,3 @@ class RequirementParserService {
 }
 
 module.exports = new RequirementParserService();
-

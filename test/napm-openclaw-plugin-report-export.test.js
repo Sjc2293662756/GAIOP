@@ -46,7 +46,11 @@ describe('napm-openclaw-plugin report export', () => {
   const originalReportExecutor = process.env.NAPM_REPORT_EXECUTOR;
   const originalReportOutputDir = process.env.NAPM_REPORT_OUTPUT_DIR;
   const originalDevResolverTools = process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
+  const originalReportSourceDir = process.env.NAPM_REPORT_SOURCE_DIR;
+  const originalTrustedContextDir = process.env.NAPM_TRUSTED_CONTEXT_DIR;
+  const originalAuditLogPath = process.env.NAPM_AUDIT_LOG_PATH;
   let outputDir;
+  let stateDir;
   let plugin;
 
   function bindToolArgs(toolName, args, suffix) {
@@ -68,11 +72,19 @@ describe('napm-openclaw-plugin report export', () => {
 
   beforeEach(() => {
     outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-plugin-report-'));
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-plugin-state-'));
     process.env.NAPM_REPORT_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-report/scripts/generate_napm_report.js');
     process.env.NAPM_REPORT_OUTPUT_DIR = outputDir;
+    process.env.NAPM_REPORT_SOURCE_DIR = path.join(stateDir, 'report-sources');
+    process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(stateDir, 'trusted-contexts');
+    process.env.NAPM_AUDIT_LOG_PATH = path.join(stateDir, 'audit.log');
     delete process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS;
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote.js');
+  });
+
+  afterEach(() => {
+    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
   afterAll(() => {
@@ -91,6 +103,9 @@ describe('napm-openclaw-plugin report export', () => {
     } else {
       process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS = originalDevResolverTools;
     }
+    restoreEnv('NAPM_REPORT_SOURCE_DIR', originalReportSourceDir);
+    restoreEnv('NAPM_TRUSTED_CONTEXT_DIR', originalTrustedContextDir);
+    restoreEnv('NAPM_AUDIT_LOG_PATH', originalAuditLogPath);
   });
 
   test('should register report export tool in production', () => {
@@ -106,6 +121,7 @@ describe('napm-openclaw-plugin report export', () => {
     });
 
     expect(Array.from(tools.keys()).sort()).toEqual([
+      'napm-alert-packet-analysis',
       'napm-alert-query',
       'napm-fault-diagnosis',
       'napm-inspection-snapshot',
@@ -296,3 +312,8 @@ describe('napm-openclaw-plugin report export', () => {
     expect(result.content).toContain('napm-report-export');
   });
 });
+
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

@@ -13,14 +13,14 @@ describe('ResolvedQueryTimeRangeService', () => {
       key: 'today',
       displayText: '今天',
       start: 1779638400,
-      end: 1779724740,
+      end: 1779677940,
       source: 'time_range_resolver'
     });
     expect(nextDay).toMatchObject({
       key: 'today',
       displayText: '今天',
       start: 1779724800,
-      end: 1779811140
+      end: 1779764340
     });
     expect(nextDay.start - today.start).toBe(24 * 60 * 60);
     expect(today.start % 60).toBe(0);

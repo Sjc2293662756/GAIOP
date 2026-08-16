@@ -226,10 +226,12 @@ class ReportSourceStore {
   _delete(id) {
     try {
       fs.unlinkSync(this._filePath(id));
+      return true;
     } catch (error) {
-      if (error?.code !== 'ENOENT') {
+      if (!['ENOENT', 'EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) {
         throw error;
       }
+      return false;
     }
   }
 

@@ -145,6 +145,6 @@ describe('execution time resolver', () => {
 
     expect(resolvePrompt('今天有哪些告警', NOW_MS)).toMatchObject({ key: 'today', start: 1779984000, end: NOW_SECONDS });
     expect(resolvePrompt('昨天有哪些告警', NOW_MS)).toMatchObject({ key: 'yesterday', start: 1779897600, end: 1779983940 });
-    expect(resolvePrompt('最近两小时有哪些告警', NOW_MS)).toMatchObject({ key: 'last7200seconds', start: NOW_SECONDS - 7200, end: NOW_SECONDS });
+    expect(resolvePrompt('最近两小时有哪些告警', NOW_MS)).toMatchObject({ key: 'last2hours', start: NOW_SECONDS - 7200, end: NOW_SECONDS });
   });
 });

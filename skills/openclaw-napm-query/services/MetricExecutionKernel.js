@@ -62,12 +62,10 @@ class MetricExecutionKernel {
       url
     }, requestContext);
 
-    logger.info('正在请求 metric kernel URL...');
-    const rawPayload = await napmClient.get(params);
-    const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
-    logger.info('请求到的数据:');
-    logger.info(typeof rawPayload === 'string' ? rawPayload.substring(0, 200) + (rawPayload.length > 200 ? '...' : '') : JSON.stringify(rawPayload).substring(0, 200));
-    logger.info('数据长度:', csvText.length);
+      logger.info('正在请求 metric kernel URL...');
+      const rawPayload = await napmClient.get(params);
+      const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
+      logger.info('NAPM metric payload received', { dataLength: csvText.length });
 
     const data = parseNapmPayload(rawPayload);
     response.ok = true;

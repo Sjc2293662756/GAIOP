@@ -1,6 +1,7 @@
 const manifest = require('../openclaw.plugin.json');
 
 const PRODUCTION_TOOLS = [
+  'napm-alert-packet-analysis',
   'napm-alert-query',
   'napm-fault-diagnosis',
   'napm-inspection-snapshot',

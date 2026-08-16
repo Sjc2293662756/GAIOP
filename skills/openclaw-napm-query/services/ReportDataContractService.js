@@ -33,7 +33,7 @@ function compact(values = []) {
     .filter(Boolean);
 }
 
-function normalizeReportType(responseType = '') {
+function normalizeReportType(_responseType = '') {
   return 'quick_report';
 }
 

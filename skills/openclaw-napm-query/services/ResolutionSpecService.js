@@ -142,7 +142,7 @@ function getQueryConstructionPolicy() {
  * 获取边界模式。
  * 运行时固定 strict，兼容模式已下线，环境变量不再打开 prompt fallback。
  */
-function getBoundaryMode(defaultMode = 'strict') {
+function getBoundaryMode(_defaultMode = 'strict') {
   return 'strict';
 }
 

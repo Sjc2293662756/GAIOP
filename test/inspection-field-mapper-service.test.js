@@ -55,8 +55,8 @@ describe('InspectionFieldMapperService', () => {
     expect(inspection.devices[0]).toMatchObject({
       systemName: 'NAPM-01',
       ipAddress: '192.0.2.10',
-      softwareVersion: 'NetInside 4.0.9',
-      serialNumber: 'NetInside NAPM 4.0-123456'
+      softwareVersion: '5.0',
+      serialNumber: 'NAPM-123456'
     });
     expect(inspection.performance.items.map((item) => item.name)).toContain('丢包数');
     expect(inspection.dataRetention.items.find((item) => item.name === '1分钟数据').value).toBe('10/30天');

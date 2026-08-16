@@ -253,7 +253,7 @@ class MetricMappingService {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, '')
-      .replace(/[()（）_\-]/g, '');
+      .replace(/[()（）_-]/g, '');
   }
 
   /**

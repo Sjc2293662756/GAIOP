@@ -1,3 +1,7 @@
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
 function makeReportData(title) {
   return {
     schema: 'openclaw_napm_report_data.v1',
@@ -32,13 +36,31 @@ function createHarness(plugin) {
 }
 
 describe('napm-openclaw-plugin conversation isolation', () => {
+  const originalReportSourceDir = process.env.NAPM_REPORT_SOURCE_DIR;
+  const originalTrustedContextDir = process.env.NAPM_TRUSTED_CONTEXT_DIR;
+  const originalAuditLogPath = process.env.NAPM_AUDIT_LOG_PATH;
   let plugin;
   let hooks;
+  let stateDir;
 
   beforeEach(() => {
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-conversation-isolation-'));
+    process.env.NAPM_REPORT_SOURCE_DIR = path.join(stateDir, 'report-sources');
+    process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(stateDir, 'trusted-contexts');
+    process.env.NAPM_AUDIT_LOG_PATH = path.join(stateDir, 'audit.log');
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote.js');
     hooks = createHarness(plugin);
+  });
+
+  afterEach(() => {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  afterAll(() => {
+    restoreEnv('NAPM_REPORT_SOURCE_DIR', originalReportSourceDir);
+    restoreEnv('NAPM_TRUSTED_CONTEXT_DIR', originalTrustedContextDir);
+    restoreEnv('NAPM_AUDIT_LOG_PATH', originalAuditLogPath);
   });
 
   function bindScope(conversationId, toolCallId, traceId = '') {
@@ -58,7 +80,9 @@ describe('napm-openclaw-plugin conversation isolation', () => {
     const params = bindScope('conversation-a', 'call-a', 'caller-controlled-trace');
 
     expect(params.traceId).not.toBe('caller-controlled-trace');
-    expect(plugin.__test__.getTrustedConversationKey(params)).toBe('wecom:default:conversation-a');
+    expect(plugin.__test__.getTrustedConversationKey(params)).toBe(
+      plugin.__test__.getConversationKey(makeContext('conversation-a'))
+    );
   });
 
   test('does not allow conversation B to export conversation A remembered reportData', () => {
@@ -117,3 +141,8 @@ describe('napm-openclaw-plugin conversation isolation', () => {
     expect(plugin.__test__.getConversationKey(ctxA)).not.toBe(plugin.__test__.getConversationKey(ctxB));
   });
 });
+
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

@@ -57,8 +57,35 @@ const SENSITIVE_KEYS = new Set([
   'passwd',
   'token',
   'authorization',
-  'secret'
+  'secret',
+  'username',
+  'baseurl',
+  'url',
+  'requesturl',
+  'response',
+  'responsebody',
+  'rawpayload',
+  'data',
+  'body',
+  'businessname',
+  'applicationname',
+  'objectname',
+  'ip',
+  'ips',
+  'ipaddress'
 ]);
+
+function isSensitiveKey(key = '') {
+  const normalized = String(key || '').toLowerCase();
+  return SENSITIVE_KEYS.has(normalized) || /^groupargument\d+$/.test(normalized);
+}
+
+function redactSensitiveText(value = '') {
+  return String(value)
+    .replace(/\b(?:https?|ftp):\/\/[^\s"']+/gi, '[internal-url]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[ip]')
+    .replace(/\b(password|passwd|token|authorization|secret|username)=([^&\s]+)/gi, '$1=[masked]');
+}
 
 /**
  * 截断字符串
@@ -68,7 +95,7 @@ const SENSITIVE_KEYS = new Set([
  * @returns {string} - 截断后的字符串
  */
 function truncateString(value, maxLength = 4000) {
-  const text = String(value);
+  const text = redactSensitiveText(value);
   return text.length > maxLength
     ? `${text.slice(0, maxLength)}...[truncated:${text.length - maxLength}]`
     : text;
@@ -107,8 +134,8 @@ function sanitize(value, depth = 0) {
 
   if (value instanceof Error) {
     return {
-      message: value.message,
-      stack: value.stack
+      message: redactSensitiveText(value.message),
+      stack: redactSensitiveText(value.stack)
     };
   }
 
@@ -124,7 +151,7 @@ function sanitize(value, depth = 0) {
     const entries = Object.entries(value).slice(0, 80);
     const normalized = {};
     entries.forEach(([key, item]) => {
-      if (SENSITIVE_KEYS.has(String(key).toLowerCase())) {
+      if (isSensitiveKey(key)) {
         normalized[key] = '[masked]';
         return;
       }
@@ -182,7 +209,7 @@ function logAudit(event, payload = {}, requestContext = {}) {
 function maskSensitiveParams(params = {}) {
   const normalized = {};
   Object.entries(params || {}).forEach(([key, value]) => {
-    normalized[key] = SENSITIVE_KEYS.has(String(key).toLowerCase()) ? '[masked]' : value;
+    normalized[key] = isSensitiveKey(key) ? '[masked]' : value;
   });
   return normalized;
 }
@@ -288,6 +315,8 @@ function buildSafeUrl(baseUrl, params = {}) {
 module.exports = {
   logAudit,
   sanitize,
+  isSensitiveKey,
+  redactSensitiveText,
   maskSensitiveParams,
   buildSafeUrl,
   buildOrderedParams,

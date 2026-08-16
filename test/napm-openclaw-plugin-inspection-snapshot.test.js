@@ -78,6 +78,7 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
     });
 
     expect(Array.from(tools.keys()).sort()).toEqual([
+      'napm-alert-packet-analysis',
       'napm-alert-query',
       'napm-fault-diagnosis',
       'napm-inspection-snapshot',

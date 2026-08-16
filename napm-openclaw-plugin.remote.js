@@ -4261,22 +4261,45 @@ function buildReportInputForExport(args = {}) {
   const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
   const conversationKey = getTrustedConversationKey(args);
   const explicitReportSourceId = String(args.reportSourceId || '').trim();
-  const persistedSource = explicitReportData
-    ? null
-    : (explicitReportSourceId
-      ? napmReportSourceStore.get({ reportSourceId: explicitReportSourceId, scope: conversationKey })
-      : napmReportSourceStore.findForScope(conversationKey));
-  const rememberedRecord = null;
-  const persistedReportData = persistedSource?.ok ? persistedSource.reportData : null;
+  const rememberedRecord = conversationKey
+    ? getLatestRememberedSkillRecord(conversationKey)
+    : null;
+  const rememberedReportData = getReportDataFromRecord(rememberedRecord);
   const explicitSourceResult = isPlainObject(args.sourceResult)
     ? args.sourceResult
     : (isPlainObject(args.packetResult)
       ? args.packetResult
       : (isPlainObject(args.queryResult) ? args.queryResult : null));
-  const sourceResult = explicitSourceResult;
-  const sourceReportData = explicitReportData || persistedReportData;
+  const rememberedSourceResult = isPlainObject(rememberedRecord?.result)
+    ? rememberedRecord.result
+    : null;
 
-  if (!explicitReportData && !explicitSourceResult && persistedSource && !persistedSource.ok) {
+  if (!explicitReportData && !explicitSourceResult && !conversationKey) {
+    return {
+      ok: false,
+      errorCode: 'REPORT_DATA_NOT_FOUND',
+      message: '未找到可导出的结构化结果。请先完成一次 NAPM 查询或数据包分析，再导出 Word。'
+    };
+  }
+
+  const persistedSource = (explicitReportData || explicitSourceResult)
+    ? null
+    : (explicitReportSourceId
+      ? napmReportSourceStore.get({
+        reportSourceId: explicitReportSourceId,
+        scope: conversationKey
+      })
+      : napmReportSourceStore.findForScope(conversationKey));
+  const persistedReportData = persistedSource?.ok ? persistedSource.reportData : null;
+  const sourceReportData = explicitReportData
+    || (!explicitSourceResult ? (persistedReportData || rememberedReportData) : null);
+  const sourceResult = explicitSourceResult || (!sourceReportData ? rememberedSourceResult : null);
+
+  if (
+    persistedSource
+    && !persistedSource.ok
+    && !['REPORT_SOURCE_NOT_FOUND', 'REPORT_SOURCE_EXPIRED'].includes(persistedSource.errorCode)
+  ) {
     return persistedSource;
   }
 
@@ -4312,7 +4335,9 @@ function buildReportInputForExport(args = {}) {
       audit: {
         ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
         exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'report_source_store',
+        reportDataSource: explicitReportData
+          ? 'tool_args.reportData'
+          : (persistedReportData ? 'report_source_store' : 'latest_napm_skill_result.reportData'),
         sourcePromptKey: rememberedRecord?.promptKey || null
       }
     };
@@ -4332,7 +4357,9 @@ function buildReportInputForExport(args = {}) {
     } : null,
     scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
     source: sourceReportData
-      ? (explicitReportData ? 'tool_args.reportData' : 'report_source_store')
+      ? (explicitReportData
+        ? 'tool_args.reportData'
+        : (persistedReportData ? 'report_source_store' : 'latest_napm_skill_result.reportData'))
       : (explicitSourceResult ? 'tool_args.sourceResult' : 'latest_structured_skill_result')
   };
 }

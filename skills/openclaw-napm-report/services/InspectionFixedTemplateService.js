@@ -1264,11 +1264,13 @@ class InspectionFixedTemplateService {
   }
 
   renderSection(section = {}, context = {}, chartBuffers = null) {
+    // TOC pages are disabled for every report type. Ignore both the field and
+    // its legacy page-break companion so stale templates cannot reintroduce it.
+    if (section.type === 'toc' || section.id === 'toc_break') return [];
     if (section.type === 'cover') return this.renderCover(section, context);
     if (section.type === 'pageBreak') return [new Paragraph({ children: [new PageBreak()] })];
     if (section.type === 'heading') return [buildHeading(section.title, section.level || 1)];
     if (section.type === 'paragraphs') return this.renderParagraphs(section, context);
-    if (section.type === 'toc') return this.renderToc(section, context);
     if (section.type === 'staticTable') return this.renderStaticTable(section, context);
     if (section.type === 'keyValueTable') return this.renderKeyValueTable(section, context);
     if (section.type === 'table') return this.renderTableSection(section, context);

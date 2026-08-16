@@ -353,7 +353,7 @@ class GroupPathPlannerService {
   }
 
   // 基于候选路径和对齐结果生成最终 plannedGroups，并尽量继承已有 argument。
-  buildPlannedGroups(candidatePath = [], alignment = null, existingGroups = []) {
+  buildPlannedGroups(candidatePath = [], alignment = null, _existingGroups = []) {
     const groups = candidatePath.map((type) => ({
       type: this.normalizeGroupType(type),
       argument: null

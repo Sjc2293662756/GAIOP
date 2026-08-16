@@ -49,20 +49,6 @@
       "type": "pageBreak"
     },
     {
-      "id": "toc",
-      "type": "toc",
-      "title": "目录",
-      "alias": "Summary Report TOC",
-      "headingStyleRange": "1-2",
-      "hyperlink": true,
-      "updateMode": "wordField"
-    },
-    {
-      "id": "toc_break",
-      "type": "pageBreak"
-    },
-
-    {
       "id": "overview_heading",
       "type": "heading",
       "title": "1 报告概述",

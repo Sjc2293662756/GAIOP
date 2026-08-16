@@ -12,6 +12,7 @@ describe('napm-openclaw-plugin packet business page guard', () => {
     const resolved = packetSkill.resolveQuery({
       prompt: 'http://101.254.114.238/SDK/webLanguage 分析这个的数据包预览',
       mode: 'preview_only',
+      host: 'http://netinside.example.test',
       criteria: {
         businessName: 'SDK',
         page: 'http://101.254.114.238/SDK/webLanguage',
@@ -35,6 +36,7 @@ describe('napm-openclaw-plugin packet business page guard', () => {
       prompt: '预览 101.254.114.238 最近一小时的数据包',
       mode: 'preview_only',
       downloadType: 'packetsDown',
+      host: 'http://netinside.example.test',
       criteria: {
         ips: ['101.254.114.238'],
         start: 1781488800,
