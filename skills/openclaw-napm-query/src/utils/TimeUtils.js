@@ -8,6 +8,7 @@
  * 修改日期：2026-04-16
  */
 const logger = require('./logger');
+const TimeRangeService = require('../../services/ResolvedQueryTimeRangeService');
 
 /**
  * TimeUtils 类
@@ -54,7 +55,7 @@ class TimeUtils {
    */
   static getYesterdayStart() {
     const start = this.getDayStart(-1);
-    logger.info('Yesterday start', { value: this.formatDate(start) });
+    logger.info('Yesterday start:', this.formatDate(start));
     return start;
   }
 
@@ -65,7 +66,7 @@ class TimeUtils {
    */
   static getYesterdayEnd() {
     const end = this.getDayEndExclusive(-1);
-    logger.info('Yesterday end', { value: this.formatDate(end) });
+    logger.info('Yesterday end:', this.formatDate(end));
     return end;
   }
 
@@ -176,42 +177,7 @@ class TimeUtils {
    * @returns {number|null} - 解析后的数字或null
    */
   static parseChineseNumber(rawValue) {
-    const text = String(rawValue || '').trim();
-    if (!text) {
-      return null;
-    }
-
-    if (/^\d+$/.test(text)) {
-      return Number(text);
-    }
-
-    const digitMap = {
-      '零': 0,
-      '一': 1,
-      '二': 2,
-      '两': 2,
-      '三': 3,
-      '四': 4,
-      '五': 5,
-      '六': 6,
-      '七': 7,
-      '八': 8,
-      '九': 9
-    };
-
-    if (text === '十') {
-      return 10;
-    }
-
-    if (text.includes('十')) {
-      const [tensPart, onesPart] = text.split('十');
-      const tens = tensPart ? (digitMap[tensPart] || 0) : 1;
-      const ones = onesPart ? (digitMap[onesPart] || 0) : 0;
-      const value = tens * 10 + ones;
-      return value > 0 ? value : null;
-    }
-
-    return digitMap[text] ?? null;
+    return TimeRangeService.parseDurationAmount(rawValue);
   }
 
   /**
@@ -230,7 +196,9 @@ class TimeUtils {
 
     const prefix = mode === 'past' ? '过去' : '最近';
     const normalizedUnit = String(unit || '').trim().toLowerCase();
-    const unitLabel = normalizedUnit === 'day' ? '天' : '小时';
+    const unitLabel = normalizedUnit === 'day'
+      ? '天'
+      : (normalizedUnit === 'minute' ? '分钟' : '小时');
     return `${prefix}${numericValue}${unitLabel}`;
   }
 
@@ -267,28 +235,31 @@ class TimeUtils {
       return null;
     }
 
-    const match = raw.match(/(最近|过去|近)\s*([0-9]+|[零一二两三四五六七八九十]{1,3})\s*(?:个)?\s*(小时|天|日)/);
-    if (!match) {
+    const parsed = TimeRangeService.parseExplicitTimeRangePrompt(raw);
+    if (!parsed || ['today', 'yesterday'].includes(parsed.key)) {
+      return null;
+    }
+    const range = TimeRangeService.resolveKnownTimeRangeKey(parsed.key, this.getNowMinute());
+    if (!range || !(range.end > range.start)) {
       return null;
     }
 
-    const mode = match[1] === '过去' ? 'past' : 'recent';
-    const value = /^\d+$/.test(match[2]) ? Number(match[2]) : this.parseChineseNumber(match[2]);
-    if (!(Number.isFinite(value) && value > 0)) {
-      return null;
-    }
-
-    const unit = match[3] === '小时' ? 'hour' : 'day';
-    const seconds = unit === 'day' ? value * 24 * 3600 : value * 3600;
-    const range = this.getRelativeRange(seconds);
+    const mode = /^\s*过去/.test(raw) ? 'past' : 'recent';
+    const durationSeconds = range.end - range.start;
+    const unit = /minutes?$/.test(parsed.key)
+      ? 'minute'
+      : (/days?$/.test(parsed.key) ? 'day' : 'hour');
+    const secondsPerUnit = unit === 'day' ? 86400 : (unit === 'minute' ? 60 : 3600);
+    const value = durationSeconds / secondsPerUnit;
     return {
       dynamic: true,
       mode,
       unit,
       value,
-      label: this.buildDynamicTimeLabel(value, unit, mode),
+      label: parsed.displayText || this.buildDynamicTimeLabel(value, unit, mode),
       start: range.start,
-      end: range.end
+      end: range.end,
+      timeRangeKey: parsed.key
     };
   }
 
@@ -346,7 +317,7 @@ class TimeUtils {
       case '最近24小时':
         return this.getRelativeRange(24 * 3600);
       default:
-        logger.warn('Unknown time range', { timeRange });
+        logger.warn('Unknown time range:', timeRange);
         return {
           start: this.getYesterdayStart(),
           end: this.getYesterdayEnd()

@@ -1,26 +1,51 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 class ConversationOperationState {
   constructor(options = {}) {
     this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.resultMaxAgeMs = Number(options.resultMaxAgeMs) || 90 * 1000;
     this.reportMaxAgeMs = Number(options.reportMaxAgeMs) || 5 * 60 * 1000;
     this.maxEntries = Number(options.maxEntries) || 2000;
+    this.queryRepairBudget = Number.isInteger(options.queryRepairBudget)
+      ? Math.max(0, options.queryRepairBudget)
+      : 1;
     this.skillByPrompt = new Map();
+    this.skillByTurn = new Map();
     this.latestSkillByScope = new Map();
+    this.queryFailureByPrompt = new Map();
+    this.queryFailureByTurn = new Map();
     this.debugByPrompt = new Map();
     this.latestDebugByScope = new Map();
     this.reportByScope = new Map();
+    this.fallbackDeliveryByTurn = new Map();
+    this.finalDeliveryByTurn = new Map();
+    this.preparedFinalByTurn = new Map();
   }
 
-  rememberSkillResult({ scope, promptKey, result, requestUrl = '', resolvedQuery = null }) {
+  rememberSkillResult({ scope, turnId = '', promptKey, result, requestUrl = '', resolvedQuery = null }) {
     if (!this._isUsableScope(scope) || !promptKey || !result || typeof result !== 'object') {
       return null;
+    }
+
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    const turnKey = this._buildTurnKey(scope, normalizedTurnId);
+    const existingTurnRecord = turnKey
+      ? this._getFresh(this.skillByTurn, turnKey, this.resultMaxAgeMs)
+      : null;
+    const existingPromptRecord = this._getFresh(this.skillByPrompt, promptKey, this.resultMaxAgeMs);
+    const protectedSuccess = this._isExplicitSuccess(existingTurnRecord?.result)
+      ? existingTurnRecord
+      : (this._isExplicitSuccess(existingPromptRecord?.result) ? existingPromptRecord : null);
+    if (protectedSuccess && this._isExplicitFailure(result)) {
+      return protectedSuccess;
     }
 
     const record = {
       promptKey,
       conversationKey: scope,
+      turnId: normalizedTurnId || null,
       updatedAt: this.now(),
       requestUrl: String(requestUrl || '').trim(),
       resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null,
@@ -28,14 +53,75 @@ class ConversationOperationState {
     };
     this._prune();
     this.skillByPrompt.set(promptKey, record);
+    if (turnKey) {
+      this.skillByTurn.set(turnKey, record);
+    }
     this.latestSkillByScope.set(scope, record);
     this._trim(this.skillByPrompt);
+    this._trim(this.skillByTurn);
     this._trim(this.latestSkillByScope);
     return record;
   }
 
+  rememberQueryFailure({ scope, turnId = '', promptKey, result, resolvedQuery = null }) {
+    if (!this._isUsableScope(scope) || !promptKey || !this._isExplicitFailure(result)) {
+      return null;
+    }
+
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    const turnKey = this._buildTurnKey(scope, normalizedTurnId);
+    const recordKey = turnKey || promptKey;
+    const existing = this._getFresh(
+      turnKey ? this.queryFailureByTurn : this.queryFailureByPrompt,
+      recordKey,
+      this.resultMaxAgeMs
+    );
+    const fingerprint = this._fingerprintQueryFailure(result, resolvedQuery);
+    const attemptCount = Number(existing?.attemptCount || 0) + 1;
+    const duplicate = Boolean(existing?.fingerprint && existing.fingerprint === fingerprint);
+    const mayRepair = !duplicate && attemptCount <= this.queryRepairBudget;
+    const record = {
+      promptKey,
+      conversationKey: String(scope).trim(),
+      turnId: normalizedTurnId || null,
+      updatedAt: this.now(),
+      result,
+      resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null,
+      fingerprint,
+      attemptCount,
+      duplicate,
+      mayRepair,
+      terminal: !mayRepair
+    };
+
+    this._prune();
+    this.queryFailureByPrompt.set(promptKey, record);
+    if (turnKey) {
+      this.queryFailureByTurn.set(turnKey, record);
+    }
+    this._trim(this.queryFailureByPrompt);
+    this._trim(this.queryFailureByTurn);
+    return record;
+  }
+
+  getQueryFailureForTurn(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return null;
+    }
+    return this._getFresh(this.queryFailureByTurn, key, this.resultMaxAgeMs);
+  }
+
   getSkillResult(promptKey) {
     return this._getFresh(this.skillByPrompt, promptKey, this.resultMaxAgeMs);
+  }
+
+  getSkillResultForTurn(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return null;
+    }
+    return this._getFresh(this.skillByTurn, key, this.resultMaxAgeMs);
   }
 
   getLatestSkillResult(scope) {
@@ -45,7 +131,7 @@ class ConversationOperationState {
     return this._getFresh(this.latestSkillByScope, scope, this.resultMaxAgeMs);
   }
 
-  rememberDebugApi({ scope, promptKey, requestUrl }) {
+  rememberDebugApi({ scope, turnId = '', promptKey, requestUrl }) {
     const normalizedUrl = String(requestUrl || '').trim();
     if (!this._isUsableScope(scope) || !promptKey || !normalizedUrl) {
       return null;
@@ -53,6 +139,7 @@ class ConversationOperationState {
 
     const record = {
       conversationKey: scope,
+      turnId: this._normalizeTurnId(turnId) || null,
       promptKey,
       requestUrl: normalizedUrl,
       updatedAt: this.now()
@@ -76,7 +163,7 @@ class ConversationOperationState {
     return this._getFresh(this.latestDebugByScope, scope, this.resultMaxAgeMs);
   }
 
-  rememberReportExport({ scope, prompt, result, filePath = '', downloadUrl = '', reportId = '' }) {
+  rememberReportExport({ scope, turnId = '', prompt, result, filePath = '', downloadUrl = '', reportId = '' }) {
     if (!this._isUsableScope(scope) || !result || typeof result !== 'object' || !result.ok) {
       return null;
     }
@@ -84,6 +171,7 @@ class ConversationOperationState {
     const record = {
       prompt: String(prompt || '').trim() || null,
       conversationKey: scope,
+      turnId: this._normalizeTurnId(turnId) || null,
       updatedAt: this.now(),
       result,
       filePath: String(filePath || '').trim(),
@@ -96,11 +184,137 @@ class ConversationOperationState {
     return record;
   }
 
-  getReportExport(scope) {
+  getReportExport(scope, turnId = '') {
     if (!this._isUsableScope(scope)) {
       return null;
     }
-    return this._getFresh(this.reportByScope, scope, this.reportMaxAgeMs);
+    const record = this._getFresh(this.reportByScope, scope, this.reportMaxAgeMs);
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    if (!record || !normalizedTurnId || !record.turnId) {
+      return record;
+    }
+    return record.turnId === normalizedTurnId ? record : null;
+  }
+
+  claimFallbackDelivery(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return true;
+    }
+    const existing = this._getFresh(this.fallbackDeliveryByTurn, key, this.resultMaxAgeMs);
+    if (existing) {
+      return false;
+    }
+    this.fallbackDeliveryByTurn.set(key, { updatedAt: this.now() });
+    this._trim(this.fallbackDeliveryByTurn);
+    return true;
+  }
+
+  claimFinalDelivery(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return true;
+    }
+    const existing = this._getFresh(this.finalDeliveryByTurn, key, this.resultMaxAgeMs);
+    if (existing) {
+      return false;
+    }
+    this.finalDeliveryByTurn.set(key, { conversationKey: scope, updatedAt: this.now() });
+    this._trim(this.finalDeliveryByTurn);
+    return true;
+  }
+
+  prepareFinalContent({ scope, turnId, content, source = '', workflowState = '' }) {
+    const key = this._buildTurnKey(scope, turnId);
+    const normalizedContent = String(content || '').trim();
+    if (!key || !normalizedContent) {
+      return null;
+    }
+
+    this._prune();
+    const claimed = this._getFresh(this.finalDeliveryByTurn, key, this.resultMaxAgeMs);
+    const existing = this._getFresh(this.preparedFinalByTurn, key, this.resultMaxAgeMs);
+    if (claimed) {
+      return existing;
+    }
+
+    const fingerprint = crypto.createHash('sha256').update(normalizedContent, 'utf8').digest('hex');
+    if (existing?.fingerprint === fingerprint) {
+      return existing;
+    }
+
+    const record = {
+      conversationKey: String(scope).trim(),
+      turnId: this._normalizeTurnId(turnId),
+      content: normalizedContent,
+      fingerprint,
+      source: String(source || '').trim() || 'unknown',
+      workflowState: String(workflowState || '').trim() || null,
+      state: 'FINAL_CONTENT_READY',
+      updatedAt: this.now()
+    };
+    this.preparedFinalByTurn.set(key, record);
+    this._trim(this.preparedFinalByTurn);
+    return record;
+  }
+
+  getPreparedFinalContent(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return null;
+    }
+    return this._getFresh(this.preparedFinalByTurn, key, this.resultMaxAgeMs);
+  }
+
+  claimPreparedFinalDelivery(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key || !this._getFresh(this.preparedFinalByTurn, key, this.resultMaxAgeMs)) {
+      return false;
+    }
+    if (this._getFresh(this.finalDeliveryByTurn, key, this.resultMaxAgeMs)) {
+      return false;
+    }
+    this.finalDeliveryByTurn.set(key, {
+      conversationKey: String(scope).trim(),
+      turnId: this._normalizeTurnId(turnId),
+      state: 'FINAL_DELIVERY_CLAIMED',
+      updatedAt: this.now()
+    });
+    this._trim(this.finalDeliveryByTurn);
+    return true;
+  }
+
+  clearScope(scope) {
+    const normalizedScope = String(scope || '').trim();
+    if (!normalizedScope) {
+      return 0;
+    }
+
+    const turnKeyPrefix = `${normalizedScope}::`;
+    let cleared = 0;
+    for (const map of [
+      this.skillByPrompt,
+      this.skillByTurn,
+      this.latestSkillByScope,
+      this.queryFailureByPrompt,
+      this.queryFailureByTurn,
+      this.debugByPrompt,
+      this.latestDebugByScope,
+      this.reportByScope,
+      this.fallbackDeliveryByTurn,
+      this.finalDeliveryByTurn,
+      this.preparedFinalByTurn
+    ]) {
+      for (const [key, record] of map.entries()) {
+        const belongsToScope = String(record?.conversationKey || '').trim() === normalizedScope
+          || key === normalizedScope
+          || String(key).startsWith(turnKeyPrefix);
+        if (belongsToScope && map.delete(key)) {
+          cleared += 1;
+        }
+      }
+    }
+    return cleared;
   }
 
   evictExpired() {
@@ -120,10 +334,16 @@ class ConversationOperationState {
 
   _prune() {
     this._pruneMap(this.skillByPrompt, this.resultMaxAgeMs);
+    this._pruneMap(this.skillByTurn, this.resultMaxAgeMs);
     this._pruneMap(this.latestSkillByScope, this.resultMaxAgeMs);
+    this._pruneMap(this.queryFailureByPrompt, this.resultMaxAgeMs);
+    this._pruneMap(this.queryFailureByTurn, this.resultMaxAgeMs);
     this._pruneMap(this.debugByPrompt, this.resultMaxAgeMs);
     this._pruneMap(this.latestDebugByScope, this.resultMaxAgeMs);
     this._pruneMap(this.reportByScope, this.reportMaxAgeMs);
+    this._pruneMap(this.fallbackDeliveryByTurn, this.resultMaxAgeMs);
+    this._pruneMap(this.finalDeliveryByTurn, this.resultMaxAgeMs);
+    this._pruneMap(this.preparedFinalByTurn, this.resultMaxAgeMs);
   }
 
   _pruneMap(map, maxAgeMs) {
@@ -151,6 +371,36 @@ class ConversationOperationState {
 
   _isUsableScope(scope) {
     return Boolean(String(scope || '').trim());
+  }
+
+  _isExplicitSuccess(result) {
+    return Boolean(result && typeof result === 'object' && result.ok === true && !result.error);
+  }
+
+  _isExplicitFailure(result) {
+    return Boolean(result && typeof result === 'object' && (result.ok === false || result.error));
+  }
+
+  _fingerprintQueryFailure(result, resolvedQuery) {
+    const payload = {
+      code: result?.error?.code || result?.code || null,
+      reason: result?.error?.reason || result?.reason || null,
+      message: result?.error?.message || result?.message || null,
+      resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');
+  }
+
+  _normalizeTurnId(turnId) {
+    return String(turnId || '').trim();
+  }
+
+  _buildTurnKey(scope, turnId) {
+    const normalizedScope = String(scope || '').trim();
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    return normalizedScope && normalizedTurnId
+      ? `${normalizedScope}::${normalizedTurnId}`
+      : '';
   }
 }
 

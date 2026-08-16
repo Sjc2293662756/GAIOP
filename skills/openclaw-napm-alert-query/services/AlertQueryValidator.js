@@ -97,6 +97,9 @@ function normalizeOptions(options = {}) {
     discoveryEnabled: source.discoveryEnabled !== false,
     discoveryTopCount: Number.isFinite(Number(source.discoveryTopCount)) ? Number(source.discoveryTopCount) : 5,
     packetBufferSeconds: Number.isFinite(Number(source.packetBufferSeconds)) ? Number(source.packetBufferSeconds) : 120,
+    alertTriggerMetrics: source.alertTriggerMetrics && typeof source.alertTriggerMetrics === 'object'
+      ? source.alertTriggerMetrics
+      : null,
   };
 }
 

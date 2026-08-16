@@ -32,6 +32,10 @@ output/
 *.zip
 *.docx
 
+# Packet-analysis runtime request artifacts
+skills/openclaw-napm-packet-analysis/query_*.json
+skills/openclaw-napm-packet-analysis/alert_packet_query.json
+
 # OS
 .DS_Store
 Thumbs.db

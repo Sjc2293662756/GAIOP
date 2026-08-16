@@ -1,43 +1,28 @@
 interface:
-  display_name: "OpenClaw NAPM Direct Query"
-  short_description: "Direct NAPM structured query execution and Chinese narration contract."
+  display_name: "OpenClaw NAPM Query"
+  short_description: "Standalone NetInside / NAPM query skill for top, trend, average, drilldown, metadata, metric ownership, and overview analysis."
   default_prompt: |-
-    Use $openclaw-napm-query as the direct runtime for NAPM / NetInside requests.
+    Use $openclaw-napm-query as the standalone runtime for NetInside / NAPM requests.
 
-    OpenClaw owns: domain boundary, refusal/redirect, follow-up, clarification, and narration.
+    OpenClaw owns natural-language understanding, domain boundary judgment, follow-up inheritance, clarification policy, and structured resolvedQuery construction.
 
-    Query construction contract:
-    - Construct a complete `resolvedQuery` for every production query, including simple rankings and lookups.
-    - Pass `prompt` only for traceability and narration. The plugin never derives or repairs query semantics from it.
-    - For relative time, set one concrete `timeRange.key` such as last1hour or last24hours; plugin execute calculates root start/end from the server clock.
-    - For fixed time, set minute-aligned root `start`/`end` and `executionOptions.timeMode=fixed`.
-    - Missing time, placeholder keys such as lastNminutes, and incomplete resolvedQuery must fail explicitly.
+    The skill owns query normalization, metadata and metric compatibility checks, NAPM WebService request construction, execution, and machine-readable narration contract output.
 
-    Runtime contract:
-    - Alert summary/timeline/detail/notification requests use `napm-alert-query`, never `napm-skill-query`.
-    - Analysis/diagnosis/troubleshooting/root-cause requests for a specific named object use `napm-fault-diagnosis`, whether or not a report is requested.
-    - Global ranking/statistics and single-metric reads remain `napm-skill-query`.
-    - The skill executes the NAPM API request and returns machine-readable narration input.
-    - OpenClaw must produce the final Chinese answer in the same turn.
-    - Every data answer must include the data time range from narrationInput.
-    - Do not answer from stale context when a fresh query fails.
+    Invoke the skill executor with an executable resolvedQuery:
 
-    Critical anti-patterns (these are the most common mistakes):
-    - Never map 报错/错误/异常 on WebApplication/业务 to PLI/PLO → use PGHTTP400/PGHTTP500.
-    - Never map 服务器响应时间 to RTTI → use TRTI.
-    - Never map 数据包数量 to TPIO → use PKIO.
-    - Never answer application inventory from groups-tree.static.json → use applications API.
-    - Plain 应用 is ambiguous → clarify, don't guess.
-    - Never compute Unix timestamps for relative time. Set a concrete timeRange.key instead. Use root start/end only for an explicitly fixed range.
-    - 流量/流量大小/传输量/流量最大 → BYTIO (总字节数, data). 吞吐/带宽/速率 → TPIO (Kbps). 不要混用.
+    node scripts/run_napm_query.js --resolvedQuery '{"service":"groups","groups":[{"type":"WebApplication"}],"format":"json"}'
 
-    For full metric/object disambiguation rules, load `references/chinese-semantic-metric-mapping.md` on demand.
-    For composite analysis and inventory rules, load `references/query-workflow-contract.md` on demand.
+    Supported query families include topValues ranking, timeValues trend, averageValues interval values, overview analysis, drilldownCatalog hierarchy lookup, groups metadata inventory, and metrics inventory or ownership lookup.
 
-    Narration:
-    - Produce final Chinese answer from narrationInput and result rows.
-    - Do not stop at JSON or raw data acknowledgement.
-    - Do not leak English reasoning or tool-thought text.
+    For application inventory, plain "应用" or "系统有哪些应用" means DefinedApp from applications Type=2. "业务", "业务系统", or "Web应用" means WebApplication from applications Type=3.
+
+    If resolvedQuery is missing, do not invent a live query from raw prompt text. Return the skill fallback asking OpenClaw to finish intent resolution or scope clarification first.
+
+    Every data answer must include the data time range. Prefer narrationInput.result.timeRange.displayText or narrationInput.summary.timeRange.displayText near the beginning of the Chinese answer.
+
+    Do not stop at raw JSON, Groups list completed, Average query completed, or [object Object]. Use narrationInput and returned rows to produce the final Chinese answer.
+
+    Do not expose credentials. Show upstream API URLs only when runtime debug output is explicitly enabled, and keep sensitive parameters masked.
 
 policy:
   allow_implicit_invocation: true

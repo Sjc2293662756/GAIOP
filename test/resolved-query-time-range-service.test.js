@@ -13,14 +13,14 @@ describe('ResolvedQueryTimeRangeService', () => {
       key: 'today',
       displayText: '今天',
       start: 1779638400,
-      end: 1779677940,
+      end: 1779724740,
       source: 'time_range_resolver'
     });
     expect(nextDay).toMatchObject({
       key: 'today',
       displayText: '今天',
       start: 1779724800,
-      end: 1779764340
+      end: 1779811140
     });
     expect(nextDay.start - today.start).toBe(24 * 60 * 60);
     expect(today.start % 60).toBe(0);
@@ -61,16 +61,34 @@ describe('ResolvedQueryTimeRangeService', () => {
     });
   });
 
-  test('should reject an unsupported explicit key without falling back', () => {
-    expect(TimeRangeService.resolveTimeRange({
-      timeRangeKey: 'lastNminutes',
-      prompt: '过去1小时'
-    }, {
-      nowSeconds: 1779677977
-    })).toMatchObject({
-      ok: false,
-      reason: 'unsupported_time_range_key',
-      requestedKey: 'lastNminutes'
+  test.each([
+    ['最近三小时的告警情况', 'last3hours', 3 * 60 * 60],
+    ['最近3小时的告警情况', 'last3hours', 3 * 60 * 60],
+    ['最近七小时的告警情况', 'last7hours', 7 * 60 * 60],
+    ['最近90分钟的告警情况', 'last90minutes', 90 * 60],
+    ['最近半小时的告警情况', 'last30minutes', 30 * 60],
+    ['最近七天的告警情况', 'last7days', 7 * 24 * 60 * 60],
+    ['最近一周的 HTTP 500 情况', 'last7days', 7 * 24 * 60 * 60],
+    ['近两周的 HTTP 400 情况', 'last14days', 14 * 24 * 60 * 60]
+  ])('should infer %s as the canonical key %s', (prompt, key, durationSeconds) => {
+    const result = TimeRangeService.resolveTimeRange(prompt, {
+      nowSeconds: 1786093000
+    });
+
+    expect(result).toMatchObject({
+      key,
+      start: 1786092960 - durationSeconds,
+      end: 1786092960
+    });
+  });
+
+  test('should keep legacy lastNseconds keys executable at the shared boundary', () => {
+    const result = TimeRangeService.resolveKnownTimeRangeKey('last10800seconds', 1786093000);
+
+    expect(result).toMatchObject({
+      key: 'last10800seconds',
+      start: 1786082160,
+      end: 1786092960
     });
   });
 });

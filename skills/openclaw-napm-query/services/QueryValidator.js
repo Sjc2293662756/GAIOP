@@ -26,36 +26,24 @@ class QueryValidator {
       errors.push('Service type is required');
     }
 
-    const hasStart = target.start !== undefined && target.start !== null && target.start !== '';
-    const hasEnd = target.end !== undefined && target.end !== null && target.end !== '';
+    const hasStart = Boolean(target.start);
+    const hasEnd = Boolean(target.end);
     const startNumber = Number(target.start);
     const endNumber = Number(target.end);
-    const hasValidStart = hasStart
-      && Number.isFinite(startNumber)
-      && Number.isInteger(startNumber)
-      && startNumber > 0;
-    const hasValidEnd = hasEnd
-      && Number.isFinite(endNumber)
-      && Number.isInteger(endNumber)
-      && endNumber > 0;
 
     if (!hasStart || !hasEnd) {
       errors.push('Start and end timestamps are required');
     }
 
-    if ((hasStart && !hasValidStart) || (hasEnd && !hasValidEnd)) {
-      errors.push('Start and end timestamps must be positive integer Unix seconds');
-    }
-
-    if (hasValidStart && hasValidEnd && startNumber >= endNumber) {
+    if (Number.isFinite(startNumber) && Number.isFinite(endNumber) && startNumber > endNumber) {
       errors.push('Start timestamp must be before end timestamp');
     }
 
     if (
       hasStart
       && hasEnd
-      && hasValidStart
-      && hasValidEnd
+      && Number.isFinite(startNumber)
+      && Number.isFinite(endNumber)
       && (startNumber % 60 !== 0 || endNumber % 60 !== 0)
     ) {
       errors.push('Start and end timestamps must be aligned to 60-second minute boundaries');
@@ -85,19 +73,10 @@ class QueryValidator {
     }
 
     if (errors.length > 0) {
-      const querySummary = {
-        service: target.service || null,
-        start: Number.isFinite(Number(target.start)) ? Number(target.start) : null,
-        end: Number.isFinite(Number(target.end)) ? Number(target.end) : null,
-        metricCount: Array.isArray(target.metrics) ? target.metrics.length : (target.metric ? 1 : 0),
-        groupTypes: Array.isArray(target.groups)
-          ? target.groups.map((group) => String(group?.type || '').trim()).filter(Boolean)
-          : []
-      };
       if (mode === 'gateway') {
-        logger.error('Structured query validation failed', { errors, querySummary });
+        logger.error('Gateway request validation failed', { errors, gatewayRequest: target });
       } else {
-        logger.error('Query validation failed', { errors, querySummary });
+        logger.error('Query validation failed', { errors, queryRequest: target });
       }
       const error = new Error(errors.join('; '));
       error.code = 'QUERY_SHAPE_INVALID';
@@ -110,7 +89,7 @@ class QueryValidator {
     }
 
     if (mode === 'gateway') {
-      logger.info('Structured query validation passed', { service: target.service });
+      logger.info('Gateway request validation passed', { service: target.service });
     } else {
       logger.info('Query validation passed', { service: target.service });
     }

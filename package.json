@@ -1,10 +1,11 @@
 {
   "name": "intelligence-reports-js",
-  "version": "1.0.0",
+  "version": "1.1.0-rc.1",
   "description": "NAPM OpenClaw skill direct-query runtime",
   "scripts": {
     "query": "node skills/openclaw-napm-query/scripts/run_napm_query.js",
     "test": "jest",
+    "verify:runtime-contract": "node scripts/verify-napm-skill-runtime-contract.js",
     "lint": "eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query/services/**/*.js skills/openclaw-napm-query/src/**/*.js"
   },
   "keywords": [

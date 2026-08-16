@@ -1,15 +1,15 @@
-# OpenClaw Integration Notes (Direct Skill Runtime)
+# OpenClaw Integration Notes (Standalone Skill Runtime)
 
 ## Goal
 
-OpenClaw should route NAPM-related requests directly to `openclaw-napm-query`.
+OpenClaw should route NAPM-related requests directly to the `openclaw-napm-query` skill.
 
 Responsibility split in the current runtime:
 
 - OpenClaw owns domain boundary judgement, follow-up understanding, clarification policy, and standard `resolvedQuery` construction.
 - The skill owns query normalization, metadata validation, NAPM execution, and machine-readable narration contract generation.
 
-There is no gateway approval layer in the active runtime.
+There is no gateway approval layer in the active runtime. The plugin tool name `napm-skill-query` can remain as a compatibility wrapper, but it is not the required standalone skill entry.
 
 ## Trigger Strategy
 
@@ -27,22 +27,25 @@ Do not require a hard NAPM keyword match when there is an active NAPM session an
 
 ## Runtime Policy
 
-1. Require structured `resolvedQuery` from OpenClaw for every production query.
+1. Prefer structured `resolvedQuery` from OpenClaw as the standard contract.
 2. Use continuation context when present.
 3. Treat `decision` and `intent` as optional hints, but do not require them for execution.
 4. Require executable `resolvedQuery` for normal query execution.
 5. Return a machine-readable result for OpenClaw final narration.
-6. Treat `prompt` and `userQuery` as trace-only; never use them to construct or repair query fields.
-7. For relative time, pass a concrete `timeRange.key`; plugin `execute()` is the only place that materializes root-level `start/end`.
-8. For fixed time, pass minute-aligned root-level `start/end` with `executionOptions.timeMode=fixed`.
 
-## Recommended Tool
+## Recommended Invocation
 
-Recommended command name:
+Primary executable interface from inside the skill directory:
+
+```bash
+node scripts/run_napm_query.js --resolvedQueryFile ./query.json
+```
+
+Compatibility wrapper, when the plugin is still installed:
 
 - `napm-skill-query`
 
-Fallback script:
+Repository-local script form:
 
 ```bash
 node skills/openclaw-napm-query/scripts/run_napm_query.js --resolvedQuery "{\"service\":\"groups\",\"groups\":[{\"type\":\"WebApplication\"}],\"format\":\"json\"}"
@@ -59,7 +62,7 @@ Executor output should stay machine-readable, but OpenClaw should turn it into t
 ## Semantic Reminders
 
 - Do not answer application inventory from `groups-tree.static.json` `Application` nodes. The tree is hierarchy metadata, not the application catalog truth source.
-- Plain `系统中有哪些应用` is ambiguous. Clarify whether the user wants `WebApplication(Type=3)`, `DefinedApp(Type=2)`, `BuiltinApplication(Type=1)`, `CompositeApplication(Type=4)`, or `OtherApp`.
+- Plain `应用` / `系统中有哪些应用` means list `DefinedApp` catalog objects from `applications Type=2`; do not ask for clarification unless the user explicitly introduces another application subtype.
 - `系统中有哪些web应用` / `系统中有哪些业务` means list `WebApplication` catalog objects from `applications Type=3`; runtime metric execution still uses `groupType=WebApplication`.
 - `系统中有哪些已定义应用` means list `DefinedApp` catalog objects from `applications Type=2`.
 - `系统中有哪些自动识别应用` / `系统中有哪些自动识别的应用` / `系统中有哪些自动识别出来的应用` / `系统中有哪些复合协议` / `系统中有哪些复合应用` means list `CompositeApplication` catalog objects from `applications Type=4`.

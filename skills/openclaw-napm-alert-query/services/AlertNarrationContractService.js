@@ -156,6 +156,9 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
   const total = summary.total != null ? summary.total : events.length;
   lines.push(`告警总数：${total} 条`);
   lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  🟢 轻微 ${bySev.minor || 0} 条`);
+  if (Number.isFinite(Number(total)) && Number(total) > events.length) {
+    lines.push(`统计口径：分类与严重级别基于全部 ${total} 条告警；明细仅展示 ${events.length} 条原始事件中的聚合概览。`);
+  }
   lines.push('');
 
   // ── 按类别 + name+severity 分组 ──
@@ -169,19 +172,42 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     if (!eventsByCategory.has(cat)) eventsByCategory.set(cat, []);
     eventsByCategory.get(cat).push(e);
   }
+  const categoryDetails = Array.isArray(summary.byCategoryDetail)
+    ? summary.byCategoryDetail
+    : [];
+  const categoryDetailByKey = new Map(categoryDetails.map((detail) => [
+    detail.category || detail.categoryLabel || 'unknown',
+    detail
+  ]));
 
   for (let i = 0; i < categoryOrder.length; i++) {
     const catKey = categoryOrder[i];
     const catLabel = ALERT_CATEGORY_LABELS[catKey] || catKey;
     const catEvents = eventsByCategory.get(catKey) || [];
-    const catTotal = catEvents.length;
+    const categoryDetail = categoryDetailByKey.get(catKey) || null;
+    const summaryCategoryTotal = Number(summary?.byCategory?.[catKey]);
+    const detailCategoryTotal = Number(categoryDetail?.total);
+    const catTotal = Number.isFinite(detailCategoryTotal)
+      ? detailCategoryTotal
+      : (Number.isFinite(summaryCategoryTotal) ? summaryCategoryTotal : catEvents.length);
+    const displayEvents = Array.isArray(categoryDetail?.overviewEvents)
+      ? categoryDetail.overviewEvents
+      : catEvents;
 
     // 统计本类别各级别数量
-    let catCritical = 0, catMajor = 0, catMinor = 0;
-    for (const e of catEvents) {
-      if (e.severity === 4) catCritical++;
-      else if (e.severity === 3) catMajor++;
-      else catMinor++;
+    const categorySeverity = categoryDetail?.bySeverity || {};
+    let catCritical = Number(categorySeverity.critical);
+    let catMajor = Number(categorySeverity.major);
+    let catMinor = Number(categorySeverity.minor);
+    if (![catCritical, catMajor, catMinor].every(Number.isFinite)) {
+      catCritical = 0;
+      catMajor = 0;
+      catMinor = 0;
+      for (const e of catEvents) {
+        if (e.severity === 4) catCritical++;
+        else if (e.severity === 3) catMajor++;
+        else catMinor++;
+      }
     }
 
     if (catTotal === 0) {
@@ -194,7 +220,7 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
 
       // 按 name + severity 分组聚合
       const groupMap = new Map();
-      for (const e of catEvents) {
+      for (const e of displayEvents) {
         const key = `${e.name || '未知告警'}||${e.severity || 0}`;
         if (!groupMap.has(key)) {
           groupMap.set(key, {
@@ -208,16 +234,22 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
           });
         }
         const g = groupMap.get(key);
-        g.count++;
-        if (e.period > 0) g.totalPeriod += e.period;
-        if (e.start && (!g.firstStart || e.start < g.firstStart)) g.firstStart = e.start;
+        const triggerCount = Number(e.triggerCount) > 0 ? Number(e.triggerCount) : 1;
+        const totalPeriod = Number(e.totalPeriod) > 0 ? Number(e.totalPeriod) : Number(e.period);
+        const firstStart = e.firstStart || e.start;
+        g.count += triggerCount;
+        if (totalPeriod > 0) g.totalPeriod += totalPeriod;
+        if (firstStart && (!g.firstStart || firstStart < g.firstStart)) g.firstStart = firstStart;
         // 按 group 聚合对象名
         const objKey = e.group || '?';
-        g.groups.set(objKey, (g.groups.get(objKey) || 0) + 1);
+        g.groups.set(objKey, (g.groups.get(objKey) || 0) + triggerCount);
       }
 
       // 按严重级别降序排列分组
       const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
+      if (sortedGroups.length === 0) {
+        lines.push('   当前统计中存在告警，但没有保留可展示的聚合明细。');
+      }
       for (let j = 0; j < sortedGroups.length; j++) {
         const g = sortedGroups[j];
         const sevEmoji = g.severity === 4 ? '🔴' : g.severity === 3 ? '🟠' : '🟢';
@@ -244,13 +276,29 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
   }
 
   // ── 兜底：detail 接口返回的事件 category 可能为 null，落入 unknown 桶 ──
-  const unknownEvents = eventsByCategory.get('unknown') || [];
-  if (unknownEvents.length > 0) {
-    const unkCritical = unknownEvents.filter(e => e.severity === 4).length;
-    const unkMajor = unknownEvents.filter(e => e.severity === 3).length;
-    const unkMinor = unknownEvents.filter(e => e.severity === 2).length;
+  const retainedUnknownEvents = eventsByCategory.get('unknown') || [];
+  const unknownDetail = categoryDetailByKey.get('unknown') || null;
+  const unknownEvents = Array.isArray(unknownDetail?.overviewEvents)
+    ? unknownDetail.overviewEvents
+    : retainedUnknownEvents;
+  const unknownSummaryTotal = Number(summary?.byCategory?.unknown);
+  const unknownDetailTotal = Number(unknownDetail?.total);
+  const unknownTotal = Number.isFinite(unknownDetailTotal)
+    ? unknownDetailTotal
+    : (Number.isFinite(unknownSummaryTotal) ? unknownSummaryTotal : retainedUnknownEvents.length);
+  if (unknownTotal > 0) {
+    const unknownSeverity = unknownDetail?.bySeverity || {};
+    const unkCritical = Number.isFinite(Number(unknownSeverity.critical))
+      ? Number(unknownSeverity.critical)
+      : retainedUnknownEvents.filter(e => e.severity === 4).length;
+    const unkMajor = Number.isFinite(Number(unknownSeverity.major))
+      ? Number(unknownSeverity.major)
+      : retainedUnknownEvents.filter(e => e.severity === 3).length;
+    const unkMinor = Number.isFinite(Number(unknownSeverity.minor))
+      ? Number(unknownSeverity.minor)
+      : retainedUnknownEvents.filter(e => e.severity === 2).length;
     const symIndex = Math.min(categoryOrder.length, 7);
-    lines.push(`${symbols[symIndex] || '⑧'} 其他告警 — ${unknownEvents.length} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）`);
+    lines.push(`${symbols[symIndex] || '⑧'} 其他告警 — ${unknownTotal} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）`);
     lines.push('');
 
     const groupMap = new Map();
@@ -264,11 +312,14 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
         });
       }
       const g = groupMap.get(key);
-      g.count++;
-      if (e.period > 0) g.totalPeriod += e.period;
-      if (e.start && (!g.firstStart || e.start < g.firstStart)) g.firstStart = e.start;
+      const triggerCount = Number(e.triggerCount) > 0 ? Number(e.triggerCount) : 1;
+      const totalPeriod = Number(e.totalPeriod) > 0 ? Number(e.totalPeriod) : Number(e.period);
+      const firstStart = e.firstStart || e.start;
+      g.count += triggerCount;
+      if (totalPeriod > 0) g.totalPeriod += totalPeriod;
+      if (firstStart && (!g.firstStart || firstStart < g.firstStart)) g.firstStart = firstStart;
       const objKey = e.group || '?';
-      g.groups.set(objKey, (g.groups.get(objKey) || 0) + 1);
+      g.groups.set(objKey, (g.groups.get(objKey) || 0) + triggerCount);
     }
     const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
     for (let j = 0; j < sortedGroups.length; j++) {
@@ -515,8 +566,6 @@ function buildPacketInstruction(packetHandoff, triggerInfo = null) {
   };
 }
 
-const { GENERIC_QUERY_TEMPLATE_ID, REPORT_SCHEMA } = require('../../openclaw-napm-report/services/ReportTemplateRegistry');
-
 function buildReportData(result = {}, sourceQuestion = '') {
   const sections = [];
   const summary = result.summary || {};
@@ -545,9 +594,7 @@ function buildReportData(result = {}, sourceQuestion = '') {
   }
 
   return {
-    schema: REPORT_SCHEMA,
-    reportType: 'quick_report',
-    templateId: GENERIC_QUERY_TEMPLATE_ID,
+    reportType: 'diagnostic_report',
     format: 'docx',
     title: 'NAPM 告警分析报告',
     sourceQuestion: sourceQuestion || null,

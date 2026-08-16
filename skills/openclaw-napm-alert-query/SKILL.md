@@ -1,6 +1,6 @@
 ---
 name: openclaw-napm-alert-query
-description: OpenClaw NAPM alert query skill for NetInside alert summary, timeline, detail, trigger metric series, alert notification explanation, packet handoff, and reportData generation. Use for 告警/告警事件/告警详情/告警时间线/告警通知/告警数据包 questions. When the user says "告警数据包 <eventId>" or "分析告警的数据包", this skill MUST be called FIRST — it performs automatic indirect IP discovery for business/app/group alerts and returns packetHandoff with download candidates. Only after this skill returns should openclaw-napm-packet-analysis be called. This skill is read-only and must not add, update, or delete alert rules.
+description: OpenClaw NAPM alert query primitive for NetInside alert summary, timeline, detail, trigger metric series, notification explanation, packet handoff, and reportData generation. Use directly for ordinary alert questions. Combined 告警数据包 requests with eventId must use openclaw-napm-alert-packet-analysis, which calls this Skill internally with mode=detail and bounded retries. This Skill is read-only and must not add, update, or delete alert rules.
 ---
 
 # OpenClaw NAPM Alert Query
@@ -29,25 +29,22 @@ Do not use this skill for:
 
 - 普通指标、排行、均值、趋势、对象清单、指标清单、下钻目录：use `openclaw-napm-query`.
 - 纯数据包预览、下载、pcap/cap 分析（不涉及告警事件 ID）：use `openclaw-napm-packet-analysis`.
+- 告警事件关联的数据包诊断：use `openclaw-napm-alert-packet-analysis`; do not manually sequence tools.
 - Word/docx/PDF 报告文件生成：use `openclaw-napm-report` after this skill returns `reportData`.
 - 新增、修改、删除告警任务或通知配置。This stage is read-only.
 
-### ⚠ "告警数据包" Cross-Skill Sequencing
+### "告警数据包" Internal Primitive Boundary
 
-When the user says "告警数据包" or "分析告警 <eventId> 的数据包"，this is a **sequenced two-step flow**:
+When the user says "告警数据包" or "分析告警 <eventId> 的数据包", OpenClaw must call `openclaw-napm-alert-packet-analysis` once:
 
 ```
-Step 1: THIS skill (alert-query) FIRST
-  → mode=detail, eventIds=[<id>]
-  → get alert detail + packetHandoff (including indirect discovery if applicable)
-
-Step 2: openclaw-napm-packet-analysis SECOND
-  → use resolved IPs/event IDs from packetHandoff.candidates
+OpenClaw -> openclaw-napm-alert-packet-analysis
+  -> this Skill internally with mode=detail and fixed eventId/start/end
+  -> bounded detail visibility retry
+  -> existing openclaw-napm-packet-analysis internally with suggestedPacketQuery
 ```
 
-DO NOT skip Step 1. The packet skill's `criteria.id` only works for `linkType=2` alerts.
-For `linkType=1` business/app/group alerts, this skill performs automatic indirect IP
-discovery before handing off to packet-analysis.
+Do not call this Skill directly from the model for the combined workflow, and do not ask the model to perform the second step. The composite runtime consumes `packetHandoff` itself. The packet Skill's `criteria.id` only works for trusted `linkType=2` handoffs.
 
 ## Runtime Shape
 
@@ -261,4 +258,3 @@ AI 必须读取 `packetInstruction.action` 和 `packetInstruction.callPacketAnal
 - `references/alert-workflow-contract.md`
 - `references/alert-api-contract.md`
 - `references/alert-notification-fields.md`
-

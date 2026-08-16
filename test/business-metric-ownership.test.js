@@ -8,14 +8,31 @@ const DimensionMappingService = require('../skills/openclaw-napm-query/services/
 const {
   getDefaultMetricCandidatesForObjectType,
   rankMetricIdsForObjectType
-} = require('../skills/openclaw-napm-query/src/constants/objectMetricOwnership');
+} = require('../src/constants/objectMetricOwnership');
 const {
   getDomainMeta,
   getObjectsForDomain,
   isMetricCompatibleWithObjectType
-} = require('../skills/openclaw-napm-query/src/constants/metricDomains');
+} = require('../src/constants/metricDomains');
 
 describe('business metric ownership guardrails', () => {
+  test('normalizes executable metric shape without recursive self-invocation', () => {
+    const normalized = RequirementParserService.normalizeExecutableQueryShape({
+      service: 'topValues',
+      metric: ' pghttp500 ',
+      metrics: ['PGHTTP500', 'pghttp500'],
+      groups: [{ type: 'WebApplication' }]
+    });
+
+    expect(normalized).toMatchObject({
+      service: 'topValues',
+      metric: 'PGHTTP500',
+      metrics: ['PGHTTP500'],
+      topMetric: 'PGHTTP500',
+      groups: [{ type: 'WebApplication' }]
+    });
+  });
+
   test('should filter WebApplication metric inventory to PG and optimization metrics', () => {
     const filtered = RequirementParserService.filterMetricInventoryForOwnership(
       [{ type: 'WebApplication' }],

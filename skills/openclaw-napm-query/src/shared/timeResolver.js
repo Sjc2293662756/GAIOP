@@ -128,7 +128,7 @@ function resolveExecutionTime(options = {}) {
     return createExecutionTimeRange({
       ok: true,
       key: 'custom',
-      displayText: '自定义时间范围',
+      displayText: '\u81ea\u5b9a\u4e49\u65f6\u95f4\u8303\u56f4',
       start: floorToMinute(start),
       end: floorToMinute(end),
       source: 'explicit_execution_time',

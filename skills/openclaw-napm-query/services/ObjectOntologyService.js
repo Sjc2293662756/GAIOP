@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ONTOLOGY_PATH = path.resolve(__dirname, '../../../config/object-ontology.v1.json');
+const ONTOLOGY_PATH = path.resolve(__dirname, '../config/object-ontology.v1.json');
 
 let cachedOntology = null;
 
@@ -30,6 +30,7 @@ function loadOntology() {
     version: parsed.version || 'unknown',
     objects,
     byType: new Map(objects.map(item => [item.objectType, item])),
+    plainApplicationDefault: normalizeText(parsed.plainApplicationDefault) || 'DefinedApp',
     plainApplicationCandidates: Array.isArray(parsed.plainApplicationCandidates)
       ? parsed.plainApplicationCandidates.slice()
       : []
@@ -56,6 +57,10 @@ function listObjectDefinitions() {
 
 function getPlainApplicationCandidates() {
   return loadOntology().plainApplicationCandidates.slice();
+}
+
+function getPlainApplicationDefault() {
+  return loadOntology().plainApplicationDefault;
 }
 
 function getAliases(objectType = '') {
@@ -100,10 +105,10 @@ function classifyObjectText(prompt = '') {
 
   if (/应用|Application/i.test(text)) {
     return {
-      objectType: null,
-      ambiguous: true,
-      reason: 'plain_application_inventory_is_ambiguous',
-      candidates: getPlainApplicationCandidates()
+      objectType: getPlainApplicationDefault(),
+      ambiguous: false,
+      reason: 'plain_application_defaults_to_defined_app',
+      matchedPattern: 'PlainApplication'
     };
   }
 
@@ -140,6 +145,7 @@ module.exports = {
   listObjectDefinitions,
   getObjectDefinition,
   getAliases,
+  getPlainApplicationDefault,
   getPlainApplicationCandidates,
   classifyObjectText,
   resolveObjectInstanceProvider

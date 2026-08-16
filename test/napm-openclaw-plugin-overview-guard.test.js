@@ -18,7 +18,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should replace an overview free-form reply with the remembered skill result', async () => {
+  test('should not rewrite overview reply when output layer is skill-display-only', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -45,6 +45,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
     const beforeMessageWrite = hooks.get('before_message_write');
     const skillTool = tools.get('napm-skill-query');
     expect(typeof messageReceived).toBe('function');
@@ -66,15 +67,28 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'overview',
+          queryModeKey: 'overview',
+          overviewScene: 'application',
+          start: 1778227800,
+          end: 1778314200,
+          format: 'json'
+        }
+      }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
     plugin.__test__.rememberSkillResult(prompt, {
       ok: true,
-      displayText: '应用整体概览结果',
-      resolvedQuery: {
-        service: 'overview',
-        queryModeKey: 'overview',
-        overviewScene: 'application'
-      }
-    }, plugin.__test__.getConversationKey(ctx));
+      displayText: '应用整体状态正常。',
+      resolvedQuery: bound.params.resolvedQuery
+    }, scope, 'napm-skill-query', turnId);
 
     const beforeWriteResult = await beforeMessageWrite({
       message: {
@@ -83,6 +97,6 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       }
     }, ctx);
 
-    expect(beforeWriteResult.message.content[0].text).toBe('应用整体概览结果');
+    expect(beforeWriteResult).toBeUndefined();
   }, 30000);
 });

@@ -38,7 +38,7 @@
 使用 `metricsForGroup` 服务，确认某个 group drill-down 支持的 metric 列表。
 
 ### 2.5 现网对象值
-对于现网业务对象名、应用名、业务组名，优先通过运行时结果与现有元数据样本确认，而不是只看静态示例。`api查询` 文档里已经包含了一部分现网对象样本。
+对于现网业务对象名、应用名、业务组名，优先通过运行时结果与现有元数据样本确认，而不是只看静态示例。`api查询` 文档里已经包含了一部分现网对象样本。:contentReference[oaicite:96]{index=96}
 
 ---
 
@@ -118,7 +118,7 @@
 - `metrics`
 - `groups`
 - `groupArguments`
-- `metricsForGroup`
+- `metricsForGroup` :contentReference[oaicite:97]{index=97}
 
 ### execution
-只有 metadata resolution 成功后，才进入最终执行，避免错误对象绑定和无效指标查询。当前直连 Skill 运行时仍要保留 metadata review、argument resolution 和 execution guard。
+只有 metadata resolution 成功后，才进入最终执行，避免错误对象绑定和无效指标查询。当前直连 Skill 运行时仍要保留 metadata review、argument resolution 和 execution guard。:contentReference[oaicite:98]{index=98}

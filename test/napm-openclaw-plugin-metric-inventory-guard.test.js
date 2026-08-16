@@ -35,7 +35,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(testApi.isMetricInventoryDetailPrompt('业务都可以查哪些指标？')).toBe(false);
   });
 
-  test('should block a WECOM metric inventory reply when no matching skill result exists', async () => {
+  test('should leave before_message_write as a synchronous non-refresh hook', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -62,6 +62,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
     const beforeMessageWrite = hooks.get('before_message_write');
     const skillTool = tools.get('napm-skill-query');
 
@@ -84,6 +85,30 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'metrics',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'WebApplication' }],
+          semanticConstraints: {
+            operation: 'metadata_list',
+            targetObjectType: 'WebApplication'
+          }
+        }
+      }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '业务可查指标已返回。',
+      resolvedQuery: bound.params.resolvedQuery
+    }, scope, 'napm-skill-query', turnId);
+
     const result = await beforeMessageWrite({
       message: {
         role: 'assistant',
@@ -91,10 +116,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toEqual({ block: true });
+    expect(result).toBeUndefined();
   }, 30000);
 
-  test('should require a matching skill result during async message_sending', async () => {
+  test('should require upstream resolvedQuery instead of rewriting metric inventory reply during async message_sending path', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -121,6 +146,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
     const messageSending = hooks.get('message_sending');
     const skillTool = tools.get('napm-skill-query');
 
@@ -143,12 +169,33 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'metrics',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'WebApplication' }],
+          semanticConstraints: {
+            operation: 'metadata_list',
+            targetObjectType: 'WebApplication'
+          }
+        }
+      }
+    }, ctx);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '业务可查指标已返回。',
+      resolvedQuery: bound.params.resolvedQuery
+    }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
+
     const result = await messageSending({
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result.content).toContain('NAPM skill');
-    expect(result.content).toContain('未拿到有效 skill 结果');
+    expect(result).toBeUndefined();
   }, 30000);
 
   test('should require upstream resolvedQuery when model never called tool', async () => {
@@ -198,11 +245,10 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result.content).toContain('NAPM skill');
-    expect(result.content).toContain('未拿到有效 skill 结果');
+    expect(result?.content).toContain('本轮未拿到有效 skill 结果');
   }, 30000);
 
-  test('should block a business metric inventory reply during before_message_write without evidence', async () => {
+  test('should rewrite unverified business metric inventory before persistence', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -254,7 +300,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toEqual({ block: true });
+    expect(result?.message?.content?.[0]?.text).toContain('本轮未拿到有效 skill 结果');
   }, 30000);
 
   test('should block metric inventory skill call without upstream resolvedQuery', async () => {
@@ -310,7 +356,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result).toBeTruthy();
     expect(result.block).toBe(true);
     expect(result.blockReason).toContain('resolvedQuery');
-    expect(result.blockReason).toContain('OpenClaw must construct resolvedQuery first');
+    expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
   }, 30000);
 
   test('should advertise resolvedQuery-first contract in skill tool description', () => {
@@ -507,7 +553,6 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'This is a NAPM metric inquiry — let me query the skill to get a clear picture.'
     }, ctx);
 
-    expect(result.content).toContain('NAPM skill');
-    expect(result.content).toContain('未拿到有效 skill 结果');
+    expect(result?.content).toContain('本轮未拿到有效 skill 结果');
   }, 30000);
 });

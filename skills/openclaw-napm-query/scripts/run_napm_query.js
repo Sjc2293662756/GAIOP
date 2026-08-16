@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 
 const path = require('path');
+const fs = require('fs');
 
-const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
+const skillRoot = path.resolve(__dirname, '..');
 
 function loadDotenv() {
   const candidates = [
-    path.join(workspaceRoot, 'node_modules', 'dotenv'),
+    path.join(skillRoot, 'node_modules', 'dotenv'),
+    path.join(skillRoot, '..', '..', 'node_modules', 'dotenv'),
     'dotenv'
   ];
 
   for (const candidate of candidates) {
     try {
       require(candidate).config({
-        path: path.join(workspaceRoot, '.env')
+        path: path.join(skillRoot, '.env')
       });
       return;
     } catch (_error) {
@@ -24,19 +26,18 @@ function loadDotenv() {
 
 loadDotenv();
 
-const RequirementParserService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/RequirementParserService'));
-const MetricMappingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/MetricMappingService'));
-const NapmMetadataService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/NapmMetadataService'));
-const GroupPathPlannerService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/GroupPathPlannerService'));
-const PromptRoutingService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/PromptRoutingService'));
-const ResolutionSpecService = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ResolutionSpecService'));
-const { buildOpenClawReplyContract } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/OpenClawNarrationContractService'));
-const ExecutionFailureClassifier = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/services/ExecutionFailureClassifier'));
+const RequirementParserService = require(path.join(skillRoot, 'services/RequirementParserService'));
+const MetricMappingService = require(path.join(skillRoot, 'services/MetricMappingService'));
+const NapmMetadataService = require(path.join(skillRoot, 'services/NapmMetadataService'));
+const GroupPathPlannerService = require(path.join(skillRoot, 'services/GroupPathPlannerService'));
+const PromptRoutingService = require(path.join(skillRoot, 'services/PromptRoutingService'));
+const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionSpecService'));
+const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
+const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
-const TimeUtils = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/src/utils/TimeUtils'));
-const { buildSafeUrl, logAudit } = require(path.join(workspaceRoot, 'skills/openclaw-napm-query/src/utils/auditLogger'));
-// validateTimeRangeFreshness / autoCorrectTimestampIfStale removed 2026-07-07:
-// time override now handled by before_tool_call Hook + src/shared/timeResolver.js
+const TimeUtils = require(path.join(skillRoot, 'src/utils/TimeUtils'));
+const { buildSafeUrl, logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
+
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
 function normalizeTraceId(value = '') {
@@ -164,8 +165,14 @@ function parseArgs(argv) {
     } else if (arg === '--queryJson') {
       args.queryJson = argv[index + 1];
       index += 1;
+    } else if (arg === '--queryJsonFile' || arg === '--resolvedQueryFile') {
+      args.resolvedQueryFile = argv[index + 1];
+      index += 1;
     } else if (arg === '--payload') {
       args.payload = argv[index + 1];
+      index += 1;
+    } else if (arg === '--payloadFile') {
+      args.payloadFile = argv[index + 1];
       index += 1;
     } else if (arg === '--resolvedQuery') {
       args.resolvedQuery = argv[index + 1];
@@ -187,9 +194,26 @@ function parseArgs(argv) {
   return args;
 }
 
+function readJsonFileArg(name, value) {
+  if (!value) {
+    return null;
+  }
+
+  const filePath = path.isAbsolute(value)
+    ? value
+    : path.resolve(process.cwd(), value);
+  const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+  return parseJsonArg(name, raw);
+}
+
 function parseJsonArg(name, value) {
   if (!value) {
     return null;
+  }
+
+  // CLI arguments are JSON strings; in-process plugin calls already carry objects.
+  if (typeof value === 'object') {
+    return value;
   }
 
   try {
@@ -278,11 +302,7 @@ function buildSensitiveCredentialRefusalText() {
 
 function buildSummary(service, resolvedQuery, data, extra = {}) {
   const rows = Array.isArray(data) ? data : [];
-  const metrics = Array.isArray(resolvedQuery?.metrics)
-    ? resolvedQuery.metrics.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  const metric = resolvedQuery?.metric || metrics[0] || '';
-  const metricText = metrics.length > 0 ? metrics.join(',') : metric;
+  const metric = resolvedQuery?.metric || (Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '');
   const topMetric = String(resolvedQuery?.topMetric || '').trim();
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
@@ -297,7 +317,7 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '未知端口流量排行',
       highlights: [
-        metricText ? `查询指标：${metricText}` : null,
+        metric ? `查询指标：${metric}` : null,
         topMetric ? `排序指标：${topMetric}` : null,
         protocolLabels.length > 0 ? `协议范围：${protocolLabels.join(' / ')}` : null
       ].filter(Boolean),
@@ -331,7 +351,7 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u672a\u67e5\u5230\u6570\u636e',
       highlights: [
-        metricText ? `\u67e5\u8be2\u6307\u6807\uff1a${metricText}` : null,
+        metric ? `\u67e5\u8be2\u6307\u6807\uff1a${metric}` : null,
         groupPath ? `\u67e5\u8be2\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: 0,
@@ -344,13 +364,13 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u6392\u884c\u7ed3\u679c',
       highlights: [
-        metricText ? `\u6307\u6807\uff1a${metricText}` : null,
+        metric ? `\u6307\u6807\uff1a${metric}` : null,
         topMetric ? `\u6392\u5e8f\u6307\u6807\uff1a${topMetric}` : null,
         groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
-      metrics: metrics.length > 0 ? metrics : (metric ? [metric] : []),
+      metrics: metric ? [metric] : [],
       topMetric: topMetric || null
     };
   }
@@ -360,12 +380,12 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u8d8b\u52bf\u7ed3\u679c',
       highlights: [
-        metricText ? `\u6307\u6807\uff1a${metricText}` : null,
+        metric ? `\u6307\u6807\uff1a${metric}` : null,
         groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
       ].filter(Boolean),
       rowCount: rows.length,
       empty: false,
-      metrics: metrics.length > 0 ? metrics : (metric ? [metric] : [])
+      metrics: metric ? [metric] : []
     };
   }
 
@@ -373,12 +393,12 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
     mode: extra.mode || 'GO_DIRECT_QUERY',
     title: '\u67e5\u8be2\u7ed3\u679c',
     highlights: [
-      metricText ? `\u6307\u6807\uff1a${metricText}` : null,
+      metric ? `\u6307\u6807\uff1a${metric}` : null,
       groupPath ? `\u5bf9\u8c61\u8303\u56f4\uff1a${groupPath}` : null
     ].filter(Boolean),
     rowCount: rows.length,
     empty: false,
-    metrics: metrics.length > 0 ? metrics : (metric ? [metric] : [])
+    metrics: metric ? [metric] : []
   };
 }
 
@@ -406,9 +426,6 @@ const OVERVIEW_SCENE_BY_OBJECT_TYPE = {
   OtherApp: 'security',
   TotalTraffic: 'system'
 };
-
-const COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE = 'comprehensive_analysis';
-const DISCOVER_THEN_ANALYZE_RESPONSE_TYPE = 'comprehensive_analysis_with_discovery';
 
 function deepClone(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
@@ -474,16 +491,12 @@ function normalizeResolvedQueryTimeRange(query = {}) {
   if (Number.isFinite(Number(query.end)) && Number(query.end) > 0) {
     query.end = floorToMinute(query.end);
   }
-  // 2026-07-07: 时间覆盖已由 before_tool_call Hook 统一处理，
-  // validateTimeRangeFreshness / autoCorrectTimestampIfStale 不再需要。
   if (query.timeRange && typeof query.timeRange === 'object' && !Array.isArray(query.timeRange)) {
     delete query.timeRange.start;
     delete query.timeRange.end;
   }
   if (query.analysisPipeline?.discoveryQuery && typeof query.analysisPipeline.discoveryQuery === 'object') {
-    query.analysisPipeline.discoveryQuery = stripDiscoveryQueryExecutionTime(
-      normalizeResolvedQueryTimeRange(query.analysisPipeline.discoveryQuery)
-    );
+    query.analysisPipeline.discoveryQuery = normalizeResolvedQueryTimeRange(query.analysisPipeline.discoveryQuery);
   }
   if (Array.isArray(query.protocolQueries)) {
     query.protocolQueries = query.protocolQueries.map((item) => (
@@ -493,29 +506,6 @@ function normalizeResolvedQueryTimeRange(query = {}) {
     ));
   }
   return query;
-}
-
-function stripDiscoveryQueryExecutionTime(discoveryQuery = {}) {
-  if (!discoveryQuery || typeof discoveryQuery !== 'object' || Array.isArray(discoveryQuery)) {
-    return discoveryQuery;
-  }
-
-  const next = {
-    ...discoveryQuery
-  };
-  delete next.start;
-  delete next.end;
-  if (next.timeRange && typeof next.timeRange === 'object' && !Array.isArray(next.timeRange)) {
-    const cleanedTimeRange = { ...next.timeRange };
-    delete cleanedTimeRange.start;
-    delete cleanedTimeRange.end;
-    if (Object.keys(cleanedTimeRange).length > 0) {
-      next.timeRange = cleanedTimeRange;
-    } else {
-      delete next.timeRange;
-    }
-  }
-  return next;
 }
 
 function inferOverviewSceneFromObjectType(objectType = '') {
@@ -567,8 +557,8 @@ function buildDiscoveryQuery(baseResolvedQuery = {}, prompt = '') {
     return null;
   }
 
-  const query = normalizeResolvedQueryShape(stripDiscoveryQueryExecutionTime(discoverySeed), prompt);
-  if (hasExplicitTimeRange(baseResolvedQuery)) {
+  const query = normalizeResolvedQueryShape(discoverySeed, prompt);
+  if (!hasExplicitTimeRange(query) && hasExplicitTimeRange(baseResolvedQuery)) {
     query.start = Number(baseResolvedQuery.start);
     query.end = Number(baseResolvedQuery.end);
   }
@@ -582,93 +572,6 @@ function buildDiscoveryQuery(baseResolvedQuery = {}, prompt = '') {
     query.topMetric = query.metric || query.metrics?.[0] || baseResolvedQuery?.topMetric || null;
   }
   return normalizeResolvedQueryTimeRange(query);
-}
-
-function validateAnalysisPipelineContract(baseResolvedQuery = {}) {
-  const pipeline = baseResolvedQuery?.analysisPipeline && typeof baseResolvedQuery.analysisPipeline === 'object'
-    ? baseResolvedQuery.analysisPipeline
-    : null;
-  const discoveryQuery = pipeline?.discoveryQuery && typeof pipeline.discoveryQuery === 'object'
-    ? pipeline.discoveryQuery
-    : null;
-
-  if (!discoveryQuery) {
-    return {
-      ok: false,
-      code: 'DISCOVERY_QUERY_MISSING',
-      message: 'analysisPipeline.discoveryQuery is required for discover-then-overview execution.',
-      stage: 'analysisPipeline'
-    };
-  }
-
-  if (!hasExplicitTimeRange(baseResolvedQuery)) {
-    return {
-      ok: false,
-      code: 'ANALYSIS_PIPELINE_TIME_RANGE_MISSING',
-      message: 'analysisPipeline requires top-level start/end generated by napm-resolve-time-range.',
-      stage: 'analysisPipeline'
-    };
-  }
-
-  const targetObjectType = inferDiscoveryTargetObjectType(pipeline, discoveryQuery);
-  const groups = normalizeQueryGroups(discoveryQuery.groups);
-  const discoveryGroupType = normalizeDiscoveryTargetObjectType(groups[0]?.type);
-
-  if (!targetObjectType) {
-    return {
-      ok: false,
-      code: 'DISCOVERY_TARGET_TYPE_UNRESOLVED',
-      message: 'analysisPipeline.targetObjectType or discoveryQuery.groups[0].type is required.',
-      stage: 'analysisPipeline'
-    };
-  }
-
-  if (!discoveryGroupType) {
-    return {
-      ok: false,
-      code: 'DISCOVERY_GROUP_TYPE_MISSING',
-      message: 'discoveryQuery.groups[0].type is required.',
-      stage: 'discoveryQuery'
-    };
-  }
-
-  if (targetObjectType !== discoveryGroupType) {
-    return {
-      ok: false,
-      code: 'DISCOVERY_TARGET_TYPE_MISMATCH',
-      message: `analysisPipeline targetObjectType ${targetObjectType} does not match discoveryQuery group type ${discoveryGroupType}.`,
-      stage: 'analysisPipeline',
-      targetObjectType,
-      discoveryGroupType
-    };
-  }
-
-  if (String(discoveryQuery.service || '').trim() !== 'topValues') {
-    return {
-      ok: false,
-      code: 'UNSUPPORTED_DISCOVERY_SERVICE',
-      message: 'analysisPipeline.discoveryQuery currently supports service=topValues only.',
-      stage: 'discoveryQuery',
-      service: discoveryQuery.service || null
-    };
-  }
-
-  const primaryMetric = resolvePrimaryMetricId(discoveryQuery);
-  if (!primaryMetric) {
-    return {
-      ok: false,
-      code: 'DISCOVERY_METRIC_MISSING',
-      message: 'discoveryQuery requires metric, metrics[0], or topMetric.',
-      stage: 'discoveryQuery'
-    };
-  }
-
-  return {
-    ok: true,
-    targetObjectType,
-    discoveryGroupType,
-    primaryMetric
-  };
 }
 
 function deriveDiscoveryFocusSelection(analysisPipeline = {}, discoveryQuery = {}, discoveryResult = {}) {
@@ -743,14 +646,9 @@ function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelectio
   next.contextGroups = existingContextGroups;
   next.overviewScene = next.overviewScene
     || next?.semanticConstraints?.overviewScene
-    || next?.analysisScene
-    || next?.semanticConstraints?.analysisScene
     || inferOverviewSceneFromObjectType(focusSelection.type)
     || inferOverviewSceneFromObjectType(discoveryQuery?.groups?.[0]?.type)
     || 'system';
-  next.analysisType = next.analysisType || next?.semanticConstraints?.analysisType || 'comprehensive_analysis';
-  next.analysisMode = next.analysisMode || next?.semanticConstraints?.analysisMode || 'discover_then_analyze';
-  next.analysisScene = next.analysisScene || next?.semanticConstraints?.analysisScene || next.overviewScene;
 
   const metricId = resolvePrimaryMetricId(discoveryQuery || next);
   if (metricId) {
@@ -765,9 +663,6 @@ function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelectio
   next.semanticConstraints = {
     ...(next?.semanticConstraints && typeof next.semanticConstraints === 'object' ? next.semanticConstraints : {}),
     operation: 'overview',
-    analysisType: next.analysisType,
-    analysisMode: next.analysisMode,
-    analysisScene: next.analysisScene,
     overviewScene: next.overviewScene,
     targetObjectType: focusSelection.type,
     anchorObject: {
@@ -782,9 +677,6 @@ function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelectio
     : {};
   next.analysisPipeline = {
     ...originalPipeline,
-    analysisType: next.analysisType,
-    analysisMode: next.analysisMode,
-    analysisScene: next.analysisScene,
     discoveryQuery: null,
     discovery: {
       targetObjectType: focusSelection.type,
@@ -803,42 +695,21 @@ function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelectio
   return normalizeResolvedQueryShape(next, next.userRequirement || '');
 }
 
-function buildAnalysisDiscoveryFailureResult(baseResolvedQuery = {}, discoveryQuery = {}, discoveryResult = {}, options = {}) {
+function buildAnalysisDiscoveryFailureResult(baseResolvedQuery = {}, discoveryQuery = {}, discoveryResult = {}) {
   const targetObjectType = inferDiscoveryTargetObjectType(baseResolvedQuery?.analysisPipeline, discoveryQuery) || '目标对象';
   const metricId = resolvePrimaryMetricId(discoveryQuery);
-  const stage = String(options.stage || 'discoveryQuery').trim();
-  const code = String(options.code || discoveryResult?.error?.code || 'DISCOVERY_TARGET_NOT_FOUND').trim();
-  const reason = String(options.message || discoveryResult?.error?.message || '').trim();
-  const text = code === 'DISCOVERY_TARGET_NOT_FOUND'
-    ? [
-        `本次未在指定时间范围内发现符合条件的 ${targetObjectType}，因此没有进入聚焦分析。`,
-        `查询对象：${targetObjectType}`,
-        `排序指标：${metricId || '未指定'}`,
-        reason ? `失败原因：${reason}` : null
-      ].filter(Boolean).join('\n')
-    : [
-        '本次未能完成“先发现对象”的步骤，因此没有进入聚焦分析。',
-        `失败阶段：${stage}`,
-        `查询对象：${targetObjectType}`,
-        `排序指标：${metricId || '未指定'}`,
-        `失败原因：${reason || code}`
-      ].join('\n');
+  const text = [
+    `当前先按 ${metricId || '指定指标'} 尝试定位可分析的 ${targetObjectType}，但在本次查询结果里没有锁定到明确对象。`,
+    '可以先缩小时间范围，或直接指定要分析的对象后再继续综合分析。'
+  ].join('\n');
   return {
     ok: false,
     service: 'overview',
     data: [],
-    responseType: 'decision_result',
-    failureStage: stage,
-    summary: buildDecisionSummary(
-      code === 'DISCOVERY_TARGET_NOT_FOUND' ? '未锁定可分析对象' : '先发现对象步骤失败',
-      text,
-      code
-    ),
+    summary: buildDecisionSummary('未锁定可分析对象', text, 'DISCOVERY_TARGET_NOT_FOUND'),
     error: {
-      code,
-      message: reason || text,
-      userMessage: text,
-      failureStage: stage
+      code: 'DISCOVERY_TARGET_NOT_FOUND',
+      message: text
     },
     requestUrl: discoveryResult?.requestUrl || null,
     warnings: discoveryResult?.error?.message ? [String(discoveryResult.error.message)] : []
@@ -1599,6 +1470,8 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
     }
   } else if (explicitGroups.length > 0 && shouldDrilldown && shouldAllowExecutionPathRepair(query)) {
     query.groups = inferDrilldownPathFromPrompt(explicitGroups, prompt);
+  } else if (continuationInstruction.inheritGroups && explicitGroups.length === 0 && sessionGroups.length > 0) {
+    query.groups = sessionGroups;
   }
 
   if (continuationInstruction.inheritMetric && sessionState.last_metric) {
@@ -1697,7 +1570,8 @@ async function resolveInput(args, payload) {
     };
   }
 
-  const explicitResolvedQuery = coerceJsonObject(args.queryJson)
+  const explicitResolvedQuery = readJsonFileArg('--resolvedQueryFile', args.resolvedQueryFile)
+    || coerceJsonObject(args.queryJson)
     || parseJsonArg('--resolvedQuery', args.resolvedQuery)
     || payload?.resolvedQuery
     || null;
@@ -1722,7 +1596,7 @@ async function resolveInput(args, payload) {
   const error = new Error('Structured resolvedQuery is required in upstream-execution mode; local prompt parsing is disabled.');
   error.code = 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
   error.details = {
-    acceptedInputs: ['--queryJson', '--resolvedQuery', 'payload.resolvedQuery'],
+    acceptedInputs: ['--queryJson', '--queryJsonFile', '--resolvedQuery', '--resolvedQueryFile', 'payload.resolvedQuery'],
     promptReceived: Boolean(prompt),
     boundaryMode: getBoundaryMode()
   };
@@ -1917,49 +1791,14 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
   const hasDiscoveryStage = Boolean(analysisPipeline?.discoveryQuery);
 
   if (isOverview && hasDiscoveryStage) {
-    const pipelineValidation = validateAnalysisPipelineContract(resolvedQuery);
-    if (!pipelineValidation.ok) {
-      return buildAnalysisDiscoveryFailureResult(
-        resolvedQuery,
-        analysisPipeline?.discoveryQuery || {},
-        {},
-        {
-          code: pipelineValidation.code,
-          message: pipelineValidation.message,
-          stage: pipelineValidation.stage || 'analysisPipeline'
-        }
-      );
-    }
-
     const discoveryQuery = buildDiscoveryQuery(resolvedQuery, prompt);
     if (!discoveryQuery) {
       return buildAnalysisDiscoveryFailureResult(resolvedQuery, {}, {});
     }
     const discoveryResult = await RequirementParserService.executeGatewayRequest(discoveryQuery);
-    if (!discoveryResult?.ok) {
-      return buildAnalysisDiscoveryFailureResult(
-        resolvedQuery,
-        discoveryQuery,
-        discoveryResult,
-        {
-          code: discoveryResult?.error?.code || 'DISCOVERY_QUERY_FAILED',
-          message: discoveryResult?.error?.message || 'discoveryQuery execution failed.',
-          stage: 'discoveryQuery'
-        }
-      );
-    }
-
     const focusSelection = deriveDiscoveryFocusSelection(analysisPipeline, discoveryQuery, discoveryResult);
     if (!focusSelection) {
-      return buildAnalysisDiscoveryFailureResult(
-        resolvedQuery,
-        discoveryQuery,
-        discoveryResult,
-        {
-          code: 'DISCOVERY_TARGET_NOT_FOUND',
-          stage: 'discoveryQuery'
-        }
-      );
+      return buildAnalysisDiscoveryFailureResult(resolvedQuery, discoveryQuery, discoveryResult);
     }
 
     const focusedOverviewResolvedQuery = buildFocusedOverviewResolvedQuery(
@@ -1979,11 +1818,6 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
       ...overviewResult,
       resolvedQuery: focusedOverviewResolvedQuery,
       requestUrl: overviewResult?.requestUrl || discoveryResult?.requestUrl || null,
-      responseType: DISCOVER_THEN_ANALYZE_RESPONSE_TYPE,
-      legacyResponseType: 'overview_with_discovery',
-      analysisType: focusedOverviewResolvedQuery.analysisType || 'comprehensive_analysis',
-      analysisMode: focusedOverviewResolvedQuery.analysisMode || 'discover_then_analyze',
-      analysisScene: focusedOverviewResolvedQuery.analysisScene || focusedOverviewResolvedQuery.overviewScene || null,
       discovery: {
         service: discoveryQuery.service,
         targetObjectType: focusSelection.type,
@@ -2021,8 +1855,7 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
       ok: Boolean(result?.ok),
       requestUrl: result?.requestUrl || null,
       rowCount: Array.isArray(result?.data) ? result.data.length : 0,
-      responseType: DISCOVER_THEN_ANALYZE_RESPONSE_TYPE,
-      legacyResponseType: 'overview_with_discovery'
+      responseType: 'overview_with_discovery'
     }, traceId);
     return result;
   }
@@ -2064,9 +1897,9 @@ async function executeResolvedQuery(prompt, resolvedQuery, payload, intentResult
   return result;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const payload = parseJsonArg('--payload', args.payload) || {};
+async function executeSkillCall(args = {}, payload = {}) {
+  args = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+  payload = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {};
   const traceId = buildTraceIdFromPayload(payload, args);
   payload.traceId = traceId;
   const input = await resolveInput(args, payload);
@@ -2109,8 +1942,7 @@ async function main() {
       semanticResolutionResult,
       supportedMetrics: MetricMappingService.getAllMetricCodes().length
     });
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
@@ -2134,8 +1966,7 @@ async function main() {
       assistantDecision: clarificationGate,
       supportedMetrics: MetricMappingService.getAllMetricCodes().length
     }, clarificationGate);
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
@@ -2165,8 +1996,7 @@ async function main() {
         replyText: item?.value || item?.label
       }))
     });
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
@@ -2176,13 +2006,12 @@ async function main() {
       service: 'drilldownCatalog',
       resolvedQuery,
       resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-      ok: !hierarchyCatalogPayload?.notFound,
+      ok: !Boolean(hierarchyCatalogPayload?.notFound),
       responseType: 'drilldown_catalog',
       hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null
     }, traceId);
     const output = buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+    return output;
   }
 
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
@@ -2215,232 +2044,97 @@ async function main() {
     includeRequestUrl: false
   });
 
-  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  return output;
 }
 
-if (require.main === module) {
-  main().catch((error) => {
-    const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
-    if (isMissingResolvedQuery) {
-      logSkillAudit('napm_skill_missing_resolved_query', {
-        traceId: null,
-        error: {
-          code: error.code || null,
-          message: error.message
-        },
-        details: error.details || null
-      }, null);
-      const output = buildMissingResolvedQueryContract({
-        prompt: null,
-        service: null,
-        resolvedQuery: null,
-        rows: [],
-        data: [],
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length
-      });
-      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-      return;
-    }
-
-    logSkillAudit('napm_skill_execution_failed', {
+function buildSkillExecutionFailureContract(error) {
+  const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
+  if (isMissingResolvedQuery) {
+    logSkillAudit('napm_skill_missing_resolved_query', {
       traceId: null,
       error: {
-        code: error.code || 'SKILL_EXECUTION_ERROR',
+        code: error.code || null,
         message: error.message
-      }
+      },
+      details: error.details || null
     }, null);
-
-    const failureClassification = ExecutionFailureClassifier.classify(error, {});
-    const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
-    const output = buildOpenClawReplyContract({
-      ok: false,
+    return buildMissingResolvedQueryContract({
+      prompt: null,
       service: null,
       resolvedQuery: null,
       rows: [],
       data: [],
-      summary,
-      error: {
-        code: error.code || 'SKILL_EXECUTION_ERROR',
-        message: error.message,
-        failureClassification,
-        userMessage: failureClassification.userMessage
-      },
-      responseType: 'decision_result',
-      displayText: failureClassification.userMessage
-    }, {
-      forwardDisplayText: false,
-      appendRequestUrlToDisplayText,
-      includeRequestUrl: false
+      supportedMetrics: MetricMappingService.getAllMetricCodes().length
     });
+  }
 
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    process.exit(1);
+  logSkillAudit('napm_skill_execution_failed', {
+    traceId: null,
+    error: {
+      code: error.code || 'SKILL_EXECUTION_ERROR',
+      message: error.message
+    }
+  }, null);
+
+  const failureClassification = ExecutionFailureClassifier.classify(error, {});
+  const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
+  return buildOpenClawReplyContract({
+    ok: false,
+    service: null,
+    resolvedQuery: null,
+    rows: [],
+    data: [],
+    summary,
+    error: {
+      code: error.code || 'SKILL_EXECUTION_ERROR',
+      message: error.message,
+      failureClassification,
+      userMessage: failureClassification.userMessage
+    },
+    responseType: 'decision_result',
+    displayText: failureClassification.userMessage
+  }, {
+    forwardDisplayText: false,
+    appendRequestUrlToDisplayText,
+    includeRequestUrl: false
   });
 }
 
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const payload = readJsonFileArg('--payloadFile', args.payloadFile)
+    || parseJsonArg('--payload', args.payload)
+    || {};
+
+  try {
+    const output = await executeSkillCall(args, payload);
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  } catch (error) {
+    const output = buildSkillExecutionFailureContract(error);
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    process.exitCode = 1;
+  }
+}
+
 /**
- * Plugin 通过 require() 同进程调用的入口。
- * params 已经是 JavaScript 对象（buildSkillPayload 的产出），
- * 包含 resolvedQuery, prompt, traceId, sessionState 等字段，
- * 无需 CLI 参数解析和 JSON 反序列化。
- *
- * 时间覆盖已由 before_tool_call Hook 完成，
- * 此函数只做 floorToMinute + 基础 shape 校验。
+ * The plugin calls Skill scripts in-process and passes ordinary objects.
  */
 async function handleSkillCall(params = {}) {
+  const input = params && typeof params === 'object' && !Array.isArray(params) ? params : {};
+  const payload = {
+    ...(input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload) ? input.payload : {}),
+    ...input
+  };
+
   try {
-    const payload = params;
-    const traceId = normalizeTraceId(payload.traceId) || buildTraceIdFromPayload(payload, {});
-    payload.traceId = traceId;
-    const input = await resolveInput({}, payload);
-    const prompt = input.prompt || '';
-    const resolvedQuery = input.resolvedQuery || {};
-    const mappingResult = input.mappingResult || null;
-    const intentResult = input.intentResult || null;
-    const semanticResolutionResult = input.semanticResolutionResult || null;
-    const hierarchyCatalogPayload = input.hierarchyCatalogPayload
-      || await buildHierarchyCatalogPayloadFromResolvedQuery(resolvedQuery)
-      || null;
-
-    logSkillAudit('napm_skill_resolved_query_received', {
-      traceId,
-      prompt,
-      resolvedQuerySource: detectResolvedQuerySource({}, payload),
-      boundaryMode: getBoundaryMode(),
-      resolvedQuery,
-      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-      sessionPresent: Boolean(input?.requestContext?.session),
-      sensitiveCredentialRequest: Boolean(input.sensitiveCredentialRequest),
-    }, traceId);
-
-    // Guard: sensitive credential request
-    if (input.sensitiveCredentialRequest) {
-      logSkillAudit('napm_skill_execution_completed', {
-        traceId, prompt, service: 'security_refusal', resolvedQuery,
-        resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-        ok: true, responseType: 'security_refusal',
-      }, traceId);
-      return buildSensitiveCredentialRefusalContract({
-        prompt, service: 'security_refusal', resolvedQuery, intentResult, semanticResolutionResult,
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
-      });
-    }
-
-    // Guard: clarification gate
-    const clarificationGate = mappingResult?.clarificationGate || resolvedQuery?.clarificationGate || null;
-    if (clarificationGate?.required) {
-      logSkillAudit('napm_skill_execution_completed', {
-        traceId, prompt, service: String(resolvedQuery?.service || '').trim() || null,
-        resolvedQuery, resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-        ok: true, responseType: 'clarification_required',
-        clarificationQuestion: clarificationGate?.question || null,
-      }, traceId);
-      return buildClarificationContract({
-        prompt, service: resolvedQuery?.service || null, resolvedQuery, intentResult, semanticResolutionResult,
-        assistantDecision: clarificationGate,
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
-      }, clarificationGate);
-    }
-
-    // Guard: execution guard
-    if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {
-      logSkillAudit('napm_skill_execution_completed', {
-        traceId, prompt, service: String(resolvedQuery?.service || '').trim() || null,
-        resolvedQuery, resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-        ok: true, responseType: 'execution_guard_blocked',
-        guardMessage: resolvedQuery?.executionGuard?.message || null,
-      }, traceId);
-      return buildClarificationContract({
-        prompt, service: resolvedQuery?.service || null, resolvedQuery, intentResult, semanticResolutionResult,
-        assistantDecision: resolvedQuery.executionGuard,
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
-      }, {
-        question: resolvedQuery.executionGuard.message,
-        options: (resolvedQuery.executionGuard.details?.suggestedCandidates || []).map((item) => ({
-          label: item?.label || item?.value,
-          value: item?.value || item?.label,
-          replyText: item?.value || item?.label,
-        })),
-      });
-    }
-
-    // Guard: drilldown catalog
-    if (resolvedQuery?.service === 'drilldownCatalog' && hierarchyCatalogPayload) {
-      logSkillAudit('napm_skill_execution_completed', {
-        traceId, prompt, service: 'drilldownCatalog', resolvedQuery,
-        resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
-        ok: !hierarchyCatalogPayload?.notFound,
-        responseType: 'drilldown_catalog',
-        hierarchyTargetGroupType: hierarchyCatalogPayload?.targetGroupType || null,
-      }, traceId);
-      return buildHierarchyCatalogContract(prompt, hierarchyCatalogPayload);
-    }
-
-    // Main execution path
-    const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
-    const rows = Array.isArray(executionResult?.data) ? executionResult.data : [];
-    const service = executionResult?.service || resolvedQuery?.service || null;
-    const summary = executionResult?.summary || buildSummary(service, resolvedQuery, rows);
-    const output = buildOpenClawReplyContract({
-      ok: Boolean(executionResult?.ok),
-      prompt, service, resolvedQuery, rows, data: rows,
-      overview: executionResult?.overview || null,
-      requestUrl: executionResult?.requestUrl || null,
-      requestParamsJson: executionResult?.requestParams || null,
-      metadata: executionResult?.metadata || null,
-      rawApiResponse: undefined,
-      summary,
-      error: executionResult?.error || null,
-      warnings: Array.isArray(executionResult?.warnings) ? executionResult.warnings : [],
-      supportedMetrics: MetricMappingService.getAllMetricCodes().length,
-      intentResult, semanticResolutionResult,
-      assistantDecision: clarificationGate || null,
-    }, {
-      forwardDisplayText: isOverviewResolvedQuery(resolvedQuery) ? true : SKILL_FORWARD_DISPLAY_TEXT,
-      appendRequestUrlToDisplayText,
-      defaultDisplayTextBuilder: buildDisplayText,
-      includeRequestUrl: false,
-    });
-
-    return output;
+    return await executeSkillCall(input, payload);
   } catch (error) {
-    const isMissingResolvedQuery = error.code === 'UPSTREAM_RESOLVED_QUERY_REQUIRED';
-    if (isMissingResolvedQuery) {
-      logSkillAudit('napm_skill_missing_resolved_query', {
-        traceId: null,
-        error: { code: error.code || null, message: error.message },
-        details: error.details || null,
-      }, null);
-      return buildMissingResolvedQueryContract({
-        prompt: null, service: null, resolvedQuery: null,
-        rows: [], data: [],
-        supportedMetrics: MetricMappingService.getAllMetricCodes().length,
-      });
-    }
-
-    logSkillAudit('napm_skill_execution_failed', {
-      traceId: null,
-      error: { code: error.code || 'SKILL_EXECUTION_ERROR', message: error.message },
-    }, null);
-
-    const failureClassification = ExecutionFailureClassifier.classify(error, {});
-    const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
-    return buildOpenClawReplyContract({
-      ok: false, service: null, resolvedQuery: null, rows: [], data: [], summary,
-      error: {
-        code: error.code || 'SKILL_EXECUTION_ERROR',
-        message: error.message,
-        failureClassification,
-        userMessage: failureClassification.userMessage,
-      },
-      responseType: 'decision_result',
-      displayText: failureClassification.userMessage,
-    }, {
-      forwardDisplayText: false,
-      appendRequestUrlToDisplayText,
-      includeRequestUrl: false,
-    });
+    return buildSkillExecutionFailureContract(error);
   }
+}
+
+if (require.main === module) {
+  main();
 }
 
 module.exports = {
@@ -2453,7 +2147,6 @@ module.exports = {
     normalizeResolvedQueryTimeRange,
     hasExplicitRankingMetricInText,
     normalizeResolvedQueryShape,
-    buildSummary,
     normalizeSessionState,
     extractContinuationInstruction,
     isDrilldownPrompt,
@@ -2464,10 +2157,13 @@ module.exports = {
     normalizeDrilldownQuestionTarget,
     buildDrilldownCatalogDisplayText,
     buildHierarchyCatalogPayloadFromResolvedQuery,
+    parseArgs,
     resolveInput,
     buildFocusedOverviewResolvedQuery,
     deriveDiscoveryFocusSelection,
     executeUnknownPortDualProtocolQuery,
-    executeResolvedQuery
+    executeResolvedQuery,
+    executeSkillCall,
+    buildSkillExecutionFailureContract
   }
 };

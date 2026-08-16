@@ -2,6 +2,15 @@
 
 This document contains report-specific workflow rules that belong to `openclaw-napm-report`.
 
+## GAIOP formal archive adaptation (2026-07-16)
+
+- New report artifacts are written as a pair beneath `GAIOP_REPORTS_DIR/<sourceUserId or _unattributed>/<reportType>/`.
+- Audit JSON carries `relativeFilePath` and `relativeAuditPath`; absolute host paths are not an Admin integration field.
+- `sourceUserId`, `sourceSessionId`, and `dataSourceId` may only enter a Web-generated report through a verified GAIOP provenance envelope. Missing trusted user ownership uses `_unattributed` and remains administrator-only in Admin.
+- The Admin BFF signs v2 provenance with the active data-source ID. The plugin accepts v1 only for compatibility and must not infer ownership from a channel account, filename, or process user.
+- The deployment template defines `GAIOP_REPORTS_DIR` plus the provenance enable flag and signing-key placeholder. The directory is controlled by deployment; the key is injected only through the secret store and never committed.
+- Shared-volume deployment, signature-key provisioning, and real Gateway metadata propagation remain deployment-stage work; this document does not authorize a server change.
+
 OpenClaw owns natural-language understanding, follow-up inheritance, deciding whether a report is requested, and sequencing query/packet skills before report export. This skill owns report input validation, docx generation, file storage, audit JSON storage, and machine-readable export result output.
 
 ## 1. Accepted Scope
@@ -136,6 +145,14 @@ Rules:
 - Do not silently generate Word when the user asked for PDF.
 - Do not claim PDF was generated unless `format=pdf` is actually supported.
 
+### Template coverage note (2026-07-18)
+
+`quick_report` does not use a dedicated business template. It is exported through a lightweight DOCX renderer that writes the supplied structured context as a title, optional question/time-range metadata, section paragraphs, simple tables, and lists. This is intentionally distinct from fixed inspection, summary, and diagnostic layouts, while still producing the same paired formal archive artifacts.
+
+`comparative_report` and `operation_report` do not yet have a verified renderer. They must not be presented as producible Word report types until a renderer and archive test are added.
+
+Product scope decision (2026-07-18): defer both report types. `comparative_report` needs a confirmed multi-object or multi-time-range comparison workflow; `operation_report` overlaps with the existing inspection report and needs a separate business definition before implementation. Do not start either implementation or expose a new user action until that later confirmation.
+
 ## 5. Report Sections
 
 Recommended section types:
@@ -179,9 +196,9 @@ Successful output:
   "reportId": "napm-report-20260601-103000-abc123",
   "title": "最近一天丢包严重 IP 分析报告",
   "format": "docx",
-  "filePath": "/home/netinside/.openclaw/reports/napm-report-20260601-103000-abc123.docx",
-  "auditPath": "/home/netinside/.openclaw/reports/napm-report-20260601-103000-abc123.json",
-  "downloadUrl": "/reports/napm-report-20260601-103000-abc123.docx",
+  "fileName": "napm-report-20260601-103000-abc123.docx",
+  "relativeFilePath": "user-id/quick_report/napm-report-20260601-103000-abc123.docx",
+  "relativeAuditPath": "user-id/quick_report/napm-report-20260601-103000-abc123.json",
   "generatedAt": "2026-06-01T10:30:05.000+08:00"
 }
 ```
@@ -202,14 +219,13 @@ The skill should:
 
 - Write the report file.
 - Write an audit JSON copy beside the report.
-- Return `filePath`, `auditPath`, and `downloadUrl`.
+- Keep absolute `filePath` and `auditPath` only inside the server process when needed for file I/O. Return a public result with report identity, title, format, and file name; the browser downloads through Admin report management.
 
 The report audit JSON should preserve:
 
 - Original report input.
 - `reportId`.
-- `filePath`.
-- `downloadUrl`.
+- `fileName`, `relativeFilePath`, and `relativeAuditPath`.
 - `generatedAt`.
 
 ## 8. Duplicate File Sending

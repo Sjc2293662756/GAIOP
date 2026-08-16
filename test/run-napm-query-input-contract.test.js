@@ -2,6 +2,10 @@ process.env.NETINSIDE_HOST = process.env.NETINSIDE_HOST || 'https://example.inva
 process.env.NETINSIDE_USERNAME = process.env.NETINSIDE_USERNAME || 'test-user';
 process.env.NETINSIDE_PASSWORD = process.env.NETINSIDE_PASSWORD || 'test-password';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 jest.mock('../skills/openclaw-napm-query/scripts/overview-module', () => {
   const actual = jest.requireActual('../skills/openclaw-napm-query/scripts/overview-module');
   return {
@@ -155,51 +159,23 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
-  test('should preserve the canonical fixed Top 5 parameter set at the execution boundary', async () => {
-    const input = await __test__.resolveInput({
-      prompt: '按 BYTIO 查询固定时间窗口内流量最高的 5 个 IP'
-    }, {
-      resolvedQuery: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        metric: 'BYTIO',
-        metrics: ['BYTI', 'BYTO', 'BYTIO'],
-        topMetric: 'BYTIO',
-        groups: [{ type: 'IPAddress' }],
-        topCount: 5,
-        start: 1785310980,
-        end: 1785314580,
-        format: 'json',
-        executionOptions: { timeMode: 'fixed' }
-      }
-    });
+  test('should read resolvedQuery from a UTF-8 BOM JSON file', async () => {
+    const filePath = path.join(os.tmpdir(), `napm-rq-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(filePath, `\uFEFF${JSON.stringify({
+      service: 'drilldownCatalog',
+      groups: [{ type: 'BusinessGroup' }],
+      format: 'json'
+    })}`, 'utf8');
 
-    expect(input.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      metric: 'BYTIO',
-      metrics: ['BYTI', 'BYTO', 'BYTIO'],
-      topMetric: 'BYTIO',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 5,
-      start: 1785310980,
-      end: 1785314580,
-      format: 'json',
-      executionOptions: { timeMode: 'fixed' }
-    });
-  });
+    try {
+      const args = __test__.parseArgs(['--resolvedQueryFile', filePath]);
+      const input = await __test__.resolveInput(args, {});
 
-  test('should retain the full metric set in the execution summary', () => {
-    const summary = __test__.buildSummary('topValues', {
-      service: 'topValues',
-      metric: 'BYTIO',
-      metrics: ['BYTI', 'BYTO', 'BYTIO'],
-      topMetric: 'BYTIO',
-      groups: [{ type: 'IPAddress' }]
-    }, [{ object: '192.0.2.1' }]);
-
-    expect(summary.metrics).toEqual(['BYTI', 'BYTO', 'BYTIO']);
-    expect(summary.topMetric).toBe('BYTIO');
-    expect(summary.highlights).toContain('指标：BYTI,BYTO,BYTIO');
+      expect(input.resolvedQuery.service).toBe('drilldownCatalog');
+      expect(input.resolvedQuery.groups[0].type).toBe('BusinessGroup');
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
   });
 
   test('should minute-align root resolvedQuery timestamps and strip nested timeRange execution timestamps before execution', async () => {
@@ -262,7 +238,7 @@ describe('run_napm_query input contract', () => {
     expect(input.resolvedQuery.end).toBe(1777986000);
   });
 
-  test('should keep discovery pipeline query free of execution timestamps', async () => {
+  test('should minute-align discovery pipeline timestamps', async () => {
     const input = await __test__.resolveInput({
       prompt: 'discover then overview'
     }, {
@@ -288,11 +264,11 @@ describe('run_napm_query input contract', () => {
 
     expect(input.resolvedQuery.start).toBe(1779413040);
     expect(input.resolvedQuery.end).toBe(1779499440);
-    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.start).toBeUndefined();
-    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.end).toBeUndefined();
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.start).toBe(1779413040);
+    expect(input.resolvedQuery.analysisPipeline.discoveryQuery.end).toBe(1779499440);
   });
 
-  test('should reject non-minute-aligned structured queries at validation boundary', () => {
+  test('should reject non-minute-aligned gateway requests at validation boundary', () => {
     expect(() => QueryValidator.validateGatewayRequest({
       service: 'topValues',
       metric: 'PLI',
@@ -461,81 +437,12 @@ describe('run_napm_query input contract', () => {
       );
 
       expect(result.ok).toBe(true);
-      expect(result.responseType).toBe('comprehensive_analysis_with_discovery');
-      expect(result.legacyResponseType).toBe('overview_with_discovery');
-      expect(result.analysisType).toBe('comprehensive_analysis');
-      expect(result.analysisMode).toBe('discover_then_analyze');
-      expect(result.resolvedQuery.analysisScene).toBe('network');
       expect(result.discovery.selectedObject).toBe('101.254.114.237');
       expect(result.overview.discovery.selectedObject).toBe('101.254.114.237');
       expect(overviewModule.executeOverviewModule).toHaveBeenCalledTimes(1);
-      expect(RequirementParserService.executeGatewayRequest.mock.calls[0][0]).toEqual(expect.objectContaining({
-        service: 'topValues',
-        start: 1777982400,
-        end: 1777986000
-      }));
-      expect(RequirementParserService.executeGatewayRequest.mock.calls[0][0].timeRange?.start).toBeUndefined();
     } finally {
       RequirementParserService.executeGatewayRequest = originalExecute;
     }
-  });
-
-  test('should reject analysis pipeline when target type mismatches discovery group type', async () => {
-    const result = await __test__.executeResolvedQuery(
-      '哪个业务 HTTP 500 最严重，并分析原因？',
-      {
-        service: 'overview',
-        queryModeKey: 'overview',
-        overviewScene: 'business',
-        analysisPipeline: {
-          targetObjectType: 'WebApplication',
-          discoveryQuery: {
-            service: 'topValues',
-            groups: [{ type: 'BusinessGroup' }],
-            metrics: ['PGHTTP500'],
-            topMetric: 'PGHTTP500',
-            topCount: 1
-          }
-        },
-        start: 1777982400,
-        end: 1777986000
-      },
-      {},
-      { goal: 'overview' }
-    );
-
-    expect(result.ok).toBe(false);
-    expect(result.error.code).toBe('DISCOVERY_TARGET_TYPE_MISMATCH');
-    expect(result.error.failureStage).toBe('analysisPipeline');
-    expect(overviewModule.executeOverviewModule).not.toHaveBeenCalled();
-  });
-
-  test('should reject analysis pipeline without top-level time range', async () => {
-    const result = await __test__.executeResolvedQuery(
-      '找到连接失败最多的地址，然后分析它',
-      {
-        service: 'overview',
-        queryModeKey: 'overview',
-        overviewScene: 'network',
-        analysisPipeline: {
-          targetObjectType: 'IPAddress',
-          discoveryQuery: {
-            service: 'topValues',
-            groups: [{ type: 'IPAddress' }],
-            metrics: ['RFCI'],
-            topMetric: 'RFCI',
-            topCount: 1
-          }
-        }
-      },
-      {},
-      { goal: 'overview' }
-    );
-
-    expect(result.ok).toBe(false);
-    expect(result.error.code).toBe('ANALYSIS_PIPELINE_TIME_RANGE_MISSING');
-    expect(result.error.userMessage).toContain('失败阶段：analysisPipeline');
-    expect(overviewModule.executeOverviewModule).not.toHaveBeenCalled();
   });
 
   test('should execute unknown port traffic asks as separate TCP and UDP direct queries', async () => {

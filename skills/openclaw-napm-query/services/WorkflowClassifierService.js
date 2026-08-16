@@ -2,29 +2,9 @@ const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
 const ObjectOntologyService = require('./ObjectOntologyService');
-const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 
 function normalizePromptText(prompt = '') {
   return String(prompt || '').trim();
-}
-
-function inferInventoryObjectType(text = '') {
-  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
-  if (ontologyMatch.objectType) {
-    return ontologyMatch.objectType;
-  }
-
-  const applicationCatalog = classifyApplicationCatalogPrompt(text);
-  return applicationCatalog.objectType || null;
-}
-
-function hasMetricConditionIntent(text = '') {
-  return MetricSemanticNormalizerService.hasMetricSemantic(text)
-    || /错误|报错|异常|失败|超时|慢|响应时间|耗时|重传|连接数|访问数/i.test(text);
-}
-
-function hasQuestionListIntent(text = '') {
-  return /有哪些|哪些|有哪几个|都有哪些|列出|查看|查询|谁|哪个|哪一个/.test(text);
 }
 
 function hasInventoryIntent(text = '') {
@@ -47,7 +27,7 @@ function hasOverviewIntent(text = '') {
 }
 
 function hasRankingIntent(text = '') {
-  return /(最大|最高|最多|最少|最低|最小|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
+  return /(最大|最高|最多|较多|更多|偏多|最小|最低|最少|较少|更少|偏少|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
 }
 
 function hasTrendIntent(text = '') {
@@ -56,6 +36,25 @@ function hasTrendIntent(text = '') {
 
 function hasAverageIntent(text = '') {
   return /(平均|均值|average|avg)/i.test(text);
+}
+
+function matchAlertPacketIntent(text = '') {
+  if (!/告警/i.test(text) || !/(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text)) {
+    return null;
+  }
+  const eventMatch = text.match(/\bevent\s*id\s*[:=]?\s*(\d+)\b/i)
+    || text.match(/告警(?:事件)?\s*(?:id\s*[:=]?)?\s*(\d{3,})/i);
+  return eventMatch ? { eventId: eventMatch[1] } : null;
+}
+
+function inferInventoryObjectType(text = '') {
+  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
+  if (ontologyMatch.objectType) {
+    return ontologyMatch.objectType;
+  }
+
+  const applicationCatalog = classifyApplicationCatalogPrompt(text);
+  return applicationCatalog.objectType || null;
 }
 
 function classifyWorkflow(prompt = '') {
@@ -68,13 +67,21 @@ function classifyWorkflow(prompt = '') {
     };
   }
 
-  const targetObjectType = inferInventoryObjectType(text);
+  const alertPacketIntent = matchAlertPacketIntent(text);
+  if (alertPacketIntent) {
+    return {
+      workflowType: 'alert_packet_analysis',
+      confidence: 1,
+      eventId: alertPacketIntent.eventId,
+      reason: 'alert_packet_event_intent'
+    };
+  }
 
   if (hasDrilldownIntent(text)) {
     return {
       workflowType: 'drilldown_catalog',
       confidence: 0.9,
-      targetObjectType,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'drilldown_catalog_intent'
     };
   }
@@ -83,36 +90,16 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'metric_inventory',
       confidence: 0.9,
-      targetObjectType,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'metric_inventory_intent'
-    };
-  }
-
-  // Metric evidence wins over inventory wording. "有哪些页面出现400错误"
-  // asks for ranked/filterable metric data, not a metadata catalog.
-  if (hasMetricConditionIntent(text) && (hasRankingIntent(text) || hasQuestionListIntent(text))) {
-    return {
-      workflowType: 'metric_topn',
-      confidence: 0.88,
-      targetObjectType,
-      reason: 'metric_condition_over_inventory'
-    };
-  }
-
-  if (hasInventoryIntent(text)) {
-    return {
-      workflowType: 'object_inventory',
-      confidence: 0.92,
-      targetObjectType,
-      reason: 'object_inventory_intent'
     };
   }
 
   if (hasTrendIntent(text)) {
     return {
       workflowType: 'metric_timeseries',
-      confidence: 0.75,
-      targetObjectType,
+      confidence: 0.85,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'trend_intent'
     };
   }
@@ -120,8 +107,8 @@ function classifyWorkflow(prompt = '') {
   if (hasAverageIntent(text)) {
     return {
       workflowType: 'metric_average',
-      confidence: 0.75,
-      targetObjectType,
+      confidence: 0.85,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'average_intent'
     };
   }
@@ -129,9 +116,18 @@ function classifyWorkflow(prompt = '') {
   if (hasRankingIntent(text)) {
     return {
       workflowType: 'metric_topn',
-      confidence: 0.75,
-      targetObjectType,
+      confidence: 0.85,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'ranking_intent'
+    };
+  }
+
+  if (hasInventoryIntent(text)) {
+    return {
+      workflowType: 'object_inventory',
+      confidence: 0.92,
+      targetObjectType: inferInventoryObjectType(text),
+      reason: 'object_inventory_intent'
     };
   }
 
@@ -139,7 +135,7 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: 'overview',
       confidence: 0.7,
-      targetObjectType,
+      targetObjectType: inferInventoryObjectType(text),
       reason: 'overview_intent'
     };
   }
@@ -147,7 +143,7 @@ function classifyWorkflow(prompt = '') {
   return {
     workflowType: null,
     confidence: 0.2,
-    targetObjectType,
+    targetObjectType: inferInventoryObjectType(text),
     reason: 'workflow_unresolved'
   };
 }

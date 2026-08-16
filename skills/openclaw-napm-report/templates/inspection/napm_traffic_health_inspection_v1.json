@@ -49,6 +49,19 @@
       "type": "pageBreak"
     },
     {
+      "id": "toc",
+      "type": "toc",
+      "title": "目录",
+      "alias": "Inspection Report TOC",
+      "headingStyleRange": "1-2",
+      "hyperlink": true,
+      "updateMode": "wordField"
+    },
+    {
+      "id": "toc_break",
+      "type": "pageBreak"
+    },
+    {
       "id": "document_description_heading",
       "type": "heading",
       "title": "1 文档说明",

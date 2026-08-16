@@ -57,7 +57,7 @@ class MetricMappingService {
    */
   loadMetricsFromConfigFile() {
     try {
-      const configPath = path.join(__dirname, '../../../config/metrics-config.yml');
+      const configPath = path.join(__dirname, '../config/metrics-config.yml');
 
       if (fs.existsSync(configPath)) {
         const fileContents = fs.readFileSync(configPath, 'utf8');
@@ -253,7 +253,7 @@ class MetricMappingService {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, '')
-      .replace(/[()（）_-]/g, '');
+      .replace(/[()（）_\-]/g, '');
   }
 
   /**

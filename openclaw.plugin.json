@@ -17,6 +17,7 @@
       "napm-report-export",
       "napm-packet-analysis",
       "napm-alert-query",
+      "napm-alert-packet-analysis",
       "napm-inspection-snapshot",
       "napm-summary",
       "napm-fault-diagnosis",

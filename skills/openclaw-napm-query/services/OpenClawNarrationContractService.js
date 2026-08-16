@@ -13,18 +13,6 @@ const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 const { buildReportData } = require('./ReportDataContractService');
 
-const COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE = 'comprehensive_analysis';
-const DISCOVER_THEN_ANALYZE_RESPONSE_TYPE = 'comprehensive_analysis_with_discovery';
-const LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE = 'overview_with_discovery';
-
-function normalizeAnalysisResponseType(value = '') {
-  const raw = String(value || '').trim();
-  if (raw === LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE) {
-    return DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
-  }
-  return raw;
-}
-
 // 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
 function toFiniteNumber(value) {
   const numeric = Number(value);
@@ -334,23 +322,6 @@ function extractMetricValue(row, metricId = null) {
   return toFiniteNumber(row?.rawValue ?? row?.value);
 }
 
-function hasExplicitMetricValue(row, metricId = null) {
-  if (!row || typeof row !== 'object' || !metricId) {
-    return false;
-  }
-  if (Array.isArray(row.metricValues) && row.metricValues.some((item) => {
-    const currentMetricId = String(item?.metric?.id || item?.metric?.Id || '').trim();
-    return currentMetricId === metricId;
-  })) {
-    return true;
-  }
-  return Boolean(
-    (row.values && typeof row.values === 'object' && Object.prototype.hasOwnProperty.call(row.values, metricId))
-    || row.metric === metricId
-    || Object.prototype.hasOwnProperty.call(row, metricId)
-  );
-}
-
 function findMetricValueRecord(row, metricId = null) {
   const metricValues = Array.isArray(row?.metricValues) ? row.metricValues : [];
   if (metricValues.length === 0) {
@@ -419,7 +390,7 @@ function normalizeFollowUpPrompts(payload = {}) {
 }
 
 function resolveResponseType(payload = {}, hasResultData = false) {
-  const explicit = normalizeAnalysisResponseType(payload?.responseType);
+  const explicit = String(payload?.responseType || '').trim();
   if (explicit) {
     return explicit;
   }
@@ -428,16 +399,7 @@ function resolveResponseType(payload = {}, hasResultData = false) {
     return 'compare';
   }
   if (payload?.overview && typeof payload.overview === 'object') {
-    const analysisMode = String(
-      payload?.analysisMode
-      || payload?.resolvedQuery?.analysisMode
-      || payload?.resolvedQuery?.semanticConstraints?.analysisMode
-      || ''
-    ).trim();
-    if (analysisMode === 'discover_then_analyze') {
-      return DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
-    }
-    return COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE;
+    return 'overview';
   }
 
   const service = String(payload?.service || payload?.resolvedQuery?.service || '').trim();
@@ -453,19 +415,11 @@ function resolveResponseType(payload = {}, hasResultData = false) {
  * 构造 TopN / 排名类 narration 结构。
  */
 function buildTopnStructure(payload, rows, followUpPrompts) {
+  const metricId = extractMetricId(payload);
   const sortMetricId = extractSortMetricId(payload);
-  const queryMetricId = extractMetricId(payload);
-  const sortValuesAvailable = Boolean(sortMetricId) && rows.some((row) => hasExplicitMetricValue(row, sortMetricId));
-  const metricId = sortValuesAvailable ? sortMetricId : queryMetricId;
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
-  const groups = Array.isArray(payload?.resolvedQuery?.groups) ? payload.resolvedQuery.groups : [];
-  const objectType = String(groups[groups.length - 1]?.type || '').trim() || null;
-  const requestedTopCount = Number.isInteger(Number(payload?.resolvedQuery?.topCount))
-    && Number(payload.resolvedQuery.topCount) > 0
-    ? Number(payload.resolvedQuery.topCount)
-    : null;
-  const displayLimit = requestedTopCount || Math.min(rows.length, 50);
-  const items = rows.slice(0, displayLimit).map((row, index) => {
+  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const items = rows.slice(0, 10).map((row, index) => {
     const rawValue = extractMetricValue(row, metricId);
     const unit = extractMetricUnit(row, metricId);
     return {
@@ -475,60 +429,23 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
       metric: metricId,
       metricLabel: extractMetricLabel(row, metricId),
       rawValue,
-      value: formatMetricValue(rawValue, unit),
+      value: row?.value || formatMetricValue(rawValue, unit),
       formattedValue: formatMetricValue(rawValue, unit),
       unit,
       groupPath: row?.groupPath || null
     };
   });
-  const explanationMetricText = queryMetricId && sortMetricId && queryMetricId !== sortMetricId
-    ? `查询指标为 ${queryMetricId}，排序指标为 ${sortMetricId}`
+  const explanationMetricText = metricId && sortMetricId && metricId !== sortMetricId
+    ? `查询指标为 ${metricId}，排序指标为 ${sortMetricId}`
     : (metricId ? `围绕 ${metricId} 指标` : null);
-  const sortDirection = String(payload?.resolvedQuery?.semanticConstraints?.direction || '').trim()
-    || (payload?.resolvedQuery?.semanticConstraints?.operation === 'rank_bottom' ? 'asc' : 'desc');
-  const sortableValues = items
-    .map((item) => toFiniteNumber(item.rawValue))
-    .filter((value) => value !== null);
-  const sortConsistent = sortValuesAvailable
-    ? sortableValues.every((value, index) => index === 0
-      || (sortDirection === 'asc' ? sortableValues[index - 1] <= value : sortableValues[index - 1] >= value))
-    : null;
-  const sortWarning = !sortValuesAvailable
-    ? `结果未返回排序指标 ${sortMetricId || 'unknown'} 的值，无法核验排行顺序。`
-    : (!sortConsistent
-      ? `结果顺序与排序指标 ${sortMetricId} 的 ${sortDirection} 顺序不一致，不应生成可信排名结论。`
-      : null);
-  const reachedRequestLimit = requestedTopCount != null && rows.length >= requestedTopCount;
-  const limitExplanation = requestedTopCount != null
-    ? `请求 Top ${requestedTopCount}，实际返回 ${rows.length} 条；达到请求上限不代表后端没有更多数据。`
-    : `实际返回 ${rows.length} 条。`;
   return {
     responseType: 'topn',
     title: payload?.summary?.title || '排行结果',
     explanation: objectType && explanationMetricText
-      ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。${limitExplanation}${sortWarning ? ` ${sortWarning}` : ''}`
-      : `这是一个排行结果。${limitExplanation}${sortWarning ? ` ${sortWarning}` : ''}`,
+      ? `这是按 ${objectType} 维度返回的排行结果，${explanationMetricText}。请直接概括前列对象、领先程度和明显差距。`
+      : '这是一个排行结果。请直接概括前列对象、领先程度和明显差距。',
     timeRange,
     objectType,
-    requestedTopCount,
-    returnedRowCount: rows.length,
-    reachedRequestLimit,
-    hasMoreRowsThanDisplayed: rows.length > items.length,
-    sortMetric: sortMetricId,
-    sortDirection,
-    sortValuesAvailable,
-    sortConsistent,
-    sortWarning,
-    executionFacts: {
-      service: String(payload?.resolvedQuery?.service || payload?.service || '').trim() || null,
-      start: toFiniteNumber(payload?.resolvedQuery?.start),
-      end: toFiniteNumber(payload?.resolvedQuery?.end),
-      metrics: Array.isArray(payload?.resolvedQuery?.metrics) ? payload.resolvedQuery.metrics : [],
-      topMetric: sortMetricId,
-      groups,
-      topCount: requestedTopCount,
-      returnedRowCount: rows.length
-    },
     displayText: buildTopnDisplayText({ responseType: 'topn', objectType, timeRange, items }),
     items,
     nextActions: followUpPrompts
@@ -629,22 +546,20 @@ function buildApplicationOverviewSummary(modules = []) {
 function buildOverviewStructure(payload, followUpPrompts) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const scene = String(payload?.overview?.scene || '').trim();
-  const responseType = resolveResponseType(payload, true);
-  const isDiscoverThenAnalyze = responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE;
   const discovery = payload?.overview?.discovery && typeof payload.overview.discovery === 'object'
     ? payload.overview.discovery
     : null;
   const discoveryObject = String(discovery?.selectedObject || '').trim();
   const discoveryMetric = String(discovery?.metric || '').trim();
   const sceneLabelMap = {
-    system: '系统综合分析',
-    business: '业务综合分析',
-    business_group: '业务组综合分析',
-    application: '应用综合分析',
-    network: '网络综合分析',
-    security: '安全综合分析'
+    system: '系统概览',
+    business: '业务概览',
+    business_group: '业务组概览',
+    application: '应用概览',
+    network: '网络概览',
+    security: '安全概览'
   };
-  const sceneLabel = sceneLabelMap[scene] || '综合分析';
+  const sceneLabel = sceneLabelMap[scene] || '概览';
   const overviewQueries = Array.isArray(payload?.overview?.queries) ? payload.overview.queries : [];
   const summaryHighlights = Array.isArray(payload?.summary?.highlights)
     ? payload.summary.highlights.filter(Boolean).map((item) => String(item))
@@ -668,22 +583,14 @@ function buildOverviewStructure(payload, followUpPrompts) {
   const keyFindings = applicationSummary.length > 0
     ? applicationSummary
     : [...summaryHighlights, ...topFindings].slice(0, 8);
-  const explanation = isDiscoverThenAnalyze
-    ? `这是先发现对象再聚焦分析的${sceneLabel}结果。请先说明发现对象和发现依据，再总结聚焦分析证据、判断和建议动作。`
-    : (scene === 'application'
-      ? '这是应用综合分析结果，请优先总结告警、吞吐、访问趋势、体验趋势和失败热点。'
-      : `这是${sceneLabel}结果，请优先总结核心发现、异常热点和建议关注方向。`);
+  const explanation = scene === 'application'
+    ? '这是应用概览结果，请优先总结告警、吞吐、访问趋势、体验趋势和失败热点。'
+    : `这是${sceneLabel}结果，请优先总结核心发现、异常热点和建议关注方向。`;
 
   return {
-    responseType,
-    legacyResponseType: responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE
-      ? LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE
-      : null,
+    responseType: 'overview',
     title: sceneLabel,
     explanation,
-    analysisType: payload?.analysisType || payload?.resolvedQuery?.analysisType || 'comprehensive_analysis',
-    analysisMode: payload?.analysisMode || payload?.resolvedQuery?.analysisMode || (isDiscoverThenAnalyze ? 'discover_then_analyze' : 'focused_analysis'),
-    analysisScene: payload?.analysisScene || payload?.resolvedQuery?.analysisScene || scene || null,
     timeRange,
     scene,
     sceneLabel,
@@ -744,65 +651,55 @@ function buildWebApplicationCatalogDisplayText(rows = []) {
   return lines.join('\n');
 }
 
-function getObjectTypeDisplayName(objectType = '') {
-  const normalized = String(objectType || '').trim();
-  const names = {
-    BusinessGroup: '业务组',
-    ClientBusinessGroup: '客户端业务组',
-    WebApplication: '业务系统',
-    DefinedApp: '已定义应用',
-    CompositeApplication: '自动识别应用',
-    BuiltinApplication: '内置应用',
-    OtherApp: '未知应用',
-    IPAddress: 'IP',
-    Prefix24: '网段',
-    User: '用户',
-    PageFamily: '页面族'
+function resolveGroupListDescriptor(objectType = '', metadata = {}) {
+  const typeFilter = Array.isArray(metadata?.applicationTypeFilter)
+    ? metadata.applicationTypeFilter.map(Number).filter(Number.isFinite)
+    : [];
+  const descriptors = {
+    DefinedApp: { label: '已定义应用', detail: 'DefinedApp，applications Type=2' },
+    WebApplication: { label: '业务系统', detail: 'WebApplication，applications Type=3' },
+    BuiltinApplication: { label: '内置应用', detail: 'BuiltinApplication，applications Type=1' },
+    CompositeApplication: { label: '自动识别应用', detail: 'CompositeApplication，applications Type=4' },
+    OtherApp: { label: '未知应用', detail: 'OtherApp' },
+    BusinessGroup: { label: '业务组', detail: 'BusinessGroup' }
   };
-  return names[normalized] || normalized || '对象';
+  const descriptor = descriptors[objectType] || {
+    label: objectType || '对象',
+    detail: objectType || null
+  };
+  if (metadata?.providerType === 'applications' && typeFilter.length === 1) {
+    return {
+      ...descriptor,
+      detail: `${objectType || descriptor.detail}，applications Type=${typeFilter[0]}`
+    };
+  }
+  return descriptor;
 }
 
-function getInventoryProviderDescription(metadata = null) {
-  const providerType = String(metadata?.providerType || '').trim();
-  const apiType = String(metadata?.apiType || '').trim();
-  if (!providerType && !apiType) {
-    return '';
+function buildGroupListDisplayText(payload = {}, rows = [], explicitObjectType = '', explicitMetadata = null) {
+  const metadata = explicitMetadata && typeof explicitMetadata === 'object'
+    ? explicitMetadata
+    : (payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {});
+  const objectType = String(
+    explicitObjectType
+    || metadata.effectiveObjectType
+    || metadata.requestedObjectType
+    || payload?.resolvedQuery?.groups?.[0]?.type
+    || ''
+  ).trim();
+  const descriptor = resolveGroupListDescriptor(objectType, metadata);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return `当前没有返回${descriptor.label}。`;
   }
 
-  if (providerType === 'businessGroups' || apiType === 'businessGroups') {
-    return '查询口径：南向 businessGroups 目录，返回系统已配置的 BusinessGroup/业务组对象。';
-  }
-  if (providerType === 'groupArguments' || apiType === 'groupArguments') {
-    const argumentType = Number(metadata?.argumentType);
-    return Number.isFinite(argumentType)
-      ? `查询口径：南向 groupArguments 目录，argumentType=${argumentType}。`
-      : '查询口径：南向 groupArguments 目录。';
-  }
-  if (providerType === 'applications' || apiType === 'applications') {
-    const filter = Array.isArray(metadata?.applicationTypeFilter)
-      ? metadata.applicationTypeFilter.map(Number).filter(Number.isFinite)
-      : [];
-    return filter.length > 0
-      ? `查询口径：南向 applications 目录，按 Type=${filter.join('/')} 筛选。`
-      : '查询口径：南向 applications 目录。';
-  }
-  return `查询口径：南向 ${apiType || providerType} 目录。`;
-}
-
-function buildGenericGroupListDisplayText(rows = [], objectType = '', metadata = null) {
-  const objectLabel = getObjectTypeDisplayName(objectType);
-  const lines = [`系统中目前有 ${rows.length} 个${objectLabel}（${objectType || 'Object'}）：`];
+  const detail = descriptor.detail ? `（${descriptor.detail}）` : '';
+  const lines = [`系统中目前有 ${rows.length} 个${descriptor.label}${detail}：`];
   rows.forEach((row, index) => {
     const value = String(getListItemValue(row, 'label') || '').trim();
     if (value) {
       lines.push(`${index + 1}. ${value}`);
     }
   });
-
-  const providerDescription = getInventoryProviderDescription(metadata);
-  if (providerDescription) {
-    lines.push(providerDescription);
-  }
   return lines.join('\n');
 }
 
@@ -810,10 +707,15 @@ function buildGenericGroupListDisplayText(rows = [], objectType = '', metadata =
 function buildListStructure(payload, rows, followUpPrompts, responseType, labelKey) {
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
   const listTypeLabel = responseType === 'group_list' ? '对象列表' : '指标列表';
-  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
   const metadata = payload?.metadata && typeof payload.metadata === 'object'
     ? payload.metadata
     : null;
+  const objectType = String(
+    metadata?.effectiveObjectType
+    || metadata?.requestedObjectType
+    || payload?.resolvedQuery?.groups?.[0]?.type
+    || ''
+  ).trim() || null;
   const webApplicationCatalogList = isWebApplicationCatalogList(payload, responseType, objectType);
   const itemIds = rows.map((row) => String(row?.id || '').trim()).filter(Boolean);
   const sampleMetricIds = itemIds.slice(0, 12);
@@ -849,9 +751,7 @@ function buildListStructure(payload, rows, followUpPrompts, responseType, labelK
   }));
   const displayText = webApplicationCatalogList
     ? buildWebApplicationCatalogDisplayText(rows)
-    : (responseType === 'group_list'
-      ? buildGenericGroupListDisplayText(rows, objectType, metadata)
-      : null);
+    : (responseType === 'group_list' ? buildGroupListDisplayText(payload, rows, objectType, metadata) : null);
 
   return {
     responseType,
@@ -913,10 +813,7 @@ function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], s
   if (responseType === 'trend') {
     return buildTrendStructure(payload, rows, structuredSeries, followUpPrompts);
   }
-  if (responseType === 'overview' || responseType === COMPREHENSIVE_ANALYSIS_RESPONSE_TYPE) {
-    return buildOverviewStructure(payload, followUpPrompts);
-  }
-  if (responseType === LEGACY_DISCOVER_THEN_OVERVIEW_RESPONSE_TYPE || responseType === DISCOVER_THEN_ANALYZE_RESPONSE_TYPE) {
+  if (responseType === 'overview') {
     return buildOverviewStructure(payload, followUpPrompts);
   }
   if (responseType === 'compare') {
@@ -1112,13 +1009,14 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
         ...data,
         error: normalizedError,
         answerMode,
-        responseType
+        responseType: data.responseType || narrationStructure?.responseType || null
       }, { answerMode })
     }
   };
 }
 
 module.exports = {
+  buildGroupListDisplayText,
   buildOpenClawReplyContract,
   buildNarrationStructure,
   normalizeNarrationRows,

@@ -131,12 +131,12 @@ NAPM Web Services 的通用 URL 结构为：
 - `groupType3=IPAddress`
 - `metrics=PGHTTP500`
 - `topMetric=PGHTTP500`
-- `topCount=5`
+- `topCount=5` :contentReference[oaicite:84]{index=84}
 
 ### 4.4 指定最深层具体对象
 若从 TopN 切换到查某个具体对象平均值，则通常在最深层补 `groupArgument`。例如：
 - `groupArgument3=1.202.187.84`
-用于锁定某个客户端 IP。
+用于锁定某个客户端 IP。:contentReference[oaicite:85]{index=85}
 
 ---
 
@@ -163,14 +163,14 @@ NAPM Web Services 的通用 URL 结构为：
 - group chain：`WebApplication -> ClientIPs -> IPAddress`
 - metric：`PGHTTP500`
 - topMetric：`PGHTTP500`
-- topCount：`5`
+- topCount：`5` :contentReference[oaicite:88]{index=88}
 
 ### 5.4 查某客户端 IP 在该 WebApplication 下的 HTTP500 均值/总量
 思路：
 - 从上一个路径继续
 - 改服务为 `averageValues`
 - 补最深层 `groupArgument` 锁定 IP
-- 去掉 `topMetric/topCount`
+- 去掉 `topMetric/topCount` :contentReference[oaicite:89]{index=89}
 
 ---
 
@@ -191,7 +191,7 @@ NAPM Web Services 的通用 URL 结构为：
 以避免：
 - 选错 group path
 - 选错对象类型
-- 选了该层不支持的指标
+- 选了该层不支持的指标 :contentReference[oaicite:90]{index=90}
 
 ### execution
 执行层要输出的是结构化 resolvedQuery，而不是仅靠自然语言隐式推断。最终必须明确：

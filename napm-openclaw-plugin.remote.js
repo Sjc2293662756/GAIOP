@@ -1,12 +1,59 @@
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const AssistantOutputLedger = require('./plugin/AssistantOutputLedger');
 const ConversationOperationState = require('./plugin/ConversationOperationState');
+const {
+  buildDeterministicFinalReply: buildAlertPacketFinalReply,
+  prepareModelFinalContent: prepareAlertPacketModelFinalContent
+} = require('./plugin/AlertPacketFinalReplyService');
+const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
+const ReportSourceStore = require('./plugin/ReportSourceStore');
+const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
 
 const NAPM_DIRECT_SKILL_MODE = true;
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
 const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
-const OPENCLAW_SKILLS_ROOT = process.env.OPENCLAW_SKILLS_ROOT
-  || (fs.existsSync(LOCAL_SKILLS_ROOT) ? LOCAL_SKILLS_ROOT : DEPLOYED_SKILLS_ROOT);
+const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
+  'openclaw-napm-query/scripts/run_napm_query.js',
+  'openclaw-napm-query/services/PromptRoutingService.js',
+  'openclaw-napm-query/services/ResolutionSpecService.js',
+  'openclaw-napm-report/scripts/generate_napm_report.js',
+  'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js',
+  'openclaw-napm-alert-query/scripts/run_alert_query.js',
+  'openclaw-napm-alert-packet-analysis/scripts/run_alert_packet_analysis.js',
+  'openclaw-napm-inspection/scripts/run_inspection_snapshot.js',
+  'openclaw-napm-summary/scripts/run_summary.js',
+  'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js'
+]);
+
+function hasCompleteNapmSkillRuntime(skillsRoot = '', existsSync = fs.existsSync) {
+  const root = String(skillsRoot || '').trim();
+  return Boolean(root) && REQUIRED_NAPM_SKILL_RUNTIME_PATHS.every((relativePath) => (
+    existsSync(path.join(root, relativePath))
+  ));
+}
+
+function resolveOpenClawSkillsRoot(options = {}) {
+  const explicitRoot = String(options.explicitRoot ?? process.env.OPENCLAW_SKILLS_ROOT ?? '').trim();
+  if (explicitRoot) {
+    return explicitRoot;
+  }
+
+  const localSkillsRoot = String(options.localSkillsRoot || LOCAL_SKILLS_ROOT).trim();
+  const deployedSkillsRoot = String(options.deployedSkillsRoot || DEPLOYED_SKILLS_ROOT).trim();
+  const existsSync = typeof options.existsSync === 'function' ? options.existsSync : fs.existsSync;
+  if (hasCompleteNapmSkillRuntime(localSkillsRoot, existsSync)) {
+    return localSkillsRoot;
+  }
+  if (hasCompleteNapmSkillRuntime(deployedSkillsRoot, existsSync)) {
+    return deployedSkillsRoot;
+  }
+
+  return existsSync(deployedSkillsRoot) ? deployedSkillsRoot : localSkillsRoot;
+}
+
+const OPENCLAW_SKILLS_ROOT = resolveOpenClawSkillsRoot();
 
 // ── In-process Skill loaders (2026-07-07) ─────────────────────────────────
 // 替代 execFileAsync subprocess spawn，改为同进程 require() 调用。
@@ -25,12 +72,14 @@ const napmQuerySkill = () => loadSkill('openclaw-napm-query', 'run_napm_query.js
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
 const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
+const napmAlertPacketSkill = () => loadSkill('openclaw-napm-alert-packet-analysis', 'run_alert_packet_analysis.js');
 const napmInspectionSkill = () => loadSkill('openclaw-napm-inspection', 'run_inspection_snapshot.js');
 const napmSummarySkill = () => loadSkill('openclaw-napm-summary', 'run_summary.js');
 const napmFaultDiagnosisSkill = () => loadSkill('openclaw-napm-fault-diagnosis', 'run_fault_diagnosis.js');
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmSentMediaByConversation = new Map();
+const nativeCommandByScope = new Map();
 let cachedGroupPathPlannerService = null;
 let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
@@ -44,15 +93,38 @@ let napmResolvedQueryResolverLookupComplete = false;
 let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+const OPENCLAW_NATIVE_COMMAND_TTL_MS = 30 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const TRUSTED_TOOL_CONTEXT_MAX_AGE_MS = REPORT_EXPORT_CACHE_MAX_AGE_MS;
+const REPORT_SOURCE_TTL_MS = Number(process.env.NAPM_REPORT_SOURCE_TTL_MS) > 0
+  ? Number(process.env.NAPM_REPORT_SOURCE_TTL_MS)
+  : 30 * 60 * 1000;
+const REPORT_SOURCE_DIR = process.env.NAPM_REPORT_SOURCE_DIR
+  || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-report-sources');
+const TRUSTED_CONTEXT_DIR = process.env.NAPM_TRUSTED_CONTEXT_DIR
+  || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-trusted-tool-contexts');
 const napmOperationState = new ConversationOperationState({
   resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
   reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS
 });
+const assistantOutputLedger = new AssistantOutputLedger({
+  maxAgeMs: RESULT_CACHE_MAX_AGE_MS
+});
+const conversationScopeRegistry = new ConversationScopeRegistry({
+  maxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS
+});
+const napmReportSourceStore = new ReportSourceStore({
+  baseDir: REPORT_SOURCE_DIR,
+  ttlMs: REPORT_SOURCE_TTL_MS
+});
+const napmTrustedToolContextStore = new TrustedToolContextStore({
+  baseDir: TRUSTED_CONTEXT_DIR,
+  ttlMs: TRUSTED_TOOL_CONTEXT_MAX_AGE_MS
+});
 const napmTrustedToolContextByTraceId = new Map();
+const napmAutomaticReportByTurn = new Map();
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
-const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
+const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-alert-packet-analysis', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
   networkAlerts: '网络性能告警',
   networkIssueAlerts: '网络异常告警',
@@ -289,6 +361,8 @@ function looksLikeInternalReasoningPreview(text = '') {
     /让我(?:用|查找|筛选|先|直接)/ig,
     /\bit\s+only\s+returned\b/ig,
     /\blet\s+me\s+try\b/ig,
+    /\blet\s+me\s+(?:re-?run|use|check|query|call|fetch|look|inspect)\b/ig,
+    /\bpreviously\s+i\s+(?:checked|queried|tried)\b/ig,
     /\bactually,\s*wait\b/ig,
     /\bnow\s+i\s+see\b/ig,
     /\blet\s+me\s+take\s+a\s+(?:different|step\s+back)\s+approach\b/ig,
@@ -336,6 +410,17 @@ function isNapmMetaFollowUpPrompt(prompt = '', previousState = null) {
   return hasReference && hasMetaIntent;
 }
 
+function isResultDeliveryFollowUpPrompt(prompt = '', previousState = null) {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasDeliveryIntent = /(?:为什么|怎么|咋)(?:没有|没)(?:返回|显示|展示|出来|给我)|(?:怎么|咋)?只有(?:标题|一句话)|结果呢|结果在哪里|报告呢|报告在(?:哪|哪里)|没有给我|没给我|重新发(?:一下|一遍)?|再发(?:一下|一遍)?|重新展示|再展示/i.test(text);
+  const previousNapmRelated = Boolean(previousState?.napmRelated || previousState?.domainRelated);
+  return hasDeliveryIntent && previousNapmRelated;
+}
+
 function isAlertEventPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
@@ -355,6 +440,62 @@ function isAlertEventPrompt(prompt = '') {
   }
 
   return /(?:有哪些|有什么|有没有|是否有|查(?:询)?|列(?:出)?|列表|清单|摘要|明细|详情|事件|event\s*id|id|时间线|趋势|数量|统计|汇总|紧急|重大|轻微|严重|触发|原因|为什么|关联|数据包|napm-alert-query|告警查询\s*skill|告警\s*skill)/i.test(text);
+}
+
+function isAlertPacketAnalysisPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text || !/告警/i.test(text)) {
+    return false;
+  }
+  const hasPacketIntent = /(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text);
+  const hasEventId = /\bevent\s*id\s*[:=]?\s*\d+\b/i.test(text)
+    || /告警(?:事件)?\s*(?:id\s*[:=]?)?\s*\d{3,}/i.test(text);
+  return hasPacketIntent && hasEventId;
+}
+
+function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
+  const text = String(prompt || '').trim();
+  const source = isPlainObject(params) ? params : {};
+  const eventMatch = text.match(/\bevent\s*id\s*[:=]?\s*(\d+)\b/i)
+    || text.match(/告警(?:事件)?\s*(?:id\s*[:=]?)?\s*(\d{3,})/i);
+  const startMatch = text.match(/\bstart\s*[:=]\s*(\d{10,13})\b/i);
+  const endMatch = text.match(/\bend\s*[:=]\s*(\d{10,13})\b/i);
+  const metricMatch = text.match(/触发指标值\s*[:：]\s*([^=\r\n]+?)\s*=\s*(-?\d+(?:\.\d+)?)\s*([^\s\r\n]*)/i);
+  const severityMatch = text.match(/告警级别\s*[:：]\s*([^\r\n]+)/i);
+  const conditionMatch = text.match(/触发条件\s*[:：]\s*([^\r\n]+)/i);
+  const sourceMetrics = isPlainObject(source.triggerMetrics) ? source.triggerMetrics : {};
+  const normalizeSeconds = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    return numeric > 9999999999 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+  };
+  const asStringArray = (value) => {
+    const values = Array.isArray(value) ? value : (value == null || value === '' ? [] : [value]);
+    return values.map((item) => String(item).trim()).filter(Boolean);
+  };
+  const asNumberArray = (value) => {
+    const values = Array.isArray(value) ? value : (value == null || value === '' ? [] : [value]);
+    return values.map(Number).filter(Number.isFinite);
+  };
+  const canonical = {
+    prompt: text,
+    eventId: String(eventMatch?.[1] || source.eventId || '').trim(),
+    start: normalizeSeconds(startMatch?.[1] || source.start),
+    end: normalizeSeconds(endMatch?.[1] || source.end),
+    triggerMetrics: {
+      names: metricMatch ? [metricMatch[1].trim()] : asStringArray(sourceMetrics.names || sourceMetrics.name),
+      codes: asStringArray(sourceMetrics.codes || sourceMetrics.code),
+      values: metricMatch ? [Number(metricMatch[2])] : asNumberArray(sourceMetrics.values ?? sourceMetrics.value),
+      units: metricMatch && metricMatch[3]
+        ? [metricMatch[3].trim()]
+        : asStringArray(sourceMetrics.units || sourceMetrics.unit),
+      severity: severityMatch ? severityMatch[1].trim() : String(sourceMetrics.severity || '').trim(),
+      condition: conditionMatch ? conditionMatch[1].trim() : String(sourceMetrics.condition || '').trim()
+    }
+  };
+  const traceId = normalizeTraceId(source.traceId);
+  if (traceId) canonical.traceId = traceId;
+  return canonical;
 }
 
 function isAlertSkillMetaFollowUpPrompt(prompt = '', previousState = null) {
@@ -509,6 +650,31 @@ function isMeaningfulText(value = '') {
   return text !== '[object Object]' && text !== '[object Array]';
 }
 
+function isPlatformIdentityPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const patterns = [
+    // Pure greetings share the platform identity route. Anchors prevent a greeting
+    // prefix from bypassing NAPM routing or the general out-of-scope boundary.
+    /^(?:(?:观枢\s*AI|助手)[，,:：\s]*)?(?:你好|您好|嗨|哈喽|哈啰|hello|hi|早|早上好|上午好|中午好|下午好|晚上好|早安|午安|晚安|在吗|在不在)(?:呀|啊|哦|哈)?[！!。.?？，,~～]*$/i,
+    /(?:你|您)(?:到底)?是谁/i,
+    /(?:你|您)(?:叫|叫什么)(?:名字|名称)?/i,
+    /(?:你|您)的(?:名字|名称|身份)(?:是|叫|是什么)/i,
+    /(?:你|您)是(?:做什么|干什么|什么助手|哪种助手|什么系统)(?:的)?/i,
+    /(?:请|麻烦)?(?:介绍(?:一下)?(?:你|您)自己|做个?自我介绍|自我介绍(?:一下)?)/i,
+    /(?:你|您)(?:能|可以|会|擅长)[^，。！？?!\n]{0,8}(?:做|处理|回答|提供|支持)[^，。！？?!\n]{0,8}(?:什么|哪些)/i,
+    /(?:你|您)(?:有|具备)(?:什么|哪些)?(?:功能|能力|本领)/i,
+    /(?:你|您)(?:运行|部署|工作)在(?:哪里|哪儿|什么平台|哪个平台)/i,
+    /(?:你|您)(?:基于|使用)(?:什么|哪个)平台/i,
+    /(?:你|您)是(?:什么|哪个)模型/i
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 function normalizePromptKey(prompt) {
   return String(prompt || '')
     .trim()
@@ -617,6 +783,19 @@ function appendPluginAuditEvent(event, payload = {}) {
 function normalizeTraceId(value = '') {
   const text = String(value || '').trim();
   return text ? truncateAuditText(text, 160) : '';
+}
+
+function normalizeTurnId(value = '') {
+  const text = String(value || '').trim();
+  return text ? truncateAuditText(text, 160) : '';
+}
+
+function buildNapmTurnId() {
+  return `napm-turn-${crypto.randomUUID()}`;
+}
+
+function getContextTurnKey(ctx = {}) {
+  return normalizeTraceId(ctx?.messageId || ctx?.runId || '');
 }
 
 function buildNapmTraceId(ctx = {}, args = {}) {
@@ -965,6 +1144,11 @@ function isStrictBoundaryMode() {
   return getBoundaryMode() === 'strict';
 }
 
+function getQuerySemanticGuardMode() {
+  const raw = String(process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE || '').trim().toLowerCase();
+  return ['enforce', 'shadow', 'off'].includes(raw) ? raw : 'shadow';
+}
+
 function shouldEnableDevResolverTools() {
   const raw = String(process.env.NAPM_ENABLE_DEV_RESOLVER_TOOLS || '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
@@ -1144,6 +1328,28 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     }
   }
 
+  if (Array.isArray(next.groups)) {
+    next.groups = next.groups.map((group) => {
+      if (!isPlainObject(group)) {
+        return group;
+      }
+      const type = String(group.type || '').trim();
+      return {
+        ...group,
+        type: type === 'Application' ? 'DefinedApp' : type
+      };
+    });
+  }
+  if (String(next.objectType || '').trim() === 'Application') {
+    next.objectType = 'DefinedApp';
+  }
+  if (isPlainObject(next.semanticConstraints)) {
+    next.semanticConstraints = { ...next.semanticConstraints };
+    if (String(next.semanticConstraints.targetObjectType || '').trim() === 'Application') {
+      next.semanticConstraints.targetObjectType = 'DefinedApp';
+    }
+  }
+
   const metricList = Array.isArray(next.metrics)
     ? next.metrics
     : (typeof next.metrics === 'string' ? next.metrics.split(',') : []);
@@ -1209,6 +1415,14 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
   });
 
   return next;
+}
+
+function getResolutionSpecServiceNames() {
+  const service = getResolutionSpecService();
+  if (service && typeof service.getServiceNames === 'function') {
+    return service.getServiceNames();
+  }
+  return [];
 }
 
 function isSupportedRelativeTimeRangeKey(value = '') {
@@ -1507,6 +1721,14 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 }
 
 function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
+  const allowedServices = getResolutionSpecServiceNames();
+  const serviceName = String(validation?.expectedService || args?.resolvedQuery?.service || '').trim();
+  const resolutionSpecService = getResolutionSpecService();
+  const serviceSpec = serviceName && resolutionSpecService?.getServiceSpec
+    ? resolutionSpecService.getServiceSpec(serviceName)
+    : null;
+  const allowedQueryModes = Array.isArray(serviceSpec?.queryModes) ? serviceSpec.queryModes : [];
+  const requiredFields = Array.isArray(serviceSpec?.required) ? serviceSpec.required : [];
   return {
     ok: false,
     source: 'napm_openclaw_plugin_boundary',
@@ -1522,6 +1744,12 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
       reason: validation.reason || 'invalid_resolved_query',
       message: validation.message || 'resolvedQuery failed plugin boundary validation.'
     },
+    allowedServices,
+    expectedQueryModeKey: String(validation?.expectedQueryModeKey || '').trim()
+      || (allowedQueryModes.length === 1 ? allowedQueryModes[0] : null),
+    allowedQueryModes,
+    requiredFields,
+    validationDetails: isPlainObject(validation.details) ? validation.details : null,
     resolvedQuery: normalizeObject(args?.resolvedQuery) || null,
     resolvedQuerySummary: summarizeResolvedQueryForAudit(args?.resolvedQuery)
   };
@@ -1714,6 +1942,10 @@ function classifyNapmWorkflow(prompt = '') {
   };
 }
 
+function isObjectInventoryPrompt(prompt = '') {
+  return classifyNapmWorkflow(prompt).workflowType === 'object_inventory';
+}
+
 function normalizeHierarchyQuestionTarget(prompt = '') {
   return getPromptRoutingService().normalizeHierarchyQuestionTarget(prompt) || '';
 }
@@ -1809,6 +2041,8 @@ function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolve
   return {
     ok: false,
     reason: 'composite_application_inventory_contract_mismatch',
+    expectedService: 'groups',
+    expectedQueryModeKey: 'metadata',
     message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps，也不能携带 argument:"all"。'
   };
 }
@@ -1844,8 +2078,21 @@ function validateObjectInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
   return {
     ok: false,
     reason: 'object_inventory_contract_mismatch',
+    expectedService: 'groups',
+    expectedQueryModeKey: 'metadata',
     message: `This is an NAPM object_inventory query for ${expectedType}. resolvedQuery must use service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"${expectedType}"}], and must not use overview/topValues or argument:"all".`
   };
+}
+
+function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
+  if (getQuerySemanticGuardMode() === 'off') {
+    return { ok: true };
+  }
+
+  return [
+    validateCompositeApplicationInventoryResolvedQuery(prompt, resolvedQuery),
+    validateObjectInventoryResolvedQuery(prompt, resolvedQuery)
+  ].find((validation) => validation && validation.ok === false) || { ok: true };
 }
 
 function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
@@ -1950,6 +2197,65 @@ function getResolvedQueryValidationOptions(args = {}) {
   };
 }
 
+function rememberResolvedQueryFailureForTurn(
+  activePrompt = '',
+  validation = {},
+  args = {},
+  conversationKey = '',
+  turnId = ''
+) {
+  const failureResult = buildResolvedQueryBoundaryFailureResult(validation, args);
+  const prompt = activePrompt || normalizePrompt(args);
+  const failureRecord = napmOperationState.rememberQueryFailure({
+    scope: conversationKey,
+    turnId,
+    promptKey: buildPromptScopeKey(prompt, conversationKey),
+    result: failureResult,
+    resolvedQuery: normalizeObject(args?.resolvedQuery) || null
+  });
+
+  if (failureRecord?.terminal) {
+    failureResult.decision = {
+      next_action: 'STOP_RETRYING',
+      reason: failureResult.error.reason,
+      message: 'Query repair budget exhausted. Stop reconstructing and report the typed failure.'
+    };
+  }
+
+  return failureRecord || {
+    result: failureResult,
+    attemptCount: 1,
+    mayRepair: true,
+    terminal: false,
+    duplicate: false
+  };
+}
+
+function rememberResolvedQueryBoundaryFailureForTurn(
+  activePrompt = '',
+  validation = {},
+  args = {},
+  conversationKey = '',
+  conversationState = null,
+  guardState = null
+) {
+  return rememberResolvedQueryFailureForTurn(
+    activePrompt,
+    validation,
+    args,
+    conversationKey,
+    getActiveTurnId(conversationState, guardState)
+  );
+}
+
+function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
+  const message = validation.message || 'resolvedQuery failed plugin validation.';
+  if (failureRecord?.terminal) {
+    return `${message} Query repair budget exhausted; stop reconstructing and report this failure.`;
+  }
+  return `${message} OpenClaw may reconstruct resolvedQuery once.`;
+}
+
 function prepareSkillExecutionArgs(args = {}) {
   const prepared = isPlainObject(args) ? { ...args } : {};
   const prompt = normalizePrompt(prepared);
@@ -1984,15 +2290,25 @@ function isPluginStructuredOverviewInjection(originalArgs = {}, preparedArgs = {
     && isOverviewPrompt(normalizePrompt(preparedArgs));
 }
 
+function buildGuardKey(prefix, value) {
+  const normalized = String(value == null ? '' : value).trim();
+  return normalized ? `${prefix}:${normalized}` : '';
+}
+
 function getGuardKeys(ctx = {}) {
-  return [
-    ctx.sessionKey,
-    ctx.sessionId,
-    ctx.agentId,
-    ctx.runId,
-    ctx.messageId,
-    ctx.conversationId
-  ].filter((value, index, array) => Boolean(value) && array.indexOf(value) === index);
+  const conversationParts = [ctx.channelId, ctx.accountId, ctx.conversationId]
+    .map((value) => String(value == null ? '' : value).trim());
+  const conversationKey = conversationParts.every(Boolean)
+    ? `conversation:${conversationParts.join(':')}`
+    : '';
+  const keys = [
+    buildGuardKey('session-key', ctx.sessionKey),
+    buildGuardKey('session-id', ctx.sessionId),
+    conversationKey,
+    buildGuardKey('run-id', ctx.runId),
+    buildGuardKey('message-id', ctx.messageId)
+  ].filter(Boolean);
+  return keys.filter((value, index) => keys.indexOf(value) === index);
 }
 
 function getGuardState(ctx = {}) {
@@ -2013,23 +2329,32 @@ function setGuardState(ctx = {}, state) {
 
 function buildConversationScopedGuardState(content = '', previousState = null) {
   const prompt = String(content || '').trim();
+  const platformIdentityPrompt = isPlatformIdentityPrompt(prompt);
   const overviewRelated = isOverviewPrompt(prompt);
   const alertEventPrompt = isAlertEventPrompt(prompt);
   const alertMetaFollowUpPrompt = isAlertSkillMetaFollowUpPrompt(prompt, previousState);
   const metricInventoryPrompt = isMetricInventoryPrompt(prompt)
     || (previousState?.lastMetricInventoryGroup && isMetricInventoryDetailPrompt(prompt));
   const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
+  const resultDeliveryFollowUpPrompt = isResultDeliveryFollowUpPrompt(prompt, previousState);
+  const reportExportPrompt = isReportExportPrompt(prompt);
   const domainRelated = overviewRelated
+    || isSummaryPrompt(prompt)
+    || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
     || isSystemDomainPrompt(prompt)
     || metaFollowUpPrompt
+    || resultDeliveryFollowUpPrompt
     || (previousState?.domainRelated && isContinuationPrompt(prompt));
   const napmRelated = overviewRelated
+    || isSummaryPrompt(prompt)
+    || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
     || isNapmRelatedPrompt(prompt)
     || metaFollowUpPrompt
+    || resultDeliveryFollowUpPrompt
     || (previousState?.napmRelated && isContinuationPrompt(prompt));
   const alertRelated = alertEventPrompt
     || alertMetaFollowUpPrompt
@@ -2039,19 +2364,25 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     prompt,
     napmRelated,
     domainRelated,
+    platformIdentityPrompt,
     alertRelated,
     alertEventPrompt,
     alertMetaFollowUpPrompt,
     metricInventoryPrompt,
     metaFollowUpPrompt,
+    resultDeliveryFollowUpPrompt,
     lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
       ? inferMetricInventoryGroup(prompt)
       : (previousState?.lastMetricInventoryGroup || ''),
-    generalOutOfScopeRequested: Boolean(prompt) && !domainRelated,
+    generalOutOfScopeRequested: Boolean(prompt) && !domainRelated && !platformIdentityPrompt,
     outOfScopeBoundaryRequested: domainRelated && isOutOfScopeNapmRequest(prompt),
     turnNapmToolUsed: false,
     updatedAt: Date.now()
   };
+}
+
+function getActiveTurnId(conversationState = null, guardState = null) {
+  return normalizeTurnId(conversationState?.turnId || guardState?.turnId || '');
 }
 
 function derivePromptGuardState(activePrompt = '', conversationState = null, guardState = null) {
@@ -2075,9 +2406,106 @@ function derivePromptGuardState(activePrompt = '', conversationState = null, gua
 }
 
 function getConversationKey(ctx = {}) {
-  const parts = [ctx.channelId, ctx.accountId, ctx.conversationId]
-    .map((value) => String(value || '').trim());
-  return parts.every(Boolean) ? parts.join(':') : '';
+  return conversationScopeRegistry.resolve(ctx);
+}
+
+function parseOpenClawControlCommand(content = '') {
+  const text = String(content || '').trim();
+  const match = text.match(/^\/([a-z][a-z0-9_-]*)(?:@\S+)?(?:\s|$)/i);
+  if (!match) {
+    return null;
+  }
+
+  const name = match[1].toLowerCase();
+  return {
+    name,
+    raw: text,
+    resetsSession: name === 'new' || name === 'reset'
+  };
+}
+
+function pruneNativeCommandTurns() {
+  const now = Date.now();
+  for (const [scope, record] of nativeCommandByScope.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > OPENCLAW_NATIVE_COMMAND_TTL_MS) {
+      nativeCommandByScope.delete(scope);
+    }
+  }
+}
+
+function rememberNativeCommandTurn(ctx = {}, command = null) {
+  const scope = getConversationKey(ctx);
+  if (!scope || !command) {
+    return false;
+  }
+  pruneNativeCommandTurns();
+  nativeCommandByScope.set(scope, {
+    ...command,
+    updatedAt: Date.now()
+  });
+  return true;
+}
+
+function clearNativeCommandTurn(ctx = {}) {
+  const scope = getConversationKey(ctx);
+  return scope ? nativeCommandByScope.delete(scope) : false;
+}
+
+function isNativeCommandTurn(ctx = {}) {
+  const scope = getConversationKey(ctx);
+  if (!scope) {
+    return false;
+  }
+  pruneNativeCommandTurns();
+  return nativeCommandByScope.has(scope);
+}
+
+function clearNapmConversationScope(ctx = {}) {
+  const scope = getConversationKey(ctx);
+  if (!scope) {
+    return { scope: '', cleared: false };
+  }
+
+  const summary = {
+    scope,
+    conversationState: napmConversationState.delete(scope),
+    operationRecords: napmOperationState.clearScope(scope),
+    assistantOutputs: assistantOutputLedger.clearScope(scope),
+    reportSources: napmReportSourceStore.clearScope(scope),
+    trustedContexts: napmTrustedToolContextStore.clearScope(scope),
+    inMemoryTrustedContexts: 0,
+    mediaState: napmSentMediaByConversation.delete(scope),
+    nativeCommandState: nativeCommandByScope.delete(scope),
+    scopeAliases: 0,
+    guardRecords: 0,
+    cleared: true
+  };
+
+  for (const [traceId, record] of napmTrustedToolContextByTraceId.entries()) {
+    if (String(record?.conversationKey || '').trim() === scope) {
+      napmTrustedToolContextByTraceId.delete(traceId);
+      summary.inMemoryTrustedContexts += 1;
+    }
+  }
+  for (const [key, state] of napmGuardState.entries()) {
+    if (String(state?.conversationKey || '').trim() === scope) {
+      napmGuardState.delete(key);
+      summary.guardRecords += 1;
+    }
+  }
+  for (const key of getGuardKeys(ctx)) {
+    if (napmGuardState.delete(key)) {
+      summary.guardRecords += 1;
+    }
+  }
+  summary.scopeAliases = conversationScopeRegistry.clearScope(scope);
+
+  appendPluginAuditEvent('napm_conversation_scope_cleared', {
+    ...summary,
+    scope: undefined,
+    scopeHash: ReportSourceStore.hashScope(scope)
+  });
+  return summary;
 }
 
 function pruneTrustedToolContexts() {
@@ -2100,12 +2528,10 @@ function bindTrustedToolContext(event = {}, ctx = {}) {
   }
 
   const toolName = String(event.toolName || '').trim() || 'napm-tool';
-  const toolCallId = String(event.toolCallId || event.callId || event.id || '').trim();
-  const traceId = normalizeTraceId([
-    buildNapmTraceId(ctx, {}),
-    toolName,
-    toolCallId || Date.now().toString(36)
-  ].join('-'));
+  const conversationState = napmConversationState.get(conversationKey) || null;
+  const guardState = getGuardState(ctx);
+  const turnId = getActiveTurnId(conversationState, guardState);
+  const traceId = `napm-${crypto.randomUUID()}`;
   if (!traceId) {
     return '';
   }
@@ -2113,10 +2539,27 @@ function bindTrustedToolContext(event = {}, ctx = {}) {
   pruneTrustedToolContexts();
   napmTrustedToolContextByTraceId.set(traceId, {
     conversationKey,
+    turnId: turnId || null,
     toolName,
     updatedAt: Date.now()
   });
-  event.params.traceId = traceId;
+  const persistentRecord = napmTrustedToolContextStore.put({
+    traceId,
+    scope: conversationKey,
+    turnId,
+    toolName
+  });
+  if (Object.isExtensible(event.params)) {
+    event.params.traceId = traceId;
+  }
+  appendPluginAuditEvent('trusted_tool_context_bound', {
+    traceId,
+    toolName,
+    turnId: turnId || null,
+    scopeHash: ReportSourceStore.hashScope(conversationKey),
+    persistent: Boolean(persistentRecord.ok),
+    errorCode: persistentRecord.ok ? null : persistentRecord.errorCode
+  });
   return traceId;
 }
 
@@ -2127,7 +2570,29 @@ function getTrustedConversationKey(args = {}) {
   }
   pruneTrustedToolContexts();
   const record = napmTrustedToolContextByTraceId.get(traceId) || null;
-  return String(record?.conversationKey || '').trim();
+  const memoryScope = String(record?.conversationKey || '').trim();
+  if (memoryScope) {
+    return memoryScope;
+  }
+
+  const persistentRecord = napmTrustedToolContextStore.get(traceId);
+  return persistentRecord.ok ? String(persistentRecord.scope || '').trim() : '';
+}
+
+function getTrustedTurnId(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) {
+    return '';
+  }
+  pruneTrustedToolContexts();
+  const record = napmTrustedToolContextByTraceId.get(traceId) || null;
+  const memoryTurnId = normalizeTurnId(record?.turnId);
+  if (memoryTurnId) {
+    return memoryTurnId;
+  }
+
+  const persistentRecord = napmTrustedToolContextStore.get(traceId);
+  return persistentRecord.ok ? normalizeTurnId(persistentRecord.turnId) : '';
 }
 
 function getMediaUrlsFromOutgoingEvent(event = {}) {
@@ -2148,6 +2613,24 @@ function getMediaUrlsFromOutgoingEvent(event = {}) {
   return Array.from(new Set(urls));
 }
 
+function buildMediaDedupeKey(url = '') {
+  const value = String(url || '').trim();
+  if (!value) {
+    return '';
+  }
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch (_error) {
+    // Keep the original URL when decoding fails.
+  }
+  const basename = path.basename(decoded.split(/[?#]/, 1)[0] || decoded).toLowerCase();
+  if (/\.(?:docx|pdf)$/i.test(basename)) {
+    return `report:${basename.replace(/---[0-9a-f]{8}-[0-9a-f-]{27,36}(?=\.(?:docx|pdf)$)/i, '')}`;
+  }
+  return `url:${decoded}`;
+}
+
 function isReportExportPrompt(text = '') {
   const value = String(text || '').trim();
   if (!value) {
@@ -2155,6 +2638,11 @@ function isReportExportPrompt(text = '') {
   }
   return /(report|export|word|docx|pdf)/i.test(value)
     || /(报告|报表|导出|文档|文件|总结为|整理成|以\s*word|以\s*pdf|word\s*文档|pdf\s*文档)/i.test(value);
+}
+
+function isReportGenerationBypassTool(toolName = '') {
+  const normalized = String(toolName || '').trim().toLowerCase();
+  return /(exec|shell|terminal|bash|powershell|python|write|file[_-]?write|create[_-]?file)/i.test(normalized);
 }
 
 function getReportArtifactUrlsFromOutgoingEvent(event = {}) {
@@ -2206,18 +2694,27 @@ function dedupeOutgoingMediaForConversation(event = {}, ctx = {}) {
   if (!conversationKey) {
     return null;
   }
+  const turnId = getActiveTurnId(
+    napmConversationState.get(conversationKey) || null,
+    getGuardState(ctx)
+  );
   const now = Date.now();
   const existing = napmSentMediaByConversation.get(conversationKey) || new Map();
-  for (const [url, updatedAt] of existing.entries()) {
-    if ((now - Number(updatedAt || 0)) > SENT_MEDIA_DEDUPE_WINDOW_MS) {
-      existing.delete(url);
+  for (const [key, record] of existing.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > SENT_MEDIA_DEDUPE_WINDOW_MS) {
+      existing.delete(key);
     }
   }
 
-  const duplicateUrls = mediaUrls.filter((url) => existing.has(url));
-  const freshUrls = mediaUrls.filter((url) => !existing.has(url));
+  const isDuplicateForTurn = (url) => {
+    const record = existing.get(buildMediaDedupeKey(url));
+    if (!record) return false;
+    return turnId ? record.turnId === turnId : !record.turnId;
+  };
+  const duplicateUrls = mediaUrls.filter(isDuplicateForTurn);
+  const freshUrls = mediaUrls.filter((url) => !isDuplicateForTurn(url));
   for (const url of freshUrls) {
-    existing.set(url, now);
+    existing.set(buildMediaDedupeKey(url), { updatedAt: now, turnId: turnId || null });
   }
   napmSentMediaByConversation.set(conversationKey, existing);
 
@@ -2233,36 +2730,72 @@ function getRequestUrlFromResult(result) {
   return String(result?.requestUrl || summary?.requestUrl || '').trim();
 }
 
-function rememberSkillResult(prompt, result, conversationKey = '') {
+function rememberSkillResult(prompt, result, conversationKey = '', sourceTool = 'napm-skill-query', turnId = '') {
   const key = buildPromptScopeKey(prompt, conversationKey);
   if (!conversationKey || !key || !isPlainObject(result)) {
     return null;
   }
-  return napmOperationState.rememberSkillResult({
+  const record = napmOperationState.rememberSkillResult({
     scope: conversationKey,
+    turnId,
     promptKey: key,
     result,
     requestUrl: getRequestUrlFromResult(result),
     resolvedQuery: result.resolvedQuery
   });
+  const reportData = getReportDataFromResult(result);
+  if (!record || !reportData) {
+    return record;
+  }
+
+  const source = napmReportSourceStore.put({
+    scope: conversationKey,
+    sourceTool,
+    reportType: reportData.reportType,
+    promptKey: key,
+    reportData
+  });
+  if (source.ok) {
+    record.reportSourceId = source.reportSourceId;
+    appendPluginAuditEvent('report_source_stored', {
+      reportSourceId: source.reportSourceId,
+      sourceTool,
+      reportType: source.reportType,
+      scopeHash: source.ownerScopeHash,
+      expiresAt: source.expiresAt
+    });
+  } else {
+    record.reportSourceErrorCode = source.errorCode;
+    appendPluginAuditEvent('report_source_store_failed', {
+      sourceTool,
+      errorCode: source.errorCode,
+      message: source.message
+    });
+  }
+  return record;
 }
 
-function rememberDebugApi(prompt, result, conversationKey = '') {
-  rememberSkillResult(prompt, result, conversationKey);
+function rememberDebugApi(prompt, result, conversationKey = '', turnId = '') {
+  const skillRecord = rememberSkillResult(prompt, result, conversationKey, 'napm-skill-query', turnId);
 
   const key = buildPromptScopeKey(prompt, conversationKey);
   const requestUrl = getRequestUrlFromResult(result);
   if (!conversationKey || !key || !requestUrl) {
     return null;
   }
-  return napmOperationState.rememberDebugApi({
+  const debugRecord = napmOperationState.rememberDebugApi({
     scope: conversationKey,
+    turnId,
     promptKey: key,
     requestUrl
   });
+  if (debugRecord && skillRecord?.reportSourceId) {
+    debugRecord.reportSourceId = skillRecord.reportSourceId;
+  }
+  return debugRecord;
 }
 
-function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversationKey = '') {
+function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversationKey = '', turnId = '') {
   if (!Array.isArray(prompts)) {
     return;
   }
@@ -2271,13 +2804,14 @@ function rememberDebugApiForPromptAliases(prompts = [], result = {}, conversatio
     .map((prompt) => String(prompt || '').trim())
     .filter(Boolean)
     .forEach((prompt) => {
-      rememberDebugApi(prompt, result, conversationKey);
+      rememberDebugApi(prompt, result, conversationKey, turnId);
     });
 }
 
-function rememberReportExportResult(prompt = '', result = {}, conversationKey = '') {
+function rememberReportExportResult(prompt = '', result = {}, conversationKey = '', turnId = '') {
   return napmOperationState.rememberReportExport({
     scope: conversationKey,
+    turnId,
     prompt,
     result,
     filePath: result?.filePath,
@@ -2286,12 +2820,229 @@ function rememberReportExportResult(prompt = '', result = {}, conversationKey = 
   });
 }
 
-function getFreshReportExportResult(conversationKey = '') {
-  return napmOperationState.getReportExport(conversationKey);
+function getFreshReportExportResult(conversationKey = '', turnId = '') {
+  return napmOperationState.getReportExport(conversationKey, turnId);
 }
 
-function isFreshReportExportResult(conversationKey = '') {
-  return Boolean(getFreshReportExportResult(conversationKey));
+function isFreshReportExportResult(conversationKey = '', turnId = '') {
+  return Boolean(getFreshReportExportResult(conversationKey, turnId));
+}
+
+function buildFreshReportExportReply(conversationKey = '', turnId = '') {
+  const record = getFreshReportExportResult(conversationKey, turnId);
+  return record?.result?.ok ? buildReportExportReply(record.result) : '';
+}
+
+function getRecentReportExportResult(conversationKey = '') {
+  return getFreshReportExportResult(conversationKey, '');
+}
+
+function buildRecentReportExportReply(conversationKey = '') {
+  const record = getRecentReportExportResult(conversationKey);
+  return record?.result?.ok ? buildReportExportReply(record.result) : '';
+}
+
+function buildAutomaticSummaryToolArgs(prompt = '') {
+  const normalizedPrompt = String(prompt || '').trim();
+  const timeRangeKey = inferOverviewTimeRangeKey(normalizedPrompt) || 'last24hours';
+  const sceneKey = normalizeOverviewSceneKey(inferOverviewScene(normalizedPrompt));
+  const scopeByScene = {
+    system: { type: 'global', label: '全局' },
+    business: { type: 'webApplication', label: '业务' },
+    application: { type: 'application', label: '应用' },
+    business_group: { type: 'businessGroup', label: '业务组' },
+    network: { type: 'network', label: '网络' },
+    alert: { type: 'alert', label: '告警' }
+  };
+  const scope = /告警|告警综述|alerts?|alert\s+overview/i.test(normalizedPrompt)
+    ? scopeByScene.alert
+    : (scopeByScene[sceneKey] || scopeByScene.system);
+  const titleByType = {
+    global: 'NAPM 系统综述报告',
+    webApplication: 'NAPM 业务综述报告',
+    application: 'NAPM 应用综述报告',
+    businessGroup: 'NAPM 业务组综述报告',
+    network: 'NAPM 网络综述报告',
+    alert: 'NAPM 告警综述报告'
+  };
+  return {
+    prompt: normalizedPrompt,
+    sourceQuestion: normalizedPrompt,
+    scope,
+    timeRange: {
+      key: timeRangeKey,
+      displayText: normalizedPrompt
+    },
+    format: 'docx',
+    title: titleByType[scope.type] || titleByType.global
+  };
+}
+
+async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversationKey = '', turnId = '') {
+  const normalizedPrompt = String(prompt || '').trim();
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  if (!normalizedPrompt || !scope || !normalizedTurnId || !isSummaryPrompt(normalizedPrompt)) {
+    return null;
+  }
+
+  const operationKey = `${scope}::${normalizedTurnId}`;
+  const existing = napmAutomaticReportByTurn.get(operationKey);
+  if (existing) {
+    return existing;
+  }
+
+  const operation = (async () => {
+    try {
+      const summaryEvent = {
+        toolName: 'napm-summary',
+        params: buildAutomaticSummaryToolArgs(normalizedPrompt)
+      };
+      bindTrustedToolContext(summaryEvent, ctx);
+      const summaryArgs = {
+        ...summaryEvent.params,
+        traceId: summaryEvent.params.traceId
+      };
+      appendPluginAuditEvent('napm_automatic_summary_started', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        prompt: normalizedPrompt,
+        timeRangeKey: summaryArgs.timeRange?.key || null
+      });
+      const summaryResult = await summaryTool.execute('automatic-summary', summaryArgs);
+      const summaryDetails = summaryResult?.details || null;
+      if (!isPlainObject(summaryDetails) || summaryDetails.ok === false) {
+        throw new Error('napm-summary returned no usable result');
+      }
+      const reportSourceId = String(
+        summaryResult?.metadata?.reportSourceId
+        || summaryDetails?.reportSourceId
+        || ''
+      ).trim();
+
+      const exportEvent = {
+        toolName: 'napm-report-export',
+        params: {
+          prompt: normalizedPrompt,
+          format: 'docx',
+          title: summaryArgs.title,
+          ...(reportSourceId ? { reportSourceId } : {})
+        }
+      };
+      bindTrustedToolContext(exportEvent, ctx);
+      const exportArgs = {
+        ...exportEvent.params,
+        traceId: exportEvent.params.traceId
+      };
+      const exportResult = await reportExportTool.execute('automatic-report-export', exportArgs);
+      const reportDetails = exportResult?.details || null;
+      if (!isPlainObject(reportDetails) || reportDetails.ok !== true) {
+        throw new Error('napm-report-export did not generate a report');
+      }
+
+      appendPluginAuditEvent('napm_automatic_summary_completed', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        reportId: reportDetails.reportId || null,
+        format: reportDetails.format || null
+      });
+      return {
+        content: buildReportExportReply(reportDetails),
+        mediaUrl: reportDetails.filePath || undefined,
+        mediaUrls: reportDetails.filePath ? [reportDetails.filePath] : undefined,
+        details: reportDetails
+      };
+    } catch (error) {
+      appendPluginAuditEvent('napm_automatic_summary_failed', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        errorCode: error?.code || 'AUTOMATIC_SUMMARY_FAILED',
+        error: String(error?.message || error || 'unknown error').slice(0, 500)
+      });
+      return null;
+    }
+  })();
+
+  napmAutomaticReportByTurn.set(operationKey, operation);
+  try {
+    return await operation;
+  } finally {
+    napmAutomaticReportByTurn.delete(operationKey);
+  }
+}
+
+function buildReplyDispatchMessageContext(event = {}) {
+  const messageContext = isPlainObject(event?.ctx) ? event.ctx : {};
+  return {
+    sessionKey: String(event?.sessionKey || messageContext.SessionKey || '').trim() || undefined,
+    channelId: String(
+      event?.originatingChannel
+      || messageContext.OriginatingChannel
+      || messageContext.Surface
+      || messageContext.Provider
+      || ''
+    ).trim() || undefined,
+    accountId: String(messageContext.AccountId || '').trim() || undefined,
+    conversationId: String(
+      event?.originatingTo
+      || messageContext.OriginatingTo
+      || messageContext.NativeDirectUserId
+      || messageContext.From
+      || messageContext.To
+      || ''
+    ).trim() || undefined,
+    runId: String(event?.runId || '').trim() || undefined,
+    messageId: String(messageContext.MessageSid || messageContext.MessageSidFull || '').trim() || undefined
+  };
+}
+
+function getReplyDispatchPrompt(event = {}, conversationState = null) {
+  const messageContext = isPlainObject(event?.ctx) ? event.ctx : {};
+  const fallbackPrompt = [
+    messageContext.BodyForCommands,
+    messageContext.CommandBody,
+    messageContext.RawBody,
+    messageContext.Body
+  ]
+    .map((item) => String(item || '').trim())
+    .find(isMeaningfulText) || '';
+  return selectActivePromptText(conversationState, null, fallbackPrompt);
+}
+
+async function dispatchReportReplyPayload(payload = {}, event = {}, hookCtx = {}, auditEvent = '') {
+  const content = String(payload?.content || payload?.text || '').trim();
+  const filePath = String(payload?.mediaUrl || payload?.filePath || '').trim();
+  if (!content || !filePath || typeof hookCtx?.dispatcher?.sendFinalReply !== 'function') {
+    return null;
+  }
+
+  if (typeof hookCtx.onReplyStart === 'function') {
+    await hookCtx.onReplyStart();
+  }
+  const replyPayload = {
+    text: content,
+    mediaUrl: filePath,
+    mediaUrls: [filePath]
+  };
+  const queuedFinal = Boolean(hookCtx.dispatcher.sendFinalReply(replyPayload));
+  const counts = typeof hookCtx.dispatcher.getQueuedCounts === 'function'
+    ? hookCtx.dispatcher.getQueuedCounts()
+    : { tool: 0, block: 0, final: queuedFinal ? 1 : 0 };
+  if (queuedFinal) {
+    hookCtx.recordProcessed?.('completed', { reason: 'napm_report_reply_dispatched' });
+    hookCtx.markIdle?.('message_completed');
+  }
+  appendPluginAuditEvent(auditEvent || 'napm_report_reply_dispatched', {
+    sessionKey: event?.sessionKey || null,
+    runId: event?.runId || null,
+    filePath,
+    queuedFinal
+  });
+  return {
+    handled: true,
+    queuedFinal,
+    counts
+  };
 }
 
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
@@ -2304,6 +3055,22 @@ function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
 
 function getLatestRememberedSkillRecord(conversationKey = '') {
   return napmOperationState.getLatestSkillResult(conversationKey);
+}
+
+function getReportDataFromResult(result = null) {
+  if (!isPlainObject(result)) {
+    return null;
+  }
+  if (isPlainObject(result.reportData)) {
+    return result.reportData;
+  }
+  if (isPlainObject(result.details) && isPlainObject(result.details.reportData)) {
+    return result.details.reportData;
+  }
+  if (isPlainObject(result.result) && isPlainObject(result.result.reportData)) {
+    return result.result.reportData;
+  }
+  return null;
 }
 
 function getReportDataFromRecord(record = null) {
@@ -2350,8 +3117,43 @@ function getRecentRememberedSkillResult(conversationKey = '') {
   return napmOperationState.getLatestSkillResult(conversationKey);
 }
 
+function getRememberedSkillResultForTurn(conversationKey = '', turnId = '') {
+  return napmOperationState.getSkillResultForTurn(conversationKey, turnId);
+}
+
+function getRememberedQueryFailureForTurn(conversationKey = '', turnId = '') {
+  return napmOperationState.getQueryFailureForTurn(conversationKey, turnId);
+}
+
 function getRememberedRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
   const metaFollowUp = isNapmMetaFollowUpPrompt(activePrompt, guardState || conversationState);
+  const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState);
+  const currentTurnRecord = getRememberedSkillResultForTurn(
+    conversationKey,
+    getActiveTurnId(conversationState, guardState)
+  );
+  if (currentTurnRecord) {
+    return currentTurnRecord;
+  }
+  const currentTurnFailure = getRememberedQueryFailureForTurn(
+    conversationKey,
+    getActiveTurnId(conversationState, guardState)
+  );
+  if (currentTurnFailure) {
+    return currentTurnFailure;
+  }
+  if (resultDeliveryFollowUp) {
+    const recentRecord = getRecentRememberedSkillResult(conversationKey);
+    return recentRecord
+      && isPlainObject(recentRecord.result)
+      && recentRecord.result.ok !== false
+      && !recentRecord.result.error
+      ? recentRecord
+      : null;
+  }
+  if (isObjectInventoryPrompt(activePrompt)) {
+    return null;
+  }
   return getRememberedSkillResult(activePrompt, conversationKey)
     || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
     || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null)
@@ -2379,8 +3181,33 @@ function isAlertSkillResultRecord(record = null) {
   );
 }
 
+function isAlertPacketSkillResultRecord(record = null) {
+  if (!record || !isPlainObject(record.result)) {
+    return false;
+  }
+  const result = record.result;
+  return Boolean(
+    result.workflowType === 'alert_packet_analysis'
+    || result?.narrationInput?.schema === 'openclaw_napm_alert_packet_analysis.v1'
+  );
+}
+
+function isSkillResultRecordForTurn(record = null, turnId = '') {
+  const normalizedTurnId = normalizeTurnId(turnId);
+  return Boolean(
+    record
+    && normalizedTurnId
+    && normalizeTurnId(record.turnId) === normalizedTurnId
+  );
+}
+
+function isAlertScopedSkillResultRecord(record = null) {
+  return isAlertSkillResultRecord(record) || isAlertPacketSkillResultRecord(record);
+}
+
 function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
   const candidates = [
+    getRememberedSkillResultForTurn(conversationKey, getActiveTurnId(conversationState, guardState)),
     getRememberedSkillResult(activePrompt, conversationKey)
   ];
 
@@ -2394,7 +3221,7 @@ function getRememberedAlertRecordForPrompt(activePrompt = '', conversationState 
     candidates.push(getRecentRememberedSkillResult(conversationKey));
   }
 
-  return candidates.find((record) => isFreshRememberedRecord(record) && isAlertSkillResultRecord(record)) || null;
+  return candidates.find((record) => isFreshRememberedRecord(record) && isAlertScopedSkillResultRecord(record)) || null;
 }
 
 function getRememberedMetricInventoryFollowUpRecord(prompt = '', conversationState = null, conversationKey = '') {
@@ -2514,7 +3341,25 @@ function isPacketCapturePrompt(prompt) {
   if (!text) {
     return false;
   }
-  return /(数据包|报文|抓包|抓取包|下载包|下载数据包|原始包|包详情|数据包情况|pcap|cap\b|packet|packetsPreview|packetsDown|DownServlet)/i.test(text);
+
+  if (/(数据包|报文|抓包|抓取包|下载包|下载数据包|原始包|包详情|数据包情况|\bpcap\b|\.cap\b|\bcap\b|packetsPreview|packetsDown|DownServlet)/i.test(text)) {
+    return true;
+  }
+
+  const hasPacketNoun = /\bpackets?\b/i.test(text);
+  if (!hasPacketNoun) {
+    return false;
+  }
+
+  const hasPacketLossMetric = /\bpacket[\s-]*loss(?:\s+rate)?\b|\bloss\s+rate\b|\bPLI\b/i.test(text);
+  const hasExplicitCaptureArtifact = /\b(?:capture|download|fetch|export)\b|\braw\s+packets?\b|\bpcap\b|\.cap\b/i.test(text);
+  if (hasPacketLossMetric && !hasExplicitCaptureArtifact) {
+    return false;
+  }
+
+  const hasPacketOperation = /\b(?:capture|download|fetch|inspect|analy[sz]e|analysis|preview|decode|export|open)\b/i.test(text);
+  const hasPacketDetailIntent = /\bpackets?\s+(?:details?|contents?|payloads?|headers?)\b|\b(?:details?|contents?|payloads?|headers?)\s+(?:of|for)\s+(?:the\s+)?packets?\b/i.test(text);
+  return hasExplicitCaptureArtifact || hasPacketOperation || hasPacketDetailIntent;
 }
 
 function isNapmRelatedPrompt(prompt) {
@@ -3038,6 +3883,19 @@ function buildAlertQueryReply(result = {}) {
   return `${text}\n\nDebug API:\n${requestUrl}`;
 }
 
+function buildAlertPacketAnalysisReply(result = {}) {
+  if (!result?.ok) {
+    return String(
+      result?.error?.message
+      || '告警数据包分析工作流执行失败。'
+    ).trim();
+  }
+  return [
+    '告警详情与数据包分析已完成。请仅依据下面的结构化证据解释告警触发原因，不得再次查询告警汇总，不得猜测 IP 或补写数据包结论。',
+    JSON.stringify(result.narrationInput || result, null, 2)
+  ].join('\n\n');
+}
+
 function shouldRenderAlertCategorySections(result = {}) {
   if (!result?.ok || result?.mode !== 'summary') {
     return false;
@@ -3332,7 +4190,7 @@ function buildPacketAnalysisReply(result = {}) {
   return JSON.stringify(result, null, 2);
 }
 
-function buildReportDataForExport(args = {}) {
+function buildLegacyReportDataForExport(args = {}) {
   const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
   const conversationKey = getTrustedConversationKey(args);
   const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
@@ -3365,19 +4223,62 @@ function buildReportDataForExport(args = {}) {
   };
 }
 
+function buildReportDataForExport(args = {}) {
+  const reportInput = buildReportInputForExport(args);
+  if (!reportInput.ok) {
+    return reportInput;
+  }
+  return {
+    ok: true,
+    reportData: reportInput.reportData,
+    source: reportInput.source
+  };
+}
+
+function auditReportExportSourceResolved(reportInput = {}, args = {}) {
+  const source = isPlainObject(reportInput.reportSource) ? reportInput.reportSource : null;
+  appendPluginAuditEvent('report_export_source_resolved', {
+    traceId: normalizeTraceId(args.traceId) || null,
+    reportSourceId: source?.reportSourceId || null,
+    source: reportInput.source || null,
+    sourceTool: source?.sourceTool || null,
+    reportType: source?.reportType || null,
+    scopeHash: source?.ownerScopeHash || reportInput.scopeHash || null
+  });
+}
+
+function auditReportGenerated(result = {}, reportInput = {}, args = {}) {
+  appendPluginAuditEvent('report_generated', {
+    traceId: normalizeTraceId(args.traceId) || null,
+    reportSourceId: reportInput.reportSource?.reportSourceId || null,
+    reportId: String(result.reportId || '').trim() || null,
+    format: String(result.format || '').trim() || null,
+    scopeHash: reportInput.reportSource?.ownerScopeHash || reportInput.scopeHash || null
+  });
+}
+
 function buildReportInputForExport(args = {}) {
   const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
   const conversationKey = getTrustedConversationKey(args);
-  const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
-  const rememberedReportData = getReportDataFromRecord(rememberedRecord);
+  const explicitReportSourceId = String(args.reportSourceId || '').trim();
+  const persistedSource = explicitReportData
+    ? null
+    : (explicitReportSourceId
+      ? napmReportSourceStore.get({ reportSourceId: explicitReportSourceId, scope: conversationKey })
+      : napmReportSourceStore.findForScope(conversationKey));
+  const rememberedRecord = null;
+  const persistedReportData = persistedSource?.ok ? persistedSource.reportData : null;
   const explicitSourceResult = isPlainObject(args.sourceResult)
     ? args.sourceResult
     : (isPlainObject(args.packetResult)
       ? args.packetResult
       : (isPlainObject(args.queryResult) ? args.queryResult : null));
-  const rememberedSourceResult = isPlainObject(rememberedRecord?.result) ? rememberedRecord.result : null;
-  const sourceResult = explicitSourceResult || rememberedSourceResult;
-  const sourceReportData = explicitReportData || rememberedReportData;
+  const sourceResult = explicitSourceResult;
+  const sourceReportData = explicitReportData || persistedReportData;
+
+  if (!explicitReportData && !explicitSourceResult && persistedSource && !persistedSource.ok) {
+    return persistedSource;
+  }
 
   if (!sourceReportData && !sourceResult) {
     return {
@@ -3411,7 +4312,7 @@ function buildReportInputForExport(args = {}) {
       audit: {
         ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
         exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result.reportData',
+        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'report_source_store',
         sourcePromptKey: rememberedRecord?.promptKey || null
       }
     };
@@ -3423,8 +4324,15 @@ function buildReportInputForExport(args = {}) {
     ok: true,
     reportData: reportInput.reportData || null,
     reportInput,
+    reportSource: persistedSource?.ok ? {
+      reportSourceId: persistedSource.reportSourceId,
+      sourceTool: persistedSource.sourceTool,
+      reportType: persistedSource.reportType,
+      ownerScopeHash: persistedSource.ownerScopeHash
+    } : null,
+    scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
     source: sourceReportData
-      ? (explicitReportData ? 'tool_args.reportData' : 'latest_napm_skill_result.reportData')
+      ? (explicitReportData ? 'tool_args.reportData' : 'report_source_store')
       : (explicitSourceResult ? 'tool_args.sourceResult' : 'latest_structured_skill_result')
   };
 }
@@ -3445,6 +4353,14 @@ function buildReportExportReply(result = {}) {
     lines.push(`文件路径：${result.filePath}`);
   }
   return lines.join('\n');
+}
+
+function appendReportSourceId(text, reportSourceId = '') {
+  const normalizedId = String(reportSourceId || '').trim();
+  const normalizedText = String(text || '').trim();
+  return normalizedId
+    ? `${normalizedText}${normalizedText ? '\n' : ''}报告数据编号：${normalizedId}`
+    : normalizedText;
 }
 
 function buildResolvedQueryForPrompt(prompt = '', args = {}) {
@@ -3638,7 +4554,7 @@ function buildBusinessInventoryCorrectedReply(rememberedRecord = null) {
   }
   return [
     '当前业务清单回答必须以 NAPM skill 返回结果为准。',
-    'WebApplication 业务系统目录的查询口径是 applications Type=3；不能解释为近期活跃流量过滤，也不能按中文名称过滤。'
+    'WebApplication 业务系统目录的查询口径是 applications Type=3；不是按流量活跃度过滤，也不是中文名称过滤。'
   ].join('\n');
 }
 
@@ -3697,6 +4613,7 @@ function shouldForceSkillRecordForPrompt(prompt = '', guardState = null) {
     || isAlertSkillMetaFollowUpPrompt(text, guardState)
     || guardState?.alertRelated
     || isPacketCapturePrompt(text)
+    || isObjectInventoryPrompt(text)
     || isBusinessObjectInventoryPrompt(text)
     || isBusinessGroupInventoryPrompt(text)
     || isCompositeApplicationInventoryPrompt(text)
@@ -3732,6 +4649,8 @@ function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rem
 
   if (
     isPacketCapturePrompt(prompt)
+    || isObjectInventoryPrompt(prompt)
+    || isResultDeliveryFollowUpPrompt(prompt, guardState)
     || isOverviewPrompt(prompt)
     || isHierarchyCatalogPrompt(prompt)
     || isMetricInventoryPrompt(prompt)
@@ -3849,29 +4768,19 @@ function buildAlertExecutionTraceReplyFromRememberedRecord(record = null) {
 }
 
 function selectActivePromptText(conversationState = null, guardState = null, fallbackPrompt = '') {
-  const candidates = [
+  const authoritativeCandidates = [
+    conversationState?.canonicalPrompt,
+    guardState?.canonicalPrompt,
     conversationState?.prompt,
-    guardState?.prompt,
-    fallbackPrompt
+    guardState?.prompt
   ]
     .map((item) => String(item || '').trim())
     .filter(isMeaningfulText);
 
-  if (candidates.length === 0) {
-    return '';
+  if (authoritativeCandidates.length > 0) {
+    return authoritativeCandidates[0];
   }
-
-  const preferred = candidates.find((text) => (
-    isAlertEventPrompt(text)
-    || isAlertSkillMetaFollowUpPrompt(text, guardState || conversationState)
-    || isMetricInventoryPrompt(text)
-    || isMetricInventoryDetailPrompt(text)
-    || isHierarchyCatalogPrompt(text)
-    || isOverviewPrompt(text)
-    || isNapmRelatedPrompt(text)
-    || isSystemDomainPrompt(text)
-  ));
-  return preferred || candidates[0];
+  return isMeaningfulText(fallbackPrompt) ? String(fallbackPrompt).trim() : '';
 }
 
 function extractMessageText(message) {
@@ -3883,6 +4792,32 @@ function extractMessageText(message) {
     .filter(Boolean)
     .join('\n')
     .trim();
+}
+
+function messageContainsToolCall(message = null) {
+  if (!message || !Array.isArray(message.content)) {
+    return false;
+  }
+  return message.content.some((part) => {
+    const type = String(part?.type || '').trim().toLowerCase().replace(/[_-]/g, '');
+    return type === 'toolcall' || isPlainObject(part?.toolCall);
+  });
+}
+
+function buildFallbackSendingResult(content, conversationKey = '', conversationState = null, guardState = null) {
+  const turnId = getActiveTurnId(conversationState, guardState);
+  if (
+    conversationKey
+    && turnId
+    && !napmOperationState.claimFallbackDelivery(conversationKey, turnId)
+  ) {
+    appendPluginAuditEvent('napm_plugin_duplicate_fallback_suppressed', {
+      conversationKey,
+      turnId
+    });
+    return { cancel: true };
+  }
+  return { content };
 }
 
 function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardState = null, rememberedRecord = null) {
@@ -3910,15 +4845,14 @@ function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardStat
     return false;
   }
 
-  if (rememberedRecord && isPlainObject(rememberedRecord.result)) {
-    return false;
-  }
-
   if (isStreamingPreviewMessageEvent(event)) {
     return true;
   }
 
-  if (guardState?.turnNapmToolUsed && looksLikeInternalReasoningPreview(event?.content)) {
+  if (
+    looksLikeInternalReasoningPreview(extractTextContent(event?.content))
+    && (guardState?.turnNapmToolUsed || rememberedRecord)
+  ) {
     return true;
   }
 
@@ -3928,7 +4862,42 @@ function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardStat
 function buildUserFacingSkillText(result) {
   const summary = isPlainObject(result?.summary) ? result.summary : {};
   const requestUrl = result?.requestUrl || summary?.requestUrl || '';
-  const displayText = String(result?.displayText || summary?.displayText || result?.replyText || '').trim();
+  const narrationStructure = isPlainObject(result?.narrationStructure)
+    ? result.narrationStructure
+    : (isPlainObject(result?.narrationInput?.result?.narrationStructure)
+      ? result.narrationInput.result.narrationStructure
+      : {});
+  let groupListDisplayText = '';
+  const responseType = String(result?.responseType || narrationStructure?.responseType || '').trim();
+  if (result?.service === 'groups' || responseType === 'group_list') {
+    const rows = Array.isArray(result?.rows)
+      ? result.rows
+      : (Array.isArray(result?.data) ? result.data : []);
+    try {
+      const narrationContractService = require(path.join(
+        OPENCLAW_SKILLS_ROOT,
+        'openclaw-napm-query/services/OpenClawNarrationContractService'
+      ));
+      if (typeof narrationContractService.buildGroupListDisplayText === 'function') {
+        groupListDisplayText = narrationContractService.buildGroupListDisplayText(
+          result,
+          rows,
+          result?.metadata?.effectiveObjectType || result?.resolvedQuery?.groups?.[0]?.type || '',
+          result?.metadata || null
+        );
+      }
+    } catch (_error) {
+      groupListDisplayText = '';
+    }
+  }
+  const displayText = String(
+    result?.displayText
+    || summary?.displayText
+    || result?.replyText
+    || narrationStructure?.displayText
+    || groupListDisplayText
+    || ''
+  ).trim();
   return displayText ? appendDebugApi(displayText, requestUrl) : '';
 }
 
@@ -3964,21 +4933,25 @@ function makeTextReplyFromSkillResult(result) {
   return makeTextReply(lines.join('\n'));
 }
 
-function makeToolResult(result) {
+function makeToolResult(result, reportSourceId = '') {
   const displayText = buildUserFacingSkillText(result);
   return {
     content: [
       {
         type: 'text',
-        text: displayText || JSON.stringify(result, null, 2)
+        text: appendReportSourceId(displayText || JSON.stringify(result, null, 2), reportSourceId)
       }
     ],
-    details: result
+    isError: Boolean(result?.ok === false || result?.error),
+    details: result,
+    metadata: reportSourceId ? { reportSourceId } : undefined
   };
 }
 
 function createSkillToolDefinition() {
   const queryContract = getResolutionSpecQueryContract() || {};
+  const allowedServices = getResolutionSpecServiceNames();
+  const overviewScenes = getResolutionSpecRoutingRules()?.overviewScenes || [];
   const acceptedInputs = Array.isArray(queryContract.acceptedInputs)
     ? queryContract.acceptedInputs.join(', ')
     : 'payload.resolvedQuery';
@@ -4000,7 +4973,11 @@ function createSkillToolDefinition() {
           type: 'object',
           description: 'Required fully resolved semantic query. For relative time, provide a concrete timeRange.key and let plugin execute materialize root-level start/end from the server clock. For fixed time, provide minute-aligned Unix-second root-level start/end and executionOptions.timeMode=fixed. prompt is never used to fill missing query fields.',
           properties: {
-            service: { type: 'string' },
+            service: {
+              type: 'string',
+              enum: allowedServices,
+              description: 'Service declared by napm-resolution-spec.v1.json. Use timeValues for trends, not timeseries/trend/series.'
+            },
             queryModeKey: { type: 'string' },
             metrics: { type: 'array', items: { type: 'string' } },
             metric: { type: 'string' },
@@ -4017,6 +4994,45 @@ function createSkillToolDefinition() {
               }
             },
             topCount: { type: 'number' },
+            granularity: {
+              type: 'number',
+              minimum: 1,
+              description: 'Required for service=timeValues; interval in seconds supported by NAPM metadata.'
+            },
+            overviewScene: {
+              type: 'string',
+              enum: overviewScenes,
+              description: 'Required for service=overview.'
+            },
+            protocolQueries: {
+              type: 'array',
+              description: 'Required for service=topValues_multi_protocol. Each item is a complete topValues query for one protocol.',
+              items: {
+                type: 'object',
+                properties: {
+                  service: { type: 'string', enum: ['topValues'] },
+                  queryModeKey: { type: 'string', enum: ['topn'] },
+                  metrics: { type: 'array', items: { type: 'string' } },
+                  topMetric: { type: 'string' },
+                  groups: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                  topCount: { type: 'number' },
+                  start: { type: 'number' },
+                  end: { type: 'number' },
+                  semanticConstraints: { type: 'object', additionalProperties: true }
+                },
+                additionalProperties: true
+              }
+            },
+            filters: {
+              type: 'array',
+              items: { type: 'object', additionalProperties: true },
+              description: 'Optional structured query filters.'
+            },
+            executionOptions: {
+              type: 'object',
+              description: 'Execution controls such as timeMode and explicit repair-policy flags.',
+              additionalProperties: true
+            },
             start: {
               type: 'number',
               description: 'Fixed-time queries only: minute-aligned Unix timestamp in seconds. Omit for relative time.'
@@ -4035,6 +5051,7 @@ function createSkillToolDefinition() {
               additionalProperties: false
             },
             format: { type: 'string' },
+            userRequirement: { type: 'string' },
             semanticConstraints: { type: 'object', additionalProperties: true },
             pathPlanning: { type: 'object', additionalProperties: true },
             resolutionHints: { type: 'object', additionalProperties: true }
@@ -4051,6 +5068,8 @@ function createSkillToolDefinition() {
     },
     execute: async (_toolCallId, args) => {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
+      const conversationKey = getTrustedConversationKey(preparedArgs);
+      const turnId = getTrustedTurnId(preparedArgs);
       const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
       applyTimeOverride(preparedArgs.resolvedQuery);
       const validation = validateResolvedQueryAgainstSpec(
@@ -4069,11 +5088,27 @@ function createSkillToolDefinition() {
           resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
           resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
         });
-        return makeToolResult(buildResolvedQueryBoundaryFailureResult(validation, preparedArgs));
+        const failureResult = buildResolvedQueryBoundaryFailureResult(validation, preparedArgs);
+        const failureRecord = rememberResolvedQueryFailureForTurn(
+          normalizePrompt(preparedArgs),
+          validation,
+          preparedArgs,
+          conversationKey,
+          turnId
+        );
+        if (failureRecord?.result) {
+          return makeToolResult(failureRecord.result);
+        }
+        return makeToolResult(failureResult);
       }
       const result = await napmQuerySkill().handleSkillCall(preparedArgs);
-      rememberDebugApi(normalizePrompt(preparedArgs), result, getTrustedConversationKey(preparedArgs));
-      return makeToolResult(result);
+      const debugRecord = rememberDebugApi(
+        normalizePrompt(preparedArgs),
+        result,
+        conversationKey,
+        turnId
+      );
+      return makeToolResult(result, debugRecord?.reportSourceId);
     }
   };
 }
@@ -4090,6 +5125,7 @@ function createReportExportToolDefinition() {
         format: { type: 'string', enum: ['docx', 'word', 'pdf'], description: 'Requested export format. word is normalized to docx. pdf currently returns REPORT_PDF_EXPORT_UNAVAILABLE.' },
         title: { type: 'string', description: 'Optional report title override.' },
         reportPlan: { type: 'object', description: 'Optional upstream report plan.', additionalProperties: true },
+        reportSourceId: { type: 'string', description: 'Explicit report source id returned by a report-producing NAPM tool.' },
         reportData: { type: 'object', description: 'Optional reportData from napm-skill-query. If omitted, the latest fresh NAPM skill result reportData is used.', additionalProperties: true },
         downloadBaseUrl: { type: 'string', description: 'Optional download base URL, defaults to /reports.' },
         traceId: { type: 'string', description: 'Optional trace id for audit correlation.' }
@@ -4105,8 +5141,17 @@ function createReportExportToolDefinition() {
           details: reportInput
         };
       }
+      auditReportExportSourceResolved(reportInput, args);
       const result = await napmReportSkill().handleSkillCall(reportInput.reportInput);
-      rememberReportExportResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      rememberReportExportResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        getTrustedTurnId(args)
+      );
+      if (result?.ok) {
+        auditReportGenerated(result, reportInput, args);
+      }
       return {
         content: [
           {
@@ -4124,7 +5169,7 @@ function createAlertQueryToolDefinition() {
   return {
     label: 'NAPM Alert Query',
     name: 'napm-alert-query',
-    description: 'Execute the standalone NAPM alert skill for alert summary, alert timeline, alert detail, trigger metric series, notification field explanation, packet handoff, and reportData generation. Use this for 告警, 告警事件, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog alert notification explanation. This tool is read-only and must not modify alert rules.',
+    description: 'Execute the standalone NAPM alert skill for alert summary, alert timeline, alert detail, trigger metric series, notification field explanation, packet handoff, and reportData generation. Use this for ordinary 告警, 告警事件, 告警详情, 告警时间线, 紧急告警, 重大告警, 轻微告警, alertsSummary, alertsSummaryTimeLine, alertsDetail, Email/SNMP/SysLog alert notification explanation. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. This tool is read-only and must not modify alert rules.',
     parameters: {
       type: 'object',
       properties: {
@@ -4145,10 +5190,19 @@ function createAlertQueryToolDefinition() {
         alertQuery: { type: 'object', description: 'Full alert query payload accepted by openclaw-napm-alert-query.', additionalProperties: true },
         criteria: {
           type: 'object',
-          description: 'Alert criteria. Executable modes require start/end Unix-second timestamps. detail modes require eventIds.',
+          description: 'Alert criteria. Relative queries must use timeRange.key or let the skill derive time from the canonical prompt and server clock. start/end are only for an explicit fixed-time request. detail modes require eventIds.',
           properties: {
-            start: { type: 'number', description: 'Unix-second start timestamp.' },
-            end: { type: 'number', description: 'Unix-second end timestamp.' },
+            start: { type: 'number', description: 'Explicit fixed-time query only: Unix-second start timestamp. Omit for relative time.' },
+            end: { type: 'number', description: 'Explicit fixed-time query only: Unix-second end timestamp. Omit for relative time.' },
+            timeRange: {
+              type: 'object',
+              description: 'Relative-time declaration. Prefer a concrete key; the skill recomputes start/end from the server clock.',
+              properties: {
+                key: { type: 'string', description: 'Concrete key: last<number>minutes|hours|days, last1hour, today, or yesterday.' },
+                displayText: { type: 'string' }
+              },
+              additionalProperties: false
+            },
             categories: { type: 'array', items: { type: 'string' } },
             severities: { type: 'array', items: { type: 'number' }, description: '2=轻微, 3=重大, 4=紧急.' },
             objects: { type: 'array', items: { type: 'string' } },
@@ -4181,9 +5235,16 @@ function createAlertQueryToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmAlertSkill().handleSkillCall(args || {});
-      const renderedText = buildAlertQueryReply(result);
       const pi = result?.narrationInput?.packetInstruction;
-      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      const handoffRecord = rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-alert-query',
+        getTrustedTurnId(args)
+      );
+      const reportSourceId = handoffRecord?.reportSourceId || '';
+      const renderedText = appendReportSourceId(buildAlertQueryReply(result), reportSourceId);
 
       // 有 packetInstruction 时：text=AI指令, finalAnswer=摘要, details=完整数据
       if (pi && pi.callPacketAnalysis && Array.isArray(pi.candidates) && pi.candidates.length > 0) {
@@ -4196,6 +5257,7 @@ function createAlertQueryToolDefinition() {
             total: result?.summary?.total ?? null,
             packetHandoff: result?.packetHandoff || null,
             packetInstruction: pi,
+            reportSourceId: reportSourceId || null,
             candidateCount: pi.candidates.length,
             candidates: pi.candidates.map((c) => ({
               rank: c.rank,
@@ -4212,7 +5274,44 @@ function createAlertQueryToolDefinition() {
       // 防止 AI 从文本中解析数字后自行重组输出（算百分比、画 markdown 表格等）
       return {
         finalAnswer: renderedText,
-        displayText: renderedText
+        displayText: renderedText,
+        metadata: reportSourceId ? { reportSourceId } : undefined
+      };
+    }
+  };
+}
+
+function createAlertPacketAnalysisToolDefinition() {
+  return {
+    label: 'NAPM Alert Packet Analysis',
+    name: 'napm-alert-packet-analysis',
+    description: 'Deterministic composite workflow for packet evidence around one specified NAPM alert event. Use only when the prompt combines 告警 with 数据包/报文/抓包 and provides eventId plus fixed start/end. This tool owns alertsDetail retries and calls the existing packet Skill in-process.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Canonical original alert notification prompt.' },
+        eventId: { type: 'string', pattern: '^\\d+$' },
+        start: { type: 'number', description: 'Fixed Unix-second packet window start.' },
+        end: { type: 'number', description: 'Fixed Unix-second packet window end.' },
+        triggerMetrics: { type: 'object', additionalProperties: true },
+        traceId: { type: 'string', description: 'Plugin-owned trusted trace id.' }
+      },
+      required: ['prompt', 'eventId', 'start', 'end'],
+      additionalProperties: false
+    },
+    execute: async (_toolCallId, args = {}) => {
+      const result = await napmAlertPacketSkill().handleSkillCall(args || {});
+      rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-alert-packet-analysis',
+        getTrustedTurnId(args)
+      );
+      return {
+        content: [{ type: 'text', text: buildAlertPacketAnalysisReply(result) }],
+        details: result,
+        isError: Boolean(result?.ok === false || result?.error)
       };
     }
   };
@@ -4243,15 +5342,23 @@ function createInspectionSnapshotToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmInspectionSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      const handoffRecord = rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-inspection-snapshot',
+        getTrustedTurnId(args)
+      );
+      const reportSourceId = handoffRecord?.reportSourceId || '';
       return {
         content: [
           {
             type: 'text',
-            text: buildInspectionSnapshotReply(result)
+            text: appendReportSourceId(buildInspectionSnapshotReply(result), reportSourceId)
           }
         ],
-        details: result
+        details: result,
+        metadata: reportSourceId ? { reportSourceId } : undefined
       };
     }
   };
@@ -4306,15 +5413,23 @@ function createSummaryToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmSummarySkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      const handoffRecord = rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-summary',
+        getTrustedTurnId(args)
+      );
+      const reportSourceId = handoffRecord?.reportSourceId || '';
       return {
         content: [
           {
             type: 'text',
-            text: buildSummaryReply(result)
+            text: appendReportSourceId(buildSummaryReply(result), reportSourceId)
           }
         ],
-        details: result
+        details: result,
+        metadata: reportSourceId ? { reportSourceId } : undefined
       };
     }
   };
@@ -4366,15 +5481,23 @@ function createFaultDiagnosisToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmFaultDiagnosisSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      const handoffRecord = rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-fault-diagnosis',
+        getTrustedTurnId(args)
+      );
+      const reportSourceId = handoffRecord?.reportSourceId || '';
       return {
         content: [
           {
             type: 'text',
-            text: buildFaultDiagnosisReply(result)
+            text: appendReportSourceId(buildFaultDiagnosisReply(result), reportSourceId)
           }
         ],
-        details: result
+        details: result,
+        metadata: reportSourceId ? { reportSourceId } : undefined
       };
     }
   };
@@ -4384,7 +5507,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known. ⚠️ If the user says "告警数据包 <eventId>", do NOT use this skill directly — route to napm-alert-query FIRST for automatic IP discovery. The criteria.id parameter is ONLY for linkType=2 event IDs, NOT for alert event IDs.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known and the request is not tied to an alert event. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
     parameters: {
       type: 'object',
       properties: {
@@ -4412,7 +5535,7 @@ function createPacketAnalysisToolDefinition() {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
             ipRanges: { type: 'array', items: { type: 'string' } },
-            id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. Do NOT use for alert event IDs — route to napm-alert-query first.' },
+            id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. For a combined alert packet request, use napm-alert-packet-analysis and accept an id only from its trusted handoff.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
@@ -4436,15 +5559,23 @@ function createPacketAnalysisToolDefinition() {
     },
     execute: async (_toolCallId, args = {}) => {
       const result = await napmPacketSkill().handleSkillCall(args || {});
-      rememberSkillResult(normalizePrompt(args), result, getTrustedConversationKey(args));
+      const handoffRecord = rememberSkillResult(
+        normalizePrompt(args),
+        result,
+        getTrustedConversationKey(args),
+        'napm-packet-analysis',
+        getTrustedTurnId(args)
+      );
+      const reportSourceId = handoffRecord?.reportSourceId || '';
       return {
         content: [
           {
             type: 'text',
-            text: buildPacketAnalysisReply(result)
+            text: appendReportSourceId(buildPacketAnalysisReply(result), reportSourceId)
           }
         ],
-        details: result
+        details: result,
+        metadata: reportSourceId ? { reportSourceId } : undefined
       };
     }
   };
@@ -4594,14 +5725,24 @@ function buildNapmRoutingSystemContext(opts = {}) {
     : 'payload.resolvedQuery';
   const prompt = String(opts.prompt || '').trim();
 
+  if (isPlatformIdentityPrompt(prompt)) {
+    return [
+      'PLATFORM IDENTITY / CAPABILITY / GREETING REQUEST:',
+      '这是允许的平台身份、能力或简短问候问题。直接依据 OpenClaw workspace 中的 IDENTITY.md 和 SOUL.md 回答。',
+      '不得调用 NAPM skill 或其他工具；不得要求查询结果；不得返回天气、闲聊、泛问答的通用域外文案。',
+      '纯问候应简短、自然地回应，并说明自己是观枢AI；身份或能力问题应准确说明观枢 GAIOP / NAPM、OpenClaw 智能运维助手的定位。'
+    ].join('\n');
+  }
+
   // Scene detection via existing classifiers (all accept prompt string)
-  var isFault = false, isSummary = false, isAlert = false, isPacket = false;
+  var isFault = false, isSummary = false, isAlert = false, isPacket = false, isAlertPacket = false;
   try {
     if (prompt) {
       isFault = isFaultDiagnosisPrompt(prompt);
       isSummary = isSummaryPrompt(prompt);
       isAlert = isAlertEventPrompt(prompt);
       isPacket = isPacketCapturePrompt(prompt);
+      isAlertPacket = isAlertPacketAnalysisPrompt(prompt);
     }
   } catch (_e) { /* classifier errors → inject all rules as fallback */ }
 
@@ -4616,12 +5757,18 @@ function buildNapmRoutingSystemContext(opts = {}) {
   rules.push(
     'TOOL ROUTING — pick exactly one entry point based on user intent:',
     '  ⚠️ RANKING/DISCOVERY queries (排行/排名/TopN/哪个最多/哪些最高/谁最少) → napm-skill-query with service=topValues. These are DATA QUERIES, NOT fault diagnosis. Examples: "今天哪个业务的400报错最多？" "丢包最高的前10个IP" "HTTP 500最多的Web应用排行".',
+    '  AVERAGE/MEAN queries (平均/均值) → napm-skill-query with service=averageValues, queryModeKey=average.',
+    '  TREND/TIMESERIES queries (趋势/走势/变化/曲线/按时间) → napm-skill-query with service=timeValues, queryModeKey=timeseries, and granularity in seconds.',
+    '  STATUS/OVERVIEW queries (情况怎么样/整体状态/概览/总览) → napm-skill-query with service=overview, queryModeKey=overview, and overviewScene.',
+    '  OBJECT INVENTORY queries (有哪些对象/业务/应用) → napm-skill-query with service=groups, queryModeKey=metadata. In this deployment plain 应用 means DefinedApp (applications Type=2), while 业务/业务系统/Web应用 means WebApplication (applications Type=3).',
+    '  METRIC INVENTORY queries (支持哪些指标/可查哪些指标) → napm-skill-query with service=metrics, queryModeKey=metadata.',
+    '  DRILLDOWN CATALOG queries (下钻/层级/路径/目录) → napm-skill-query with service=drilldownCatalog, queryModeKey=metadata.',
     '  fault/error diagnosis for a SPECIFIC named object (分析XXweb的故障/给XX出故障诊断报告/排查XX的报错根因/XX应用慢原因分析/XX业务性能诊断) → napm-fault-diagnosis (ONLY pass description + timeRange; the tool auto-detects flowType and target from NAPM catalog) → napm-report-export',
     '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
     '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
     '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',
     '  packet capture/analysis (数据包/报文/抓包/pcap) → napm-packet-analysis',
-    '  alert+packet combined (告警数据包 <eventId>) → napm-alert-query FIRST (mode=detail) → napm-packet-analysis with suggestedPacketQuery',
+    '  alert+packet combined (告警数据包 <eventId> with fixed start/end) → napm-alert-packet-analysis ONLY. The composite tool owns alertsDetail retries and packet-analysis handoff; never call napm-alert-query or napm-packet-analysis directly.',
     '  data query (排行/排名/TopN/ranking/average/trend/overview/inventory/metric-list/drilldown) → napm-skill-query',
     '  report/export only (将以上导出Word/生成报告, no new data) → napm-report-export (consume existing reportData)',
     'Do NOT use napm-skill-query for reports, fault analysis, alerts, or packet requests. Each domain has its own tool.',
@@ -4641,7 +5788,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
-    'Query construction rules (inventory/metric ownership/drilldown/time wording/follow-up) → skills/openclaw-napm-query/references/query-workflow-contract.md.'
+    'Query construction rules → skills/openclaw-napm-query/references/query-construction.md; service and mode mapping → skills/openclaw-napm-query/references/service-modes.md.'
   );
 
   // ── ALERT CONTRACT (only for alert scenes) ──
@@ -4652,11 +5799,17 @@ function buildNapmRoutingSystemContext(opts = {}) {
     );
   }
 
+  if (isAlertPacket) {
+    rules.push(
+      'ALERT_PACKET_WORKFLOW_REQUIRED: call napm-alert-packet-analysis exactly once. Preserve canonical eventId/start/end and triggerMetrics. Do not add timeRange.key and do not fall back to alertsSummary.'
+    );
+  }
+
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
       'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
-      'Alert-packet: napm-alert-query FIRST (auto IP discovery via packetHandoff), then napm-packet-analysis. criteria.id is for linkType=2 only, not alert event IDs.',
+      'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );
   }
@@ -4685,6 +5838,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
 const skillTool = createSkillToolDefinition();
 const reportExportTool = createReportExportToolDefinition();
 const alertQueryTool = createAlertQueryToolDefinition();
+const alertPacketAnalysisTool = createAlertPacketAnalysisToolDefinition();
 const inspectionSnapshotTool = createInspectionSnapshotToolDefinition();
 const summaryTool = createSummaryToolDefinition();
 const faultDiagnosisTool = createFaultDiagnosisToolDefinition();
@@ -4698,6 +5852,13 @@ const plugin = {
   description: 'Bridge NAPM skill and query requests from OpenClaw into the deployed NAPM OpenClaw skill runtime.',
   register(api) {
     const registerNapmHook = (events, handler, opts = {}) => {
+      if (typeof api.on === 'function') {
+        const normalizedEvents = Array.isArray(events) ? events : [events];
+        for (const eventName of normalizedEvents) {
+          api.on(eventName, handler, opts);
+        }
+        return;
+      }
       if (api.hooks && typeof api.hooks.on === 'function') {
         const normalizedEvents = Array.isArray(events) ? events : [events];
         for (const eventName of normalizedEvents) {
@@ -4715,6 +5876,7 @@ const plugin = {
     api.registerTool(skillTool);
     api.registerTool(reportExportTool);
     api.registerTool(alertQueryTool);
+    api.registerTool(alertPacketAnalysisTool);
     api.registerTool(inspectionSnapshotTool);
     api.registerTool(summaryTool);
     api.registerTool(faultDiagnosisTool);
@@ -4725,10 +5887,31 @@ const plugin = {
       (event, ctx) => {
         const conversationKey = getConversationKey(ctx);
         const content = extractTextContent(event?.content ?? event?.message?.content);
+        const nativeCommand = parseOpenClawControlCommand(content);
+        if (nativeCommand) {
+          const resetSummary = nativeCommand.resetsSession
+            ? clearNapmConversationScope(ctx)
+            : null;
+          rememberNativeCommandTurn(ctx, nativeCommand);
+          appendPluginAuditEvent('openclaw_native_command_bypassed', {
+            command: nativeCommand.name,
+            resetsSession: nativeCommand.resetsSession,
+            scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+            resetSummary
+          });
+          return undefined;
+        }
+
+        clearNativeCommandTurn(ctx);
         const previousState = conversationKey ? (napmConversationState.get(conversationKey) || null) : null;
+        const turnId = buildNapmTurnId();
         const nextState = {
           ...buildConversationScopedGuardState(content, previousState),
-          promptKey: normalizePromptKey(content)
+          conversationKey: conversationKey || null,
+          promptKey: normalizePromptKey(content),
+          canonicalPrompt: content,
+          turnId,
+          contextTurnKey: getContextTurnKey(ctx) || null
         };
 
         if (conversationKey) {
@@ -4746,45 +5929,77 @@ const plugin = {
     registerNapmHook(
       ['before_prompt_build', 'before_agent_start'],
       (event, ctx) => {
-        const prompt = typeof event?.prompt === 'string' ? event.prompt.trim() : '';
+        if (isNativeCommandTurn(ctx)) {
+          return undefined;
+        }
+
+        const receivedPrompt = typeof event?.prompt === 'string' ? event.prompt.trim() : '';
         const guardKeys = getGuardKeys(ctx);
+        const conversationKey = getConversationKey(ctx);
+        const previousConversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+        const contextTurnKey = getContextTurnKey(ctx);
+        // message_received is the authoritative turn boundary. Prompt-build hooks
+        // may expose different run/message ids and must never replace its identity.
+        const canReuseTurn = Boolean(previousConversationState?.turnId);
+        const prompt = canReuseTurn
+          ? String(previousConversationState?.canonicalPrompt || previousConversationState?.prompt || receivedPrompt).trim()
+          : receivedPrompt;
+        const turnId = canReuseTurn
+          ? normalizeTurnId(previousConversationState.turnId)
+          : buildNapmTurnId();
+        const promptPlatformIdentityPrompt = isPlatformIdentityPrompt(prompt);
         const promptOverviewRelated = isOverviewPrompt(prompt);
         const promptDomainRelated = promptOverviewRelated || isSystemDomainPrompt(prompt);
         const promptNapmRelated = promptOverviewRelated || isNapmRelatedPrompt(prompt);
         const promptOutOfScopeBoundaryRequested = promptDomainRelated && isOutOfScopeNapmRequest(prompt);
-        const promptGeneralOutOfScopeRequested = Boolean(prompt) && !promptDomainRelated;
+        const promptGeneralOutOfScopeRequested = Boolean(prompt)
+          && !promptDomainRelated
+          && !promptPlatformIdentityPrompt;
         if (guardKeys.length > 0) {
-          const conversationKey = getConversationKey(ctx);
-          const previousConversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+          let conversationState = previousConversationState;
           if (conversationKey && isMeaningfulText(prompt)) {
-            napmConversationState.set(conversationKey, {
+            conversationState = {
               ...buildConversationScopedGuardState(prompt, previousConversationState),
-              promptKey: normalizePromptKey(prompt)
-            });
+              conversationKey,
+              promptKey: normalizePromptKey(prompt),
+              canonicalPrompt: prompt,
+              turnId,
+              contextTurnKey: contextTurnKey || previousConversationState?.contextTurnKey || null
+            };
+            napmConversationState.set(conversationKey, conversationState);
           }
-          const conversationState = conversationKey ? napmConversationState.get(conversationKey) : previousConversationState;
           const effectiveNapmRelated = promptNapmRelated || Boolean(conversationState?.napmRelated);
           const effectiveDomainRelated = promptDomainRelated || Boolean(conversationState?.domainRelated);
+          const effectivePlatformIdentityPrompt = promptPlatformIdentityPrompt
+            || Boolean(conversationState?.platformIdentityPrompt);
+          const previousGuardState = getGuardState(ctx);
           const guardState = {
             prompt,
+            canonicalPrompt: prompt,
+            conversationKey: conversationKey || null,
+            turnId,
             napmRelated: effectiveNapmRelated,
             domainRelated: effectiveDomainRelated,
+            platformIdentityPrompt: effectivePlatformIdentityPrompt,
             alertRelated: Boolean(conversationState?.alertRelated),
             alertEventPrompt: Boolean(conversationState?.alertEventPrompt),
             alertMetaFollowUpPrompt: Boolean(conversationState?.alertMetaFollowUpPrompt),
             generalOutOfScopeRequested: prompt
-              ? !effectiveDomainRelated
+              ? (!effectiveDomainRelated && !effectivePlatformIdentityPrompt)
               : (promptGeneralOutOfScopeRequested || Boolean(conversationState?.generalOutOfScopeRequested)),
             outOfScopeBoundaryRequested: effectiveDomainRelated
               && (
                 promptOutOfScopeBoundaryRequested
                 || (!prompt && Boolean(conversationState?.outOfScopeBoundaryRequested))
               ),
-            turnNapmToolUsed: Boolean(getGuardState(ctx)?.turnNapmToolUsed),
+            turnNapmToolUsed: Boolean(
+              previousGuardState?.turnId === turnId
+              && previousGuardState?.turnNapmToolUsed
+            ),
             updatedAt: Date.now()
           };
           setGuardState(ctx, guardState);
-          api.logger.info(`[napm-openclaw-plugin] stored guard state keys=${guardKeys.join(',')} generalOutOfScope=${guardState.generalOutOfScopeRequested} outOfScopeBoundary=${guardState.outOfScopeBoundaryRequested} napmRelated=${guardState.napmRelated}`);
+          api.logger.info(`[napm-openclaw-plugin] stored guard state keys=${guardKeys.join(',')} generalOutOfScope=${guardState.generalOutOfScopeRequested} outOfScopeBoundary=${guardState.outOfScopeBoundaryRequested} platformIdentity=${guardState.platformIdentityPrompt} napmRelated=${guardState.napmRelated}`);
         }
         if (prompt) {
           api.logger.info(`[napm-openclaw-plugin] injecting NAPM routing policy for prompt: ${prompt.slice(0, 120)}`);
@@ -4800,22 +6015,122 @@ const plugin = {
     );
 
     registerNapmHook(
+      'reply_dispatch',
+      async (event, hookCtx) => {
+        if (event?.isTailDispatch || event?.suppressUserDelivery || event?.sendPolicy === 'deny') {
+          return undefined;
+        }
+
+        const messageCtx = buildReplyDispatchMessageContext(event);
+        if (isNativeCommandTurn(messageCtx)) {
+          return undefined;
+        }
+        const conversationKey = getConversationKey(messageCtx);
+        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+        const prompt = getReplyDispatchPrompt(event, conversationState);
+        if (!prompt) {
+          return undefined;
+        }
+
+        const turnId = getActiveTurnId(conversationState, null);
+        const deliveryFollowUp = isResultDeliveryFollowUpPrompt(prompt, conversationState);
+        if (deliveryFollowUp) {
+          const recentReport = getRecentReportExportResult(conversationKey)?.result || null;
+          if (recentReport?.ok && recentReport.filePath) {
+            appendPluginAuditEvent('napm_report_followup_replayed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              reportId: recentReport.reportId || null,
+              mediaUrl: recentReport.filePath
+            });
+            return dispatchReportReplyPayload({
+              content: buildReportExportReply(recentReport),
+              mediaUrl: recentReport.filePath
+            }, event, hookCtx, 'napm_report_followup_reply_dispatched');
+          }
+        }
+
+        if (!isSummaryPrompt(prompt)) {
+          return undefined;
+        }
+
+        const freshReport = getFreshReportExportResult(conversationKey, turnId)?.result || null;
+        if (freshReport?.ok && freshReport.filePath) {
+          return dispatchReportReplyPayload({
+            content: buildReportExportReply(freshReport),
+            mediaUrl: freshReport.filePath
+          }, event, hookCtx, 'napm_report_current_turn_reply_dispatched');
+        }
+
+        const automaticReport = await runAutomaticSummaryReportDelivery(
+          prompt,
+          messageCtx,
+          conversationKey,
+          turnId
+        );
+        if (!automaticReport?.content || !automaticReport?.mediaUrl) {
+          return undefined;
+        }
+        return dispatchReportReplyPayload(
+          automaticReport,
+          event,
+          hookCtx,
+          'napm_report_initial_reply_dispatched'
+        );
+      },
+      {
+        name: 'napm-report-reply-dispatch',
+        description: 'Own NAPM summary report delivery so generated Word media enters the native outbound reply payload.'
+      }
+    );
+
+    registerNapmHook(
       'before_tool_call',
       (event, ctx) => {
+        if (isNativeCommandTurn(ctx)) {
+          return undefined;
+        }
+
         const guardKeys = getGuardKeys(ctx);
         const guardState = getGuardState(ctx);
         const conversationKey = getConversationKey(ctx);
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const toolName = String(event?.toolName || '').trim();
-        const toolParams = isPlainObject(event?.params) ? event.params : {};
-        if (isSafeNapmToolName(toolName)) {
-          bindTrustedToolContext(event, ctx);
-        }
+        const originalToolParams = isPlainObject(event?.params) ? event.params : {};
+        const trustedTraceId = isSafeNapmToolName(toolName)
+          ? bindTrustedToolContext(event, ctx)
+          : '';
+        let toolParams = trustedTraceId
+          ? { ...originalToolParams, traceId: trustedTraceId }
+          : originalToolParams;
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
 
         const fallbackPrompt = normalizePrompt(toolParams);
         const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
+        if (toolName === 'napm-alert-query' && activePrompt) {
+          toolParams = buildCanonicalSkillToolParams(activePrompt, toolParams);
+        }
+        if (toolName === 'napm-alert-packet-analysis' && activePrompt) {
+          toolParams = buildCanonicalAlertPacketToolParams(activePrompt, toolParams);
+        }
+        const trustedParamsResult = (trustedTraceId || toolParams !== originalToolParams)
+          ? { params: toolParams }
+          : undefined;
         const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
+
+        if (isReportExportPrompt(activePrompt) && isReportGenerationBypassTool(toolName)) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked report generation bypass: tool=${toolName}`);
+          appendPluginAuditEvent('napm_report_generation_bypass_blocked', {
+            toolName,
+            prompt: activePrompt,
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: '报告请求必须使用 napm-report-export；禁止通过 exec、write、shell 或脚本直接生成报告文件。'
+          };
+        }
 
         if ((activePromptState?.generalOutOfScopeRequested || activePromptState?.outOfScopeBoundaryRequested) && !isSafeNapmToolName(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked tool for out-of-scope prompt: tool=${toolName}`);
@@ -4837,8 +6152,31 @@ const plugin = {
           || isAlertSkillMetaFollowUpPrompt(activePrompt, activePromptState)
           || Boolean(activePromptState?.alertRelated)
         );
-        const activeAlertPacketPrompt = activePacketPrompt && activeAlertPrompt;
+        const activeAlertPacketPrompt = Boolean(activePrompt) && isAlertPacketAnalysisPrompt(activePrompt);
         const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
+
+        if (activeAlertPacketPrompt && toolName !== 'napm-alert-packet-analysis') {
+          api.logger.warn(`[napm-openclaw-plugin] blocked non-composite tool for alert packet workflow: tool=${toolName}`);
+          appendPluginAuditEvent('napm_plugin_alert_packet_wrong_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            expectedTool: 'napm-alert-packet-analysis',
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'ALERT_PACKET_WORKFLOW_REQUIRED: 该请求必须使用 napm-alert-packet-analysis；禁止降级为告警汇总、跳过 eventId 详情定位或由模型直接调用数据包工具。'
+          };
+        }
+
+        if (activeAlertPacketPrompt && toolName === 'napm-alert-packet-analysis') {
+          setGuardState(ctx, {
+            ...activePromptState,
+            turnNapmToolUsed: true,
+            updatedAt: Date.now()
+          });
+          return { params: toolParams };
+        }
 
         // ── Fault diagnosis guard (MUST be first) ──
         // 2026-07-14: 当 prompt 明确是"告警数据包"请求时（activeAlertPacketPrompt=true），
@@ -4918,7 +6256,7 @@ const plugin = {
             turnNapmToolUsed: true,
             updatedAt: Date.now()
           });
-          return undefined;
+          return trustedParamsResult;
         }
 
         // Summary report guard: block napm-skill-query for summary prompts → redirect to napm-summary
@@ -4942,7 +6280,7 @@ const plugin = {
             turnNapmToolUsed: true,
             updatedAt: Date.now()
           });
-          return undefined;
+          return trustedParamsResult;
         }
 
         // Packet prompts belong to the packet-analysis skill and must not enter metric-query execution.
@@ -4966,6 +6304,7 @@ const plugin = {
           const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
           const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
+          const semanticGuardMode = getQuerySemanticGuardMode();
           const resolvedQueryValidation = validateResolvedQueryAgainstSpec(
             canonicalSkillParams?.resolvedQuery,
             { phase: 'construction' }
@@ -4975,6 +6314,7 @@ const plugin = {
           }
           const promptLooksStructuredMetaRequest = Boolean(
             isMetricInventoryPrompt(activePrompt)
+            || isObjectInventoryPrompt(activePrompt)
             || isBusinessObjectInventoryPrompt(activePrompt)
             || isBusinessGroupInventoryPrompt(activePrompt)
             || isHierarchyCatalogPrompt(activePrompt)
@@ -4987,6 +6327,7 @@ const plugin = {
             prompt: activePrompt,
             originalPrompt: originalPrompt || null,
             boundaryMode,
+            semanticGuardMode,
             promptLooksStructuredMetaRequest,
             validation: {
               ok: Boolean(resolvedQueryValidation.ok),
@@ -4999,51 +6340,41 @@ const plugin = {
             canonicalResolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
             context: buildAuditContextSnapshot(ctx)
           });
-          const compositeApplicationInventoryValidation = validateCompositeApplicationInventoryResolvedQuery(
+          const promptSemanticObservation = observePromptQuerySemanticMismatch(
             activePrompt,
             canonicalSkillParams?.resolvedQuery
           );
-          if (!compositeApplicationInventoryValidation.ok) {
-            api.logger.warn(`[napm-openclaw-plugin] blocked CompositeApplication inventory semantic mismatch: reason=${compositeApplicationInventoryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
-            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
+          if (!promptSemanticObservation.ok) {
+            api.logger.warn(`[napm-openclaw-plugin] observed prompt/query semantic mismatch: mode=${semanticGuardMode} reason=${promptSemanticObservation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            appendPluginAuditEvent('napm_plugin_prompt_query_semantic_mismatch_observed', {
               traceId,
               toolName,
               prompt: activePrompt,
               boundaryMode,
-              reason: compositeApplicationInventoryValidation.reason,
-              message: compositeApplicationInventoryValidation.message,
+              semanticGuardMode,
+              enforced: semanticGuardMode === 'enforce',
+              reason: promptSemanticObservation.reason,
+              message: promptSemanticObservation.message,
               resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
               resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
               context: buildAuditContextSnapshot(ctx)
             });
-            return {
-              block: true,
-              blockReason: `${compositeApplicationInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
-            };
+            if (semanticGuardMode === 'enforce') {
+              const failureRecord = rememberResolvedQueryBoundaryFailureForTurn(
+                activePrompt,
+                promptSemanticObservation,
+                canonicalSkillParams,
+                conversationKey,
+                conversationState,
+                guardState
+              );
+              return {
+                block: true,
+                blockReason: buildResolvedQueryFailureBlockReason(promptSemanticObservation, failureRecord)
+              };
+            }
           }
-          const objectInventoryValidation = validateObjectInventoryResolvedQuery(
-            activePrompt,
-            canonicalSkillParams?.resolvedQuery
-          );
-          if (!objectInventoryValidation.ok) {
-            api.logger.warn(`[napm-openclaw-plugin] blocked object_inventory semantic mismatch: reason=${objectInventoryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
-            appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
-              traceId,
-              toolName,
-              prompt: activePrompt,
-              boundaryMode,
-              reason: objectInventoryValidation.reason,
-              message: objectInventoryValidation.message,
-              resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
-              resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
-              context: buildAuditContextSnapshot(ctx)
-            });
-            return {
-              block: true,
-              blockReason: `${objectInventoryValidation.message} OpenClaw must reconstruct resolvedQuery first.`
-            };
-          }
-          if (!resolvedQueryValidation.ok && (boundaryMode === 'strict' || promptLooksStructuredMetaRequest)) {
+          if (!resolvedQueryValidation.ok) {
             api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid resolvedQuery: reason=${resolvedQueryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
             appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
               traceId,
@@ -5056,9 +6387,17 @@ const plugin = {
               resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
               context: buildAuditContextSnapshot(ctx)
             });
+            const failureRecord = rememberResolvedQueryBoundaryFailureForTurn(
+              activePrompt,
+              resolvedQueryValidation,
+              canonicalSkillParams,
+              conversationKey,
+              conversationState,
+              guardState
+            );
             return {
               block: true,
-              blockReason: `${resolvedQueryValidation.message} OpenClaw must construct resolvedQuery first.`
+              blockReason: buildResolvedQueryFailureBlockReason(resolvedQueryValidation, failureRecord)
             };
           }
           const shouldRewriteSkillParams = Boolean(
@@ -5144,7 +6483,7 @@ const plugin = {
         }
 
         if (!activeNapmPrompt || !isDangerousSystemTool(toolName)) {
-          return undefined;
+          return trustedParamsResult;
         }
 
         api.logger.warn(`[napm-openclaw-plugin] blocked dangerous tool for NAPM-scoped prompt: tool=${toolName}`);
@@ -5162,6 +6501,35 @@ const plugin = {
     registerNapmHook(
       'message_sending',
       async (event, ctx) => {
+        if (isNativeCommandTurn(ctx)) {
+          return undefined;
+        }
+
+        const conversationKey = getConversationKey(ctx);
+        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+        const guardState = getGuardState(ctx);
+        const turnId = getActiveTurnId(conversationState, guardState);
+        const activePromptForReport = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
+        const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePromptForReport, guardState || conversationState);
+        const progressOutput = assistantOutputLedger.consumeProgressDelivery({
+          scope: conversationKey,
+          turnId,
+          text: extractTextContent(event?.content)
+        });
+        if (progressOutput) {
+          appendPluginAuditEvent('tool_progress_delivery_suppressed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            outputId: progressOutput.outputId,
+            assistantMessageIndex: progressOutput.assistantMessageIndex,
+            stopReason: progressOutput.stopReason,
+            hasToolCall: progressOutput.hasToolCall,
+            fingerprint: progressOutput.fingerprint,
+            contentLength: progressOutput.textLength
+          });
+          return { cancel: true };
+        }
+
         const mediaDedupe = dedupeOutgoingMediaForConversation(event, ctx);
         if (mediaDedupe?.original?.length > 0 && mediaDedupe.fresh.length === 0) {
           appendPluginAuditEvent('napm_plugin_duplicate_media_suppressed', {
@@ -5185,11 +6553,106 @@ const plugin = {
           };
         }
 
-        const conversationKey = getConversationKey(ctx);
-        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
-        const guardState = getGuardState(ctx);
-        const activePromptForReport = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
+        const alertScopedPrompt = Boolean(
+          isAlertEventPrompt(activePromptForReport)
+          || isAlertSkillMetaFollowUpPrompt(activePromptForReport, guardState || conversationState)
+          || guardState?.alertRelated
+          || conversationState?.alertRelated
+        );
+        const rememberedRecord = alertScopedPrompt
+          ? getRememberedAlertRecordForPrompt(activePromptForReport, conversationState, conversationKey, guardState)
+          : getRememberedRecordForPrompt(activePromptForReport, conversationState, conversationKey, guardState);
+        const recentReportReply = resultDeliveryFollowUp
+          ? buildRecentReportExportReply(conversationKey)
+          : '';
+        if (recentReportReply) {
+          const recentReport = getRecentReportExportResult(conversationKey)?.result || {};
+          appendPluginAuditEvent('napm_report_followup_replayed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            reportId: recentReport.reportId || null,
+            mediaUrl: recentReport.filePath || null
+          });
+          return {
+            content: recentReportReply,
+            mediaUrl: recentReport.filePath || undefined,
+            mediaUrls: recentReport.filePath ? [recentReport.filePath] : undefined
+          };
+        }
+        const freshReportReply = buildFreshReportExportReply(conversationKey, turnId);
+        if (isReportExportPrompt(activePromptForReport) && freshReportReply) {
+          return { content: freshReportReply };
+        }
+        if (
+          isSummaryPrompt(activePromptForReport)
+          && !freshReportReply
+          && !isStreamingPreviewMessageEvent(event)
+        ) {
+          const automaticReport = await runAutomaticSummaryReportDelivery(
+            activePromptForReport,
+            ctx,
+            conversationKey,
+            turnId
+          );
+          if (automaticReport?.content) {
+            return automaticReport;
+          }
+        }
+        if (
+          isAlertPacketAnalysisPrompt(activePromptForReport)
+          && isAlertPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          let preparedFinal = napmOperationState.getPreparedFinalContent(conversationKey, turnId);
+          if (!preparedFinal) {
+            preparedFinal = napmOperationState.prepareFinalContent({
+              scope: conversationKey,
+              turnId,
+              content: buildAlertPacketFinalReply(rememberedRecord.result),
+              source: 'deterministic_fallback',
+              workflowState: rememberedRecord.result.workflowState
+            });
+            appendPluginAuditEvent('napm_plugin_alert_packet_fallback_prepared', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              workflowState: rememberedRecord.result.workflowState || null,
+              fingerprint: preparedFinal?.fingerprint || null
+            });
+          }
+          if (!preparedFinal || !napmOperationState.claimPreparedFinalDelivery(conversationKey, turnId)) {
+            appendPluginAuditEvent('napm_plugin_duplicate_alert_packet_delivery_suppressed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              workflowState: rememberedRecord.result.workflowState || null
+            });
+            return { cancel: true };
+          }
+          appendPluginAuditEvent('napm_plugin_alert_packet_final_delivery_claimed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            workflowState: rememberedRecord.result.workflowState || null,
+            source: preparedFinal.source,
+            fingerprint: preparedFinal.fingerprint
+          });
+          return { content: preparedFinal.content };
+        }
+        if (shouldCancelNapmPreviewMessage(event, ctx, activePromptForReport, guardState, rememberedRecord)) {
+          api.logger.warn('[napm-openclaw-plugin] canceled NAPM preview before output rewriting');
+          return { cancel: true };
+        }
         const reportArtifactUrls = getReportArtifactUrlsFromOutgoingEvent(event);
+        if (reportArtifactUrls.length > 0 && !isReportExportPrompt(activePromptForReport)) {
+          appendPluginAuditEvent('napm_stale_report_media_suppressed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            prompt: activePromptForReport || null,
+            mediaUrls: reportArtifactUrls,
+            reason: 'non_report_turn_must_not_inherit_previous_report_media'
+          });
+          return extractTextContent(event?.content)
+            ? { mediaUrls: [], mediaUrl: null }
+            : { cancel: true };
+        }
         if (isReportExportPrompt(activePromptForReport) && reportArtifactUrls.length > 0) {
           const illegalUrls = reportArtifactUrls.filter((url) => !isAllowedReportArtifactUrl(url, conversationKey));
           if (illegalUrls.length > 0) {
@@ -5220,15 +6683,6 @@ const plugin = {
 
         if (!outOfScopeBoundaryRequested) {
           const activePrompt = activePromptForReport;
-          const alertScopedPrompt = Boolean(
-            isAlertEventPrompt(activePrompt)
-            || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
-            || guardState?.alertRelated
-            || conversationState?.alertRelated
-          );
-          const rememberedRecord = alertScopedPrompt
-            ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
-            : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
           const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
           if (shouldAllowNapmReasoningPreviewForCtx(ctx) && isStreamingPreviewMessageEvent(event)) {
             return undefined;
@@ -5243,6 +6697,17 @@ const plugin = {
             return {
               content: buildReportExportRequiredReply()
             };
+          }
+          if (
+            isObjectInventoryPrompt(activePrompt)
+            || isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState)
+          ) {
+            const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
+            if (rememberedReplyText) {
+              return {
+                content: rememberedReplyText
+              };
+            }
           }
           const leakedBypassProcessText = looksLikeNapmBypassProcessText(leakedReasoningText);
           if (isNapmMetaFollowUpPrompt(activePrompt, guardState) || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)) {
@@ -5259,9 +6724,14 @@ const plugin = {
           }
           if (looksLikeInvalidBusinessInventoryAnswer(leakedReasoningText)) {
             const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
-            return {
-              content: rememberedReplyText || buildSkillRequiredReplyForPrompt(activePrompt)
-            };
+            return rememberedReplyText
+              ? { content: rememberedReplyText }
+              : buildFallbackSendingResult(
+                buildSkillRequiredReplyForPrompt(activePrompt),
+                conversationKey,
+                conversationState,
+                guardState
+              );
           }
           if (looksLikeUnsupportedBusinessInventoryExplanation(leakedReasoningText)) {
             return {
@@ -5270,9 +6740,14 @@ const plugin = {
           }
           if (isHierarchyCatalogPrompt(activePrompt) && looksLikeManualHierarchyInferenceText(leakedReasoningText)) {
             const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
-            return {
-              content: rememberedReplyText || buildHierarchySkillRequiredReply()
-            };
+            return rememberedReplyText
+              ? { content: rememberedReplyText }
+              : buildFallbackSendingResult(
+                buildHierarchySkillRequiredReply(),
+                conversationKey,
+                conversationState,
+                guardState
+              );
           }
           const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(leakedReasoningText)
             ? buildRememberedSkillReplyText(rememberedRecord)
@@ -5289,15 +6764,12 @@ const plugin = {
                 content: rememberedReplyText
               };
             }
-            return {
-              content: buildSkillRequiredReplyForPrompt(activePrompt)
-            };
-          }
-          if (shouldCancelNapmPreviewMessage(event, ctx, activePrompt, guardState, rememberedRecord)) {
-            api.logger.warn('[napm-openclaw-plugin] canceled streaming preview before NAPM final reply was ready');
-            return {
-              cancel: true
-            };
+            return buildFallbackSendingResult(
+              buildSkillRequiredReplyForPrompt(activePrompt),
+              conversationKey,
+              conversationState,
+              guardState
+            );
           }
           if (requiresSkillBackedReply && !rememberedRecord) {
             if (isStreamingPreviewMessageEvent(event)) {
@@ -5305,14 +6777,20 @@ const plugin = {
                 cancel: true
               };
             }
-            return {
-              content: buildSkillRequiredReplyForPrompt(activePrompt)
-            };
+            return buildFallbackSendingResult(
+              buildSkillRequiredReplyForPrompt(activePrompt),
+              conversationKey,
+              conversationState,
+              guardState
+            );
           }
           if (shouldForceSkillRecordForPrompt(activePrompt, guardState) && !rememberedRecord) {
-            return {
-              content: buildSkillRequiredReplyForPrompt(activePrompt)
-            };
+            return buildFallbackSendingResult(
+              buildSkillRequiredReplyForPrompt(activePrompt),
+              conversationKey,
+              conversationState,
+              guardState
+            );
           }
 
           return undefined;
@@ -5331,9 +6809,55 @@ const plugin = {
     registerNapmHook(
       'before_message_write',
       (event, ctx) => {
+        if (isNativeCommandTurn(ctx)) {
+          return undefined;
+        }
+
         const message = event?.message;
         const role = String(message?.role || '').trim();
         if (role !== 'assistant') {
+          return undefined;
+        }
+        if (messageContainsToolCall(message)) {
+          const conversationKey = getConversationKey(ctx);
+          const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+          const guardState = getGuardState(ctx);
+          const turnId = getActiveTurnId(conversationState, guardState);
+          const visibleText = extractMessageText(message);
+          const outputRecord = visibleText
+            ? assistantOutputLedger.recordToolProgress({
+                scope: conversationKey,
+                turnId,
+                text: visibleText,
+                stopReason: message?.stopReason || event?.stopReason || message?.metadata?.stopReason,
+                assistantMessageIndex: Number.isInteger(event?.assistantMessageIndex)
+                  ? event.assistantMessageIndex
+                  : null,
+                providerPhase: message?.metadata?.phase || event?.phase,
+                attemptId: ctx?.attemptId || event?.attemptId
+              })
+            : null;
+          appendPluginAuditEvent('assistant_output_classified', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            outputId: outputRecord?.outputId || null,
+            assistantMessageIndex: outputRecord?.assistantMessageIndex ?? null,
+            phase: 'progress',
+            stopReason: String(message?.stopReason || event?.stopReason || '').trim() || null,
+            hasToolCall: true,
+            fingerprint: outputRecord?.fingerprint || null,
+            contentLength: visibleText.length
+          });
+          if (visibleText && !outputRecord) {
+            appendPluginAuditEvent('lifecycle_identity_missing', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              phase: 'progress',
+              hasToolCall: true,
+              reason: !conversationKey ? 'conversation_scope_missing' : 'turn_id_missing',
+              contentLength: visibleText.length
+            });
+          }
           return undefined;
         }
 
@@ -5368,6 +6892,45 @@ const plugin = {
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
+        const turnId = getActiveTurnId(conversationState, guardState);
+        const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState);
+        const recentReportReply = resultDeliveryFollowUp
+          ? buildRecentReportExportReply(conversationKey)
+          : '';
+        if (recentReportReply) {
+          return {
+            message: buildAssistantTextMessage(recentReportReply, message)
+          };
+        }
+        const freshReportReply = buildFreshReportExportReply(conversationKey, turnId);
+        if (isReportExportPrompt(activePrompt) && freshReportReply) {
+          return {
+            message: buildAssistantTextMessage(freshReportReply, message)
+          };
+        }
+        if (
+          isAlertPacketAnalysisPrompt(activePrompt)
+          && isAlertPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          const preparedContent = prepareAlertPacketModelFinalContent(existingText, rememberedRecord.result);
+          if (preparedContent) {
+            const preparedFinal = napmOperationState.prepareFinalContent({
+              scope: conversationKey,
+              turnId,
+              content: preparedContent,
+              source: 'assistant_final',
+              workflowState: rememberedRecord.result.workflowState
+            });
+            appendPluginAuditEvent('napm_plugin_alert_packet_model_final_prepared', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              workflowState: rememberedRecord.result.workflowState || null,
+              fingerprint: preparedFinal?.fingerprint || null
+            });
+            return undefined;
+          }
+        }
         if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(existingText) && !isFreshReportExportResult(conversationKey)) {
           appendPluginAuditEvent('napm_report_direct_claim_rewritten_before_write', {
             conversationKey: conversationKey || null,
@@ -5377,6 +6940,17 @@ const plugin = {
           return {
             message: buildAssistantTextMessage(buildReportExportRequiredReply(), message)
           };
+        }
+        if (
+          isObjectInventoryPrompt(activePrompt)
+          || isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState)
+        ) {
+          const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
+          if (rememberedReplyText) {
+            return {
+              message: buildAssistantTextMessage(rememberedReplyText, message)
+            };
+          }
         }
         if (isNapmMetaFollowUpPrompt(activePrompt, guardState) || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)) {
           return {
@@ -5424,6 +6998,12 @@ const plugin = {
             message: buildAssistantTextMessage(rememberedReasoningFallbackText, message)
           };
         }
+        if (isSummaryPrompt(activePrompt) && !rememberedRecord) {
+          // reply_dispatch owns the primary async report workflow. message_sending
+          // remains a compatibility fallback for OpenClaw runtimes without that hook.
+          // Keep the transcript untouched until that operation has a result.
+          return undefined;
+        }
         if (requiresSkillBackedReply && !rememberedRecord) {
           return {
             message: buildAssistantTextMessage(buildSkillRequiredReplyForPrompt(activePrompt), message)
@@ -5448,8 +7028,15 @@ const plugin = {
 module.exports = plugin;
 module.exports.default = plugin;
 module.exports.__test__ = {
+  requiredNapmSkillRuntimePaths: REQUIRED_NAPM_SKILL_RUNTIME_PATHS,
+  hasCompleteNapmSkillRuntime,
+  resolveOpenClawSkillsRoot,
+  parseOpenClawControlCommand,
+  isNativeCommandTurn,
+  clearNapmConversationScope,
   getBoundaryMode,
   isStrictBoundaryMode,
+  getQuerySemanticGuardMode,
   shouldEnableDevResolverTools,
   isSafeNapmToolName,
   summarizeResolvedQueryForAudit,
@@ -5461,6 +7048,7 @@ module.exports.__test__ = {
   buildBusinessObjectInventoryResolvedQuery,
   isCompositeApplicationInventoryPrompt,
   validateCompositeApplicationInventoryResolvedQuery,
+  observePromptQuerySemanticMismatch,
   classifyNapmWorkflow,
   validateObjectInventoryResolvedQuery,
   buildRememberedSkillReplyText,
@@ -5476,41 +7064,53 @@ module.exports.__test__ = {
   createMainflowQueryToolDefinition,
   createReportExportToolDefinition,
   createAlertQueryToolDefinition,
+  createAlertPacketAnalysisToolDefinition,
   createInspectionSnapshotToolDefinition,
   createSummaryToolDefinition,
   createPacketAnalysisToolDefinition,
   buildInspectionSnapshotReply,
   buildSummaryReply,
   buildAlertQueryReply,
+  buildAlertPacketAnalysisReply,
+  buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
   buildPacketAnalysisReply,
   buildReportDataForExport,
   buildReportInputForExport,
+  auditReportExportSourceResolved,
+  auditReportGenerated,
   buildReportExportReply,
+  buildAutomaticSummaryToolArgs,
   isReportExportPrompt,
+  isReportGenerationBypassTool,
   textClaimsReportGenerated,
   rememberReportExportResult,
   isFreshReportExportResult,
   dedupeOutgoingMediaForConversation,
+  buildMediaDedupeKey,
   getNapmResolvedQueryResolverService,
   resolvePromptWithAudit,
   runMainflowQuery,
   inferOverviewScene,
   inferMetricInventoryGroup,
   isBusinessObjectInventoryPrompt,
+  isPlatformIdentityPrompt,
   isHierarchyCatalogPrompt,
   isAlertEventPrompt,
+  isAlertPacketAnalysisPrompt,
   hasSpecificFaultDiagnosisTarget,
   isFaultDiagnosisPrompt,
   isSummaryPrompt,
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,
+  isAlertPacketSkillResultRecord,
   buildAlertSkillRequiredReply,
   buildAlertExecutionTraceReplyFromRememberedRecord,
   isMetricInventoryPrompt,
   isMetricInventoryDetailPrompt,
   isNapmMetaFollowUpPrompt,
   isPacketLossClientTopPrompt,
+  isPacketCapturePrompt,
   looksLikeNapmBypassProcessText,
   looksLikeManualHierarchyInferenceText,
   looksLikeUnsupportedBusinessInventoryExplanation,
@@ -5523,7 +7123,9 @@ module.exports.__test__ = {
   getConversationKey,
   bindTrustedToolContext,
   getTrustedConversationKey,
+  getTrustedTurnId,
   getLatestRememberedSkillRecord,
+  getRememberedQueryFailureForTurn,
   getReportDataFromRecord,
   prepareSkillExecutionArgs,
   shouldAllowNapmReasoningPreview,

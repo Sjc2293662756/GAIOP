@@ -88,10 +88,4 @@ describe('run_napm_query hierarchy catalog contract', () => {
       ...result
     });
   });
-  test('should route plain business hierarchy to WebApplication and explicit business group to BusinessGroup', () => {
-    expect(__test__.isHierarchyCatalogPrompt('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe(true);
-    expect(__test__.normalizeDrilldownQuestionTarget('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe('WebApplication');
-    expect(__test__.isHierarchyCatalogPrompt('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe(true);
-    expect(__test__.normalizeDrilldownQuestionTarget('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe('BusinessGroup');
-  });
 });

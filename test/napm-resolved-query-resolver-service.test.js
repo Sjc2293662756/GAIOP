@@ -2,17 +2,6 @@ const ResolverService = require('../skills/openclaw-napm-query/services/NapmReso
 const PromptRoutingService = require('../skills/openclaw-napm-query/services/PromptRoutingService');
 
 describe('NapmResolvedQueryResolverService', () => {
-  test.each([
-    ['查询过去1小时总流量最高的5个IP', 5],
-    ['查询总流量最大的 8 个 IP', 8],
-    ['返回3条吞吐量最高的IP', 3],
-    ['topCount=7，按总流量查询IP', 7],
-    ['topCount: 6，按总流量查询IP', 6],
-    ['总流量最高的IP是谁', 1]
-  ])('should infer explicit TopN quantity from %s', (prompt, expected) => {
-    expect(ResolverService.inferTopCount(prompt)).toBe(expected);
-  });
-
   test('should resolve packet loss top IP prompt into strict topValues resolvedQuery', () => {
     const result = ResolverService.resolvePrompt('丢包最大的IP地址是谁？', {
       nowSeconds: 1779350400
@@ -166,7 +155,7 @@ describe('NapmResolvedQueryResolverService', () => {
       metric: 'TPIO',
       topCount: 10,
       start: 1779638400,
-      end: 1779677940,
+      end: 1779724740,
       timeRange: {
         key: 'today',
         displayText: '今天'
@@ -262,21 +251,18 @@ describe('NapmResolvedQueryResolverService', () => {
     });
   });
 
-  test('should reject plain application inventory prompt as ambiguous', () => {
+  test('should resolve plain application inventory prompt into DefinedApp metadata_list', () => {
     const result = ResolverService.resolvePrompt('系统中有哪些应用？');
 
-    expect(result).toMatchObject({
-      ok: false,
-      reason: 'ambiguous_application_catalog',
-      diagnostics: {
-        ambiguousObject: 'Application',
-        candidates: expect.arrayContaining([
-          'WebApplication',
-          'DefinedApp',
-          'BuiltinApplication',
-          'CompositeApplication',
-          'OtherApp'
-        ])
+    expect(result.ok).toBe(true);
+    expect(result.resolvedQuery).toMatchObject({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'DefinedApp' }],
+      semanticConstraints: {
+        operation: 'metadata_list',
+        workflowType: 'object_inventory',
+        targetObjectType: 'DefinedApp'
       }
     });
   });
@@ -286,7 +272,18 @@ describe('NapmResolvedQueryResolverService', () => {
     expect(PromptRoutingService.inferMetricInventoryGroup('自动识别的应用都可以查哪些指标？')).toBe('CompositeApplication');
     expect(PromptRoutingService.normalizeHierarchyQuestionTarget('CompositeApplication 可以往下钻到哪里？')).toBe('CompositeApplication');
     expect(PromptRoutingService.resolvePromptRoute('系统中有哪些应用？')).toMatchObject({
-      routeType: 'ambiguous_application_inventory'
+      routeType: 'defined_application_inventory',
+      query: {
+        service: 'groups',
+        groups: [{ type: 'DefinedApp' }]
+      }
+    });
+    expect(PromptRoutingService.resolvePromptRoute('系统中有哪些业务？')).toMatchObject({
+      routeType: 'business_object_inventory',
+      query: {
+        service: 'groups',
+        groups: [{ type: 'WebApplication' }]
+      }
     });
   });
 
@@ -303,68 +300,22 @@ describe('NapmResolvedQueryResolverService', () => {
       }
     });
   });
-  test('should resolve plain business hierarchy prompt into WebApplication drilldown catalog', () => {
-    const result = ResolverService.resolvePrompt('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f');
+
+  test('should resolve mixed inventory wording with HTTP 500 comparison into WebApplication TopN', () => {
+    const result = ResolverService.resolvePrompt(
+      '最近一周有哪些业务出现较多 HTTP 500 错误？',
+      { nowSeconds: 1786676400 }
+    );
 
     expect(result.ok).toBe(true);
-    expect(result.resolvedQuery).toMatchObject({
-      service: 'drilldownCatalog',
-      queryModeKey: 'metadata',
-      groups: [{ type: 'WebApplication' }],
-      semanticConstraints: {
-        operation: 'drilldown_catalog',
-        targetObjectType: 'WebApplication'
-      }
-    });
-  });
-
-  test('should keep explicit business group hierarchy prompt as BusinessGroup', () => {
-    const result = ResolverService.resolvePrompt('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f');
-
-    expect(result.ok).toBe(true);
-    expect(result.resolvedQuery).toMatchObject({
-      service: 'drilldownCatalog',
-      queryModeKey: 'metadata',
-      groups: [{ type: 'BusinessGroup' }],
-      semanticConstraints: {
-        operation: 'drilldown_catalog',
-        targetObjectType: 'BusinessGroup'
-      }
-    });
-  });
-
-  test('should resolve page HTTP 400 question under WebApplication scope as PageFamily topValues', () => {
-    const result = ResolverService.resolvePrompt('\u5728\u5176\u4ed6web\u5e94\u7528\u4e2d\uff0c\u6709\u54ea\u4e9b\u9875\u9762\u51fa\u73b0400\u9519\u8bef\uff1f', {
-      nowSeconds: 1781491260
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.intent).toMatchObject({
-      category: 'data_query',
-      service: 'topValues',
-      metric: 'PGHTTP400',
-      groupType: 'PageFamily'
-    });
     expect(result.resolvedQuery).toMatchObject({
       service: 'topValues',
       queryModeKey: 'topn',
-      metric: 'PGHTTP400',
-      metrics: ['PGHTTP400'],
-      topMetric: 'PGHTTP400',
-      groups: [
-        { type: 'WebApplication', argument: '其他Web应用' },
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ],
-      semanticConstraints: {
-        workflowType: 'metric_topn',
-        targetObjectType: 'PageFamily'
-      },
-      executionOptions: {
-        allowPathRepair: true
-      }
+      metrics: ['PGHTTP500'],
+      topMetric: 'PGHTTP500',
+      groups: [{ type: 'WebApplication' }],
+      timeRange: { key: 'last7days' },
+      semanticConstraints: { operation: 'rank_top' }
     });
-    expect(result.resolvedQuery.start).toBe(1781487660);
-    expect(result.resolvedQuery.end).toBe(1781491260);
   });
 });

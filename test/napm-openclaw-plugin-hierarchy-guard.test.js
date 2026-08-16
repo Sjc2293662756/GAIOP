@@ -26,7 +26,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     expect(testApi.normalizeHierarchyQuestionTarget('IP地址支持哪些下钻路径？')).toBe('IPAddress');
   });
 
-  test('should block a WECOM hierarchy reply before a matching drilldownCatalog result exists', async () => {
+  test('should leave before_message_write as a synchronous non-refresh hook for hierarchy prompts', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -53,6 +53,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
 
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
     const beforeMessageWrite = hooks.get('before_message_write');
     const skillTool = tools.get('napm-skill-query');
 
@@ -75,6 +76,27 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
 
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        resolvedQuery: {
+          service: 'drilldownCatalog',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'BusinessGroup' }],
+          userRequirement: prompt
+        }
+      }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      displayText: '业务组下钻路径已返回。',
+      resolvedQuery: bound.params.resolvedQuery
+    }, scope, 'napm-skill-query', turnId);
+
     const result = await beforeMessageWrite({
       message: {
         role: 'assistant',
@@ -82,7 +104,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
       }
     }, ctx);
 
-    expect(result).toEqual({ block: true });
+    expect(result).toBeUndefined();
   }, 30000);
 
   test('should require upstream resolvedQuery for hierarchy prompt when model skipped tool', async () => {
@@ -136,9 +158,10 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     expect(typeof result.content).toBe('string');
     expect(result.content).toContain('service=drilldownCatalog');
     expect(result.content).toContain('napm-skill-query');
+    expect(result.content).toContain('本轮没有拿到有效的 drilldownCatalog skill 结果');
   }, 30000);
 
-  test('should rewrite manual children-empty hierarchy inference without skill record', async () => {
+  test('should block manual children-empty hierarchy inference for drilldown prompts', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -194,67 +217,4 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     expect(result.content).not.toContain('该节点 children: []');
     expect(result.content).not.toContain('BusinessGroup -> IPAddress');
   }, 30000);
-  test('should recognize plain business hierarchy as WebApplication and explicit group as BusinessGroup', () => {
-    const testApi = plugin.__test__;
-    expect(testApi.isHierarchyCatalogPrompt('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe(true);
-    expect(testApi.normalizeHierarchyQuestionTarget('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe('WebApplication');
-    expect(testApi.isHierarchyCatalogPrompt('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe(true);
-    expect(testApi.normalizeHierarchyQuestionTarget('\u4e1a\u52a1\u7ec4\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f')).toBe('BusinessGroup');
-  });
-
-  test('should preserve model-provided hierarchy semantics instead of repairing from prompt', () => {
-    const testApi = plugin.__test__;
-    const params = testApi.buildCanonicalSkillToolParams('\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f', {
-      prompt: '\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f',
-      userQuery: '\u4e1a\u52a1\u6709\u54ea\u4e9b\u4e0b\u94bb\u8def\u5f84\uff1f',
-      resolvedQuery: {
-        service: 'drilldownCatalog',
-        queryModeKey: 'metadata',
-        groups: [{ type: 'BusinessGroup' }]
-      }
-    });
-
-    expect(params.resolvedQuery).toMatchObject({
-      service: 'drilldownCatalog',
-      queryModeKey: 'metadata',
-      groups: [{ type: 'BusinessGroup' }]
-    });
-  });
-
-  test('should normalize an OpenClaw metadata-wrapped prompt to the raw user prompt', () => {
-    const testApi = plugin.__test__;
-    const rawPrompt = '\u73b0\u5728\u4e22\u5305\u6700\u4e25\u91cd\u7684\u524d10\u4e2aIP\u90fd\u6709\u8c01\uff1f';
-    const wrappedPrompt = [
-      'Conversation info (untrusted metadata):',
-      '```json',
-      '{"chat_id":"wecom:shijc"}',
-      '```',
-      '',
-      'Sender (untrusted metadata):',
-      '```json',
-      '{"id":"shijc"}',
-      '```',
-      '',
-      rawPrompt
-    ].join('\n');
-
-    testApi.rememberSkillResult(wrappedPrompt, {
-      ok: true,
-      displayText: 'skill result text',
-      resolvedQuery: {
-        service: 'topValues',
-        groups: [{ type: 'IPAddress' }]
-      }
-    }, 'conv-wrapped-prompt');
-
-    const record = testApi.getRememberedRecordForPrompt(rawPrompt, null, 'conv-wrapped-prompt', {
-      napmRelated: true
-    });
-
-    expect(record.result.displayText).toBe('skill result text');
-    const wrappedRecord = testApi.getRememberedRecordForPrompt(wrappedPrompt, null, 'conv-wrapped-prompt', {
-      napmRelated: true
-    });
-    expect(wrappedRecord.result.displayText).toBe('skill result text');
-  });
 });

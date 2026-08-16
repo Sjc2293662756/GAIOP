@@ -2,15 +2,19 @@ const path = require('path');
 
 describe('napm-openclaw-plugin business inventory guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalSemanticGuardMode = process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
   let plugin = null;
 
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = 'enforce';
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
+    if (originalSemanticGuardMode === undefined) delete process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
+    else process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = originalSemanticGuardMode;
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
       return;
@@ -25,21 +29,11 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(testApi.isBusinessObjectInventoryPrompt('\u73b0\u5728\u4e1a\u52a1\u7ec4\u6574\u4f53\u60c5\u51b5\u600e\u4e48\u6837\uff1f')).toBe(false);
   });
 
-  test('should build a canonical resolvedQuery for a business object inventory prompt', () => {
+  test('should not build business object inventory helper resolvedQuery in strict-only boundary', () => {
     const testApi = plugin.__test__;
     const resolvedQuery = testApi.buildBusinessObjectInventoryResolvedQuery('\u5f53\u524d\u6709\u54ea\u4e9b\u4e1a\u52a1\u5bf9\u8c61\uff1f');
 
-    expect(resolvedQuery).toEqual({
-      service: 'groups',
-      queryModeKey: 'metadata',
-      groups: [{ type: 'WebApplication' }],
-      format: 'json',
-      semanticConstraints: {
-        operation: 'metadata_list',
-        workflowType: 'object_inventory',
-        targetObjectType: 'WebApplication'
-      }
-    });
+    expect(resolvedQuery).toBeNull();
   });
 
   test('should preserve raw prompt and avoid injecting resolvedQuery during skill arg preparation', () => {
@@ -55,26 +49,40 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     expect(prepared.resolvedQuery).toBeUndefined();
   });
 
-  test('should inject a canonical resolvedQuery in canonical skill params', () => {
+  test('should preserve raw prompt and avoid injecting resolvedQuery in canonical skill params', () => {
     const testApi = plugin.__test__;
     const prompt = '\u5f53\u524d\u6709\u54ea\u4e9b\u4e1a\u52a1\u5bf9\u8c61\uff1f';
     const prepared = testApi.buildCanonicalSkillToolParams(prompt, {});
 
     expect(prepared.prompt).toBe(prompt);
     expect(prepared.userQuery).toBe(prompt);
-    expect(prepared.resolvedQuery).toMatchObject({
+    expect(prepared.resolvedQuery).toBeUndefined();
+  });
+
+  test('should canonicalize legacy Application group type to DefinedApp', () => {
+    const testApi = plugin.__test__;
+    const normalized = testApi.normalizeResolvedQueryForPlugin({
       service: 'groups',
       queryModeKey: 'metadata',
-      groups: [{ type: 'WebApplication' }],
+      groups: [{ type: 'Application' }],
       semanticConstraints: {
         operation: 'metadata_list',
         workflowType: 'object_inventory',
-        targetObjectType: 'WebApplication'
+        targetObjectType: 'Application'
+      }
+    });
+
+    expect(normalized).toMatchObject({
+      service: 'groups',
+      queryModeKey: 'metadata',
+      groups: [{ type: 'DefinedApp' }],
+      semanticConstraints: {
+        targetObjectType: 'DefinedApp'
       }
     });
   });
 
-  test('should rewrite a prompt-only business inventory skill call to the canonical resolvedQuery', async () => {
+  test('should block business inventory skill call without upstream resolvedQuery', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -125,22 +133,9 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result).toMatchObject({
-      params: {
-        prompt,
-        userQuery: prompt,
-        resolvedQuery: {
-          service: 'groups',
-          queryModeKey: 'metadata',
-          groups: [{ type: 'BusinessGroup' }],
-          semanticConstraints: {
-            operation: 'metadata_list',
-            workflowType: 'object_inventory',
-            targetObjectType: 'BusinessGroup'
-          }
-        }
-      }
-    });
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('resolvedQuery');
+    expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
   }, 30000);
 
   test('should allow business-group inventory skill call with upstream resolvedQuery', async () => {
@@ -215,10 +210,13 @@ describe('napm-openclaw-plugin business inventory guard', () => {
         groups: [{ type: 'BusinessGroup' }]
       }
     });
-    expect(result.params.traceId).toContain('napm-run-business-group-allow');
+    expect(result.params.traceId).toMatch(/^napm-/);
+    expect(plugin.__test__.getTrustedConversationKey(result.params)).toBe(
+      'session:session-business-group-allow'
+    );
   }, 30000);
 
-  test('should rewrite business-group inventory when model params drift to topValues', async () => {
+  test('should reject business-group inventory when resolvedQuery drifts to topValues', async () => {
     const hooks = new Map();
     const api = {
       config: {},
@@ -274,69 +272,9 @@ describe('napm-openclaw-plugin business inventory guard', () => {
     }, ctx);
 
     expect(result).toBeTruthy();
-    expect(result).toMatchObject({
-      params: {
-        resolvedQuery: {
-          service: 'groups',
-          queryModeKey: 'metadata',
-          groups: [{ type: 'BusinessGroup' }],
-          semanticConstraints: {
-            operation: 'metadata_list',
-            workflowType: 'object_inventory',
-            targetObjectType: 'BusinessGroup'
-          }
-        }
-      }
-    });
-  }, 30000);
-
-  test('should not execute resolver and should block an unsupported answer without a remembered result', async () => {
-    const hooks = new Map();
-    const api = {
-      config: {},
-      logger: {
-        info() {},
-        warn() {},
-        error() {}
-      },
-      registerTool() {},
-      registerCommand() {},
-      registerHook(name, handler) {
-        if (Array.isArray(name)) {
-          name.forEach((item) => hooks.set(item, handler));
-          return;
-        }
-        hooks.set(name, handler);
-      }
-    };
-
-    plugin.register(api);
-
-    const ctx = {
-      channelId: 'wecom',
-      accountId: 'acct-business-force-skill',
-      conversationId: 'conv-business-force-skill',
-      sessionKey: 'session-business-force-skill',
-      sessionId: 'session-business-force-skill',
-      runId: 'run-business-force-skill'
-    };
-    const prompt = '\u7cfb\u7edf\u4e2d\u6709\u54ea\u4e9b\u4e1a\u52a1\uff1f';
-
-    hooks.get('message_received')({ content: prompt }, ctx);
-    await hooks.get('before_prompt_build')({ prompt }, ctx);
-
-    const result = await hooks.get('message_sending')({
-      content: '\u5f53\u524d NAPM \u67e5\u8be2\u94fe\u8def\u5bf9\u7eaf\u5217\u8868\u67e5\u8be2\u652f\u6301\u6709\u9650\u3002'
-    }, ctx);
-
-    expect(result.content).toContain('NAPM skill');
-    expect(result.content).toContain('未拿到有效 skill 结果');
-
-    const remembered = plugin.__test__.getRememberedRecordForPrompt(prompt, null, [
-      ctx.channelId,
-      ctx.accountId,
-      ctx.conversationId
-    ].join(':'), null);
-    expect(remembered).toBeNull();
+    expect(result.block).toBe(true);
+    expect(result.blockReason).toContain('object_inventory');
+    expect(result.blockReason).toContain('BusinessGroup');
+    expect(result.blockReason).toContain('service=groups');
   }, 30000);
 });

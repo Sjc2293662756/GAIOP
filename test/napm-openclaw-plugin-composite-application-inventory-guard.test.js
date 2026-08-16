@@ -2,15 +2,19 @@ const path = require('path');
 
 describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
   const originalExecutor = process.env.NAPM_SKILL_EXECUTOR;
+  const originalSemanticGuardMode = process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
   let plugin = null;
 
   beforeAll(() => {
     process.env.NAPM_SKILL_EXECUTOR = path.resolve(__dirname, '../skills/openclaw-napm-query/scripts/run_napm_query.js');
+    process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = 'enforce';
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote.js');
   });
 
   afterAll(() => {
+    if (originalSemanticGuardMode === undefined) delete process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE;
+    else process.env.NAPM_QUERY_SEMANTIC_GUARD_MODE = originalSemanticGuardMode;
     if (originalExecutor === undefined) {
       delete process.env.NAPM_SKILL_EXECUTOR;
       return;
@@ -116,7 +120,16 @@ describe('napm-openclaw-plugin CompositeApplication inventory guard', () => {
       }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result).toBeTruthy();
+    expect(result.params).toMatchObject({
+      prompt,
+      userQuery: prompt,
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'CompositeApplication' }]
+      }
+    });
   });
 
   test('should reject CompositeApplication inventory resolvedQuery with argument all', async () => {

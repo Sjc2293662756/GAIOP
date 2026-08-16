@@ -15,7 +15,6 @@ const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
 const WorkflowClassifierService = require('./WorkflowClassifierService');
-const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 
 // 深拷贝 spec 等 JSON 兼容对象，避免解析阶段修改共享配置。
 function cloneJson(value) {
@@ -83,10 +82,19 @@ function findAliasMatch(text = '', aliasMap = {}, options = {}) {
 // 向下取整到分钟，保证生成的时间窗口对齐执行层常用时间粒度。
 function alignToMinute(seconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.alignToMinute(seconds);
+  const rawEnd = Number(seconds) > 0 ? Math.floor(Number(seconds)) : Math.floor(Date.now() / 1000);
+  return Math.floor(rawEnd / 60) * 60;
 }
 
 function buildRelativeTimeRange(key, seconds, nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildRelativeTimeRange(key, seconds, nowSeconds);
+  const end = alignToMinute(nowSeconds);
+  const start = alignToMinute(end - seconds);
+  return {
+    key,
+    start,
+    end
+  };
 }
 
 function normalizeResolvedQueryTimeRange(resolvedQuery = {}) {
@@ -150,10 +158,12 @@ function validateResolvedQueryTimeContract(resolvedQuery = {}) {
 
 function buildLast1HourTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildLast1HourTimeRange(nowSeconds);
+  return buildRelativeTimeRange('last1hour', 60 * 60, nowSeconds);
 }
 
 function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.buildLast24HoursTimeRange(nowSeconds);
+  return buildRelativeTimeRange('last24hours', 24 * 60 * 60, nowSeconds);
 }
 
 /**
@@ -162,20 +172,50 @@ function buildLast24HoursTimeRange(nowSeconds = Math.floor(Date.now() / 1000)) {
  */
 function inferTimeRange(prompt = '', nowSeconds = Math.floor(Date.now() / 1000)) {
   return TimeRangeService.resolveTimeRange(prompt, { nowSeconds });
+  const text = normalizeText(prompt);
+  const lower = normalizeLower(text);
+
+  const minuteMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,3})\s*(?:分钟|分|minutes?|mins?)/i);
+  if (minuteMatch) {
+    const minutes = Number(minuteMatch[1]);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      return buildRelativeTimeRange(`last${minutes}minutes`, minutes * 60, nowSeconds);
+    }
+  }
+
+  if (/(?:最近|近|过去)\s*(?:一|1)\s*(?:小时|个小时)|last\s*(?:1\s*)?hour|past\s*(?:1\s*)?hour/i.test(text)) {
+    return buildLast1HourTimeRange(nowSeconds);
+  }
+
+  const hourMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,3})\s*(?:小时|个小时|hours?|hrs?)/i);
+  if (hourMatch) {
+    const hours = Number(hourMatch[1]);
+    if (Number.isFinite(hours) && hours > 0) {
+      return buildRelativeTimeRange(`last${hours}hours`, hours * 60 * 60, nowSeconds);
+    }
+  }
+
+  if (/(?:最近|近|过去)\s*(?:一|1)\s*(?:天|日)|(?:最近|过去)\s*24\s*(?:小时|个小时)|last\s*(?:1\s*)?day|past\s*(?:1\s*)?day|last\s*24\s*hours?|past\s*24\s*hours?/i.test(text)) {
+    return buildLast24HoursTimeRange(nowSeconds);
+  }
+
+  const dayMatch = lower.match(/(?:最近|近|过去|last|past)\s*(\d{1,2})\s*(?:天|日|days?)/i);
+  if (dayMatch) {
+    const days = Number(dayMatch[1]);
+    if (Number.isFinite(days) && days > 0) {
+      return buildRelativeTimeRange(`last${days}days`, days * 24 * 60 * 60, nowSeconds);
+    }
+  }
+
+  return buildLast1HourTimeRange(nowSeconds);
 }
 
 // 从问句中推断 TopN 数量；若更像“谁最高/哪个最多”，则默认返回 1。
 function inferTopCount(prompt = '') {
   const text = normalizeText(prompt);
-  const explicitPatterns = [
-    /\btopCount\s*[:=]\s*(\d{1,3})/i,
-    /(?:top|前)\s*(\d{1,3})/i,
-    /(?:最大|最高|最多|最小|最低|最少)(?:的)?\s*(\d{1,3})\s*(?:个|条|项|名)?/i,
-    /(?:返回|展示|列出|查询)\s*(\d{1,3})\s*(?:个|条|项|名)/i
-  ];
-  for (const pattern of explicitPatterns) {
-    const match = text.match(pattern);
-    const parsed = Number(match?.[1]);
+  const topMatch = text.match(/(?:top|前)\s*(\d{1,2})/i);
+  if (topMatch) {
+    const parsed = Number(topMatch[1]);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
     }
@@ -197,14 +237,11 @@ function inferDirection(prompt = '') {
 
 // 基于 resolution spec 中的指标别名表识别指标。
 function inferMetric(prompt = '', spec = {}) {
-  const semantic = MetricSemanticNormalizerService.resolveMetricSemantic(prompt, {
-    specMetricAliases: spec?.metrics?.aliases || {}
-  });
-  if (semantic) {
+  const match = findAliasMatch(prompt, spec?.metrics?.aliases || {});
+  if (match) {
     return {
-      metric: semantic.metric,
-      matchedAlias: semantic.matchedAlias,
-      semantic
+      metric: match.id,
+      matchedAlias: match.alias
     };
   }
 
@@ -293,14 +330,6 @@ function isMetricInventoryPrompt(prompt = '') {
   return includesAny(prompt, ['哪些指标', '什么指标', '可查哪些指标', '可以查哪些指标', '支持哪些指标', '指标列表']);
 }
 
-function isPlainApplicationCatalogPrompt(prompt = '') {
-  const text = normalizeText(prompt);
-  if (!isMetadataListPrompt(text)) {
-    return false;
-  }
-  return classifyApplicationCatalogPrompt(text).ambiguous === true;
-}
-
 function inferApplicationCatalogGroup(prompt = '', fallbackGroup = 'WebApplication') {
   const text = normalizeText(prompt);
   const classification = classifyApplicationCatalogPrompt(text);
@@ -340,18 +369,19 @@ function isDrilldownCatalogPrompt(prompt = '') {
 }
 
 function isRankingPrompt(prompt = '') {
-  const text = normalizeText(prompt);
-  if (/(最大|最高|最多|最少|最低|最小|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个|有哪些|哪些|有哪几个|列出|查看|查询)/i.test(text)) {
-    return true;
-  }
-
   return includesAny(prompt, [
     '最大',
     '最高',
     '最多',
+    '较多',
+    '更多',
+    '偏多',
     '最小',
     '最低',
     '最少',
+    '较少',
+    '更少',
+    '偏少',
     'top',
     'TopN',
     '排行',
@@ -360,59 +390,6 @@ function isRankingPrompt(prompt = '') {
     '哪个',
     '哪一个'
   ]);
-}
-
-function inferMetricTargetGroups(prompt = '', baseGroupType = 'IPAddress') {
-  const text = normalizeText(prompt);
-  const lower = normalizeLower(text);
-  const base = baseGroupType || 'IPAddress';
-  const webApplicationArgument = inferWebApplicationArgument(text);
-
-  const wantsPageFamily = /页面|页面族|PageFamily|page\s*family|page/i.test(text);
-  if (wantsPageFamily) {
-    const root = { type: 'WebApplication' };
-    if (webApplicationArgument) {
-      root.argument = webApplicationArgument;
-    }
-    return {
-      groups: [
-        root,
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ],
-      targetObjectType: 'PageFamily',
-      pathPlanning: {
-        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily'],
-        plannedGroups: [
-          root,
-          { type: 'PageFamilies', argument: null },
-          { type: 'PageFamily', argument: null }
-        ],
-        reason: 'metric_target_page_family',
-        confidence: 0.95
-      }
-    };
-  }
-
-  return {
-    groups: [{ type: base }],
-    targetObjectType: base,
-    pathPlanning: null
-  };
-}
-
-function inferWebApplicationArgument(prompt = '') {
-  const text = normalizeText(prompt);
-  if (/其他\s*web\s*应用|其他Web应用|其它\s*web\s*应用|其它Web应用|Other\s*Web\s*Application/i.test(text)) {
-    return '其他Web应用';
-  }
-
-  const quoted = text.match(/[“"']([^”"']{1,80})[”"']/);
-  if (quoted && /(web|业务|站点|网站|WebApplication)/i.test(text)) {
-    return quoted[1].trim();
-  }
-
-  return '';
 }
 
 // 构造统一 diagnostics 结构，便于上层知道该结果来自哪个解析器。
@@ -485,13 +462,6 @@ function buildMetadataResolvedQuery(prompt, service, groupType, operation) {
  */
 function resolveMetadataPrompt(prompt = '', spec = {}) {
   const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
-  if (workflow.workflowType && ![
-    'drilldown_catalog',
-    'metric_inventory',
-    'object_inventory'
-  ].includes(workflow.workflowType)) {
-    return null;
-  }
   const groupMatch = inferGroup(prompt, spec, { defaultGroup: 'WebApplication' });
   const groupType = groupMatch?.group || 'WebApplication';
 
@@ -545,25 +515,6 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
   }
 
   if (workflow.workflowType === 'object_inventory' || isMetadataListPrompt(prompt)) {
-    if (isPlainApplicationCatalogPrompt(prompt)) {
-      return failure(
-        prompt,
-        'ambiguous_application_catalog',
-        'Cannot construct resolvedQuery because plain application inventory is ambiguous. Ask for business/WebApplication, defined applications, builtin applications, composite applications, or unknown applications.',
-        {
-          phase: 'object_resolution',
-          ambiguousObject: 'Application',
-          candidates: [
-            'WebApplication',
-            'DefinedApp',
-            'BuiltinApplication',
-            'CompositeApplication',
-            'OtherApp'
-          ]
-        }
-      );
-    }
-
     const explicitBusinessGroup = /工作组|业务组|BusinessGroup/i.test(prompt);
     const resolvedGroupType = explicitBusinessGroup
       ? 'BusinessGroup'
@@ -592,7 +543,8 @@ function resolveMetadataPrompt(prompt = '', spec = {}) {
  * 会尝试同时收敛指标、对象、时间范围、排序方向和 topCount。
  */
 function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
-  if (!isRankingPrompt(prompt)) {
+  const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
+  if (workflow.workflowType !== 'metric_topn' && !isRankingPrompt(prompt)) {
     return null;
   }
 
@@ -606,10 +558,8 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     );
   }
 
-  const workflow = WorkflowClassifierService.classifyWorkflow(prompt);
   const groupMatch = inferGroup(prompt, spec, { defaultGroup: 'IPAddress' });
-  const groupType = workflow.targetObjectType || groupMatch?.group || 'IPAddress';
-  const targetGroups = inferMetricTargetGroups(prompt, groupType);
+  const groupType = groupMatch?.group || 'IPAddress';
   const nowSeconds = options.nowSeconds || Math.floor(Date.now() / 1000);
   const timeRange = inferTimeRange(prompt, nowSeconds);
   const direction = inferDirection(prompt);
@@ -621,7 +571,7 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     metric: metricMatch.metric,
     metrics: [metricMatch.metric],
     topMetric: metricMatch.metric,
-    groups: targetGroups.groups,
+    groups: [{ type: groupType }],
     topCount,
     start: timeRange.start,
     end: timeRange.end,
@@ -633,14 +583,7 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
     userRequirement: normalizeText(prompt),
     semanticConstraints: {
       operation: direction === 'asc' ? 'rank_bottom' : 'rank_top',
-      direction,
-      targetObjectType: targetGroups.targetObjectType,
-      workflowType: 'metric_topn'
-    },
-    ...(targetGroups.pathPlanning ? { pathPlanning: targetGroups.pathPlanning } : {}),
-    executionOptions: {
-      allowPathRepair: true,
-      timeMode: 'relative'
+      direction
     },
     resolutionHints: {
       constructedBy: 'openclaw_mainflow_resolver',
@@ -662,7 +605,7 @@ function resolveTopValuesPrompt(prompt = '', spec = {}, options = {}) {
       service: 'topValues',
       operation: resolvedQuery.semanticConstraints.operation,
       metric: metricMatch.metric,
-      groupType: targetGroups.targetObjectType,
+      groupType,
       topCount
     },
     resolvedQuery,
@@ -685,14 +628,14 @@ function resolvePrompt(prompt = '', options = {}) {
   }
 
   const spec = options.spec ? cloneJson(options.spec) : loadResolutionSpec();
-  const metadataResult = resolveMetadataPrompt(normalizedPrompt, spec);
-  if (metadataResult) {
-    return metadataResult;
-  }
-
   const topValuesResult = resolveTopValuesPrompt(normalizedPrompt, spec, options);
   if (topValuesResult) {
     return topValuesResult;
+  }
+
+  const metadataResult = resolveMetadataPrompt(normalizedPrompt, spec);
+  if (metadataResult) {
+    return metadataResult;
   }
 
   return failure(

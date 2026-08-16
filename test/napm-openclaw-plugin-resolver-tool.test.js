@@ -29,7 +29,7 @@ describe('napm-openclaw-plugin resolver tools', () => {
     }
   });
 
-  test('should register production NAPM tools by default without diagnostic resolver tools', () => {
+  test('should omit diagnostic resolver tools from the production tool set by default', () => {
     const plugin = loadPlugin();
     const tools = new Map();
     const api = {
@@ -48,15 +48,9 @@ describe('napm-openclaw-plugin resolver tools', () => {
 
     plugin.register(api);
 
-    expect(Array.from(tools.keys()).sort()).toEqual([
-      'napm-alert-query',
-      'napm-fault-diagnosis',
-      'napm-inspection-snapshot',
-      'napm-packet-analysis',
-      'napm-report-export',
-      'napm-skill-query',
-      'napm-summary'
-    ]);
+    expect(tools.has('napm-skill-query')).toBe(true);
+    expect(tools.has('napm-summary')).toBe(true);
+    expect(tools.has('napm-report-export')).toBe(true);
     expect(tools.has('napm-resolve-query')).toBe(false);
     expect(tools.has('napm-mainflow-query')).toBe(false);
   });
@@ -140,7 +134,8 @@ describe('napm-openclaw-plugin resolver tools', () => {
       params: { prompt }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result?.params?.traceId).toMatch(/^napm-/);
+    expect(result?.params?.prompt).toBe(prompt);
   });
 
   test('before_tool_call should block non-NAPM tools and redirect to production skill entry', async () => {

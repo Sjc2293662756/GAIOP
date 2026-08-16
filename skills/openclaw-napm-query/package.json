@@ -1,0 +1,29 @@
+{
+  "name": "openclaw-napm-query",
+  "version": "1.0.0",
+  "description": "Standalone OpenClaw skill runtime for NetInside / NAPM structured queries.",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "query": "node scripts/run_napm_query.js",
+    "check": "node --check scripts/run_napm_query.js"
+  },
+  "keywords": [
+    "openclaw",
+    "skill",
+    "napm",
+    "netinside"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.3.1",
+    "js-yaml": "^4.1.0",
+    "node-cache": "^5.1.2",
+    "winston": "^3.11.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

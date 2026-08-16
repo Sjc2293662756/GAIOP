@@ -12,25 +12,6 @@ packetsPreview -> packetsDown
 GET /webservice/NetInside?type=packetsPreview
 ```
 
-The skill also treats this response as a download-risk preview. When the response exposes packet count, estimated packet size, endpoint distribution, or traffic distribution, the skill normalizes those fields into:
-
-```text
-preview.overview
-preview.risk
-```
-
-Important distinction:
-
-| Field | Meaning |
-|---|---|
-| `preview.responseBytes` | Size of the preview API response body. This is not the pcap size. |
-| `preview.overview.estimatedBytes` | Estimated downloadable packet size, only when the API returns a compatible field. |
-| `preview.overview.packetCount` | Estimated packet count, only when the API returns a compatible field. |
-| `preview.risk.level` | `low`, `medium`, `high`, or `unknown`. |
-| `preview.risk.recommendation` | `CONTINUE_DOWNLOAD`, `CONFIRM_DOWNLOAD`, or `SUGGEST_NARROW_TIME_RANGE`. |
-
-If risk recommendation is not `CONTINUE_DOWNLOAD`, the caller should not download automatically.
-
 `packetsDown` downloads the packet file:
 
 ```text
@@ -55,16 +36,9 @@ The page parameter `iprangs` is not the API parameter. Normalize it to `ipRanges
 
 `packetsDown` returns a file stream. Do not parse it as JSON even when `json=true` is present.
 
-## Authentication Query Parameters
+## Runtime authentication
 
-Direct NetInside packet and analysis requests may require query authentication:
-
-```text
-UserName={runtime user}
-Password={runtime password}
-```
-
-The skill injects these from `NETINSIDE_USERNAME` and `NETINSIDE_PASSWORD` when `PACKET_AUTH_QUERY_PARAMS=true` (default). User-facing URLs must keep `UserName` visible when present and redact `Password` as `***`.
+Some NetInside deployments reject HTTP Basic authentication for `packetsPreview` and `packetsDown` but accept the configured `UserName` and `Password` query parameters. The runtime may attach credentials from `.env` only to the private request URL. Generated URLs, masked URLs, logs, structured results, and final replies must remain credential-free.
 
 ## DownServlet
 
@@ -88,84 +62,3 @@ GET /webservice/NetInside?type=downloadId&json=true
 ```
 
 `instanceId` usually has the form `PATH1/{resultName}`. If the user provides a table-cell value like `xxx##abc`, use the part after `##` and prefix it with `PATH1/`.
-
-For current business packet analysis, use fixed defaults unless the caller explicitly provides different values:
-
-| Parameter | Default |
-|---|---|
-| `moduleKey` | `Ipv` |
-| `groupId` | `45` |
-| `rtClickId` | `5` |
-
-## Business Packet DownServlet Resolution
-
-Business packet analysis does not usually start with `ips`, `ipRanges`, or a complete `instanceId`. It starts from a Web application/business object, then resolves the exact page visit object to download.
-
-The deterministic v3 chain is:
-
-```text
-topValues(WebApplication)
-  -> topValues(WebApplication + PageFamilies + PageFamily)
-  -> pageViews(pageFamilyId)
-  -> DownServlet(instanceId=PATH1/{pageFamilyDetailId})
-```
-
-Step 1, list/select business objects:
-
-```text
-GET https://{host}/webservice/NetInside?UserName={userName}&Password={password}&type=topValues&numGroups=1&groupType1=WebApplication&start={start}&end={end}&metrics=PGNPGE,PGTME,PGNSLPGE,PGSLPCT,PGHTTP400,PGHTTP500&topMetric=PGNPGE&topCount=20&json=true
-```
-
-Step 2, query page-family/page error analysis for the selected business:
-
-```text
-GET https://{host}/webservice/NetInside?UserName={userName}&Password={password}&type=topValues&numGroups=3&groupType1=WebApplication&groupArgument1={businessName}&groupType2=PageFamilies&groupType3=PageFamily&metrics=PGNPGE,PGNOBJE,PGHTTP200,PGHTTP300,PGHTTP400,PGHTTP500&start={start}&end={end}&topMetric=PGHTTP500&topCount=5&json=true
-```
-
-Read the selected row's `groupPath`, then parse the page-family ID from the `page` segment:
-
-```text
-...>pages>page 8573007/http://...
-```
-
-Use:
-
-```text
-page\s+(\d+)/
-```
-
-Step 3, query page visit details:
-
-```text
-GET https://{host}/webservice/NetInside?UserName={userName}&Password={password}&type=pageViews&start={start}&end={end}&json=true&pageFamilyId={pageFamilyId}&maxLimit=undefined
-```
-
-Use `json=true` for skill execution. The endpoint returns a JSON array of page visit rows. Render these rows as a business page visit preview when the user asks to preview before download.
-
-Important page visit fields:
-
-| Field | Meaning |
-|---|---|
-| `startTime` | Page visit timestamp. |
-| `page` | Page URL. |
-| `clientIp` / `originatingIp` | Peer/client IP to show for user selection. |
-| `serverIp` | Web server IP. |
-| `httpStatus` | HTTP status such as `404`. |
-| `pageFamilyDetailId` | The value used to build `instanceId=PATH1/{pageFamilyDetailId}`. |
-
-After the user selects a row, use its `pageFamilyDetailId`.
-
-Step 4, build the direct download URL:
-
-```text
-GET https://{host}/webservice/DownServlet?moduleKey=Ipv&groupId=45&rtClickId=5&start={start}&end={end}&instanceId=PATH1/{pageFamilyDetailId}
-```
-
-Supported shortcuts:
-
-| Caller provides | Skill behavior |
-|---|---|
-| `businessName` | Run the full four-step resolution chain. |
-| `pageFamilyId` | Skip business/page-family selection and start from `pageViews`. |
-| `pageFamilyDetailId` or `resultName` | Build `instanceId=PATH1/{value}` directly. |
-| Full `instanceId` | Use it directly, preserving the `PATH1/` prefix. |

@@ -1,0 +1,14 @@
+{
+  "name": "openclaw-napm-alert-packet-analysis",
+  "version": "0.1.0",
+  "description": "Deterministic alert-detail to packet-analysis workflow for OpenClaw NAPM.",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "query": "node scripts/run_alert_packet_analysis.js",
+    "check": "node --check scripts/run_alert_packet_analysis.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

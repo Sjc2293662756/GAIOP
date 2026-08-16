@@ -1,23 +1,4 @@
 interface:
   display_name: "NAPM Packet Analysis"
   short_description: "Preview, download, and analyze NetInside packet captures."
-  default_prompt: |-
-    Preview, download, or analyze NAPM packet captures using structured packet query input. Never append credentials to URLs; use .env/runtime authentication.
-
-    Alert event ID routing guard:
-    - If the user provides an alert event ID (a numeric ID without IP addresses) and asks
-      for packet analysis ("告警数据包", "分析告警 <id> 的数据包", "alert <id> packet"),
-      do NOT call this skill directly with criteria.id.
-    - Instead, route to openclaw-napm-alert-query FIRST to obtain alert details and
-      packetHandoff candidates (which may include indirect discovery results for
-      business/app/group alerts where the alert group is not an IP address).
-    - Then call this skill with the resolved IPs or event IDs from the packetHandoff result.
-    - If alert-query returns packetHandoff=null or available=false, do NOT call this skill
-      as a fallback. Alert-query's null result is authoritative — the alert has no
-      discoverable packet data. Do not try criteria.id or any other workaround.
-    - packetsPreview/packetsDown by criteria.id only works for linkType=2 alerts
-      (event-ID-linked packets). For linkType=1 business/app/group alerts, the alert-query
-      skill performs automatic indirect IP discovery before handing off to this skill.
-
-policy:
-  allow_implicit_invocation: true
+  default_prompt: "Preview, download, or analyze NAPM packet captures using structured packet query input. Never append credentials to URLs; use .env/runtime authentication."

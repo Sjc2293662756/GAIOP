@@ -93,11 +93,6 @@ MonInterfaceGroup
 - 主候选：`PG*` 页面指标与页面优化指标
 - 回答指标清单时：只列业务网络、业务访问、业务性能、响应代码、页面优化
 - 不要列：丢包、RTT、重传、吞吐、连接、用户体验、应用性能
-- **报错语义**：当用户对 WebApplication / 业务 问"报错/错误/异常/失败"且未明确指定 HTTP 状态码时，默认使用 HTTP 响应代码指标：
-  - `PGHTTP400` — HTTP 400 错误请求数
-  - `PGHTTP500` — HTTP 500 服务器错误数
-  - `PGHTTP400PCT` / `PGHTTP500PCT` — 对应百分比
-  - **不要**用 `PLI`/`PLO`（丢包）或 `RFCI`/`RFCO`（连接失败）替代 WebApplication 场景下的"报错"语义
 
 ### 4.2 `BusinessGroup` / `IPAddress` / `IPConversation` / `TotalTraffic` / `Prefix24`
 

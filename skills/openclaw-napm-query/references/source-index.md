@@ -18,21 +18,21 @@
 
 ### 2.1 metric-definitions.md
 主要来源：
-- `NetInside NAPM user guide 1.5 - metrics.docx`：提供指标分类、定义、计算口径、Client/Server 与 TCP Client/TCP Server 的区别、Inbound/Outbound 说明等。
-- `api参数.pdf` / `api查询` 中的指标字典：提供 metric code、中文名、单位等映射。
+- `NetInside NAPM user guide 1.5 - metrics.docx`：提供指标分类、定义、计算口径、Client/Server 与 TCP Client/TCP Server 的区别、Inbound/Outbound 说明等。:contentReference[oaicite:99]{index=99}
+- `api参数.pdf` / `api查询` 中的指标字典：提供 metric code、中文名、单位等映射。:contentReference[oaicite:100]{index=100}
 
 ### 2.2 group-hierarchy.md
 主要来源：
-- `NetInside NAPM分组结构原始梳理文档-含维度v1.1.docx`：提供顶层对象与 drill-down 结构。
-- `NetInside NAPM user guide 1.5 - api.docx`：提供官方 group drill-down 定义与 groupType 用法。
-- `api查询.docx`：提供现网 group / argument 候选与实际对象示例。
+- `NetInside NAPM分组结构原始梳理文档-含维度v1.1.docx`：提供顶层对象与 drill-down 结构。:contentReference[oaicite:101]{index=101}
+- `NetInside NAPM user guide 1.5 - api.docx`：提供官方 group drill-down 定义与 groupType 用法。:contentReference[oaicite:102]{index=102}
+- `api查询.docx`：提供现网 group / argument 候选与实际对象示例。:contentReference[oaicite:103]{index=103}
 
 ### 2.3 metric-category-mapping.md
 主要来源：
 - `指标使用介绍.md`：提供“模块分类 / 指标分类 / metric id / 适合场景”的主表。
 - `指标使用介绍2.md`：提供不同指标族的适用维度与方向性区分。
 - `napm顶层所对应的指标.md`：提供项目内最终采用的业务类 / 非业务类边界。
-- 项目当前实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`QueryMetadataConstraintService`、`NapmMetadataService.getMetricsForGroupPath()`。
+- 项目当前实现：`src/constants/objectMetricOwnership.js`、`QueryMetadataConstraintService`、`NapmMetadataService.getMetricsForGroupPath()`。
 
 用途：
 
@@ -45,43 +45,30 @@
 - `指标使用介绍.md`：提供指标的模块分类、指标分类、适合场景与概览模块归属。
 - `指标使用介绍2.md`：提供不同 `group` 维度下的指标归属、静态候选与 `metricsForGroup` 最终校验原则。
 - `api参数.pdf`：提供主要 `groupType` 与 metric code 的官方名称。
-- 项目当前实现：`skills/openclaw-napm-query/src/constants/metricDomains.js`、`NapmMetadataService.getMetricsForGroupPath()`。
+- 项目当前实现：`src/constants/metricDomains.js`、`NapmMetadataService.getMetricsForGroupPath()`。
 
 ### 2.5 top-level-metric-ownership.md
 主要来源：
 - `napm顶层所对应的指标.md`：提供顶层对象是业务类还是非业务类，以及每类对象对应的指标分类。
-- 项目当前实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`skills/openclaw-napm-query/src/constants/metricDomains.js`、`QueryMetadataConstraintService`。
+- 项目当前实现：`src/constants/objectMetricOwnership.js`、`src/constants/metricDomains.js`、`QueryMetadataConstraintService`。
 
 ### 2.6 service-modes.md
 主要来源：
-- `NetInside NAPM user guide 1.5 - api.docx`：提供 `topValues / averageValues / timeValues` 与元数据服务定义。
+- `NetInside NAPM user guide 1.5 - api.docx`：提供 `topValues / averageValues / timeValues` 与元数据服务定义。:contentReference[oaicite:104]{index=104}
 - `NetInside NAPM Web Services接口描述20201218.pdf`：提供官方服务表与 URL Cookbook。
-- `API构造规则手册-0725.pdf`：提供更贴近你们使用场景的构造例子与服务选择样例。
+- `API构造规则手册-0725.pdf`：提供更贴近你们使用场景的构造例子与服务选择样例。:contentReference[oaicite:106]{index=106}
 
 ### 2.7 query-construction.md
 主要来源：
-- `API构造规则手册-0725.pdf`：提供 URL 构造规则与典型查询案例。
-- `api查询.docx`：提供元数据返回样例、argument 候选与现网实例。
-- `api参数.pdf`：提供指标与分组 code 对照、参数最小集合。
+- `API构造规则手册-0725.pdf`：提供 URL 构造规则与典型查询案例。:contentReference[oaicite:107]{index=107}
+- `api查询.docx`：提供元数据返回样例、argument 候选与现网实例。:contentReference[oaicite:108]{index=108}
+- `api参数.pdf`：提供指标与分组 code 对照、参数最小集合。:contentReference[oaicite:109]{index=109}
 
 ### 2.8 runtime-lookup-notes.md
 主要来源：
-- `NetInside NAPM user guide 1.5 - api.docx`：提供元数据服务定义。
+- `NetInside NAPM user guide 1.5 - api.docx`：提供元数据服务定义。:contentReference[oaicite:110]{index=110}
 - `NetInside NAPM Web Services接口描述20201218.pdf`：提供官方服务说明。
-- `api查询.docx`：提供现网对象、groupArguments 样本和运行时候选思路。
-
-### 2.9 chinese-semantic-metric-mapping.md
-主要来源：
-- 项目现有实现：`skills/openclaw-napm-query/src/constants/objectMetricOwnership.js`、`skills/openclaw-napm-query/src/constants/metricDomains.js`、`skills/openclaw-napm-query/src/constants/objectDimensions.js`
-- 项目配置：`config/object-ontology.v1.json`、`config/metrics-config.yml`
-- 历史映射错误案例与纠正经验
-
-用途：
-
-- 作为 LLM 构造 `resolvedQuery` 时的**正向查表工具**
-- 按用户中文语义域（报错/慢/流量/丢包/重传/连接/访问/用户体验）直接定位正确 metric code
-- 提供对象上下文敏感的映射规则和常见错误抑制
-- 不替代运行时 `metricsForGroup` 校验
+- `api查询.docx`：提供现网对象、groupArguments 样本和运行时候选思路。:contentReference[oaicite:112]{index=112}
 
 ---
 
@@ -111,6 +98,5 @@
 - 若要回答“该走哪种服务”，优先查 `service-modes.md`
 - 若要构造查询，优先查 `query-construction.md`
 - 若要确认现网是否支持或存在，优先查 `runtime-lookup-notes.md`
-- 若要将用户的中文问法精确映射为 NAPM metric code，优先查 `chinese-semantic-metric-mapping.md`
 
 静态 references 用于解释与通用规则；运行时元数据服务用于现网确认与执行前校验。

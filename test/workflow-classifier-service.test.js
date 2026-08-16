@@ -1,6 +1,20 @@
 const WorkflowClassifierService = require('../skills/openclaw-napm-query/services/WorkflowClassifierService');
 
 describe('WorkflowClassifierService', () => {
+  test('classifies an alert packet event before generic metric workflows', () => {
+    const result = WorkflowClassifierService.classifyWorkflow([
+      '分析告警数据包 eventId=745278 start=1786327320 end=1786327560',
+      '触发指标值: 用户体验时间（服务器）=3055.3701毫秒'
+    ].join('\n'));
+
+    expect(result).toMatchObject({
+      workflowType: 'alert_packet_analysis',
+      confidence: 1,
+      eventId: '745278',
+      reason: 'alert_packet_event_intent'
+    });
+  });
+
   test('should classify BusinessGroup inventory as object_inventory', () => {
     const result = WorkflowClassifierService.classifyWorkflow('系统都有哪些工作组');
 
@@ -15,6 +29,26 @@ describe('WorkflowClassifierService', () => {
 
     expect(result).toMatchObject({
       workflowType: 'object_inventory',
+      targetObjectType: 'WebApplication'
+    });
+  });
+
+  test('classifies inventory wording with a comparative metric as ranking', () => {
+    const result = WorkflowClassifierService.classifyWorkflow('最近一周有哪些业务出现较多 HTTP 500 错误？');
+
+    expect(result).toMatchObject({
+      workflowType: 'metric_topn',
+      targetObjectType: 'WebApplication',
+      reason: 'ranking_intent'
+    });
+  });
+
+  test.each([
+    ['最近一周有哪些业务的 HTTP 500 错误趋势上升？', 'metric_timeseries'],
+    ['最近一周有哪些业务的平均响应时间较高？', 'metric_average']
+  ])('classifies mixed object wording by explicit data operation: %s', (prompt, workflowType) => {
+    expect(WorkflowClassifierService.classifyWorkflow(prompt)).toMatchObject({
+      workflowType,
       targetObjectType: 'WebApplication'
     });
   });
@@ -43,17 +77,6 @@ describe('WorkflowClassifierService', () => {
     expect(result).toMatchObject({
       workflowType: 'drilldown_catalog',
       targetObjectType: 'BusinessGroup'
-    });
-  });
-});
-
-describe('WorkflowClassifierService metric condition arbitration', () => {
-  test('should classify metric-conditioned list questions as metric topn, not inventory', () => {
-    const result = WorkflowClassifierService.classifyWorkflow('\u5728\u5176\u4ed6web\u5e94\u7528\u4e2d\uff0c\u6709\u54ea\u4e9b\u9875\u9762\u51fa\u73b0400\u9519\u8bef\uff1f');
-
-    expect(result).toMatchObject({
-      workflowType: 'metric_topn',
-      reason: 'metric_condition_over_inventory'
     });
   });
 });

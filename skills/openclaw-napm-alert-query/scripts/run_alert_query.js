@@ -29,6 +29,7 @@ const {
 } = require('../services/AlertNotificationExplainerService');
 const { discoverForEvents } = require('../services/AlertIndirectPacketDiscoveryService');
 const { resolveExecutionTime } = require('../../openclaw-napm-query/src/shared/timeResolver');
+const TimeRangeService = require('../../openclaw-napm-query/services/ResolvedQueryTimeRangeService');
 
 if (require.main === module) {
   main().catch((error) => {
@@ -60,6 +61,16 @@ async function main() {
 async function executeAlertQuery(payload = {}, options = {}) {
   const prompt = payload.prompt || payload.userQuery || (payload.alertQuery && payload.alertQuery.prompt) || '';
   const promptTimeRange = resolveRelativeTimeRangeFromPrompt(prompt, options.nowMs);
+  if (TimeRangeService.hasExplicitTimeRangeExpression(prompt) && !promptTimeRange) {
+    return buildFailureResult(
+      payload?.alertQuery?.mode || payload?.mode || null,
+      {
+        code: 'ALERT_RELATIVE_TIME_RANGE_UNRESOLVED',
+        message: '用户问题包含明确的相对时间，但无法生成受支持的执行时间范围；已停止告警查询。'
+      },
+      null
+    );
+  }
   const criteria = getMutableCriteria(payload);
   const originalStart = criteria?.start || null;
   const originalEnd = criteria?.end || null;
@@ -261,6 +272,12 @@ function applyPromptCategoryFilter(query = {}, prompt = '') {
     return null;
   }
 
+  const hasAuthoritativeEventIds = Array.isArray(query.criteria.eventIds)
+    && query.criteria.eventIds.length > 0;
+  if (hasAuthoritativeEventIds && ['detail', 'detail_with_timeseries'].includes(query.mode)) {
+    return null;
+  }
+
   const categories = resolveCategoryFilterFromPrompt(prompt);
   if (categories.length === 0) {
     return null;
@@ -332,76 +349,9 @@ function resolveCategoryFilterFromPrompt(prompt = '') {
 }
 
 function resolveRelativeTimeRangeFromPrompt(prompt = '', nowMs = Date.now()) {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return null;
-  }
-
-  if (/(今天|今日|当天|\btoday\b)/i.test(text)) {
-    return resolveExecutionTime({ timeRangeKey: 'today', nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000) });
-  }
-  if (/(昨天|昨日|\byesterday\b)/i.test(text)) {
-    return resolveExecutionTime({ timeRangeKey: 'yesterday', nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000) });
-  }
-
-  const match = text.match(/(?:最近|近|过去|前)\s*([0-9一二两三四五六七八九十半]+)\s*(分钟|分|小时|时|天|日)/);
-  if (!match) {
-    return null;
-  }
-
-  const amount = parseChineseNumber(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null;
-  }
-
-  const unit = match[2];
-  const secondsPerUnit = /分钟|分/.test(unit)
-    ? 60
-    : (/天|日/.test(unit) ? 86400 : 3600);
-  const durationSeconds = Math.max(60, Math.floor(amount * secondsPerUnit));
-  const range = resolveExecutionTime({
-    timeRangeKey: `last${durationSeconds}seconds`,
+  return TimeRangeService.resolvePromptTimeRange(prompt, {
     nowSeconds: Math.floor(Number(nowMs || Date.now()) / 1000)
   });
-  return range.ok
-    ? { ...range, displayText: `最近${match[1]}${unit}` }
-    : null;
-}
-
-function parseChineseNumber(value = '') {
-  const text = String(value || '').trim();
-  if (!text) return null;
-  if (text === '半') return 0.5;
-  const numeric = Number(text);
-  if (Number.isFinite(numeric)) return numeric;
-  const digitMap = {
-    零: 0,
-    一: 1,
-    二: 2,
-    两: 2,
-    三: 3,
-    四: 4,
-    五: 5,
-    六: 6,
-    七: 7,
-    八: 8,
-    九: 9,
-  };
-  if (Object.prototype.hasOwnProperty.call(digitMap, text)) {
-    return digitMap[text];
-  }
-  if (text === '十') return 10;
-  const tenIndex = text.indexOf('十');
-  if (tenIndex !== -1) {
-    const left = text.slice(0, tenIndex);
-    const right = text.slice(tenIndex + 1);
-    const tens = left ? digitMap[left] : 1;
-    const ones = right ? digitMap[right] : 0;
-    if (Number.isFinite(tens) && Number.isFinite(ones)) {
-      return tens * 10 + ones;
-    }
-  }
-  return null;
 }
 
 /**
