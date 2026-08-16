@@ -177,7 +177,18 @@ try {
   }
 
   $archiveInfo = Get-Item -LiteralPath $finalArchive
-  $sha256 = (Get-FileHash -LiteralPath $finalArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+  $sha256Algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $archiveStream = [System.IO.File]::OpenRead($finalArchive)
+    try {
+      $sha256Bytes = $sha256Algorithm.ComputeHash($archiveStream)
+    } finally {
+      $archiveStream.Dispose()
+    }
+  } finally {
+    $sha256Algorithm.Dispose()
+  }
+  $sha256 = ([System.BitConverter]::ToString($sha256Bytes)).Replace('-', '').ToLowerInvariant()
   Write-Host ''
   Write-Host 'Release package created.' -ForegroundColor Green
   Write-Host "Path:    $finalArchive"
