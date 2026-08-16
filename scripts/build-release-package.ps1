@@ -48,7 +48,7 @@ $tempRoot = Join-Path $tempBase ("napm-release-" + [System.Guid]::NewGuid().ToSt
 Push-Location $repoRoot
 try {
   $packageJson = Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json
-  $packageVersion = String($packageJson.version).Trim()
+  $packageVersion = ([string]$packageJson.version).Trim()
   if (-not $Version) {
     $Version = $packageVersion
   }
@@ -67,12 +67,12 @@ try {
     throw "The worktree is not clean. Commit the current changes before building a release package.`n$($status -join "`n")"
   }
 
-  $commitHash = String((& git rev-parse "$Commit^{commit}")).Trim()
+  $commitHash = ([string](& git rev-parse "$Commit^{commit}")).Trim()
   if ($LASTEXITCODE -ne 0 -or $commitHash -notmatch '^[0-9a-f]{40}$') {
     throw "Unable to resolve commit: $Commit"
   }
   $shortCommit = $commitHash.Substring(0, 8)
-  $branch = String((& git branch --show-current)).Trim()
+  $branch = ([string](& git branch --show-current)).Trim()
   if ($LASTEXITCODE -ne 0) {
     throw 'Unable to resolve current Git branch.'
   }
