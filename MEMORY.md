@@ -1,4 +1,5 @@
-- [deploy-push-config](memory/deploy-push-config.md) — 远端部署推送配置（服务器地址、认证、pscp 推送方式、extensions 目录注意）
+- [deploy-push-config](memory/deploy-push-config.md) — 统一仓库的单 ZIP 构建、上传、备份和服务器安装流程
+- [2026-08-16](memory/2026-08-16.md) — 两个旧仓库统一、质量基线和唯一发布规则
 - [summary-report-implementation](memory/summary-report-implementation.md) — 综述报告完整实现状态（模板、渲染、聚合、6种scope、61个测试通过）
 - [napm-query-chinese-metric-mapping](memory/2026-06-23-napm-query-metric-mapping-fix.md) — NAPM query skill 中文语义→指标映射系统性修复（报错→PLI误映射根因+两轮修复+8语义域正向查表）
 - [remote-log-investigation-guide](memory/remote-log-investigation-guide.md) — 远端OpenClaw日志排查完整指南（5层分析法、多日志关联、reqId追踪、Agent内部阶段拆解、Prompt大小分析、常见排查场景）

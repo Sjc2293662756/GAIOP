@@ -4,3 +4,24 @@
 *.yaml text working-tree-encoding=UTF-8 eol=lf
 *.md text working-tree-encoding=UTF-8 eol=lf
 *.txt text working-tree-encoding=UTF-8 eol=lf
+*.sh text working-tree-encoding=UTF-8 eol=lf
+*.ps1 text working-tree-encoding=UTF-8 eol=crlf
+
+# Keep deployment archives limited to runtime files from the selected commit.
+/.editorconfig export-ignore
+/.eslintrc.cjs export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/archive export-ignore
+/docs export-ignore
+/memory export-ignore
+/test export-ignore
+/jest.config.cjs export-ignore
+/napm-openclaw-plugin.remote.js.bak export-ignore
+/remote_packet_loss_probe.js export-ignore
+/test-*.cjs export-ignore
+/scripts/** export-ignore
+/scripts/install-release.sh -export-ignore
+/scripts/verify-napm-skill-runtime-contract.js -export-ignore
+/skills/openclaw-napm-syslog-watcher/config/watcher.config.json export-ignore
+/skills/openclaw-napm-syslog-watcher/scripts/test_codeblock.* export-ignore

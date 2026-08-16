@@ -1,6 +1,6 @@
 ---
 name: deploy-push-config
-description: 远端部署推送配置 — 服务器地址、认证、路径映射与推送方式
+description: 远端统一部署配置 — 单 ZIP、备份、路径映射与验证方式
 metadata:
   type: project
 ---
@@ -16,29 +16,52 @@ metadata:
   - **推送 Plugin 必须同时覆盖 extensions 目录**，仅推送到 workspace 无效（gateway 不从 workspace 加载 Plugin）
   - `openclaw.plugin.json` 在 extensions 目录中，contracts.tools 需要在 extensions 目录中的文件更新
 
-## 推送方式
+## 唯一本地源
 
-使用 `pscp`（PuTTY SCP，路径 `/d/PUTTY/pscp`）逐个文件推送，认证信息从受控环境获取，不写入命令模板或文档。
+本地项目根目录：
 
-本地项目根目录 = `g:/my_file/项目测试/观枢·智维平台-GAIOP/project_3/NAPM_skill`
+`G:\my_file\项目测试\观枢·智维平台-GAIOP\NAPM_skill_unified`
 
-远端目标根目录 = `/home/netinside/.openclaw/workspace/`
+分支：`integration/unified-v1`
 
-两者目录结构一一对应，推送时保持相同的相对路径。
+`skill_project/NAPM_skill` 和 `project_3/NAPM_skill` 是冻结的历史目录，不再作为部署源。
 
-## 推送命令模板
+## 标准发布方式
 
-```bash
-# Skill 脚本 → workspace/skills/
-cd "<project>" && pscp "<local-relative-path>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-relative-dir>/"
+先从干净、已提交且通过测试的 Git 版本构建：
 
-# Plugin + manifest + timeResolver → extensions 目录 (Gateway 实际加载位置)
-cd "<project>" && pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-cd "<project>" && pscp "openclaw.plugin.json" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-cd "<project>" && pscp "skills/openclaw-napm-query/src/shared/timeResolver.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/skills/openclaw-napm-query/src/shared/"
+```powershell
+npm run release:build
 ```
 
-目标路径末尾必须带 `/` 表示目录，否则多文件推送会报 `not a directory` 错误。
+生成物：`dist/NAPM_skill-<version>-<commit>.zip`
+
+只上传这一个 ZIP。认证信息从受控环境获取，不写入仓库、命令模板或文档。
+
+```bash
+pscp "dist/NAPM_skill-<version>-<commit>.zip" \
+  "netinside@101.254.114.237:/home/netinside/releases/"
+```
+
+逐文件 pscp 仅限紧急诊断，不能作为常规版本发布。发生紧急单文件修补后，必须把相同修改提交回统一仓库并重新生成完整发布包。
+
+## 服务器安装
+
+解压后先预演，再正式安装：
+
+```bash
+bash scripts/install-release.sh --dry-run
+bash scripts/install-release.sh
+```
+
+安装脚本负责：
+
+- 备份当前 extension、Skills 和依赖清单
+- 同步完整版本，而不是只覆盖本次修改文件
+- 保留 `.env`、日志、输出、运行数据和 Syslog watcher 配置
+- 安装锁定依赖
+- 验证 8 个生产工具入口
+- 重启并检查 `openclaw-gateway.service`
 
 ## 验证命令
 
@@ -56,6 +79,6 @@ plink -ssh netinside@101.254.114.237 "<command>"
 - extension 插件、共享运行时或查询执行链变更后，使用 `systemctl --user restart openclaw-gateway.service` 受控重启
 - 重启后检查服务状态、18789 端口、插件加载和企业微信认证，再执行生产 Skill 验收
 
-**Why:** 用户希望将本地修改推送到远端测试服务器时使用统一的推送方式。采用 pscp 而非 git push 是因为远端不具备 git 拉取条件，且推送只需覆盖被修改文件。
+**Why:** 逐文件推送曾导致远端同时存在不同本地目录、不同提交的混合代码。单 ZIP 让版本号、Git 提交和服务器文件保持同一来源。
 
-**How to apply:** 当用户要求"推送"或"部署"时，先 `git status --short` 确认修改文件，将其中涉及运行时的源文件（非 docs/test）用 pscp 逐个推送到远端对应路径。推送完成后用 plink 验证文件时间戳。
+**How to apply:** 当用户要求“推送”或“部署”时，先确认 Git 工作区干净、质量门禁通过、ZIP 名称中的版本和提交正确。只上传 ZIP，先 dry-run，保存备份路径，再正式安装和验收。

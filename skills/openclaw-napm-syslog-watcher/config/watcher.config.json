@@ -4,15 +4,15 @@
     "encoding": "utf-8"
   },
   "napm": {
-    "baseUrl": "https://101.254.114.238/webservice/NetInside",
-    "username": "GAIOP",
-    "password": "GAIOP123",
+    "baseUrl": "<NAPM_BASE_URL>",
+    "username": "<NAPM_USERNAME>",
+    "password": "<NAPM_PASSWORD>",
     "tlsInsecure": true,
     "requestTimeoutMs": 15000
   },
   "wecom": {
     "_comment": "企业微信群机器人 Webhook URL",
-    "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=6ab0fb17-01a5-4c88-815e-46164cf3c392",
+    "webhookUrl": "<WECOM_WEBHOOK_URL>",
     "secret": "",
     "mentionedList": [],
     "mentionedMobileList": [],
