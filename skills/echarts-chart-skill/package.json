@@ -1,6 +1,6 @@
 {
   "name": "echarts-ai-skill",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,12 +12,14 @@
     "test": "npm run check && npm run build"
   },
   "dependencies": {
-    "echarts": "^5.5.0",
-    "sharp": "^0.33.2"
+    "echarts": "^6.1.0",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
     "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }
-

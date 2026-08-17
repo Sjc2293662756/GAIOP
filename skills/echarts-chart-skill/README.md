@@ -9,7 +9,7 @@ Turn requests like **"use my data and generate a pie chart"** into deterministic
 [![Release](https://img.shields.io/github/v/release/davaded/Echarts-AI-Skill)](https://github.com/davaded/Echarts-AI-Skill/releases)
 [![License](https://img.shields.io/github/license/davaded/Echarts-AI-Skill)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![ECharts](https://img.shields.io/badge/ECharts-5.x-AA344D)](https://echarts.apache.org/)
+[![ECharts](https://img.shields.io/badge/ECharts-6.x-AA344D)](https://echarts.apache.org/)
 [![Codex Skill](https://img.shields.io/badge/Codex-Skill-111111)](./SKILL.md)
 
 English | [简体中文](./README.zh-CN.md)

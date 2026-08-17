@@ -1,6 +1,6 @@
 import type { ChartOption } from "../types/chart.js";
 
-const CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js";
+const CDN_URL = "https://cdn.jsdelivr.net/npm/echarts@6/dist/echarts.min.js";
 
 export function renderHtml(option: ChartOption, width: number, height: number): string {
   const optionJson = JSON.stringify(option, null, 2);
