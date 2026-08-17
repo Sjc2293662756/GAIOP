@@ -119,7 +119,88 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result).toBeUndefined();
   }, 30000);
 
-  test('should require upstream resolvedQuery instead of rewriting metric inventory reply during async message_sending path', async () => {
+  test('should not rewrite a metric inventory answer that mentions another object type', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(def) {
+        tools.set(def.name, def);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
+    const beforeMessageWrite = hooks.get('before_message_write');
+
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-metric-defined-app-reference',
+      conversationId: 'conv-metric-defined-app-reference',
+      sessionKey: 'session-metric-defined-app-reference',
+      sessionId: 'session-metric-defined-app-reference',
+      runId: 'run-metric-defined-app-reference'
+    };
+    const prompt = '业务有哪些指标可以用？';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        resolvedQuery: {
+          service: 'metrics',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'WebApplication' }]
+        }
+      }
+    }, ctx);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      service: 'metrics',
+      resolvedQuery: bound.params.resolvedQuery,
+      summary: { title: '指标列表', rowCount: 2, empty: false },
+      rows: [
+        { id: 'PGNPGE', label: '页面访问数', unit: 'pages' },
+        { id: 'PGTME', label: '页面延时', unit: 'sec' }
+      ],
+      narrationStructure: { responseType: 'metric_list', displayText: null }
+    }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
+
+    const result = await beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: '业务（WebApplication）共返回 2 个指标。另有应用类（DefinedApp）指标可单独查询。'
+        }]
+      }
+    }, ctx);
+
+    expect(result?.message?.content?.[0]?.text).toContain('PGNPGE');
+    expect(result?.message?.content?.[0]?.text).toContain('PGTME');
+    expect(result?.message?.content?.[0]?.text).not.toContain('另有应用类');
+    expect(result?.message?.content?.[0]?.text).not.toBe('指标列表');
+  }, 30000);
+
+  test('should use the deterministic metric inventory in async message_sending path', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -187,7 +268,13 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     }, ctx);
     plugin.__test__.rememberSkillResult(prompt, {
       ok: true,
-      displayText: '业务可查指标已返回。',
+      service: 'metrics',
+      summary: { title: '指标列表', rowCount: 2, empty: false },
+      rows: [
+        { id: 'PGNPGE', label: '页面访问数', unit: 'pages' },
+        { id: 'PGRT', label: '页面访问率', unit: 'pages/min' }
+      ],
+      narrationStructure: { responseType: 'metric_list', displayText: null },
       resolvedQuery: bound.params.resolvedQuery
     }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
 
@@ -195,7 +282,9 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result?.content).toContain('PGNPGE');
+    expect(result?.content).toContain('PGRT');
+    expect(result?.content).not.toContain('总吞吐');
   }, 30000);
 
   test('should require upstream resolvedQuery when model never called tool', async () => {
@@ -246,6 +335,77 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     }, ctx);
 
     expect(result?.content).toContain('本轮未拿到有效 skill 结果');
+  }, 30000);
+
+  test('should not reuse a prior metric inventory result in a new turn', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const api = {
+      config: {},
+      logger: {
+        info() {},
+        warn() {},
+        error() {}
+      },
+      registerTool(def) {
+        tools.set(def.name, def);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        if (Array.isArray(name)) {
+          name.forEach((item) => hooks.set(item, handler));
+          return;
+        }
+        hooks.set(name, handler);
+      }
+    };
+
+    plugin.register(api);
+
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const beforeToolCall = hooks.get('before_tool_call');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-metric-fresh-turn',
+      conversationId: 'conv-metric-fresh-turn',
+      sessionKey: 'session-metric-fresh-turn',
+      sessionId: 'session-metric-fresh-turn',
+      runId: 'run-metric-fresh-turn-1'
+    };
+    const prompt = '业务有哪些指标可以用？';
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+    const bound = await beforeToolCall({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        resolvedQuery: {
+          service: 'metrics',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'WebApplication' }]
+        }
+      }
+    }, ctx);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      service: 'metrics',
+      displayText: '上一轮业务指标结果',
+      resolvedQuery: bound.params.resolvedQuery
+    }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
+
+    ctx.runId = 'run-metric-fresh-turn-2';
+    messageReceived({ content: prompt }, ctx);
+    const result = await beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '模型未调用本轮 Skill 的旧答案' }]
+      }
+    }, ctx);
+
+    expect(result?.message?.content?.[0]?.text).toContain('本轮未拿到有效 skill 结果');
   }, 30000);
 
   test('should rewrite unverified business metric inventory before persistence', async () => {

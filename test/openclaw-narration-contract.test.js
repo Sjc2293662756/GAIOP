@@ -437,6 +437,38 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.narrationStructure.explanation).toContain('RTT');
     expect(payload.narrationStructure.explanation).toContain('告警');
   });
+
+  test('should build deterministic metric-list display text from returned rows', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'metrics',
+      resolvedQuery: {
+        service: 'metrics',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }]
+      },
+      summary: {
+        title: '指标列表',
+        rowCount: 3,
+        empty: false
+      },
+      rows: [
+        { id: 'PGNPGE', label: '页面访问数', unit: 'pages' },
+        { id: 'PGRT', label: '页面访问率', unit: 'pages/min' },
+        { id: 'PGTME', label: '页面延时', unit: 'sec' }
+      ]
+    }, {
+      forwardDisplayText: false
+    });
+
+    expect(payload.narrationStructure.displayText).toContain('WebApplication');
+    expect(payload.narrationStructure.displayText).toContain('3 个指标');
+    expect(payload.summary.displayText).toContain('PGNPGE');
+    expect(payload.summary.displayText).toContain('PGRT');
+    expect(payload.summary.displayText).toContain('PGTME');
+    expect(payload.summary.displayText).toContain('页面访问率（PGRT，pages/min）');
+    expect(payload.summary.displayText).not.toContain('页面访问率（PGNPGE');
+  });
+
   test('should constrain ClientBusinessGroup metric-list narration to business-owned metrics only', () => {
     const payload = buildOpenClawReplyContract({
       service: 'metrics',

@@ -644,6 +644,50 @@ function looksLikeInvalidBusinessInventoryAnswer(text = '') {
   return /(?:自定义业务应用|type\s*=\s*2|type=2|Type=2|DefinedApp|已定义应用|Web业务应用[\s\S]{0,120}自定义业务应用|业务相关[^，。！？\n]{0,20}(?:14|十四)\s*个|python\s*(?:按|过滤|筛选|处理|解析|输出)|exec\s*(?:工具|执行|命令)|直接调用后端|直接调(?:用)?后端|直接从API|未经过.*(?:中间管道|napm-skill-query)|没有经过.*(?:中间管道|napm-skill-query))/i.test(content);
 }
 
+function isBusinessInventoryGuardScope(prompt = '', rememberedRecord = null) {
+  // Metric inventories may mention other object types as a useful comparison.
+  // Their ownership must be checked from the structured metric result, not prose.
+  if (isMetricInventoryPrompt(prompt)) {
+    return false;
+  }
+
+  const result = isPlainObject(rememberedRecord?.result) ? rememberedRecord.result : null;
+  if (result) {
+    const resolvedQuery = isPlainObject(rememberedRecord?.resolvedQuery)
+      ? rememberedRecord.resolvedQuery
+      : (isPlainObject(result.resolvedQuery) ? result.resolvedQuery : {});
+    const service = String(result.service || resolvedQuery.service || '').trim();
+    const objectType = String(
+      result?.metadata?.effectiveObjectType
+      || result?.metadata?.requestedObjectType
+      || resolvedQuery?.groups?.[0]?.type
+      || ''
+    ).trim();
+    return service === 'groups' && objectType === 'WebApplication';
+  }
+
+  return isBusinessObjectInventoryPrompt(prompt);
+}
+
+function isMetricInventoryResultRecord(rememberedRecord = null) {
+  const result = isPlainObject(rememberedRecord?.result) ? rememberedRecord.result : null;
+  if (!result) {
+    return false;
+  }
+
+  const resolvedQuery = isPlainObject(rememberedRecord?.resolvedQuery)
+    ? rememberedRecord.resolvedQuery
+    : (isPlainObject(result.resolvedQuery) ? result.resolvedQuery : {});
+  const service = String(result.service || resolvedQuery.service || '').trim();
+  const responseType = String(
+    result.responseType
+    || result.narrationStructure?.responseType
+    || result.narrationInput?.result?.narrationStructure?.responseType
+    || ''
+  ).trim();
+  return service === 'metrics' && responseType === 'metric_list' && Boolean(result.ok !== false && !result.error);
+}
+
 function isMeaningfulText(value = '') {
   const text = String(value || '').trim();
   if (!text) {
@@ -3346,6 +3390,12 @@ function getRememberedRecordForPrompt(activePrompt = '', conversationState = nul
   if (isObjectInventoryPrompt(activePrompt)) {
     return null;
   }
+  if (isMetricInventoryPrompt(activePrompt) && !isMetricInventoryDetailPrompt(activePrompt)) {
+    // A repeated metric inventory question is a new data request. Only the
+    // current turn's result may support it; explicit detail follow-ups below
+    // retain the existing conversation-context behavior.
+    return null;
+  }
   return getRememberedSkillResult(activePrompt, conversationKey)
     || getRememberedMetricInventoryFollowUpRecord(activePrompt, conversationState, conversationKey)
     || (isMetricInventoryDetailPrompt(activePrompt) ? getRecentRememberedSkillResult(conversationKey) : null)
@@ -5100,6 +5150,7 @@ function buildUserFacingSkillText(result) {
       ? result.narrationInput.result.narrationStructure
       : {});
   let groupListDisplayText = '';
+  let metricListDisplayText = '';
   const responseType = String(result?.responseType || narrationStructure?.responseType || '').trim();
   if (result?.service === 'groups' || responseType === 'group_list') {
     const rows = Array.isArray(result?.rows)
@@ -5122,12 +5173,33 @@ function buildUserFacingSkillText(result) {
       groupListDisplayText = '';
     }
   }
+  if (result?.service === 'metrics' || responseType === 'metric_list') {
+    const rows = Array.isArray(result?.rows)
+      ? result.rows
+      : (Array.isArray(result?.data) ? result.data : []);
+    try {
+      const narrationContractService = require(path.join(
+        OPENCLAW_SKILLS_ROOT,
+        'openclaw-napm-query/services/OpenClawNarrationContractService'
+      ));
+      if (typeof narrationContractService.buildMetricListDisplayText === 'function') {
+        metricListDisplayText = narrationContractService.buildMetricListDisplayText(
+          result,
+          rows,
+          result?.metadata?.effectiveObjectType || result?.resolvedQuery?.groups?.[0]?.type || ''
+        );
+      }
+    } catch (_error) {
+      metricListDisplayText = '';
+    }
+  }
   const displayText = String(
     result?.displayText
     || summary?.displayText
     || result?.replyText
     || narrationStructure?.displayText
     || groupListDisplayText
+    || metricListDisplayText
     || ''
   ).trim();
   return displayText ? appendDebugApi(displayText, requestUrl) : '';
@@ -7046,6 +7118,17 @@ const plugin = {
           if (shouldAllowNapmReasoningPreviewForCtx(ctx) && isStreamingPreviewMessageEvent(event)) {
             return undefined;
           }
+          if (
+            isMetricInventoryPrompt(activePrompt)
+            && isMetricInventoryResultRecord(rememberedRecord)
+            && isSkillResultRecordForTurn(rememberedRecord, turnId)
+          ) {
+            // Metric identifiers, labels, and units are source data. Keep the
+            // model from silently changing them while narrating the result.
+            return {
+              content: buildRememberedSkillReplyText(rememberedRecord)
+            };
+          }
           const leakedReasoningText = extractTextContent(event?.content);
           if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(leakedReasoningText) && !isFreshReportExportResult(conversationKey)) {
             appendPluginAuditEvent('napm_report_direct_claim_blocked', {
@@ -7081,7 +7164,10 @@ const plugin = {
               content: buildAlertQueryReply(rememberedRecord.result)
             };
           }
-          if (looksLikeInvalidBusinessInventoryAnswer(leakedReasoningText)) {
+          if (
+            isBusinessInventoryGuardScope(activePrompt, rememberedRecord)
+            && looksLikeInvalidBusinessInventoryAnswer(leakedReasoningText)
+          ) {
             const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord);
             return rememberedReplyText
               ? { content: rememberedReplyText }
@@ -7092,7 +7178,10 @@ const plugin = {
                 guardState
               );
           }
-          if (looksLikeUnsupportedBusinessInventoryExplanation(leakedReasoningText)) {
+          if (
+            isBusinessInventoryGuardScope(activePrompt, rememberedRecord)
+            && looksLikeUnsupportedBusinessInventoryExplanation(leakedReasoningText)
+          ) {
             return {
               content: buildBusinessInventoryCorrectedReply(rememberedRecord)
             };
@@ -7324,6 +7413,20 @@ const plugin = {
           };
         }
         if (
+          isMetricInventoryPrompt(activePrompt)
+          && isMetricInventoryResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          // Persist the same deterministic metric inventory that was returned
+          // by the Skill, regardless of how the model paraphrased it.
+          return {
+            message: buildAssistantTextMessage(
+              buildRememberedSkillReplyText(rememberedRecord),
+              message
+            )
+          };
+        }
+        if (
           isObjectInventoryPrompt(activePrompt)
           || isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState)
         ) {
@@ -7349,13 +7452,19 @@ const plugin = {
             message: buildAssistantTextMessage(buildAlertQueryReply(rememberedRecord.result), message)
           };
         }
-        if (looksLikeInvalidBusinessInventoryAnswer(existingText)) {
+        if (
+          isBusinessInventoryGuardScope(activePrompt, rememberedRecord)
+          && looksLikeInvalidBusinessInventoryAnswer(existingText)
+        ) {
           const rememberedReplyText = buildRememberedSkillReplyText(rememberedRecord) || buildSkillRequiredReplyForPrompt(activePrompt);
           return {
             message: buildAssistantTextMessage(rememberedReplyText, message)
           };
         }
-        if (looksLikeUnsupportedBusinessInventoryExplanation(existingText)) {
+        if (
+          isBusinessInventoryGuardScope(activePrompt, rememberedRecord)
+          && looksLikeUnsupportedBusinessInventoryExplanation(existingText)
+        ) {
           return {
             message: buildAssistantTextMessage(buildBusinessInventoryCorrectedReply(rememberedRecord), message)
           };
