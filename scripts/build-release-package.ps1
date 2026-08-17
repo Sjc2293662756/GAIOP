@@ -44,6 +44,8 @@ function Remove-ReleaseTempDirectory {
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempRoot = Join-Path $tempBase ("napm-release-" + [System.Guid]::NewGuid().ToString('N'))
+$finalArchive = $null
+$removeFailedArchive = $false
 
 Push-Location $repoRoot
 try {
@@ -137,6 +139,7 @@ try {
     (New-Object System.Text.UTF8Encoding($false))
   )
 
+  $removeFailedArchive = $true
   Compress-Archive -LiteralPath $packageRoot -DestinationPath $finalArchive -CompressionLevel Optimal
   Expand-Archive -LiteralPath $finalArchive -DestinationPath $verificationDir
   $verifiedRoot = Join-Path $verificationDir $archiveName
@@ -192,6 +195,7 @@ try {
     $sha256Algorithm.Dispose()
   }
   $sha256 = ([System.BitConverter]::ToString($sha256Bytes)).Replace('-', '').ToLowerInvariant()
+  $removeFailedArchive = $false
   Write-Host ''
   Write-Host 'Release package created.' -ForegroundColor Green
   Write-Host "Path:    $finalArchive"
@@ -201,5 +205,8 @@ try {
   Write-Host "Bytes:   $($archiveInfo.Length)"
 } finally {
   Pop-Location
+  if ($removeFailedArchive -and $finalArchive -and (Test-Path -LiteralPath $finalArchive -PathType Leaf)) {
+    Remove-Item -LiteralPath $finalArchive -Force
+  }
   Remove-ReleaseTempDirectory -Path $tempRoot -TempBase $tempBase
 }

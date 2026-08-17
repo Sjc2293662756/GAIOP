@@ -26,8 +26,11 @@
 /scripts/verify-staged-release.sh -export-ignore
 /scripts/verify-napm-skill-runtime-contract.js -export-ignore
 /skills/**/.env export-ignore
+/skills/**/logs export-ignore
 /skills/**/logs/** export-ignore
+/skills/**/output export-ignore
 /skills/**/output/** export-ignore
+/skills/**/data export-ignore
 /skills/**/data/** export-ignore
 /skills/**/query_*.json export-ignore
 /skills/**/alert_packet_query.json export-ignore
