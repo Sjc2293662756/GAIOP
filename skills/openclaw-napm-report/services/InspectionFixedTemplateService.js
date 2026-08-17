@@ -934,8 +934,8 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
  * Uses system-installed CJK fonts via fontconfig (ensure fonts-wqy-microhei is installed).
  */
 async function renderChartPngBuffer(option, width = 960, height = 540) {
-  const echarts = await import('echarts');
-  const sharp = (await import('sharp')).default;
+  const echarts = require('echarts');
+  const sharp = require('sharp');
   const chart = echarts.init(null, undefined, {
     renderer: 'svg',
     ssr: true,

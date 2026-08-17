@@ -201,6 +201,21 @@ describe('InspectionFixedTemplateService', () => {
     expect(buffer.length).toBeGreaterThan(1000);
   });
 
+  test('renders configured charts to PNG buffers', async () => {
+    const service = new InspectionFixedTemplateService();
+    const report = makeReportData();
+    const template = service.loadTemplate();
+    const context = service.buildContext(report);
+    const chartBuffers = await service.preRenderCharts(template, context);
+
+    expect(chartBuffers.size).toBeGreaterThan(0);
+    for (const { buffer, width, height } of chartBuffers.values()) {
+      expect(buffer.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      expect(width).toBeGreaterThan(0);
+      expect(height).toBeGreaterThan(0);
+    }
+  });
+
   test('renders configured header and footer into docx package', async () => {
     const service = new InspectionFixedTemplateService();
     const buffer = await service.renderDocx(makeReportData());
