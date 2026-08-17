@@ -16,6 +16,12 @@ function parseArgs(argv = []) {
   return args;
 }
 
+function isExpectedSecurityRefusal(details = null) {
+  return details?.ok === false
+    && details.responseType === 'decision_result'
+    && details.error?.code === 'SENSITIVE_CREDENTIAL_REQUEST_BLOCKED';
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const extensionRoot = path.resolve(args.extensionRoot || '');
@@ -66,7 +72,7 @@ async function main() {
         userRequirement: 'sensitive credential refusal runtime smoke'
       }
     });
-    if (!result?.details?.ok || result.details.responseType !== 'security_refusal') {
+    if (!isExpectedSecurityRefusal(result?.details)) {
       throw new Error(`Installed extension query smoke failed: ${JSON.stringify({
         ok: result?.details?.ok,
         responseType: result?.details?.responseType,
@@ -86,7 +92,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message || String(error)}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message || String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  isExpectedSecurityRefusal
+};

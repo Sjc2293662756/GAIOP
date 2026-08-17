@@ -3,6 +3,9 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {
+  isExpectedSecurityRefusal
+} = require('../scripts/verify-openclaw-extension-runtime');
 
 function copyDirectorySync(sourceDir, targetDir) {
   fs.mkdirSync(targetDir, { recursive: true });
@@ -18,6 +21,26 @@ function copyDirectorySync(sourceDir, targetDir) {
     }
   }
 }
+
+describe('installed extension smoke contract', () => {
+  test('accepts only the typed sensitive-credential refusal result', () => {
+    expect(isExpectedSecurityRefusal({
+      ok: false,
+      responseType: 'decision_result',
+      error: { code: 'SENSITIVE_CREDENTIAL_REQUEST_BLOCKED' }
+    })).toBe(true);
+    expect(isExpectedSecurityRefusal({
+      ok: true,
+      responseType: 'security_refusal',
+      error: null
+    })).toBe(false);
+    expect(isExpectedSecurityRefusal({
+      ok: false,
+      responseType: 'decision_result',
+      error: { code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED' }
+    })).toBe(false);
+  });
+});
 
 describe('NAPM plugin in-process Skill execution contract', () => {
   let baseDir;
