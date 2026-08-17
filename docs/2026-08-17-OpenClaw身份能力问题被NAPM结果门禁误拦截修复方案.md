@@ -416,3 +416,49 @@ Node 语法检查：通过
 补集规则静态检索：0 处
 git diff --check：通过
 ```
+
+## 13. rc.6 测试服务器部署记录
+
+### 13.1 发布制品
+
+```text
+版本：1.1.0-rc.6
+发布提交：1a9a0c0747e27b6067cd179d8752493aa2c5279c
+制品：NAPM_skill-1.1.0-rc.6-1a9a0c07.zip
+SHA-256：c85126dd530b86a5fb01d736f4c7c6d14273fb612a9c597104972a0bfd1fc003
+大小：837645 bytes
+```
+
+构建从已 fast-forward 合入 `main` 的干净提交归档，自动重新执行完整 Jest 662/662、lint 和 8 个生产 Tool 运行时契约。上传到测试服务器后的 SHA-256 与本地完全一致。
+
+### 13.2 隔离验证和安装
+
+- 候选版本解压到独立 release 目录，`verify-staged-release.sh` 验证通过：Linux 生产依赖 0 个已知漏洞，插件语法和 8 个生产 Tool 均正常。
+- `install-release.sh --dry-run` 确认 Gateway 为 `active`、watcher 为 `inactive`，部署目标和受保护运行文件符合预期，未修改活动目录。
+- `install-release.sh` 完成自动备份、全量同步、Linux 依赖安装、活动运行时校验和服务恢复，未触发回退。
+
+自动回滚备份：
+
+```text
+/home/netinside/.openclaw/deploy_backups/20260817_170120_napm_1.1.0-rc.6_1a9a0c07/runtime-before-deploy.tgz
+SHA-256：b9e979be8200a1e867913a1bd9260a505b015d8c483cd22632d9bef9e82db3a7
+```
+
+备份实算哈希与 `runtime-before-deploy.sha256` 记录一致。
+
+### 13.3 部署后核验
+
+- workspace 与 extension 的 `RELEASE-MANIFEST.json` 均为 `1.1.0-rc.6 / 1a9a0c07`。
+- 活动 extension 的 `index.js` 和 `napm-openclaw-plugin.remote.js` SHA-256 均为 `5a13522b8f3e88f8d6d8da3bfe8959358acbb2c9f903406671c24a0ae302a33e`，与 staged 发布源一致，并包含三态 `TurnPolicy`。
+- Gateway 为 `active`，18789 在本机 IPv4/IPv6 正常监听，启动日志出现 `gateway ready`。
+- 企业微信 WebSocket 已连接并显示 `Authentication successful` / `Authenticated`。
+- watcher 保持部署前的 `inactive` 状态。
+
+活动 extension 无外发 Hook 冒烟通过：
+
+1. “你是？”进入 `MODEL-OWNED NON-ACTION TURN`，`message_sending` 和 `before_message_write` 均保留模型答案。
+2. “今天天气怎么样？”进入 `EXPLICIT OUT-OF-SCOPE NON-ACTION TURN`，两个输出 Hook 均返回固定软引导。
+3. “你是？顺便看看 239web 最近情况。”进入 NAPM Tool 路由，无本轮结果时继续返回 Skill-required 提示。
+4. `model_owned` 轮尝试调用 `napm-skill-query` 被 `before_tool_call` 拒绝。
+
+服务器侧未主动发送企业微信消息。`v1.1.0-rc.6` 标签等待真实企业微信人工验收通过后创建。
