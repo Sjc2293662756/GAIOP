@@ -19,7 +19,7 @@ Root plugin files such as `openclaw.plugin.json` and `napm-openclaw-plugin.*` ar
 
 ## Requirements
 
-- Node.js 16 or later
+- Node.js 20.9 or later
 - npm
 - Access to a NetInside / NAPM WebService endpoint
 

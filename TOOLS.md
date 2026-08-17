@@ -75,15 +75,16 @@ tail -f /home/netinside/.openclaw/workspace/skills/openclaw-napm-query/logs/audi
 
 重启后检查服务状态、18789 端口、插件加载和企业微信认证状态。
 
-## 部署推送
+## 统一发布和部署
 
-使用 pscp 逐个文件推送到远端，详见 `memory/deploy-push-config.md`。
+- 唯一开发仓库：`NAPM_skill_unified`。
+- 不再从旧仓库逐个挑文件上传，也不直接覆盖活动 workspace。
+- 在干净的 Git 提交上运行 `npm run release:build`，生成带版本号和提交号的完整 ZIP。
+- ZIP 先上传到服务器的 `/home/netinside/releases/`，隔离解压并执行 staged 验证和 `--dry-run`。
+- 只有得到明确批准后才能执行正式安装；安装器负责备份、完整同步、依赖安装、服务恢复检查和失败回退。
+- SSH 使用密钥或交互式认证，不把密码写进命令、文档或 Git。
 
-```bash
-pscp -pw <pw> "<local-file>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-path>/"
-```
-
-仅文档变更无需重启。修改 extension 插件、共享运行时或查询执行链后，应通过 `systemctl --user restart openclaw-gateway.service` 受控重启并完成生产 Skill 验收。
+完整命令和新手步骤见 `docs/版本管理与统一部署-新手指南.md`。仅文档变更无需部署或重启；运行时代码变更必须使用完整发布包并完成生产验收。
 
 ## 报告模板
 
