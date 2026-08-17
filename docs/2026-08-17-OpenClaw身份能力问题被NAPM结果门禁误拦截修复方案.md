@@ -1,7 +1,7 @@
 # OpenClaw 身份能力问题被 NAPM 结果门禁误拦截修复方案
 
 日期：2026-08-17
-状态：本地实施与验证完成，未提交、未发布
+状态：`1.1.0-rc.4` 已部署测试服务器，待企业微信真实消息验收
 范围：NAPM OpenClaw 插件、Query 工作流分类器、会话追问与结果证据门禁
 
 ## 1. 问题现象
@@ -191,4 +191,65 @@ Node 语法检查：通过
 git diff --check：通过
 ```
 
-本地仅按现有锁文件安装测试依赖。未构建发布包，未提交 Git，未修改、重启或部署远端环境。
+本地仅按现有锁文件安装测试依赖。上述结果完成后，已按统一发布流程提交、构建并部署 `1.1.0-rc.4`，部署记录见下一节。
+
+## 9. rc.4 测试服务器部署记录
+
+### 9.1 发布制品
+
+```text
+版本：1.1.0-rc.4
+发布提交：be7dba7b6f250487fec75f2aa3f03cd8070f9439
+制品：NAPM_skill-1.1.0-rc.4-be7dba7b.zip
+SHA-256：40eace457703c29fc0a36d7b41f00b6a14d1c4dc04eac8fc1dd370187d432e66
+大小：836202 bytes
+```
+
+本地构建从 Git 提交归档，重新执行完整 Jest、lint 和运行时契约校验后生成唯一 ZIP。远端上传副本的 SHA-256 与本地一致。
+
+### 9.2 隔离验证与安装
+
+远端候选版本先在独立 release 目录完成：
+
+1. `verify-staged-release.sh`：生产依赖 0 个已知漏洞，插件语法和 8 个生产 Tool 入口全部通过。
+2. `install-release.sh --dry-run`：确认活动 workspace、extension、Gateway 与 watcher 原状态，未修改文件。
+3. `install-release.sh`：自动备份、安装依赖、同步插件与 Skills、验证运行时并恢复服务。
+
+自动备份：
+
+```text
+/home/netinside/.openclaw/deploy_backups/20260817_153820_napm_1.1.0-rc.4_be7dba7b/runtime-before-deploy.tgz
+```
+
+备份的 `runtime-before-deploy.sha256` 已执行校验并通过。
+
+### 9.3 部署后核验
+
+- workspace 与 extension 的 `RELEASE-MANIFEST.json` 均为 `1.1.0-rc.4 / be7dba7b`。
+- 活动 extension 两个插件入口与本地插件 SHA-256 一致。
+- workspace Query 分类器与本地 SHA-256 一致。
+- Gateway 恢复为 `active`，端口监听正常，日志出现 `gateway ready`。
+- 企业微信 WebSocket 已重新连接并认证成功。
+- watcher 保持部署前的 `inactive` 状态。
+- 无外部消息投递的 Hook 冒烟共 9 项通过：身份分类、能力问句非对象清单、身份不要求 Skill、两个输出 Hook 保留答案、身份轮 Tool 拒绝、NAPM 后身份问答保留、真实业务清单分类保留。
+
+### 9.4 已知独立问题
+
+部署核验时发现 rc.3 历史日志曾出现 extension 内嵌 `timeResolver` 缺少 `ResolvedQueryTimeRangeService` 的错误。rc.4 没有修改该打包路径；统一运行时契约当前只验证 workspace Skill，没有覆盖 extension 内嵌模块的传递依赖。
+
+该问题不影响本次纯身份/能力问答，因为身份轮禁止 Tool 调用；但在单独修复和发布前，不能把真实 `napm-skill-query` 执行视为已由本次部署验收。企业微信本轮先验收身份问题和 NAPM 后切回身份问题，普通查询运行时缺口另行处理。
+
+### 9.5 待人工验收
+
+服务器侧没有主动发送企业微信消息。由测试人员真实发送以下问题完成最终验收：
+
+```text
+/new
+你有什么功能？
+
+/new
+你有哪些能力？
+
+在一次已有 NAPM 对话后发送：
+你能做些什么？
+```
