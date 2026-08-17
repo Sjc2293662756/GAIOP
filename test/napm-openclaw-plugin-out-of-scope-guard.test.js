@@ -104,6 +104,30 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     expect(plugin.__test__.isPlatformIdentityPrompt(prompt)).toBe(false);
   });
 
+  test('should use an immutable three-state turn policy without requiring an identity regex match', () => {
+    const { buildTurnPolicy, turnPolicyRoutes } = plugin.__test__;
+    const modelOwned = buildTurnPolicy({ prompt: '你是？' });
+    const explicitOutOfScope = buildTurnPolicy({ prompt: '今天天气怎么样？' });
+    const napmCandidate = buildTurnPolicy({
+      prompt: '看看 239web 最近情况',
+      napmRelated: true,
+      domainRelated: true
+    });
+
+    expect(plugin.__test__.isPlatformIdentityPrompt('你是？')).toBe(false);
+    expect(Object.isFrozen(modelOwned)).toBe(true);
+    expect(modelOwned).toMatchObject({
+      route: turnPolicyRoutes.MODEL_OWNED,
+      modelOwnsResponse: true,
+      toolActionsAllowed: false
+    });
+    expect(explicitOutOfScope.route).toBe(turnPolicyRoutes.EXPLICIT_OUT_OF_SCOPE);
+    expect(napmCandidate).toMatchObject({
+      route: turnPolicyRoutes.NAPM_CANDIDATE,
+      toolActionsAllowed: true
+    });
+  });
+
   test.each([
     ['greeting', '你好？'],
     ['time-greeting', '早上好'],
@@ -132,6 +156,82 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
         content: [{ type: 'text', text: identityReply }]
       }
     }, ctx)).toBeUndefined();
+  });
+
+  test.each([
+    ['short-identity', '你是？'],
+    ['formal-short-identity', '您是？'],
+    ['preferred-name', '怎么称呼？'],
+    ['brief-introduction', '简单介绍下？']
+  ])('should leave unenumerated model-owned prompt %s to the model', async (suffix, prompt) => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx(`model-owned-${suffix}`);
+    const modelReply = '我是观枢AI，运行在 OpenClaw 上，面向观枢 GAIOP / NAPM 提供智能运维服务。';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptBuildResult = await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('MODEL-OWNED');
+    await expect(hooks.get('message_sending')({ content: modelReply }, ctx)).resolves.toBeUndefined();
+    expect(hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: modelReply }]
+      }
+    }, ctx)).toBeUndefined();
+  });
+
+  test('should leave an elliptical identity follow-up to the model after a NAPM turn', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('napm-then-model-owned-identity');
+    const modelReply = '我是观枢AI。';
+
+    hooks.get('message_received')({ content: '看看 239web 最近情况' }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: '看看 239web 最近情况' }, ctx);
+
+    hooks.get('message_received')({ content: '那你呢？' }, ctx);
+    const promptBuildResult = await hooks.get('before_prompt_build')({ prompt: '那你呢？' }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('MODEL-OWNED');
+    await expect(hooks.get('message_sending')({ content: modelReply }, ctx)).resolves.toBeUndefined();
+  });
+
+  test('should keep identity plus NAPM composite requests behind Skill evidence', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('identity-plus-napm');
+    const prompt = '你是？顺便帮我看看 239web 最近情况。';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptBuildResult = await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const outgoing = await hooks.get('message_sending')({ content: '我是观枢AI。239web 正常。' }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('TOOL ROUTING');
+    expect(outgoing.content).toContain('必须经 NAPM skill');
+  });
+
+  test('should block tools while an unenumerated prompt is model-owned', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('model-owned-tool-call');
+    const prompt = '你是？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        resolvedQuery: {
+          service: 'overview',
+          queryModeKey: 'overview',
+          overviewScene: 'global',
+          timeRange: { key: 'last1hour' }
+        }
+      }
+    }, ctx);
+
+    expect(result).toMatchObject({ block: true });
+    expect(result.blockReason).toContain('模型直接回答');
   });
 
   test('should preserve a greeting immediately after /new', async () => {
@@ -275,6 +375,22 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     expect(result).toBeTruthy();
     expect(result.content).toContain('我当前只处理系统监控');
     expect(result.content).toContain('天气');
+  });
+
+  test('should block all tool actions for an explicit out-of-scope prompt', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('weather-tool-call');
+    const prompt = '今天天气怎么样？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptBuildResult = await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: { prompt }
+    }, ctx);
+
+    expect(promptBuildResult.appendSystemContext).toContain('EXPLICIT OUT-OF-SCOPE');
+    expect(result).toMatchObject({ block: true });
   });
 
   test('should rewrite weather prompt during before_message_write', async () => {

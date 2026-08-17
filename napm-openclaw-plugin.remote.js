@@ -676,6 +676,69 @@ function isPlatformIdentityPrompt(prompt = '') {
   return patterns.some((pattern) => pattern.test(normalized));
 }
 
+const TURN_POLICY_ROUTES = Object.freeze({
+  NAPM_CANDIDATE: 'napm_candidate',
+  EXPLICIT_OUT_OF_SCOPE: 'explicit_out_of_scope',
+  MODEL_OWNED: 'model_owned'
+});
+
+function isExplicitGeneralOutOfScopePrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  return [
+    /(?:天气|气温|温度|下雨|降雨|晴天|空气质量|雾霾)/i,
+    /(?:讲|说|来)(?:一个|个|段)?(?:笑话|段子|故事)/i,
+    /(?:写|作)(?:一首|首|个)?(?:诗|歌词)/i,
+    /(?:电影|电视剧|综艺|游戏)(?:推荐|好看|攻略)/i,
+    /(?:星座|运势|占卜|算命)/i,
+    /(?:陪我)?闲聊|聊聊天|随便聊聊/i
+  ].some((pattern) => pattern.test(text));
+}
+
+function buildTurnPolicy({
+  prompt = '',
+  napmRelated = false,
+  domainRelated = false,
+  platformIdentityPrompt = false,
+  outOfScopeBoundaryRequested = false
+} = {}) {
+  let route = TURN_POLICY_ROUTES.MODEL_OWNED;
+  let reason = platformIdentityPrompt ? 'platform_identity_fast_path' : 'semantic_model_fallback';
+
+  if (napmRelated || domainRelated) {
+    route = TURN_POLICY_ROUTES.NAPM_CANDIDATE;
+    reason = outOfScopeBoundaryRequested ? 'napm_boundary_request' : 'napm_domain_match';
+  } else if (isExplicitGeneralOutOfScopePrompt(prompt)) {
+    route = TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE;
+    reason = 'explicit_general_out_of_scope_match';
+  }
+
+  return Object.freeze({
+    route,
+    reason,
+    modelOwnsResponse: route === TURN_POLICY_ROUTES.MODEL_OWNED,
+    toolActionsAllowed: route === TURN_POLICY_ROUTES.NAPM_CANDIDATE
+      && !outOfScopeBoundaryRequested
+  });
+}
+
+function getTurnPolicyRoute(state = null) {
+  const route = String(state?.turnPolicy?.route || state?.turnRoute || '').trim();
+  if (Object.values(TURN_POLICY_ROUTES).includes(route)) {
+    return route;
+  }
+  if (state?.generalOutOfScopeRequested) {
+    return TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE;
+  }
+  if (state?.napmRelated || state?.domainRelated) {
+    return TURN_POLICY_ROUTES.NAPM_CANDIDATE;
+  }
+  return TURN_POLICY_ROUTES.MODEL_OWNED;
+}
+
 function normalizePromptKey(prompt) {
   return String(prompt || '')
     .trim()
@@ -2332,8 +2395,11 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
   const prompt = String(content || '').trim();
   const platformIdentityPrompt = isPlatformIdentityPrompt(prompt);
   if (platformIdentityPrompt) {
+    const turnPolicy = buildTurnPolicy({ prompt, platformIdentityPrompt });
     return {
       prompt,
+      turnPolicy,
+      turnRoute: turnPolicy.route,
       napmRelated: false,
       domainRelated: false,
       platformIdentityPrompt: true,
@@ -2382,9 +2448,19 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
   const alertRelated = alertEventPrompt
     || alertMetaFollowUpPrompt
     || Boolean(previousState?.alertRelated && (isContinuationPrompt(prompt) || metaFollowUpPrompt));
+  const outOfScopeBoundaryRequested = domainRelated && isOutOfScopeNapmRequest(prompt);
+  const turnPolicy = buildTurnPolicy({
+    prompt,
+    napmRelated,
+    domainRelated,
+    platformIdentityPrompt,
+    outOfScopeBoundaryRequested
+  });
 
   return {
     prompt,
+    turnPolicy,
+    turnRoute: turnPolicy.route,
     napmRelated,
     domainRelated,
     platformIdentityPrompt,
@@ -2397,8 +2473,8 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
       ? inferMetricInventoryGroup(prompt)
       : (previousState?.lastMetricInventoryGroup || ''),
-    generalOutOfScopeRequested: Boolean(prompt) && !domainRelated && !platformIdentityPrompt,
-    outOfScopeBoundaryRequested: domainRelated && isOutOfScopeNapmRequest(prompt),
+    generalOutOfScopeRequested: turnPolicy.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE,
+    outOfScopeBoundaryRequested,
     turnNapmToolUsed: false,
     updatedAt: Date.now()
   };
@@ -2410,6 +2486,25 @@ function getActiveTurnId(conversationState = null, guardState = null) {
 
 function derivePromptGuardState(activePrompt = '', conversationState = null, guardState = null) {
   const prompt = String(activePrompt || '').trim();
+  const existingState = {
+    ...(isPlainObject(conversationState) ? conversationState : {}),
+    ...(isPlainObject(guardState) ? guardState : {})
+  };
+  const existingPrompt = String(existingState.canonicalPrompt || existingState.prompt || '').trim();
+  if (
+    existingState.turnPolicy
+    && (
+      !prompt
+      || normalizePromptKey(prompt) === normalizePromptKey(existingPrompt)
+    )
+  ) {
+    return {
+      ...existingState,
+      prompt: prompt || existingPrompt,
+      updatedAt: Date.now()
+    };
+  }
+
   const previousState = isPlainObject(conversationState)
     ? conversationState
     : (isPlainObject(guardState) ? guardState : null);
@@ -5793,6 +5888,34 @@ function buildNapmRoutingSystemContext(opts = {}) {
     ].join('\n');
   }
 
+  const turnPolicy = opts.turnPolicy || (prompt
+    ? buildTurnPolicy({
+      prompt,
+      napmRelated: Boolean(opts.napmRelated) || isNapmRelatedPrompt(prompt),
+      domainRelated: isSystemDomainPrompt(prompt),
+      platformIdentityPrompt: false,
+      outOfScopeBoundaryRequested: isSystemDomainPrompt(prompt) && isOutOfScopeNapmRequest(prompt)
+    })
+    : buildTurnPolicy({ domainRelated: true }));
+
+  if (turnPolicy.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+    return [
+      'MODEL-OWNED NON-ACTION TURN:',
+      '请使用完整会话上下文以及 workspace 中的 SOUL.md、IDENTITY.md 理解用户当前表达。',
+      '身份、能力、称呼、问候、省略追问和澄清对话由模型直接自然回答，不要求命中 JavaScript 关键词。',
+      '不得调用任何 Tool，不得编造 NAPM 数据；如果用户实际想查询监控数据但对象或范围不明确，只问一个关键澄清问题。',
+      '若完整语义明确属于天气、娱乐或通用闲聊等非 NAPM 内容，简短说明边界并引导回系统监控问题。'
+    ].join('\n');
+  }
+
+  if (turnPolicy.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
+    return [
+      'EXPLICIT OUT-OF-SCOPE NON-ACTION TURN:',
+      '当前请求明确不属于系统监控、性能分析或 NAPM 范围。',
+      '不得调用任何 Tool；简短说明能力边界并引导用户改问监控、性能或 NAPM 问题。'
+    ].join('\n');
+  }
+
   // Scene detection via existing classifiers (all accept prompt string)
   var isFault = false, isSummary = false, isAlert = false, isPacket = false, isAlertPacket = false;
   try {
@@ -5999,62 +6122,38 @@ const plugin = {
         const contextTurnKey = getContextTurnKey(ctx);
         // message_received is the authoritative turn boundary. Prompt-build hooks
         // may expose different run/message ids and must never replace its identity.
+        const previousPrompt = String(
+          previousConversationState?.canonicalPrompt || previousConversationState?.prompt || ''
+        ).trim();
         const canReuseTurn = Boolean(previousConversationState?.turnId);
         const prompt = canReuseTurn
-          ? String(previousConversationState?.canonicalPrompt || previousConversationState?.prompt || receivedPrompt).trim()
+          ? (previousPrompt || receivedPrompt)
           : receivedPrompt;
         const turnId = canReuseTurn
           ? normalizeTurnId(previousConversationState.turnId)
           : buildNapmTurnId();
-        const promptPlatformIdentityPrompt = isPlatformIdentityPrompt(prompt);
-        const promptOverviewRelated = isOverviewPrompt(prompt);
-        const promptDomainRelated = promptOverviewRelated || isSystemDomainPrompt(prompt);
-        const promptNapmRelated = promptOverviewRelated || isNapmRelatedPrompt(prompt);
-        const promptOutOfScopeBoundaryRequested = promptDomainRelated && isOutOfScopeNapmRequest(prompt);
-        const promptGeneralOutOfScopeRequested = Boolean(prompt)
-          && !promptDomainRelated
-          && !promptPlatformIdentityPrompt;
-        if (guardKeys.length > 0) {
-          let conversationState = previousConversationState;
-          if (conversationKey && isMeaningfulText(prompt)) {
-            conversationState = {
-              ...buildConversationScopedGuardState(prompt, previousConversationState),
-              conversationKey,
-              promptKey: normalizePromptKey(prompt),
-              canonicalPrompt: prompt,
-              turnId,
-              contextTurnKey: contextTurnKey || previousConversationState?.contextTurnKey || null
-            };
+        let conversationState = canReuseTurn ? previousConversationState : null;
+        if (!conversationState && isMeaningfulText(prompt)) {
+          conversationState = {
+            ...buildConversationScopedGuardState(prompt, previousConversationState),
+            conversationKey: conversationKey || null,
+            promptKey: normalizePromptKey(prompt),
+            canonicalPrompt: prompt,
+            turnId,
+            contextTurnKey: contextTurnKey || null
+          };
+          if (conversationKey) {
             napmConversationState.set(conversationKey, conversationState);
           }
-          const effectivePlatformIdentityPrompt = promptPlatformIdentityPrompt
-            || Boolean(conversationState?.platformIdentityPrompt);
-          const effectiveNapmRelated = effectivePlatformIdentityPrompt
-            ? false
-            : (promptNapmRelated || Boolean(conversationState?.napmRelated));
-          const effectiveDomainRelated = effectivePlatformIdentityPrompt
-            ? false
-            : (promptDomainRelated || Boolean(conversationState?.domainRelated));
+        }
+        if (guardKeys.length > 0) {
           const previousGuardState = getGuardState(ctx);
           const guardState = {
+            ...(conversationState || buildConversationScopedGuardState(prompt, previousConversationState)),
             prompt,
             canonicalPrompt: prompt,
             conversationKey: conversationKey || null,
             turnId,
-            napmRelated: effectiveNapmRelated,
-            domainRelated: effectiveDomainRelated,
-            platformIdentityPrompt: effectivePlatformIdentityPrompt,
-            alertRelated: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertRelated),
-            alertEventPrompt: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertEventPrompt),
-            alertMetaFollowUpPrompt: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertMetaFollowUpPrompt),
-            generalOutOfScopeRequested: prompt
-              ? (!effectiveDomainRelated && !effectivePlatformIdentityPrompt)
-              : (promptGeneralOutOfScopeRequested || Boolean(conversationState?.generalOutOfScopeRequested)),
-            outOfScopeBoundaryRequested: !effectivePlatformIdentityPrompt && effectiveDomainRelated
-              && (
-                promptOutOfScopeBoundaryRequested
-                || (!prompt && Boolean(conversationState?.outOfScopeBoundaryRequested))
-              ),
             turnNapmToolUsed: Boolean(
               previousGuardState?.turnId === turnId
               && previousGuardState?.turnNapmToolUsed
@@ -6062,13 +6161,17 @@ const plugin = {
             updatedAt: Date.now()
           };
           setGuardState(ctx, guardState);
-          api.logger.info(`[napm-openclaw-plugin] stored guard state keys=${guardKeys.join(',')} generalOutOfScope=${guardState.generalOutOfScopeRequested} outOfScopeBoundary=${guardState.outOfScopeBoundaryRequested} platformIdentity=${guardState.platformIdentityPrompt} napmRelated=${guardState.napmRelated}`);
+          api.logger.info(`[napm-openclaw-plugin] stored guard state keys=${guardKeys.join(',')} route=${getTurnPolicyRoute(guardState)} generalOutOfScope=${guardState.generalOutOfScopeRequested} outOfScopeBoundary=${guardState.outOfScopeBoundaryRequested} platformIdentity=${guardState.platformIdentityPrompt} napmRelated=${guardState.napmRelated}`);
         }
         if (prompt) {
           api.logger.info(`[napm-openclaw-plugin] injecting NAPM routing policy for prompt: ${prompt.slice(0, 120)}`);
         }
         return {
-          appendSystemContext: buildNapmRoutingSystemContext({ prompt, napmRelated: promptNapmRelated })
+          appendSystemContext: buildNapmRoutingSystemContext({
+            prompt,
+            napmRelated: Boolean(conversationState?.napmRelated),
+            turnPolicy: conversationState?.turnPolicy
+          })
         };
       },
       {
@@ -6174,6 +6277,33 @@ const plugin = {
           return {
             block: true,
             blockReason: '平台身份、能力和问候问题必须直接依据身份上下文回答，禁止调用工具。'
+          };
+        }
+
+        if (isDirectNapmTool(toolName)) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
+          return {
+            block: true,
+            blockReason: `${toolName} has been removed from this deployment. Use napm-skill-query instead.`
+          };
+        }
+
+        const activeTurnRoute = getTurnPolicyRoute(activePromptState);
+        if (
+          activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED
+          || activeTurnRoute === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE
+        ) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked tool for non-action turn: route=${activeTurnRoute} tool=${toolName}`);
+          appendPluginAuditEvent('napm_plugin_non_action_tool_blocked', {
+            route: activeTurnRoute,
+            toolName,
+            prompt: activePrompt,
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: '当前轮应由模型直接回答或澄清，尚未确认 NAPM 动作意图，禁止调用工具。'
           };
         }
 
@@ -6288,14 +6418,6 @@ const plugin = {
             appendPluginAuditEvent('napm_plugin_fault_dx_wrong_tool_blocked', { toolName: toolName, prompt: activePrompt, context: buildAuditContextSnapshot(ctx) });
             return { block: true, blockReason: `FAULT DIAGNOSIS REQUIRED: This is a fault/error analysis request for a specific target. Do NOT use ${toolName}. Instead, call napm-fault-diagnosis with description + timeRange only. The tool auto-detects whether to use business fault analysis (bs_app_slow) or application fault analysis (cs_app_slow) based on the NAPM catalog. DO NOT pass flowType — let the tool decide.` };
           }
-        }
-
-        if (isDirectNapmTool(toolName)) {
-          api.logger.warn(`[napm-openclaw-plugin] blocked removed legacy direct tool: tool=${toolName}`);
-          return {
-            block: true,
-            blockReason: `${toolName} has been removed from this deployment. Use napm-skill-query instead.`
-          };
         }
 
         if (toolName === 'napm-skill-query' && activePacketPrompt) {
@@ -6747,14 +6869,22 @@ const plugin = {
           conversationState?.generalOutOfScopeRequested
           || guardState?.generalOutOfScopeRequested
         );
+        const activeTurnRoute = getTurnPolicyRoute(guardState || conversationState);
         const outOfScopeBoundaryRequested = Boolean(
           conversationState?.outOfScopeBoundaryRequested
           || guardState?.outOfScopeBoundaryRequested
         );
-        if (generalOutOfScopeRequested) {
+        if (
+          activeTurnRoute === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE
+          || generalOutOfScopeRequested
+        ) {
           return {
             content: buildGeneralOutOfScopeReply()
           };
+        }
+
+        if (activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED) {
+          return undefined;
         }
 
         if (!outOfScopeBoundaryRequested) {
@@ -6942,7 +7072,12 @@ const plugin = {
         const conversationKey = getConversationKey(ctx);
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         api.logger.info(`[napm-openclaw-plugin] before_message_write role=${role} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
-        if (guardState?.generalOutOfScopeRequested || conversationState?.generalOutOfScopeRequested) {
+        const activeTurnRoute = getTurnPolicyRoute(guardState || conversationState);
+        if (
+          activeTurnRoute === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE
+          || guardState?.generalOutOfScopeRequested
+          || conversationState?.generalOutOfScopeRequested
+        ) {
           api.logger.warn('[napm-openclaw-plugin] rewriting assistant message for general out-of-scope request');
           return {
             message: buildAssistantTextMessage(buildGeneralOutOfScopeReply(), message)
@@ -6954,6 +7089,10 @@ const plugin = {
           return {
             message: buildAssistantTextMessage(buildSoftBoundaryReply(), message)
           };
+        }
+
+        if (activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED) {
+          return undefined;
         }
 
         const activePrompt = selectActivePromptText(conversationState, guardState, extractMessageText(message));
@@ -7171,6 +7310,10 @@ module.exports.__test__ = {
   inferMetricInventoryGroup,
   isBusinessObjectInventoryPrompt,
   isPlatformIdentityPrompt,
+  isExplicitGeneralOutOfScopePrompt,
+  buildTurnPolicy,
+  getTurnPolicyRoute,
+  turnPolicyRoutes: TURN_POLICY_ROUTES,
   isHierarchyCatalogPrompt,
   isAlertEventPrompt,
   isAlertPacketAnalysisPrompt,

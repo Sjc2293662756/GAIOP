@@ -320,3 +320,99 @@ SHA-256：3fe7aefe1cf87a1006dc2bc42cbbcd9b62e8c56091d04a94be60b5f72476516b
 - 无外发 Hook 冒烟通过：7 个能力同义句进入身份路由，2 个复合 NAPM 请求保持非身份路由，身份答案未被输出 Hook 改写，身份轮 NAPM Tool 调用被拒绝。
 
 rc.3/rc.4 已记录的 extension 内嵌时间解析依赖问题不在本次能力问句修复范围内，rc.5 不将真实 `napm-skill-query` 视为已验收。
+
+## 12. rc.5 人工验收暴露的架构问题
+
+### 12.1 现场现象
+
+rc.5 企业微信人工测试中，“你可以干什么？”已经正常，但更短的身份问法“你是？”仍被改写为通用域外提示。远端日志和活动插件最小复现一致：
+
+```text
+platformIdentity=false
+generalOutOfScope=true
+napmRelated=false
+before_message_write: rewriting assistant message for general out-of-scope request
+```
+
+本轮没有 Tool 调用。OpenClaw 模型已经拥有完整会话以及 `SOUL.md`、`IDENTITY.md` 身份上下文，错误发生在模型生成答案之后：插件输出 Hook 用确定性文案覆盖了模型答案。
+
+### 12.2 根本原因
+
+rc.4/rc.5 的短期修复仍然依赖封闭式身份正则。插件在两个位置使用以下补集规则：
+
+```text
+有文本 && !domainRelated && !platformIdentity
+=> generalOutOfScopeRequested=true
+```
+
+这相当于要求所有合法自然语言表达都必须先被 JavaScript 正则枚举。任何尚未枚举的身份、能力、称呼、问候或省略追问，都会被当作明确域外问题。因此继续添加“你是？”等单句只能延后下一次漏判，不能根治。
+
+### 12.3 目标职责
+
+采用“模型理解语义，插件约束动作”的混合架构：
+
+- OpenClaw 模型使用完整 `messages`、`SOUL.md` 和 `IDENTITY.md` 理解身份、能力、问候、省略句和澄清对话。
+- 插件不再尝试用正则完整替代自然语言理解，只保留高置信度快速路径和安全执行校验。
+- 语义不确定时允许模型直接文本回答或提出澄清问题。
+- 动作不确定时禁止外部 Tool；NAPM Tool 只有在本轮被确定为 NAPM 候选后才能执行。
+
+### 12.4 单轮三态策略
+
+`message_received` 每轮只生成一次不可变 `TurnPolicy`，后续 Hook 只消费该策略：
+
+| route | 含义 | 输出处理 | Tool 处理 |
+|---|---|---|---|
+| `napm_candidate` | 高置信度 NAPM/监控请求 | 继续执行现有 Skill 结果证据门禁 | 仅允许现有白名单并继续校验 `resolvedQuery`、报告来源等契约 |
+| `explicit_out_of_scope` | 明确天气、娱乐、泛闲聊等域外请求 | 固定软引导回 NAPM | 禁止 Tool |
+| `model_owned` | 未被高置信度规则归类的自然语言 | 不覆盖模型答案；允许模型回答或澄清 | 禁止 Tool |
+
+身份正则命中时仍可快速标记 `platformIdentityPrompt=true`，用于注入更具体的身份提示和提前禁止 Tool；但未命中身份正则不再成为输出正确性的必要条件。“你是？”、“怎么称呼？”和“简单介绍下？”会进入 `model_owned`，由模型结合上下文回答。
+
+### 12.5 Hook 调整
+
+1. `message_received` 是策略所有者：基于当前用户文本和受控的明确追问关系创建 `TurnPolicy`。
+2. `before_prompt_build` / `before_agent_start` 复用本轮策略，不再通过补集重新分类；只有缺少 `message_received` 状态时才创建兼容性策略。
+3. `message_sending` / `before_message_write` 仅在 `explicit_out_of_scope` 或既有 NAPM 安全门禁命中时改写；`model_owned` 原样保留模型回答。
+4. `before_tool_call` 对 `model_owned` 和 `explicit_out_of_scope` 都拒绝 Tool；`napm_candidate` 继续执行 Tool 白名单、专用路由、`resolvedQuery`、时间和可信结果关联校验。
+5. 现有 NAPM 业务正则暂时保留，因为它们用于确定性工具路由和参数校验；本次移除的是“未命中正则即域外”的错误补集语义。
+
+### 12.6 当前能力边界
+
+OpenClaw 2026.3.7 当前 Hook 没有提供可验证的结构化语义路由字段，因此本次不虚构 `routingDecision` API，也不在插件内额外调用一个模型。`TurnPolicy` 是保守的本地执行策略：模型负责无动作语义回答，插件只对高置信度 NAPM 请求开放动作。
+
+未来如果 OpenClaw 提供受信任的结构化路由结果，可将其作为 `TurnPolicy` 的输入，使模型识别出的新 NAPM 表达直接进入 `napm_candidate`；在此之前，未知表达先回答或澄清，不直接执行外部动作。
+
+### 12.7 本轮验收标准
+
+1. “你是？”、“您是？”、“怎么称呼？”、“简单介绍下？”无需新增身份正则也能保留模型答案。
+2. NAPM 对话后的“那你呢？”不继承 NAPM 结果证据门禁。
+3. “你是谁，帮我看看 239web 最近情况？”等复合请求仍为 `napm_candidate`，不能借身份表达绕过 Skill。
+4. 明确天气和娱乐请求仍进入 `explicit_out_of_scope` 并由两个输出 Hook 软引导。
+5. `model_owned` 与 `explicit_out_of_scope` 轮均禁止 Tool 动作。
+6. 真实 NAPM 查询、对象清单、告警、报告、故障诊断及结果证据门禁保持原行为。
+7. 聚焦测试、完整 Jest、lint、运行时契约、Node 语法和 `git diff --check` 全部通过。
+
+### 12.8 本地实施结果
+
+实现已在 `codex/model-owned-turn-routing` 分支完成，未提交、未打包、未部署：
+
+- 新增不可变三态 `TurnPolicy`，`message_received` 每轮创建一次，后续 Prompt 与 Tool Hook 复用同一策略。
+- 删除两个“非 NAPM 且非身份即域外”的补集判断；`generalOutOfScopeRequested` 现在只由明确域外分类产生。
+- 未修改身份正则来适配“你是？”。回归测试明确断言该文本仍未命中 `isPlatformIdentityPrompt()`，但会进入 `model_owned` 并保留模型答案。
+- `model_owned` Prompt 注入完整上下文语义提示，允许模型直接回答身份、能力、称呼、问候、省略追问或提出澄清问题。
+- `model_owned` 和 `explicit_out_of_scope` 在 `before_tool_call` 均禁止所有 Tool；`napm_candidate` 继续使用既有专用 Tool 路由和结构化参数校验。
+- 两个输出 Hook 对 `model_owned` 不再执行 NAPM 结果证据或域外文案覆盖；明确天气/娱乐请求仍固定软引导。
+- 日志新增 `route=model_owned|explicit_out_of_scope|napm_candidate`，便于远端验收直接核对单轮策略。
+
+测试先在 rc.5 代码上稳定得到 6 条失败，证明复现了未枚举身份表达和模型托管轮错误放行 Tool；实现后结果为：
+
+```text
+身份/域外聚焦回归：64/64 通过
+NAPM 插件专项回归：28 suites、221/221 通过
+完整 Jest：90 suites、662/662 通过
+npm run lint：通过
+npm run verify:runtime-contract：8 个生产 Tool 全部通过
+Node 语法检查：通过
+补集规则静态检索：0 处
+git diff --check：通过
+```
