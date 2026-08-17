@@ -39,6 +39,8 @@ done
 RELEASE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST_PATH="$RELEASE_ROOT/RELEASE-MANIFEST.json"
 ROLLBACK_SCRIPT="$RELEASE_ROOT/scripts/rollback-release.sh"
+STAGE_EXTENSION_SCRIPT="$RELEASE_ROOT/scripts/stage-openclaw-extension.sh"
+VERIFY_EXTENSION_RUNTIME_SCRIPT="$RELEASE_ROOT/scripts/verify-openclaw-extension-runtime.js"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 OPENCLAW_HOME="$(realpath -m "$OPENCLAW_HOME")"
 ACTIVE_OPENCLAW_HOME="$(realpath -m "$HOME/.openclaw")"
@@ -82,6 +84,8 @@ for required_path in \
     exit 1
   }
 done
+[[ -f "$STAGE_EXTENSION_SCRIPT" ]] || { echo "Missing extension staging script: $STAGE_EXTENSION_SCRIPT" >&2; exit 1; }
+[[ -f "$VERIFY_EXTENSION_RUNTIME_SCRIPT" ]] || { echo "Missing extension runtime verifier: $VERIFY_EXTENSION_RUNTIME_SCRIPT" >&2; exit 1; }
 
 read_manifest_field() {
   node -e '
@@ -265,20 +269,7 @@ for workspace_directory in config references src tools; do
 done
 
 EXTENSION_STAGE="$(mktemp -d /tmp/napm-extension-stage-XXXXXXXX)"
-install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" "$EXTENSION_STAGE/index.js"
-install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" "$EXTENSION_STAGE/napm-openclaw-plugin.remote.js"
-install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" "$EXTENSION_STAGE/index.mjs"
-install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.package.json" "$EXTENSION_STAGE/package.json"
-install -m 0644 "$RELEASE_ROOT/openclaw.plugin.json" "$EXTENSION_STAGE/openclaw.plugin.json"
-install -m 0644 "$MANIFEST_PATH" "$EXTENSION_STAGE/RELEASE-MANIFEST.json"
-mkdir -p "$EXTENSION_STAGE/plugin"
-rsync -a "$RELEASE_ROOT/plugin/" "$EXTENSION_STAGE/plugin/"
-
-embedded_time_dir="$EXTENSION_STAGE/skills/openclaw-napm-query/src/shared"
-mkdir -p "$embedded_time_dir"
-install -m 0644 \
-  "$RELEASE_ROOT/skills/openclaw-napm-query/src/shared/timeResolver.js" \
-  "$embedded_time_dir/timeResolver.js"
+bash "$STAGE_EXTENSION_SCRIPT" "$RELEASE_ROOT" "$EXTENSION_STAGE"
 
 rsync -a --delete --exclude=node_modules/ "$EXTENSION_STAGE/" "$EXTENSION_DIR/"
 cleanup_temp
@@ -288,6 +279,9 @@ EXTENSION_STAGE=""
 node --check "$EXTENSION_DIR/index.js"
 OPENCLAW_SKILLS_ROOT="$WORKSPACE_DIR/skills" \
   node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
+node "$VERIFY_EXTENSION_RUNTIME_SCRIPT" \
+  --extensionRoot "$EXTENSION_DIR" \
+  --skillsRoot "$WORKSPACE_DIR/skills"
 
 if [[ "$SKIP_RESTART" -eq 0 && "$NO_SERVICE_CONTROL" -eq 0 ]]; then
   if [[ "$gateway_state" == "active" ]]; then

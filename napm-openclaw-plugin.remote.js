@@ -18,6 +18,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-query/scripts/run_napm_query.js',
   'openclaw-napm-query/services/PromptRoutingService.js',
   'openclaw-napm-query/services/ResolutionSpecService.js',
+  'openclaw-napm-query/services/ResolvedQueryTimeRangeService.js',
+  'openclaw-napm-query/src/shared/timeResolver.js',
   'openclaw-napm-report/scripts/generate_napm_report.js',
   'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js',
   'openclaw-napm-alert-query/scripts/run_alert_query.js',
@@ -1819,6 +1821,40 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
   };
 }
 
+function buildNapmSkillExecutionFailureReply() {
+  return [
+    'NAPM 查询工具执行失败，本次没有取得有效数据。',
+    '请稍后重试；如持续失败，请联系维护人员检查查询工具运行状态。'
+  ].join('\n');
+}
+
+function buildResolvedQueryValidationFailureReply() {
+  return [
+    '当前查询参数未构造完整，本次没有执行 NAPM 查询。',
+    '请重新发起查询；如持续失败，请联系维护人员检查查询参数构造链路。'
+  ].join('\n');
+}
+
+function buildNapmSkillExecutionFailureResult(args = {}) {
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin',
+    responseType: 'SKILL_EXECUTION_ERROR',
+    prompt: normalizePrompt(args),
+    decision: {
+      next_action: 'RETRY_OR_ESCALATE',
+      reason: 'skill_execution_failed'
+    },
+    error: {
+      code: 'NAPM_SKILL_EXECUTION_FAILED',
+      reason: 'skill_execution_failed',
+      retryable: true
+    },
+    displayText: buildNapmSkillExecutionFailureReply(),
+    resolvedQuery: normalizeObject(args?.resolvedQuery) || null
+  };
+}
+
 function shouldSkipPathPreflight(resolvedQuery = {}) {
   const service = String(resolvedQuery?.service || '').trim();
   return service === 'overview'
@@ -2310,6 +2346,29 @@ function rememberResolvedQueryBoundaryFailureForTurn(
     conversationKey,
     getActiveTurnId(conversationState, guardState)
   );
+}
+
+function clearResolvedQueryFailureForTurn(conversationKey = '', conversationState = null, guardState = null) {
+  return napmOperationState.clearQueryFailureForTurn(
+    conversationKey,
+    getActiveTurnId(conversationState, guardState)
+  );
+}
+
+function rememberSkillExecutionFailureForTurn(
+  activePrompt = '',
+  result = {},
+  args = {},
+  conversationKey = '',
+  turnId = ''
+) {
+  return napmOperationState.rememberSkillExecutionFailure({
+    scope: conversationKey,
+    turnId,
+    promptKey: buildPromptScopeKey(activePrompt || normalizePrompt(args), conversationKey),
+    result,
+    resolvedQuery: normalizeObject(args?.resolvedQuery) || null
+  });
 }
 
 function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
@@ -3243,6 +3302,10 @@ function getRememberedQueryFailureForTurn(conversationKey = '', turnId = '') {
   return napmOperationState.getQueryFailureForTurn(conversationKey, turnId);
 }
 
+function getRememberedSkillExecutionFailureForTurn(conversationKey = '', turnId = '') {
+  return napmOperationState.getSkillExecutionFailureForTurn(conversationKey, turnId);
+}
+
 function getRememberedRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
   if (isPlatformIdentityPrompt(activePrompt)) {
     return null;
@@ -3256,6 +3319,13 @@ function getRememberedRecordForPrompt(activePrompt = '', conversationState = nul
   );
   if (currentTurnRecord) {
     return currentTurnRecord;
+  }
+  const currentTurnExecutionFailure = getRememberedSkillExecutionFailureForTurn(
+    conversationKey,
+    getActiveTurnId(conversationState, guardState)
+  );
+  if (currentTurnExecutionFailure) {
+    return currentTurnExecutionFailure;
   }
   const currentTurnFailure = getRememberedQueryFailureForTurn(
     conversationKey,
@@ -4689,6 +4759,14 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
     return buildAlertQueryReply(rememberedRecord.result);
   }
 
+  if (rememberedRecord.recordType === 'query_validation_failure') {
+    return buildResolvedQueryValidationFailureReply();
+  }
+
+  if (rememberedRecord.recordType === 'skill_execution_failure') {
+    return buildNapmSkillExecutionFailureReply();
+  }
+
   const rememberedReply = makeTextReplyFromSkillResult(rememberedRecord.result);
   return String(rememberedReply?.text || '').trim();
 }
@@ -5105,6 +5183,18 @@ function makeToolResult(result, reportSourceId = '') {
 function createSkillToolDefinition() {
   const queryContract = getResolutionSpecQueryContract() || {};
   const allowedServices = getResolutionSpecServiceNames();
+  const resolutionSpecService = getResolutionSpecService();
+  const requiredFieldsByService = allowedServices
+    .map((serviceName) => {
+      const required = resolutionSpecService?.getServiceSpec
+        ? resolutionSpecService.getServiceSpec(serviceName)?.required
+        : null;
+      return Array.isArray(required) && required.length > 0
+        ? `${serviceName} requires ${required.join(', ')}`
+        : '';
+    })
+    .filter(Boolean)
+    .join('; ');
   const overviewScenes = getResolutionSpecRoutingRules()?.overviewScenes || [];
   const acceptedInputs = Array.isArray(queryContract.acceptedInputs)
     ? queryContract.acceptedInputs.join(', ')
@@ -5115,7 +5205,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -5138,6 +5228,7 @@ function createSkillToolDefinition() {
             topMetric: { type: 'string' },
             groups: {
               type: 'array',
+              description: 'Required and non-empty for service=groups. Use WebApplication for 业务/业务系统, DefinedApp for 应用/已定义应用, and BusinessGroup for 业务组.',
               items: {
                 type: 'object',
                 properties: {
@@ -5224,45 +5315,73 @@ function createSkillToolDefinition() {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
       const conversationKey = getTrustedConversationKey(preparedArgs);
       const turnId = getTrustedTurnId(preparedArgs);
-      const { applyTimeOverride } = require(path.resolve(__dirname, 'skills/openclaw-napm-query/src/shared/timeResolver'));
-      applyTimeOverride(preparedArgs.resolvedQuery);
-      const validation = validateResolvedQueryAgainstSpec(
-        preparedArgs?.resolvedQuery,
-        getResolvedQueryValidationOptions(preparedArgs)
-      );
-      if (isPlainObject(validation.resolvedQuery)) {
-        preparedArgs.resolvedQuery = validation.resolvedQuery;
-      }
-      if (!validation.ok) {
-        appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
-          traceId: normalizeTraceId(preparedArgs?.traceId) || buildNapmTraceId({}, preparedArgs),
+      const traceId = normalizeTraceId(preparedArgs?.traceId) || buildNapmTraceId({}, preparedArgs);
+
+      try {
+        const timeResolverPath = path.join(
+          OPENCLAW_SKILLS_ROOT,
+          'openclaw-napm-query/src/shared/timeResolver'
+        );
+        const { applyTimeOverride } = require(timeResolverPath);
+        applyTimeOverride(preparedArgs.resolvedQuery);
+        const validation = validateResolvedQueryAgainstSpec(
+          preparedArgs?.resolvedQuery,
+          getResolvedQueryValidationOptions(preparedArgs)
+        );
+        if (isPlainObject(validation.resolvedQuery)) {
+          preparedArgs.resolvedQuery = validation.resolvedQuery;
+        }
+        if (!validation.ok) {
+          appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
+            traceId,
+            prompt: normalizePrompt(preparedArgs),
+            reason: validation.reason || null,
+            message: validation.message || null,
+            resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
+            resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
+          });
+          const failureResult = buildResolvedQueryBoundaryFailureResult(validation, preparedArgs);
+          const failureRecord = rememberResolvedQueryFailureForTurn(
+            normalizePrompt(preparedArgs),
+            validation,
+            preparedArgs,
+            conversationKey,
+            turnId
+          );
+          if (failureRecord?.result) {
+            return makeToolResult(failureRecord.result);
+          }
+          return makeToolResult(failureResult);
+        }
+
+        napmOperationState.clearQueryFailureForTurn(conversationKey, turnId);
+        napmOperationState.clearSkillExecutionFailureForTurn(conversationKey, turnId);
+        const result = await napmQuerySkill().handleSkillCall(preparedArgs);
+        const debugRecord = rememberDebugApi(
+          normalizePrompt(preparedArgs),
+          result,
+          conversationKey,
+          turnId
+        );
+        return makeToolResult(result, debugRecord?.reportSourceId);
+      } catch (error) {
+        const failureResult = buildNapmSkillExecutionFailureResult(preparedArgs);
+        appendPluginAuditEvent('napm_plugin_skill_execution_failed', {
+          traceId,
           prompt: normalizePrompt(preparedArgs),
-          reason: validation.reason || null,
-          message: validation.message || null,
-          resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
+          errorCode: String(error?.code || 'SKILL_EXECUTION_ERROR'),
+          errorMessage: String(error?.message || 'Unknown NAPM skill execution error'),
           resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
         });
-        const failureResult = buildResolvedQueryBoundaryFailureResult(validation, preparedArgs);
-        const failureRecord = rememberResolvedQueryFailureForTurn(
+        rememberSkillExecutionFailureForTurn(
           normalizePrompt(preparedArgs),
-          validation,
+          failureResult,
           preparedArgs,
           conversationKey,
           turnId
         );
-        if (failureRecord?.result) {
-          return makeToolResult(failureRecord.result);
-        }
         return makeToolResult(failureResult);
       }
-      const result = await napmQuerySkill().handleSkillCall(preparedArgs);
-      const debugRecord = rememberDebugApi(
-        normalizePrompt(preparedArgs),
-        result,
-        conversationKey,
-        turnId
-      );
-      return makeToolResult(result, debugRecord?.reportSourceId);
     }
   };
 }
@@ -6598,6 +6717,26 @@ const plugin = {
               blockReason: buildResolvedQueryFailureBlockReason(resolvedQueryValidation, failureRecord)
             };
           }
+          const clearedValidationFailure = clearResolvedQueryFailureForTurn(
+            conversationKey,
+            conversationState,
+            guardState
+          );
+          const activeTurnId = getActiveTurnId(conversationState, guardState);
+          const clearedExecutionFailure = napmOperationState.clearSkillExecutionFailureForTurn(
+            conversationKey,
+            activeTurnId
+          );
+          if (clearedValidationFailure || clearedExecutionFailure) {
+            appendPluginAuditEvent('napm_plugin_prior_query_failure_superseded', {
+              traceId,
+              toolName,
+              prompt: activePrompt,
+              turnId: activeTurnId || null,
+              clearedValidationFailure: Boolean(clearedValidationFailure),
+              clearedExecutionFailure: Boolean(clearedExecutionFailure)
+            });
+          }
           const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
@@ -6837,6 +6976,20 @@ const plugin = {
         if (shouldCancelNapmPreviewMessage(event, ctx, activePromptForReport, guardState, rememberedRecord)) {
           api.logger.warn('[napm-openclaw-plugin] canceled NAPM preview before output rewriting');
           return { cancel: true };
+        }
+        if (
+          !shouldAllowNapmReasoningPreviewForCtx(ctx)
+          && (
+            rememberedRecord?.recordType === 'query_validation_failure'
+            || rememberedRecord?.recordType === 'skill_execution_failure'
+          )
+        ) {
+          return buildFallbackSendingResult(
+            buildRememberedSkillReplyText(rememberedRecord),
+            conversationKey,
+            conversationState,
+            guardState
+          );
         }
         const reportArtifactUrls = getReportArtifactUrlsFromOutgoingEvent(event);
         if (reportArtifactUrls.length > 0 && !isReportExportPrompt(activePromptForReport)) {
@@ -7108,6 +7261,20 @@ const plugin = {
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
         const turnId = getActiveTurnId(conversationState, guardState);
+        if (
+          !shouldAllowNapmReasoningPreviewForCtx(ctx)
+          && (
+            rememberedRecord?.recordType === 'query_validation_failure'
+            || rememberedRecord?.recordType === 'skill_execution_failure'
+          )
+        ) {
+          return {
+            message: buildAssistantTextMessage(
+              buildRememberedSkillReplyText(rememberedRecord),
+              message
+            )
+          };
+        }
         const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState);
         const recentReportReply = resultDeliveryFollowUp
           ? buildRecentReportExportReply(conversationKey)

@@ -2,6 +2,17 @@
 set -Eeuo pipefail
 
 SKIP_DEPENDENCIES=0
+EXTENSION_VERIFY_DIR=""
+
+cleanup() {
+  if [[ -n "$EXTENSION_VERIFY_DIR" && -d "$EXTENSION_VERIFY_DIR" ]]; then
+    case "$EXTENSION_VERIFY_DIR/" in
+      /tmp/napm-extension-verify-*/) rm -rf -- "$EXTENSION_VERIFY_DIR" ;;
+      *) echo "Refusing to remove unexpected extension verification directory: $EXTENSION_VERIFY_DIR" >&2 ;;
+    esac
+  fi
+}
+trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
@@ -21,7 +32,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in node npm; do
+for command_name in bash find grep install mktemp node npm realpath rsync; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -45,6 +56,14 @@ for required_path in \
     exit 1
   }
 done
+[[ -f "$RELEASE_ROOT/scripts/stage-openclaw-extension.sh" ]] || {
+  echo "Release package is missing extension staging script" >&2
+  exit 1
+}
+[[ -f "$RELEASE_ROOT/scripts/verify-openclaw-extension-runtime.js" ]] || {
+  echo "Release package is missing extension runtime verifier" >&2
+  exit 1
+}
 
 node -e '
   const fs = require("node:fs");
@@ -78,5 +97,11 @@ fi
 node --check "$RELEASE_ROOT/napm-openclaw-plugin.remote.js"
 OPENCLAW_SKILLS_ROOT="$RELEASE_ROOT/skills" \
   node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
+
+EXTENSION_VERIFY_DIR="$(mktemp -d /tmp/napm-extension-verify-XXXXXXXX)"
+bash "$RELEASE_ROOT/scripts/stage-openclaw-extension.sh" "$RELEASE_ROOT" "$EXTENSION_VERIFY_DIR"
+node "$RELEASE_ROOT/scripts/verify-openclaw-extension-runtime.js" \
+  --extensionRoot "$EXTENSION_VERIFY_DIR" \
+  --skillsRoot "$RELEASE_ROOT/skills"
 
 echo "Staged release verification complete. Active OpenClaw files were not changed."

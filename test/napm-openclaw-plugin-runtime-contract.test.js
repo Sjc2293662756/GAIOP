@@ -23,6 +23,7 @@ describe('NAPM plugin in-process Skill execution contract', () => {
     delete process.env.NAPM_AUDIT_LOG_PATH;
     delete process.env.NAPM_REPORT_SOURCE_DIR;
     delete process.env.NAPM_TRUSTED_CONTEXT_DIR;
+    delete process.env.OPENCLAW_SKILLS_ROOT;
     fs.rmSync(baseDir, { recursive: true, force: true });
   });
 
@@ -96,5 +97,94 @@ describe('NAPM plugin in-process Skill execution contract', () => {
     });
 
     expect(selectedRoot).toBe(deployedSkillsRoot);
+  });
+
+  test.each([
+    ['WebApplication', 3, '业务系统一'],
+    ['DefinedApp', 2, '已定义应用一']
+  ])('executes groups metadata for %s from a minimal installed extension layout', async (
+    objectType,
+    applicationType,
+    objectName
+  ) => {
+    const extensionDir = path.join(baseDir, 'extensions', 'napm-openclaw-plugin');
+    fs.mkdirSync(extensionDir, { recursive: true });
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
+      path.join(extensionDir, 'index.js')
+    );
+    fs.cpSync(
+      path.resolve(__dirname, '..', 'plugin'),
+      path.join(extensionDir, 'plugin'),
+      { recursive: true }
+    );
+
+    const skillsRoot = path.resolve(__dirname, '..', 'skills');
+    process.env.OPENCLAW_SKILLS_ROOT = skillsRoot;
+    jest.resetModules();
+
+    const installedRequirementParser = require(path.join(
+      skillsRoot,
+      'openclaw-napm-query/services/RequirementParserService'
+    ));
+    const originalExecuteGatewayRequest = installedRequirementParser.executeGatewayRequest;
+    installedRequirementParser.executeGatewayRequest = jest.fn(async (resolvedQuery) => ({
+      ok: true,
+      service: resolvedQuery.service,
+      data: [{
+        label: objectName,
+        value: objectName,
+        type: objectType,
+        applicationType
+      }],
+      metadata: {
+        providerType: 'applications',
+        apiType: 'applications',
+        applicationTypeFilter: [applicationType]
+      },
+      error: null
+    }));
+
+    const installedPlugin = require(path.join(extensionDir, 'index.js'));
+    const installedTools = new Map();
+    installedPlugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) {
+        installedTools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook() {}
+    });
+
+    try {
+      const result = await installedTools.get('napm-skill-query').execute(
+        `minimal-extension-${objectType}`,
+        {
+          prompt: `列出${objectName}`,
+          resolvedQuery: {
+            service: 'groups',
+            queryModeKey: 'metadata',
+            groups: [{ type: objectType }],
+            format: 'json'
+          }
+        }
+      );
+
+      expect(result.details).toMatchObject({
+        ok: true,
+        service: 'groups',
+        resolvedQuery: {
+          service: 'groups',
+          queryModeKey: 'metadata',
+          groups: [{ type: objectType }]
+        }
+      });
+      expect(result.details.rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ value: objectName, type: objectType })
+      ]));
+    } finally {
+      installedRequirementParser.executeGatewayRequest = originalExecuteGatewayRequest;
+    }
   });
 });

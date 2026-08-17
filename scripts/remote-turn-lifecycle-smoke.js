@@ -145,10 +145,15 @@ async function main() {
     content: blocked.blockReason,
     metadata: { isFinal: true }
   }, validationCtx);
-  assert.equal(
-    validationSendingResult,
-    undefined,
-    'construction-phase validation result must prevent generic fallback rewriting'
+  assert.match(
+    validationSendingResult?.content || '',
+    /查询参数未构造完整/,
+    'construction-phase validation result must use the safe typed failure reply'
+  );
+  assert.doesNotMatch(
+    validationSendingResult?.content || '',
+    /UPSTREAM_RESOLVED_QUERY_INVALID|requiredFields|resolvedQuerySummary/,
+    'construction-phase validation result must not expose the internal boundary contract'
   );
 
   const packetLossCtx = createContext('packet-loss-ranking');
@@ -389,7 +394,7 @@ async function main() {
       'native_command_hooks_bypassed',
       'native_reset_state_cleared',
       'shared_agent_guard_isolated',
-      'construction_validation_result_retained',
+      'construction_validation_result_safely_rendered',
       'packet_loss_metric_routed_to_query',
       'packet_capture_routed_to_analysis',
       'tool_call_preserved',

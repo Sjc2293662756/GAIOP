@@ -16,6 +16,8 @@ class ConversationOperationState {
     this.latestSkillByScope = new Map();
     this.queryFailureByPrompt = new Map();
     this.queryFailureByTurn = new Map();
+    this.skillExecutionFailureByPrompt = new Map();
+    this.skillExecutionFailureByTurn = new Map();
     this.debugByPrompt = new Map();
     this.latestDebugByScope = new Map();
     this.reportByScope = new Map();
@@ -43,6 +45,7 @@ class ConversationOperationState {
     }
 
     const record = {
+      recordType: 'skill_execution_result',
       promptKey,
       conversationKey: scope,
       turnId: normalizedTurnId || null,
@@ -57,6 +60,10 @@ class ConversationOperationState {
       this.skillByTurn.set(turnKey, record);
     }
     this.latestSkillByScope.set(scope, record);
+    if (this._isExplicitSuccess(result)) {
+      this.clearQueryFailureForTurn(scope, normalizedTurnId);
+      this.clearSkillExecutionFailureForTurn(scope, normalizedTurnId);
+    }
     this._trim(this.skillByPrompt);
     this._trim(this.skillByTurn);
     this._trim(this.latestSkillByScope);
@@ -81,6 +88,7 @@ class ConversationOperationState {
     const duplicate = Boolean(existing?.fingerprint && existing.fingerprint === fingerprint);
     const mayRepair = !duplicate && attemptCount <= this.queryRepairBudget;
     const record = {
+      recordType: 'query_validation_failure',
       promptKey,
       conversationKey: String(scope).trim(),
       turnId: normalizedTurnId || null,
@@ -110,6 +118,59 @@ class ConversationOperationState {
       return null;
     }
     return this._getFresh(this.queryFailureByTurn, key, this.resultMaxAgeMs);
+  }
+
+  clearQueryFailureForTurn(scope, turnId) {
+    return this._clearTurnRecord(
+      this.queryFailureByTurn,
+      this.queryFailureByPrompt,
+      scope,
+      turnId
+    );
+  }
+
+  rememberSkillExecutionFailure({ scope, turnId = '', promptKey, result, resolvedQuery = null }) {
+    if (!this._isUsableScope(scope) || !promptKey || !this._isExplicitFailure(result)) {
+      return null;
+    }
+
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    const turnKey = this._buildTurnKey(scope, normalizedTurnId);
+    const record = {
+      recordType: 'skill_execution_failure',
+      promptKey,
+      conversationKey: String(scope).trim(),
+      turnId: normalizedTurnId || null,
+      updatedAt: this.now(),
+      result,
+      resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null
+    };
+
+    this._prune();
+    this.skillExecutionFailureByPrompt.set(promptKey, record);
+    if (turnKey) {
+      this.skillExecutionFailureByTurn.set(turnKey, record);
+    }
+    this._trim(this.skillExecutionFailureByPrompt);
+    this._trim(this.skillExecutionFailureByTurn);
+    return record;
+  }
+
+  getSkillExecutionFailureForTurn(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    if (!key) {
+      return null;
+    }
+    return this._getFresh(this.skillExecutionFailureByTurn, key, this.resultMaxAgeMs);
+  }
+
+  clearSkillExecutionFailureForTurn(scope, turnId) {
+    return this._clearTurnRecord(
+      this.skillExecutionFailureByTurn,
+      this.skillExecutionFailureByPrompt,
+      scope,
+      turnId
+    );
   }
 
   getSkillResult(promptKey) {
@@ -298,6 +359,8 @@ class ConversationOperationState {
       this.latestSkillByScope,
       this.queryFailureByPrompt,
       this.queryFailureByTurn,
+      this.skillExecutionFailureByPrompt,
+      this.skillExecutionFailureByTurn,
       this.debugByPrompt,
       this.latestDebugByScope,
       this.reportByScope,
@@ -338,6 +401,8 @@ class ConversationOperationState {
     this._pruneMap(this.latestSkillByScope, this.resultMaxAgeMs);
     this._pruneMap(this.queryFailureByPrompt, this.resultMaxAgeMs);
     this._pruneMap(this.queryFailureByTurn, this.resultMaxAgeMs);
+    this._pruneMap(this.skillExecutionFailureByPrompt, this.resultMaxAgeMs);
+    this._pruneMap(this.skillExecutionFailureByTurn, this.resultMaxAgeMs);
     this._pruneMap(this.debugByPrompt, this.resultMaxAgeMs);
     this._pruneMap(this.latestDebugByScope, this.resultMaxAgeMs);
     this._pruneMap(this.reportByScope, this.reportMaxAgeMs);
@@ -389,6 +454,23 @@ class ConversationOperationState {
       resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null
     };
     return crypto.createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');
+  }
+
+  _clearTurnRecord(turnMap, promptMap, scope, turnId) {
+    const turnKey = this._buildTurnKey(scope, turnId);
+    if (!turnKey) {
+      return 0;
+    }
+
+    const record = this._getFresh(turnMap, turnKey, this.resultMaxAgeMs);
+    if (!record) {
+      return 0;
+    }
+    turnMap.delete(turnKey);
+    if (record.promptKey && promptMap.get(record.promptKey) === record) {
+      promptMap.delete(record.promptKey);
+    }
+    return 1;
   }
 
   _normalizeTurnId(turnId) {

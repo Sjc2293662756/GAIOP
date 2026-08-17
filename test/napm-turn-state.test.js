@@ -80,6 +80,47 @@ describe('NAPM turn state', () => {
     expect(state.getQueryFailureForTurn('session:one', 'turn-1')).toBe(repeated);
   });
 
+  test('clears a construction failure after a valid query is accepted for the turn', () => {
+    const state = new ConversationOperationState({ now: () => 1000, queryRepairBudget: 1 });
+    state.rememberQueryFailure({
+      scope: 'session:one',
+      turnId: 'turn-1',
+      promptKey: 'session:one::prompt',
+      result: {
+        ok: false,
+        error: { code: 'UPSTREAM_RESOLVED_QUERY_INVALID', reason: 'incomplete_resolved_query' }
+      },
+      resolvedQuery: { service: 'groups', queryModeKey: 'metadata' }
+    });
+
+    expect(state.clearQueryFailureForTurn('session:one', 'turn-1')).toBe(1);
+    expect(state.getQueryFailureForTurn('session:one', 'turn-1')).toBeNull();
+  });
+
+  test('stores and clears a Skill execution failure separately from query construction', () => {
+    const state = new ConversationOperationState({ now: () => 1000 });
+    const record = state.rememberSkillExecutionFailure({
+      scope: 'session:one',
+      turnId: 'turn-1',
+      promptKey: 'session:one::prompt',
+      result: {
+        ok: false,
+        error: { code: 'NAPM_SKILL_EXECUTION_FAILED' }
+      },
+      resolvedQuery: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }]
+      }
+    });
+
+    expect(record).toMatchObject({ recordType: 'skill_execution_failure' });
+    expect(state.getSkillExecutionFailureForTurn('session:one', 'turn-1')).toBe(record);
+    expect(state.getQueryFailureForTurn('session:one', 'turn-1')).toBeNull();
+    expect(state.clearSkillExecutionFailureForTurn('session:one', 'turn-1')).toBe(1);
+    expect(state.getSkillExecutionFailureForTurn('session:one', 'turn-1')).toBeNull();
+  });
+
   test('claims final delivery only after current-turn content is prepared', () => {
     const state = new ConversationOperationState({ now: () => 1000 });
 

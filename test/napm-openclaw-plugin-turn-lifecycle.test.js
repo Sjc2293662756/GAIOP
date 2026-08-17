@@ -375,6 +375,9 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
       filters: expect.any(Object),
       executionOptions: expect.any(Object)
     }));
+    expect(tool.description).toContain('groups requires service, queryModeKey, groups');
+    expect(tool.description).toContain('groups=[{type:"WebApplication"}]');
+    expect(resolvedQuerySchema.properties.groups.description).toContain('DefinedApp');
 
     const result = await tool.execute('invalid-service-call', {
       prompt: '过去 24 小时的吞吐量趋势如何？',
@@ -420,6 +423,77 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
       content: hookResult.blockReason,
       metadata: { isFinal: true }
     }, ctx);
-    expect(outgoing).toBeUndefined();
+    expect(outgoing?.content).toContain('查询参数未构造完整');
+    expect(outgoing?.content).not.toContain('UPSTREAM_RESOLVED_QUERY_INVALID');
+  });
+
+  test('does not expose a superseded construction failure after a valid retry', async () => {
+    const ctx = createCtx('metadata-repair-runtime-failure');
+    const prompt = '现在系统中有哪些业务？';
+    await startTurn(ctx, prompt);
+
+    const invalidCall = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        resolvedQuery: {
+          service: 'groups',
+          queryModeKey: 'metadata'
+        }
+      }
+    }, ctx);
+    expect(invalidCall).toMatchObject({ block: true });
+
+    const repairedCall = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        resolvedQuery: {
+          service: 'groups',
+          queryModeKey: 'metadata',
+          groups: [{ type: 'WebApplication' }]
+        }
+      }
+    }, ctx);
+    expect(repairedCall?.block).not.toBe(true);
+
+    const outgoing = await hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'NAPM query tool execution failed.' }]
+      }
+    }, ctx);
+    const text = outgoing?.message?.content?.[0]?.text || '';
+
+    expect(text).toContain('本轮未拿到有效 skill 结果');
+    expect(text).not.toContain('UPSTREAM_RESOLVED_QUERY_INVALID');
+    expect(text).not.toContain('requiredFields');
+    expect(text).not.toContain('resolvedQuerySummary');
+  });
+
+  test('renders validation and execution failures without serializing internal contracts', () => {
+    const validationReply = plugin.__test__.buildRememberedSkillReplyText({
+      recordType: 'query_validation_failure',
+      result: {
+        ok: false,
+        responseType: 'BOUNDARY_VALIDATION_ERROR',
+        error: { code: 'UPSTREAM_RESOLVED_QUERY_INVALID' },
+        requiredFields: ['service', 'queryModeKey', 'groups']
+      }
+    });
+    const executionReply = plugin.__test__.buildRememberedSkillReplyText({
+      recordType: 'skill_execution_failure',
+      result: {
+        ok: false,
+        responseType: 'SKILL_EXECUTION_ERROR',
+        error: { code: 'NAPM_SKILL_EXECUTION_FAILED' }
+      }
+    });
+
+    expect(validationReply).toContain('查询参数未构造完整');
+    expect(validationReply).not.toContain('UPSTREAM_RESOLVED_QUERY_INVALID');
+    expect(validationReply).not.toContain('requiredFields');
+    expect(executionReply).toContain('NAPM 查询工具执行失败');
+    expect(executionReply).not.toContain('NAPM_SKILL_EXECUTION_FAILED');
   });
 });
