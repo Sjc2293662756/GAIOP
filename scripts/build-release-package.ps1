@@ -73,6 +73,22 @@ try {
   if ($LASTEXITCODE -ne 0 -or $commitHash -notmatch '^[0-9a-f]{40}$') {
     throw "Unable to resolve commit: $Commit"
   }
+
+  $releaseTag = "v$Version"
+  $existingTags = @(& git tag --list $releaseTag)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to check whether release tag '$releaseTag' already exists."
+  }
+  if ($existingTags.Count -gt 0) {
+    $tagCommitHash = ([string](& git rev-list -n 1 $releaseTag)).Trim()
+    if ($LASTEXITCODE -ne 0 -or $tagCommitHash -notmatch '^[0-9a-f]{40}$') {
+      throw "Unable to resolve existing release tag: $releaseTag"
+    }
+    if ($tagCommitHash -ne $commitHash) {
+      throw "Release version '$Version' is already fixed to commit '$tagCommitHash' by tag '$releaseTag'. Current commit is '$commitHash'. Bump package.json and package-lock.json before building a new release."
+    }
+  }
+
   $shortCommit = $commitHash.Substring(0, 8)
   $branch = ([string](& git branch --show-current)).Trim()
   if ($LASTEXITCODE -ne 0) {
@@ -117,6 +133,16 @@ try {
   $packageRoot = Join-Path $stagingDir $archiveName
   if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) {
     throw 'Git archive did not contain the expected package root.'
+  }
+
+  $archivedPackageJsonPath = Join-Path $packageRoot 'package.json'
+  if (-not (Test-Path -LiteralPath $archivedPackageJsonPath -PathType Leaf)) {
+    throw 'Git archive did not contain package.json.'
+  }
+  $archivedPackageJson = Get-Content -LiteralPath $archivedPackageJsonPath -Raw | ConvertFrom-Json
+  $archivedVersion = ([string]$archivedPackageJson.version).Trim()
+  if ($archivedVersion -ne $Version) {
+    throw "Requested version '$Version' does not match package.json version '$archivedVersion' in commit '$commitHash'."
   }
 
   $manifest = [ordered]@{
