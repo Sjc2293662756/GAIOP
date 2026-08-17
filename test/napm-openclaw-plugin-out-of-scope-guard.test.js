@@ -72,6 +72,13 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     '你是做什么的？',
     '你能做什么？',
     '你能做些什么？',
+    '你可以干什么？',
+    '你能干什么？',
+    '你会干些什么？',
+    '你可以做哪些事？',
+    '你都能帮我做什么？',
+    '你会做啥？',
+    '你能干嘛？',
     '你有什么功能？',
     '你有哪些能力？',
     '你运行在哪里？',
@@ -88,6 +95,8 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     '您好，讲个笑话。',
     '你好，帮我查一下现在系统情况。',
     '你能帮我查一下现在系统情况吗？',
+    '你可以干什么来分析 239web？',
+    '你都能帮我做什么，先查一下 239web？',
     '你有什么功能，顺便查一下现在系统情况？',
     '你是谁，帮我看看 239web 最近情况？',
     '系统支持哪些指标？'
@@ -100,6 +109,7 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     ['time-greeting', '早上好'],
     ['identity', '你是谁？'],
     ['capability', '你能做什么？'],
+    ['capability-synonym', '你可以干什么？'],
     ['platform', '你运行在哪里？']
   ])('should preserve the model answer for a %s prompt in both outgoing hooks', async (suffix, prompt) => {
     const { hooks } = createApiHarness();
