@@ -1,7 +1,7 @@
 # OpenClaw 身份能力问题被 NAPM 结果门禁误拦截修复方案
 
 日期：2026-08-17
-状态：`1.1.0-rc.4` 已部署测试服务器，待企业微信真实消息验收
+状态：`1.1.0-rc.5` 已部署测试服务器，待企业微信真实消息验收
 范围：NAPM OpenClaw 插件、Query 工作流分类器、会话追问与结果证据门禁
 
 ## 1. 问题现象
@@ -282,3 +282,41 @@ napmRelated=false
 新增 7 个能力同义句正例、2 个复合 NAPM 请求反例，并将“你可以干什么？”纳入 `message_received -> before_prompt_build -> message_sending/before_message_write` 完整 Hook 链路验证。
 
 验证结果：聚焦回归 55/55 通过，完整 Jest 90 个套件、653 个测试全部通过，lint、运行时契约、Node 语法和 `git diff --check` 均通过。
+
+## 11. rc.5 测试服务器部署记录
+
+### 11.1 发布制品
+
+```text
+版本：1.1.0-rc.5
+发布提交：85f151fcecdc0086c0ee5bd32e9226ee98994765
+制品：NAPM_skill-1.1.0-rc.5-85f151fc.zip
+SHA-256：3fe7aefe1cf87a1006dc2bc42cbbcd9b62e8c56091d04a94be60b5f72476516b
+大小：836228 bytes
+```
+
+本地构建重新执行完整 Jest 653/653、lint 和 8 个生产 Tool 运行时契约，发布包上传后的远端哈希和大小与本地一致。
+
+### 11.2 隔离验证和安装
+
+- `verify-staged-release.sh` 通过：Linux 生产依赖 0 个已知漏洞，插件语法和 8 个生产 Tool 全部正常。
+- `install-release.sh --dry-run` 通过：确认 Gateway 为 `active`、watcher 为 `inactive`，且保留私有配置与运行数据。
+- `install-release.sh` 完成：备份、同步、Linux 依赖安装、运行时校验和服务恢复均成功，未触发回退。
+
+自动备份：
+
+```text
+/home/netinside/.openclaw/deploy_backups/20260817_161749_napm_1.1.0-rc.5_85f151fc/runtime-before-deploy.tgz
+```
+
+`runtime-before-deploy.sha256` 校验通过。
+
+### 11.3 部署后验收
+
+- workspace 与 extension 的 `RELEASE-MANIFEST.json` 均为 `1.1.0-rc.5 / 85f151fc`。
+- 活动 extension 的 `index.js`、`napm-openclaw-plugin.remote.js` 与 staged 发布源哈希一致。
+- Gateway 为 `active`，18789 端口正常监听，日志出现 `gateway ready`。
+- 企业微信 WebSocket 连接与认证成功；watcher 保持部署前的 `inactive` 状态。
+- 无外发 Hook 冒烟通过：7 个能力同义句进入身份路由，2 个复合 NAPM 请求保持非身份路由，身份答案未被输出 Hook 改写，身份轮 NAPM Tool 调用被拒绝。
+
+rc.3/rc.4 已记录的 extension 内嵌时间解析依赖问题不在本次能力问句修复范围内，rc.5 不将真实 `napm-skill-query` 视为已验收。
