@@ -4,6 +4,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+function copyDirectorySync(sourceDir, targetDir) {
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectorySync(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(sourcePath, targetPath);
+    } else {
+      throw new Error(`Unsupported plugin fixture entry: ${sourcePath}`);
+    }
+  }
+}
+
 describe('NAPM plugin in-process Skill execution contract', () => {
   let baseDir;
   let plugin;
@@ -113,10 +128,9 @@ describe('NAPM plugin in-process Skill execution contract', () => {
       path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
       path.join(extensionDir, 'index.js')
     );
-    fs.cpSync(
+    copyDirectorySync(
       path.resolve(__dirname, '..', 'plugin'),
-      path.join(extensionDir, 'plugin'),
-      { recursive: true }
+      path.join(extensionDir, 'plugin')
     );
 
     const skillsRoot = path.resolve(__dirname, '..', 'skills');
