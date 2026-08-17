@@ -47,21 +47,26 @@ pscp "dist/NAPM_skill-<version>-<commit>.zip" \
 
 ## 服务器安装
 
-解压后先预演，再正式安装：
+解压后先做隔离验证和预演，再正式安装：
 
 ```bash
+bash scripts/verify-staged-release.sh
 bash scripts/install-release.sh --dry-run
 bash scripts/install-release.sh
 ```
 
 安装脚本负责：
 
-- 备份当前 extension、Skills 和依赖清单
+- 备份当前 extension、将更新的 Skills、workspace 依赖和顶层配置
 - 同步完整版本，而不是只覆盖本次修改文件
 - 保留 `.env`、日志、输出、运行数据和 Syslog watcher 配置
 - 安装锁定依赖
 - 验证 8 个生产工具入口
-- 重启并检查 `openclaw-gateway.service`
+- 清理 extension 内不属于候选版本的旧代码副本，同时保留其依赖目录
+- 重启并检查 Gateway 和 Syslog watcher 原先处于活动状态的服务
+- 任一步骤失败时自动恢复部署前备份
+
+候选版本隔离验证只修改 `/home/netinside/releases/` 下的解压目录，不修改活动 workspace、extension 或服务。当前 R0 回退基线记录在 `memory/2026-08-17.md`；旧 `echarts-ai-skill` 在确认调用关系前不得删除。
 
 ## 验证命令
 
@@ -81,4 +86,4 @@ plink -ssh netinside@101.254.114.237 "<command>"
 
 **Why:** 逐文件推送曾导致远端同时存在不同本地目录、不同提交的混合代码。单 ZIP 让版本号、Git 提交和服务器文件保持同一来源。
 
-**How to apply:** 当用户要求“推送”或“部署”时，先确认 Git 工作区干净、质量门禁通过、ZIP 名称中的版本和提交正确。只上传 ZIP，先 dry-run，保存备份路径，再正式安装和验收。
+**How to apply:** 当用户要求“推送”或“部署”时，先确认 Git 工作区干净、质量门禁通过、ZIP 名称中的版本和提交正确。只上传 ZIP，依次执行隔离验证和 dry-run；获得明确切换批准后才正式安装。安装失败必须使用自动回退结果，不继续手工覆盖。

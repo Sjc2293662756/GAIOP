@@ -22,6 +22,14 @@
 /test-*.cjs export-ignore
 /scripts/** export-ignore
 /scripts/install-release.sh -export-ignore
+/scripts/rollback-release.sh -export-ignore
+/scripts/verify-staged-release.sh -export-ignore
 /scripts/verify-napm-skill-runtime-contract.js -export-ignore
+/skills/**/.env export-ignore
+/skills/**/logs/** export-ignore
+/skills/**/output/** export-ignore
+/skills/**/data/** export-ignore
+/skills/**/query_*.json export-ignore
+/skills/**/alert_packet_query.json export-ignore
 /skills/openclaw-napm-syslog-watcher/config/watcher.config.json export-ignore
 /skills/openclaw-napm-syslog-watcher/scripts/test_codeblock.* export-ignore

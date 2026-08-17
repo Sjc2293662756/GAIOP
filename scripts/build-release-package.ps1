@@ -127,7 +127,7 @@ try {
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
     source = 'git_archive_tracked_files'
     qualityGates = if ($SkipChecks) { @('skipped_by_operator') } else { @('npm_test', 'npm_run_lint', 'runtime_contract') }
-    installCommand = 'bash scripts/install-release.sh --dry-run && bash scripts/install-release.sh'
+    installCommand = 'bash scripts/verify-staged-release.sh && bash scripts/install-release.sh --dry-run && bash scripts/install-release.sh'
   }
   $manifestPath = Join-Path $packageRoot 'RELEASE-MANIFEST.json'
   $manifestJson = $manifest | ConvertTo-Json -Depth 5
@@ -149,6 +149,8 @@ try {
     'napm-openclaw-plugin.remote.js',
     'plugin/TrustedToolContextStore.js',
     'scripts/install-release.sh',
+    'scripts/rollback-release.sh',
+    'scripts/verify-staged-release.sh',
     'scripts/verify-napm-skill-runtime-contract.js',
     'skills/openclaw-napm-query/scripts/run_napm_query.js',
     'skills/openclaw-napm-syslog-receiver/scripts/run_syslog_receiver.js'
@@ -161,8 +163,9 @@ try {
   }
 
   $forbidden = Get-ChildItem -LiteralPath $verifiedRoot -Recurse -Force | Where-Object {
-    ($_.PSIsContainer -and $_.Name -in @('.git', 'node_modules', 'archive', 'test')) -or
+    ($_.PSIsContainer -and $_.Name -in @('.git', 'node_modules', 'archive', 'test', 'logs', 'output', 'data')) -or
     (-not $_.PSIsContainer -and $_.Name -eq '.env') -or
+    (-not $_.PSIsContainer -and $_.Extension -in @('.docx', '.log', '.tar', '.tgz', '.zip')) -or
     (-not $_.PSIsContainer -and $_.Name -match '^query_.*\.json$') -or
     (-not $_.PSIsContainer -and $_.Name -eq 'alert_packet_query.json') -or
     (-not $_.PSIsContainer -and $_.FullName.EndsWith('watcher.config.json'))
