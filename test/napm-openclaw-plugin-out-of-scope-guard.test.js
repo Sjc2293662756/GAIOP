@@ -71,6 +71,8 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     '你的身份是什么？',
     '你是做什么的？',
     '你能做什么？',
+    '你能做些什么？',
+    '你有什么功能？',
     '你有哪些能力？',
     '你运行在哪里？',
     '你基于什么平台？',
@@ -86,6 +88,8 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     '您好，讲个笑话。',
     '你好，帮我查一下现在系统情况。',
     '你能帮我查一下现在系统情况吗？',
+    '你有什么功能，顺便查一下现在系统情况？',
+    '你是谁，帮我看看 239web 最近情况？',
     '系统支持哪些指标？'
   ])('should not classify %s as a platform identity prompt', (prompt) => {
     expect(plugin.__test__.isPlatformIdentityPrompt(prompt)).toBe(false);
@@ -141,6 +145,88 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
         content: [{ type: 'text', text: greetingReply }]
       }
     }, ctx)).toBeUndefined();
+  });
+
+  test.each([
+    '你有什么功能？',
+    '你有哪些能力？'
+  ])('should preserve the identity answer for %s immediately after /new', async (prompt) => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx(`new-then-${prompt}`);
+    const identityReply = '我是观枢AI，可以协助查询和分析观枢 GAIOP / NAPM 监控数据。';
+
+    hooks.get('message_received')({ content: '/new' }, ctx);
+    await expect(hooks.get('message_sending')({
+      content: 'New session started.'
+    }, ctx)).resolves.toBeUndefined();
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    await expect(hooks.get('message_sending')({ content: identityReply }, ctx)).resolves.toBeUndefined();
+    expect(hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: identityReply }]
+      }
+    }, ctx)).toBeUndefined();
+  });
+
+  test('should not inherit NAPM state when a capability prompt follows an inspection turn', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('inspection-then-capability');
+    const identityReply = '我是观枢AI，可以协助处理观枢 GAIOP / NAPM 智能运维任务。';
+
+    hooks.get('message_received')({ content: '生成一份系统巡检报告' }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: '生成一份系统巡检报告' }, ctx);
+
+    hooks.get('message_received')({ content: '你能做些什么？' }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: '你能做些什么？' }, ctx);
+
+    await expect(hooks.get('message_sending')({ content: identityReply }, ctx)).resolves.toBeUndefined();
+    expect(hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: identityReply }]
+      }
+    }, ctx)).toBeUndefined();
+  });
+
+  test.each([
+    ['你有什么功能？', { napmRelated: false }],
+    ['你能做些什么？', { napmRelated: true }]
+  ])('should never require Skill evidence for identity prompt %s', (prompt, guardState) => {
+    expect(plugin.__test__.shouldRequireSkillBackedReply(prompt, guardState, null)).toBe(false);
+    expect(plugin.__test__.shouldForceSkillRecordForPrompt(prompt, guardState)).toBe(false);
+  });
+
+  test('should reject tool calls during a pure identity turn', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('identity-tool-call');
+    const prompt = '你有什么功能？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: { prompt }
+    }, ctx);
+
+    expect(result).toMatchObject({
+      block: true
+    });
+    expect(result.blockReason).toContain('身份');
+  });
+
+  test('should keep real NAPM inventory prompts behind Skill evidence', () => {
+    const prompt = '系统里有哪些业务？';
+
+    expect(plugin.__test__.classifyNapmWorkflow(prompt)).toMatchObject({
+      workflowType: 'object_inventory',
+      targetObjectType: 'WebApplication'
+    });
+    expect(plugin.__test__.shouldRequireSkillBackedReply(prompt, { napmRelated: true }, null)).toBe(true);
   });
 
   test('should restore the general out-of-scope guard on the next ordinary turn', async () => {

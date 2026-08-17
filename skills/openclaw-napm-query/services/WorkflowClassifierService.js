@@ -123,12 +123,15 @@ function classifyWorkflow(prompt = '') {
   }
 
   if (hasInventoryIntent(text)) {
-    return {
-      workflowType: 'object_inventory',
-      confidence: 0.92,
-      targetObjectType: inferInventoryObjectType(text),
-      reason: 'object_inventory_intent'
-    };
+    const targetObjectType = inferInventoryObjectType(text);
+    if (targetObjectType) {
+      return {
+        workflowType: 'object_inventory',
+        confidence: 0.92,
+        targetObjectType,
+        reason: 'object_inventory_intent'
+      };
+    }
   }
 
   if (hasOverviewIntent(text)) {

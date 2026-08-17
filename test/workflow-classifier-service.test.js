@@ -33,6 +33,18 @@ describe('WorkflowClassifierService', () => {
     });
   });
 
+  test.each([
+    '你有什么功能？',
+    '你有哪些能力？',
+    '你能做些什么？'
+  ])('should not classify assistant capability prompt as object inventory: %s', (prompt) => {
+    expect(WorkflowClassifierService.classifyWorkflow(prompt)).toMatchObject({
+      workflowType: null,
+      targetObjectType: null,
+      reason: 'workflow_unresolved'
+    });
+  });
+
   test('classifies inventory wording with a comparative metric as ranking', () => {
     const result = WorkflowClassifierService.classifyWorkflow('最近一周有哪些业务出现较多 HTTP 500 错误？');
 

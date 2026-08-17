@@ -655,24 +655,25 @@ function isPlatformIdentityPrompt(prompt = '') {
   if (!text) {
     return false;
   }
+  const normalized = text.replace(/[！!。.?？，,~～]+$/g, '').trim();
 
   const patterns = [
     // Pure greetings share the platform identity route. Anchors prevent a greeting
     // prefix from bypassing NAPM routing or the general out-of-scope boundary.
-    /^(?:(?:观枢\s*AI|助手)[，,:：\s]*)?(?:你好|您好|嗨|哈喽|哈啰|hello|hi|早|早上好|上午好|中午好|下午好|晚上好|早安|午安|晚安|在吗|在不在)(?:呀|啊|哦|哈)?[！!。.?？，,~～]*$/i,
-    /(?:你|您)(?:到底)?是谁/i,
-    /(?:你|您)(?:叫|叫什么)(?:名字|名称)?/i,
-    /(?:你|您)的(?:名字|名称|身份)(?:是|叫|是什么)/i,
-    /(?:你|您)是(?:做什么|干什么|什么助手|哪种助手|什么系统)(?:的)?/i,
-    /(?:请|麻烦)?(?:介绍(?:一下)?(?:你|您)自己|做个?自我介绍|自我介绍(?:一下)?)/i,
-    /(?:你|您)(?:能|可以|会|擅长)[^，。！？?!\n]{0,8}(?:做|处理|回答|提供|支持)[^，。！？?!\n]{0,8}(?:什么|哪些)/i,
-    /(?:你|您)(?:有|具备)(?:什么|哪些)?(?:功能|能力|本领)/i,
-    /(?:你|您)(?:运行|部署|工作)在(?:哪里|哪儿|什么平台|哪个平台)/i,
-    /(?:你|您)(?:基于|使用)(?:什么|哪个)平台/i,
-    /(?:你|您)是(?:什么|哪个)模型/i
+    /^(?:(?:观枢\s*AI|助手)[，,:：\s]*)?(?:你好|您好|嗨|哈喽|哈啰|hello|hi|早|早上好|上午好|中午好|下午好|晚上好|早安|午安|晚安|在吗|在不在)(?:呀|啊|哦|哈)?$/i,
+    /^(?:你|您)(?:到底)?是谁$/i,
+    /^(?:你|您)(?:叫|叫什么)(?:名字|名称)?$/i,
+    /^(?:你|您)的(?:名字|名称|身份)(?:是|叫|是什么)$/i,
+    /^(?:你|您)是(?:做什么|干什么|什么助手|哪种助手|什么系统)(?:的)?$/i,
+    /^(?:请|麻烦)?(?:介绍(?:一下)?(?:你|您)自己|做个?自我介绍|自我介绍(?:一下)?)$/i,
+    /^(?:你|您)(?:能|可以|会|擅长)[^，。！？?!\n]{0,8}(?:做|处理|回答|提供|支持)[^，。！？?!\n]{0,8}(?:什么|哪些)$/i,
+    /^(?:你|您)(?:有|具备)(?:什么|哪些)?(?:功能|能力|本领)$/i,
+    /^(?:你|您)(?:运行|部署|工作)在(?:哪里|哪儿|什么平台|哪个平台)$/i,
+    /^(?:你|您)(?:基于|使用)(?:什么|哪个)平台$/i,
+    /^(?:你|您)是(?:什么|哪个)模型$/i
   ];
 
-  return patterns.some((pattern) => pattern.test(text));
+  return patterns.some((pattern) => pattern.test(normalized));
 }
 
 function normalizePromptKey(prompt) {
@@ -2330,6 +2331,26 @@ function setGuardState(ctx = {}, state) {
 function buildConversationScopedGuardState(content = '', previousState = null) {
   const prompt = String(content || '').trim();
   const platformIdentityPrompt = isPlatformIdentityPrompt(prompt);
+  if (platformIdentityPrompt) {
+    return {
+      prompt,
+      napmRelated: false,
+      domainRelated: false,
+      platformIdentityPrompt: true,
+      alertRelated: false,
+      alertEventPrompt: false,
+      alertMetaFollowUpPrompt: false,
+      metricInventoryPrompt: false,
+      metaFollowUpPrompt: false,
+      resultDeliveryFollowUpPrompt: false,
+      lastMetricInventoryGroup: '',
+      generalOutOfScopeRequested: false,
+      outOfScopeBoundaryRequested: false,
+      turnNapmToolUsed: false,
+      updatedAt: Date.now()
+    };
+  }
+
   const overviewRelated = isOverviewPrompt(prompt);
   const alertEventPrompt = isAlertEventPrompt(prompt);
   const alertMetaFollowUpPrompt = isAlertSkillMetaFollowUpPrompt(prompt, previousState);
@@ -2343,6 +2364,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
+    || metricInventoryPrompt
     || isSystemDomainPrompt(prompt)
     || metaFollowUpPrompt
     || resultDeliveryFollowUpPrompt
@@ -2352,6 +2374,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
+    || metricInventoryPrompt
     || isNapmRelatedPrompt(prompt)
     || metaFollowUpPrompt
     || resultDeliveryFollowUpPrompt
@@ -3126,6 +3149,10 @@ function getRememberedQueryFailureForTurn(conversationKey = '', turnId = '') {
 }
 
 function getRememberedRecordForPrompt(activePrompt = '', conversationState = null, conversationKey = '', guardState = null) {
+  if (isPlatformIdentityPrompt(activePrompt)) {
+    return null;
+  }
+
   const metaFollowUp = isNapmMetaFollowUpPrompt(activePrompt, guardState || conversationState);
   const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePrompt, guardState || conversationState);
   const currentTurnRecord = getRememberedSkillResultForTurn(
@@ -3490,14 +3517,11 @@ function isContinuationPrompt(prompt) {
     return false;
   }
 
-  return text.length <= 12 || includesAnyKeyword(text, [
+  return includesAnyKeyword(text, [
     '这个',
     '它',
     '上面',
     '上述',
-    '昨天',
-    '今天',
-    '那',
     '然后呢',
     '继续',
     '改成',
@@ -4635,6 +4659,10 @@ function shouldForceSkillRecordForPrompt(prompt = '', guardState = null) {
     return false;
   }
 
+  if (isPlatformIdentityPrompt(text)) {
+    return false;
+  }
+
   return Boolean(
     isAlertEventPrompt(text)
     || isAlertSkillMetaFollowUpPrompt(text, guardState)
@@ -4663,6 +4691,10 @@ function hasVerifiableSkillRecord(record = null) {
 function shouldRequireSkillBackedReply(activePrompt = '', guardState = null, rememberedRecord = null) {
   const prompt = String(activePrompt || '').trim();
   if (!prompt) {
+    return false;
+  }
+
+  if (isPlatformIdentityPrompt(prompt)) {
     return false;
   }
 
@@ -5995,10 +6027,14 @@ const plugin = {
             };
             napmConversationState.set(conversationKey, conversationState);
           }
-          const effectiveNapmRelated = promptNapmRelated || Boolean(conversationState?.napmRelated);
-          const effectiveDomainRelated = promptDomainRelated || Boolean(conversationState?.domainRelated);
           const effectivePlatformIdentityPrompt = promptPlatformIdentityPrompt
             || Boolean(conversationState?.platformIdentityPrompt);
+          const effectiveNapmRelated = effectivePlatformIdentityPrompt
+            ? false
+            : (promptNapmRelated || Boolean(conversationState?.napmRelated));
+          const effectiveDomainRelated = effectivePlatformIdentityPrompt
+            ? false
+            : (promptDomainRelated || Boolean(conversationState?.domainRelated));
           const previousGuardState = getGuardState(ctx);
           const guardState = {
             prompt,
@@ -6008,13 +6044,13 @@ const plugin = {
             napmRelated: effectiveNapmRelated,
             domainRelated: effectiveDomainRelated,
             platformIdentityPrompt: effectivePlatformIdentityPrompt,
-            alertRelated: Boolean(conversationState?.alertRelated),
-            alertEventPrompt: Boolean(conversationState?.alertEventPrompt),
-            alertMetaFollowUpPrompt: Boolean(conversationState?.alertMetaFollowUpPrompt),
+            alertRelated: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertRelated),
+            alertEventPrompt: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertEventPrompt),
+            alertMetaFollowUpPrompt: effectivePlatformIdentityPrompt ? false : Boolean(conversationState?.alertMetaFollowUpPrompt),
             generalOutOfScopeRequested: prompt
               ? (!effectiveDomainRelated && !effectivePlatformIdentityPrompt)
               : (promptGeneralOutOfScopeRequested || Boolean(conversationState?.generalOutOfScopeRequested)),
-            outOfScopeBoundaryRequested: effectiveDomainRelated
+            outOfScopeBoundaryRequested: !effectivePlatformIdentityPrompt && effectiveDomainRelated
               && (
                 promptOutOfScopeBoundaryRequested
                 || (!prompt && Boolean(conversationState?.outOfScopeBoundaryRequested))
@@ -6124,6 +6160,23 @@ const plugin = {
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const toolName = String(event?.toolName || '').trim();
         const originalToolParams = isPlainObject(event?.params) ? event.params : {};
+        const fallbackPrompt = normalizePrompt(originalToolParams);
+        const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
+        const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
+        if (isPlatformIdentityPrompt(activePrompt) || activePromptState?.platformIdentityPrompt) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked tool for platform identity prompt: tool=${toolName}`);
+          appendPluginAuditEvent('napm_plugin_identity_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: '平台身份、能力和问候问题必须直接依据身份上下文回答，禁止调用工具。'
+          };
+        }
+
         const trustedTraceId = isSafeNapmToolName(toolName)
           ? bindTrustedToolContext(event, ctx)
           : '';
@@ -6132,8 +6185,6 @@ const plugin = {
           : originalToolParams;
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
 
-        const fallbackPrompt = normalizePrompt(toolParams);
-        const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
         if (toolName === 'napm-alert-query' && activePrompt) {
           toolParams = buildCanonicalSkillToolParams(activePrompt, toolParams);
         }
@@ -6143,8 +6194,6 @@ const plugin = {
         const trustedParamsResult = (trustedTraceId || toolParams !== originalToolParams)
           ? { params: toolParams }
           : undefined;
-        const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
-
         if (isReportExportPrompt(activePrompt) && isReportGenerationBypassTool(toolName)) {
           api.logger.warn(`[napm-openclaw-plugin] blocked report generation bypass: tool=${toolName}`);
           appendPluginAuditEvent('napm_report_generation_bypass_blocked', {
@@ -7141,6 +7190,7 @@ module.exports.__test__ = {
   looksLikeNapmBypassProcessText,
   looksLikeManualHierarchyInferenceText,
   looksLikeUnsupportedBusinessInventoryExplanation,
+  shouldForceSkillRecordForPrompt,
   shouldRequireSkillBackedReply,
   normalizeHierarchyQuestionTarget,
   normalizeOverviewSceneKey,
