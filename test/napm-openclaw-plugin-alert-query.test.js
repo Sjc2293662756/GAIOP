@@ -2,8 +2,13 @@ describe('napm-openclaw-plugin alert query integration', () => {
   let plugin;
 
   beforeEach(() => {
+    delete process.env.SHOW_UPSTREAM_API_IN_REPLY;
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote.js');
+  });
+
+  afterEach(() => {
+    delete process.env.SHOW_UPSTREAM_API_IN_REPLY;
   });
 
   function createApiHarness() {
@@ -100,6 +105,7 @@ describe('napm-openclaw-plugin alert query integration', () => {
   });
 
   test('should render fixed alert summary table reply', () => {
+    process.env.SHOW_UPSTREAM_API_IN_REPLY = 'true';
     const text = plugin.__test__.buildAlertQueryReply({
       ok: true,
       timeRange: { start: 1781488800, end: 1781492400 },
@@ -140,6 +146,19 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('Debug API:');
     expect(text).toContain('type=alertsSummary');
     expect(text).toContain('Password=***');
+  });
+
+  test('should hide upstream API details by default', () => {
+    const text = plugin.__test__.buildAlertQueryReply({
+      ok: true,
+      narrationInput: { displayText: '本时间范围内未查询到告警事件。' },
+      requestUrl: 'https://example.test/webservice/NetInside?Password=secret&type=alertsSummary'
+    });
+    const context = plugin.__test__.buildNapmRoutingSystemContext();
+
+    expect(text).toBe('本时间范围内未查询到告警事件。');
+    expect(context).toContain('Do not expose requestUrl or Debug API');
+    expect(context).not.toContain('Append "Debug API: <requestUrl>"');
   });
 
   test('should render grouped alert summary by category when no alert type is specified', () => {

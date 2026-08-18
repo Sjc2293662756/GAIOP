@@ -111,13 +111,13 @@
       "required": [
         "service",
         "queryModeKey",
+        "groups",
         "metrics",
         "start",
         "end",
         "granularity"
       ],
       "optional": [
-        "groups",
         "timeRange",
         "filters",
         "format",
@@ -2235,12 +2235,22 @@
         "包流量"
       ],
       "TPIO": [
-        "流量",
+        "流量趋势",
+        "流量的趋势",
+        "流量走势",
+        "流量的走势",
+        "流量速率",
+        "吞吐趋势",
+        "带宽趋势",
         "吞吐",
         "吞吐量",
         "带宽"
       ],
       "BYTIO": [
+        "累计流量",
+        "流量总量",
+        "流量大小",
+        "流量",
         "字节流量",
         "字节数"
       ],

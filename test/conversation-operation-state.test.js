@@ -10,6 +10,7 @@ describe('ConversationOperationState', () => {
       now: () => now,
       resultMaxAgeMs: 1_000,
       reportMaxAgeMs: 2_000,
+      queryContextMaxAgeMs: 30 * 60 * 1_000,
       maxEntries: 2
     });
   });
@@ -39,5 +40,44 @@ describe('ConversationOperationState', () => {
 
     expect(store.getReportExport('wecom:account:a').reportId).toBe('a');
     expect(store.getReportExport('wecom:account:b').reportId).toBe('b');
+  });
+
+  test('keeps lightweight query context longer than result data and clears it by scope', () => {
+    const resolvedQuery = {
+      service: 'timeValues',
+      queryModeKey: 'timeseries',
+      groups: [{ type: 'TotalTraffic' }],
+      metrics: ['TPIO'],
+      timeRange: { key: 'last24hours' },
+      granularity: 3600
+    };
+    store.rememberQueryContext({
+      scope: 'wecom:account:a',
+      turnId: 'turn-a',
+      sourceTool: 'napm-skill-query',
+      resolvedQuery
+    });
+
+    now += 7 * 60 * 1_000;
+    expect(store.getLatestSkillResult('wecom:account:a')).toBeNull();
+    expect(store.getLatestQueryContext('wecom:account:a')).toMatchObject({
+      turnId: 'turn-a',
+      sourceTool: 'napm-skill-query',
+      resolvedQuery
+    });
+
+    store.clearScope('wecom:account:a');
+    expect(store.getLatestQueryContext('wecom:account:a')).toBeNull();
+  });
+
+  test('expires lightweight query context after its dedicated lifetime', () => {
+    store.rememberQueryContext({
+      scope: 'wecom:account:a',
+      sourceTool: 'napm-skill-query',
+      resolvedQuery: { service: 'timeValues' }
+    });
+    now += (30 * 60 * 1_000) + 1;
+
+    expect(store.getLatestQueryContext('wecom:account:a')).toBeNull();
   });
 });

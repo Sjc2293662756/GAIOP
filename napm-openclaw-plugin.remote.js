@@ -94,6 +94,7 @@ let cachedNapmResolvedQueryResolverService = null;
 let napmResolvedQueryResolverLookupComplete = false;
 let skillDotenvLoaded = false;
 const RESULT_CACHE_MAX_AGE_MS = 90 * 1000;
+const QUERY_CONTEXT_MAX_AGE_MS = 30 * 60 * 1000;
 const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const OPENCLAW_NATIVE_COMMAND_TTL_MS = 30 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -107,7 +108,8 @@ const TRUSTED_CONTEXT_DIR = process.env.NAPM_TRUSTED_CONTEXT_DIR
   || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-trusted-tool-contexts');
 const napmOperationState = new ConversationOperationState({
   resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
-  reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS
+  reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS,
+  queryContextMaxAgeMs: QUERY_CONTEXT_MAX_AGE_MS
 });
 const assistantOutputLedger = new AssistantOutputLedger({
   maxAgeMs: RESULT_CACHE_MAX_AGE_MS
@@ -2964,6 +2966,27 @@ function rememberSkillResult(prompt, result, conversationKey = '', sourceTool = 
     requestUrl: getRequestUrlFromResult(result),
     resolvedQuery: result.resolvedQuery
   });
+  if (
+    record
+    && sourceTool === 'napm-skill-query'
+    && result.ok === true
+    && isPlainObject(result.resolvedQuery)
+  ) {
+    const queryContext = napmOperationState.rememberQueryContext({
+      scope: conversationKey,
+      turnId,
+      sourceTool,
+      resolvedQuery: result.resolvedQuery
+    });
+    if (queryContext) {
+      appendPluginAuditEvent('napm_query_context_remembered', {
+        turnId: queryContext.turnId,
+        sourceTool,
+        resolvedQuerySummary: summarizeResolvedQueryForAudit(queryContext.resolvedQuery),
+        scopeHash: ReportSourceStore.hashScope(conversationKey)
+      });
+    }
+  }
   const reportData = getReportDataFromResult(result);
   if (!record || !reportData) {
     return record;
@@ -2994,6 +3017,121 @@ function rememberSkillResult(prompt, result, conversationKey = '', sourceTool = 
     });
   }
   return record;
+}
+
+function normalizeContextComparisonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeContextComparisonValue(item));
+  }
+  if (isPlainObject(value)) {
+    return Object.keys(value)
+      .sort()
+      .reduce((result, key) => {
+        result[key] = normalizeContextComparisonValue(value[key]);
+        return result;
+      }, {});
+  }
+  return value == null ? null : value;
+}
+
+function normalizeContextMetrics(resolvedQuery = {}) {
+  const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
+  return Array.isArray(normalized?.metrics)
+    ? [...new Set(normalized.metrics
+        .map((metric) => String(metric || '').trim().toUpperCase())
+        .filter(Boolean))]
+        .sort()
+    : [];
+}
+
+function normalizeContextGroups(resolvedQuery = {}) {
+  const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
+  if (!Array.isArray(normalized?.groups) || normalized.groups.length === 0) {
+    return [];
+  }
+  return normalized.groups.map((group) => ({
+    type: String(group?.type || '').trim(),
+    argument: normalizeContextComparisonValue(group?.argument)
+  }));
+}
+
+function buildContextTimeSignature(resolvedQuery = {}) {
+  const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
+  const key = getRelativeTimeRangeKey(normalized).toLowerCase();
+  return {
+    key,
+    start: Number.isFinite(Number(normalized?.start)) ? Number(normalized.start) : null,
+    end: Number.isFinite(Number(normalized?.end)) ? Number(normalized.end) : null,
+    granularity: Number.isFinite(Number(normalized?.granularity))
+      ? Number(normalized.granularity)
+      : null
+  };
+}
+
+function authorizeContextualTimeValuesFollowUp(conversationKey = '', toolName = '', resolvedQuery = null) {
+  if (toolName !== 'napm-skill-query' || !conversationKey || !isPlainObject(resolvedQuery)) {
+    return { ok: false, reason: 'unsupported_tool_or_query' };
+  }
+
+  const previousRecord = napmOperationState.getLatestQueryContext(conversationKey);
+  if (
+    !previousRecord
+    || previousRecord.sourceTool !== 'napm-skill-query'
+    || !isPlainObject(previousRecord.resolvedQuery)
+  ) {
+    return { ok: false, reason: 'missing_previous_query_context' };
+  }
+
+  const previous = normalizeResolvedQueryForPlugin(previousRecord.resolvedQuery);
+  const current = normalizeResolvedQueryForPlugin(resolvedQuery);
+  if (
+    previous?.service !== 'timeValues'
+    || current?.service !== 'timeValues'
+    || previous?.queryModeKey !== 'timeseries'
+    || current?.queryModeKey !== 'timeseries'
+  ) {
+    return { ok: false, reason: 'unsupported_query_family' };
+  }
+
+  const previousMetrics = normalizeContextMetrics(previous);
+  const currentMetrics = normalizeContextMetrics(current);
+  if (
+    previousMetrics.length === 0
+    || currentMetrics.length === 0
+    || JSON.stringify(previousMetrics) !== JSON.stringify(currentMetrics)
+  ) {
+    return { ok: false, reason: 'metrics_changed' };
+  }
+
+  const previousGroups = normalizeContextGroups(previous);
+  const currentGroups = normalizeContextGroups(current);
+  if (previousGroups.length === 0) {
+    return { ok: false, reason: 'previous_group_context_missing' };
+  }
+  if (
+    currentGroups.length > 0
+    && JSON.stringify(previousGroups) !== JSON.stringify(currentGroups)
+  ) {
+    return { ok: false, reason: 'groups_changed' };
+  }
+
+  const previousTime = buildContextTimeSignature(previous);
+  const currentTime = buildContextTimeSignature(current);
+  const timeRangeChanged = (previousTime.key || currentTime.key)
+    ? previousTime.key !== currentTime.key
+    : previousTime.start !== currentTime.start || previousTime.end !== currentTime.end;
+  const granularityChanged = previousTime.granularity !== currentTime.granularity;
+  if (!timeRangeChanged && !granularityChanged) {
+    return { ok: false, reason: 'query_time_unchanged' };
+  }
+
+  return {
+    ok: true,
+    reason: 'structured_time_values_followup',
+    parentTurnId: previousRecord.turnId || null,
+    previousResolvedQuery: previousRecord.resolvedQuery,
+    currentGroupsMissing: currentGroups.length === 0
+  };
 }
 
 function rememberDebugApi(prompt, result, conversationKey = '', turnId = '') {
@@ -3958,9 +4096,7 @@ function buildAlertQueryReply(result = {}) {
   const skillText = result?.narrationInput?.displayText;
   if (skillText) {
     const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
-    return requestUrl && !skillText.includes(requestUrl)
-      ? `${skillText}\n\nDebug API:\n${requestUrl}`
-      : skillText;
+    return appendDebugApi(skillText, requestUrl);
   }
 
   if (result?.explanation?.title) {
@@ -4116,10 +4252,7 @@ function buildAlertQueryReply(result = {}) {
 
   const text = lines.join('\n').trim() || JSON.stringify(result, null, 2);
   const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
-  if (!requestUrl || text.includes(requestUrl)) {
-    return text;
-  }
-  return `${text}\n\nDebug API:\n${requestUrl}`;
+  return appendDebugApi(text, requestUrl);
 }
 
 function buildAlertPacketAnalysisReply(result = {}) {
@@ -5277,7 +5410,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}]. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -5300,7 +5433,7 @@ function createSkillToolDefinition() {
             topMetric: { type: 'string' },
             groups: {
               type: 'array',
-              description: 'Required and non-empty for service=groups. Use WebApplication for 业务/业务系统, DefinedApp for 应用/已定义应用, and BusinessGroup for 业务组.',
+              description: 'Required and non-empty for service=groups and service=timeValues. Use TotalTraffic for global/overall traffic trends, WebApplication for 业务/业务系统, DefinedApp for 应用/已定义应用, and BusinessGroup for 业务组.',
               items: {
                 type: 'object',
                 properties: {
@@ -6161,6 +6294,8 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
+    'Trend contract: service=timeValues requires a non-empty groups array. Global/overall/total traffic trends use groups=[{type:"TotalTraffic"}]. A contextual time follow-up must submit a complete resolvedQuery; do not submit only changed time fields.',
+    'Traffic semantics: 流量趋势/流量速率/吞吐/带宽 use TPIO (throughput rate). 流量/累计流量/流量大小/字节数 use BYTIO (accumulated byte traffic). TotalTraffic is the object scope, not a metric.',
     'Query construction rules → skills/openclaw-napm-query/references/query-construction.md; service and mode mapping → skills/openclaw-napm-query/references/service-modes.md.'
   );
 
@@ -6192,6 +6327,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'REJECT_AND_REDIRECT → explain boundary. ASK_CLARIFYING_QUESTION → ask and stop. ANSWER_CONCEPTUALLY/INTERPRET_RESULT → answer from result.',
     'Prefer displayText/summary.displayText directly over paraphrasing.',
     'Never answer from stale memory. Base reply on fresh tool result from current turn.',
+    'A valid empty query result is only evidence that the declared object, metric, and time range returned no data points. Do not speculate about collection failures, permissions, or data delay unless the result contains that failure classification.',
     'Never claim data was queried by direct API/curl/exec/python. Say: use napm-skill-query with resolvedQuery.'
   );
 
@@ -6201,7 +6337,9 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'Cross-skill: fresh alert report → napm-alert-query→napm-report-export. Fresh inspection → napm-inspection-snapshot→napm-report-export.',
     'PDF not available; if requested, call napm-report-export format=pdf and report error.',
     '',
-    'Append "Debug API: <requestUrl>" at end of reply when present.',
+    shouldExposeUpstreamApi()
+      ? 'Append "Debug API: <requestUrl>" at end of reply when present; keep credentials masked.'
+      : 'Do not expose requestUrl or Debug API in normal replies, even when the tool result contains them.',
     'Boundary requests (restart/deploy/config/SQL/code) mentioning NAPM objects → reject and redirect.'
   );
 
@@ -6480,8 +6618,15 @@ const plugin = {
         }
 
         const activeTurnRoute = getTurnPolicyRoute(activePromptState);
+        const contextualQueryFollowUp = activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED
+          ? authorizeContextualTimeValuesFollowUp(
+              conversationKey,
+              toolName,
+              originalToolParams?.resolvedQuery
+            )
+          : { ok: false, reason: 'turn_route_does_not_require_contextual_authorization' };
         if (
-          activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED
+          (activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED && !contextualQueryFollowUp.ok)
           || activeTurnRoute === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE
         ) {
           api.logger.warn(`[napm-openclaw-plugin] blocked tool for non-action turn: route=${activeTurnRoute} tool=${toolName}`);
@@ -6496,6 +6641,24 @@ const plugin = {
             block: true,
             blockReason: '当前轮应由模型直接回答或澄清，尚未确认 NAPM 动作意图，禁止调用工具。'
           };
+        }
+        if (contextualQueryFollowUp.ok) {
+          api.logger.info(`[napm-openclaw-plugin] allowed contextual timeValues follow-up: parentTurnId=${contextualQueryFollowUp.parentTurnId || 'none'}`);
+          appendPluginAuditEvent('napm_plugin_contextual_query_followup_allowed', {
+            route: activeTurnRoute,
+            toolName,
+            prompt: activePrompt,
+            conversationKey: conversationKey || null,
+            parentTurnId: contextualQueryFollowUp.parentTurnId,
+            currentGroupsMissing: contextualQueryFollowUp.currentGroupsMissing,
+            previousResolvedQuerySummary: summarizeResolvedQueryForAudit(
+              contextualQueryFollowUp.previousResolvedQuery
+            ),
+            currentResolvedQuerySummary: summarizeResolvedQueryForAudit(
+              originalToolParams?.resolvedQuery
+            ),
+            context: buildAuditContextSnapshot(ctx)
+          });
         }
 
         const trustedTraceId = isSafeNapmToolName(toolName)
@@ -6542,6 +6705,7 @@ const plugin = {
             Boolean(activePromptState?.napmRelated)
             || isOverviewPrompt(activePrompt)
             || isNapmRelatedPrompt(activePrompt)
+            || contextualQueryFollowUp.ok
           );
         const activePacketPrompt = Boolean(activePrompt) && isPacketCapturePrompt(activePrompt);
         const activeAlertPrompt = Boolean(activePrompt) && (

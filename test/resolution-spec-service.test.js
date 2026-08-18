@@ -25,12 +25,15 @@ describe('ResolutionSpecService extended getters', () => {
     expect(averageValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
     expect(averageValuesServiceSpec.required).not.toContain('timeRange');
     expect(timeValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
+    expect(timeValuesServiceSpec.required).toContain('groups');
     expect(timeValuesServiceSpec.required).not.toContain('timeRange');
     expect(objectCatalog.WebApplication.hasArgument).toBe(true);
     expect(objectCatalog.CompositeApplication.runtimeKey).toBe('DefinedApp');
     expect(ResolutionSpecService.getObjectAliases().CompositeApplication).toEqual(expect.arrayContaining(['复合协议', '自动识别应用']));
     expect(groupSpec.pathTemplates.defaultBranches.BusinessGroup).toBeTruthy();
     expect(metricSpec.catalog.TPIO.domain).toBe('network_usage');
+    expect(metricSpec.aliases.TPIO).toEqual(expect.arrayContaining(['流量趋势', '流量的趋势', '流量速率']));
+    expect(metricSpec.aliases.BYTIO).toEqual(expect.arrayContaining(['流量', '累计流量', '流量大小']));
     expect(Array.isArray(templateSpec.stableQueryTemplates)).toBe(true);
     expect(templateSpec.stableQueryTemplates.length).toBeGreaterThan(0);
     expect(timeSpec.supportedGranularities).toContain(3600);

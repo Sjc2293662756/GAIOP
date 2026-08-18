@@ -1,0 +1,246 @@
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+describe('NAPM plugin trend query contract and contextual follow-up', () => {
+  let baseDir;
+  let plugin;
+  let hooks;
+  let tools;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-18T02:45:00.000Z'));
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-trend-context-'));
+    process.env.NAPM_AUDIT_LOG_PATH = path.join(baseDir, 'audit.log');
+    process.env.NAPM_REPORT_SOURCE_DIR = path.join(baseDir, 'report-sources');
+    process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(baseDir, 'trusted-contexts');
+    delete process.env.SHOW_UPSTREAM_API_IN_REPLY;
+    jest.resetModules();
+    plugin = require('../napm-openclaw-plugin.remote');
+    hooks = new Map();
+    tools = new Map();
+    plugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        const names = Array.isArray(name) ? name : [name];
+        names.forEach((eventName) => hooks.set(eventName, handler));
+      }
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.NAPM_AUDIT_LOG_PATH;
+    delete process.env.NAPM_REPORT_SOURCE_DIR;
+    delete process.env.NAPM_TRUSTED_CONTEXT_DIR;
+    delete process.env.SHOW_UPSTREAM_API_IN_REPLY;
+    jest.useRealTimers();
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  function createCtx(suffix) {
+    return {
+      channelId: 'wecom',
+      accountId: `account-${suffix}`,
+      conversationId: `conversation-${suffix}`,
+      sessionKey: `session-${suffix}`,
+      sessionId: `session-${suffix}`,
+      runId: `run-${suffix}`
+    };
+  }
+
+  function buildTrendQuery(timeRangeKey = 'last24hours', granularity = 3600, options = {}) {
+    const query = {
+      service: 'timeValues',
+      queryModeKey: 'timeseries',
+      metrics: ['TPIO'],
+      metric: 'TPIO',
+      topMetric: 'TPIO',
+      groups: [{ type: 'TotalTraffic' }],
+      timeRange: { key: timeRangeKey },
+      granularity
+    };
+    if (options.omitGroups) {
+      delete query.groups;
+    }
+    return query;
+  }
+
+  async function startTurn(ctx, prompt) {
+    hooks.get('message_received')({ content: prompt }, ctx);
+    return hooks.get('before_prompt_build')({ prompt }, ctx);
+  }
+
+  function callQueryTool(ctx, prompt, resolvedQuery) {
+    const event = {
+      toolName: 'napm-skill-query',
+      toolCallId: `call-${ctx.runId}`,
+      params: { prompt, resolvedQuery }
+    };
+    const result = hooks.get('before_tool_call')(event, ctx);
+    return { event, result, params: result?.params || event.params };
+  }
+
+  async function rememberEmptyInitialTrend(ctx) {
+    const prompt = '最近一天的总流量的趋势怎么样？';
+    await startTurn(ctx, prompt);
+    const query = buildTrendQuery();
+    const bound = callQueryTool(ctx, prompt, query);
+    expect(bound.result?.block).not.toBe(true);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      service: 'timeValues',
+      resolvedQuery: query,
+      rows: [],
+      data: [],
+      summary: { title: '未查到数据', empty: true, rowCount: 0 }
+    }, scope, 'napm-skill-query', turnId);
+    return { scope, turnId };
+  }
+
+  test('requires an explicit object scope for timeValues', () => {
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec(
+      buildTrendQuery('last24hours', 3600, { omitGroups: true }),
+      { phase: 'construction' }
+    );
+
+    expect(validation).toMatchObject({
+      ok: false,
+      reason: 'incomplete_resolved_query'
+    });
+    expect(validation.message).toContain('groups');
+  });
+
+  test('documents TotalTraffic in the query tool contract', () => {
+    const definition = tools.get('napm-skill-query');
+
+    expect(definition.description).toContain('TotalTraffic');
+    expect(definition.parameters.properties.resolvedQuery.properties.groups.description)
+      .toContain('timeValues');
+  });
+
+  test('allows a seven-minute-later time-range follow-up from an empty successful trend result', async () => {
+    const ctx = createCtx('empty-trend-followup');
+    const initial = await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime(7 * 60 * 1000);
+    ctx.runId = 'run-empty-trend-followup-2';
+
+    const prompt = '那最近7天的呢？';
+    const promptContext = await startTurn(ctx, prompt);
+    expect(promptContext.appendSystemContext).toContain('MODEL-OWNED');
+
+    const followUp = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(followUp.result?.block).not.toBe(true);
+    expect(followUp.params.resolvedQuery).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'TotalTraffic' }],
+      timeRange: { key: 'last7days' },
+      granularity: 86400
+    });
+    const audit = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8');
+    expect(audit).toContain('napm_plugin_contextual_query_followup_allowed');
+    expect(audit).toContain(initial.turnId);
+  });
+
+  test('routes an incomplete contextual trend query to resolvedQuery repair instead of the model-owned block', async () => {
+    const ctx = createCtx('incomplete-trend-followup');
+    await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime(7 * 60 * 1000);
+    ctx.runId = 'run-incomplete-trend-followup-2';
+
+    const prompt = '那最近7天的呢？';
+    await startTurn(ctx, prompt);
+    const followUp = callQueryTool(
+      ctx,
+      prompt,
+      buildTrendQuery('last7days', 86400, { omitGroups: true })
+    );
+
+    expect(followUp.result).toMatchObject({ block: true });
+    expect(followUp.result.blockReason).toContain('groups');
+    expect(followUp.result.blockReason).not.toContain('模型直接回答');
+  });
+
+  test('does not authorize an identity follow-up that does not change the prior query time', async () => {
+    const ctx = createCtx('identity-after-trend');
+    await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime(7 * 60 * 1000);
+    ctx.runId = 'run-identity-after-trend-2';
+
+    const prompt = '那你呢？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery());
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+  });
+
+  test('does not share contextual query authorization across conversations', async () => {
+    const sourceCtx = createCtx('source-conversation');
+    await rememberEmptyInitialTrend(sourceCtx);
+    const otherCtx = createCtx('other-conversation');
+    jest.advanceTimersByTime(7 * 60 * 1000);
+
+    const prompt = '那最近7天的呢？';
+    await startTurn(otherCtx, prompt);
+    const attemptedQuery = callQueryTool(otherCtx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+  });
+
+  test.each([
+    [
+      'metric',
+      () => ({
+        ...buildTrendQuery('last7days', 86400),
+        metric: 'BYTIO',
+        topMetric: 'BYTIO',
+        metrics: ['BYTIO']
+      })
+    ],
+    [
+      'object scope',
+      () => ({
+        ...buildTrendQuery('last7days', 86400),
+        groups: [{ type: 'IPAddress', argument: '192.0.2.10' }]
+      })
+    ]
+  ])('does not authorize a contextual follow-up that changes the prior %s', async (_label, buildQuery) => {
+    const ctx = createCtx(`changed-${_label}`);
+    await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime(7 * 60 * 1000);
+    ctx.runId = `run-changed-${_label}-2`;
+
+    const prompt = '那最近7天的呢？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildQuery());
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+  });
+
+  test('does not authorize a contextual follow-up after query context expires', async () => {
+    const ctx = createCtx('expired-context');
+    await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime((30 * 60 * 1000) + 1);
+    ctx.runId = 'run-expired-context-2';
+
+    const prompt = '那最近7天的呢？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+  });
+});
