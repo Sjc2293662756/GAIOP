@@ -465,8 +465,10 @@ describe('OpenClawNarrationContractService', () => {
     expect(payload.summary.displayText).toContain('PGNPGE');
     expect(payload.summary.displayText).toContain('PGRT');
     expect(payload.summary.displayText).toContain('PGTME');
-    expect(payload.summary.displayText).toContain('页面访问率（PGRT，pages/min）');
-    expect(payload.summary.displayText).not.toContain('页面访问率（PGNPGE');
+    expect(payload.summary.displayText).toContain(
+      '页面访问（访问数 PGNPGE，pages；访问率 PGRT，pages/min）'
+    );
+    expect(payload.summary.displayText).not.toMatch(/^\d+\.\s+/m);
   });
 
   test('should constrain ClientBusinessGroup metric-list narration to business-owned metrics only', () => {

@@ -196,6 +196,9 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
 
     expect(result?.message?.content?.[0]?.text).toContain('PGNPGE');
     expect(result?.message?.content?.[0]?.text).toContain('PGTME');
+    expect(result?.message?.content?.[0]?.text).toContain('业务访问');
+    expect(result?.message?.content?.[0]?.text).toContain('业务性能');
+    expect(result?.message?.content?.[0]?.text).not.toMatch(/^\d+\.\s+/m);
     expect(result?.message?.content?.[0]?.text).not.toContain('另有应用类');
     expect(result?.message?.content?.[0]?.text).not.toBe('指标列表');
   }, 30000);
@@ -229,11 +232,13 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     const beforePromptBuild = hooks.get('before_prompt_build');
     const beforeToolCall = hooks.get('before_tool_call');
     const messageSending = hooks.get('message_sending');
+    const beforeMessageWrite = hooks.get('before_message_write');
     const skillTool = tools.get('napm-skill-query');
 
     expect(typeof messageReceived).toBe('function');
     expect(typeof beforePromptBuild).toBe('function');
     expect(typeof messageSending).toBe('function');
+    expect(typeof beforeMessageWrite).toBe('function');
     expect(skillTool).toBeTruthy();
 
     const ctx = {
@@ -284,7 +289,19 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
 
     expect(result?.content).toContain('PGNPGE');
     expect(result?.content).toContain('PGRT');
+    expect(result?.content).toContain(
+      '页面访问（访问数 PGNPGE，pages；访问率 PGRT，pages/min）'
+    );
+    expect(result?.content).not.toMatch(/^\d+\.\s+/m);
     expect(result?.content).not.toContain('总吞吐');
+
+    const persisted = await beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '模型再次改写的错误文本' }]
+      }
+    }, ctx);
+    expect(persisted?.message?.content?.[0]?.text).toBe(result?.content);
   }, 30000);
 
   test('should require upstream resolvedQuery when model never called tool', async () => {

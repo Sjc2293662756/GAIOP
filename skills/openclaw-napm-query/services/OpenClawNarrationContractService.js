@@ -11,6 +11,9 @@ const {
 } = require('../src/constants/objectMetricOwnership');
 const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
+const {
+  buildMetricInventoryPresentation
+} = require('./MetricInventoryPresentationService');
 const { buildReportData } = require('./ReportDataContractService');
 
 // 以下是一组数值与时间格式化辅助函数，用于把底层结果整理成稳定的展示字段。
@@ -704,43 +707,11 @@ function buildGroupListDisplayText(payload = {}, rows = [], explicitObjectType =
 }
 
 function buildMetricListDisplayText(payload = {}, rows = [], explicitObjectType = '') {
-  const objectType = String(
-    explicitObjectType
-    || payload?.metadata?.effectiveObjectType
-    || payload?.metadata?.requestedObjectType
-    || payload?.resolvedQuery?.groups?.[0]?.type
-    || ''
-  ).trim();
-  const objectLabels = {
-    WebApplication: '业务',
-    BusinessGroup: '业务组',
-    ClientBusinessGroup: '客户端业务组',
-    DefinedApp: '应用',
-    IPAddress: '网络',
-    PageFamily: '页面族',
-    User: '用户'
-  };
-  const objectLabel = objectLabels[objectType] || objectType || '当前对象';
-  const scopeText = objectType ? `${objectLabel}（${objectType}）` : objectLabel;
-  const list = Array.isArray(rows) ? rows : [];
-  if (list.length === 0) {
-    return `当前没有返回${scopeText}可查指标。`;
-  }
-
-  const lines = [`${scopeText}共返回 ${list.length} 个指标：`];
-  list.forEach((row, index) => {
-    const metricId = String(row?.id || row?.metric || '').trim();
-    const label = String(getListItemValue(row, 'label') || metricId || '').trim();
-    if (!label && !metricId) {
-      return;
-    }
-    const unit = Array.isArray(row?.unit)
-      ? row.unit.map((item) => String(item || '').trim()).filter(Boolean).join('/')
-      : String(row?.unit || '').trim();
-    const detail = [metricId, unit].filter(Boolean).join('，');
-    lines.push(`${index + 1}. ${label}${detail ? `（${detail}）` : ''}`);
-  });
-  return lines.join('\n');
+  return buildMetricInventoryPresentation({
+    payload,
+    rows,
+    objectType: explicitObjectType
+  }).displayText;
 }
 
 // 构造清单类 narration 结构，适用于对象列表与指标列表两类元数据结果。
