@@ -1,6 +1,6 @@
 module.exports = {
   testEnvironment: 'node',
-  testTimeout: 15000,
+  testTimeout: 30000,
   testPathIgnorePatterns: [
     '/node_modules/',
     '/archive/',

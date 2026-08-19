@@ -2964,7 +2964,8 @@ function rememberSkillResult(prompt, result, conversationKey = '', sourceTool = 
     promptKey: key,
     result,
     requestUrl: getRequestUrlFromResult(result),
-    resolvedQuery: result.resolvedQuery
+    resolvedQuery: result.resolvedQuery,
+    sourceTool
   });
   if (
     record
@@ -3558,6 +3559,16 @@ function isAlertSkillResultRecord(record = null) {
     ['alertsSummary', 'alertsSummaryTimeLine', 'alertsDetail', 'explain_notification', 'explain_event_fields'].includes(service)
     || schema === 'openclaw_napm_alert.v1'
     || sourceSkill === 'openclaw-napm-alert-query'
+  );
+}
+
+function isCurrentAlertQueryResultRecord(record = null, turnId = '') {
+  return Boolean(
+    record
+    && record.sourceTool === 'napm-alert-query'
+    && record.result?.ok === true
+    && isAlertSkillResultRecord(record)
+    && isSkillResultRecordForTurn(record, turnId)
   );
 }
 
@@ -4253,6 +4264,30 @@ function buildAlertQueryReply(result = {}) {
   const text = lines.join('\n').trim() || JSON.stringify(result, null, 2);
   const requestUrl = maskDebugApiUrl(result.requestUrl || result.requestUrls?.[0] || '');
   return appendDebugApi(text, requestUrl);
+}
+
+function buildAlertQueryToolResponse(result = {}, renderedText = '', reportSourceId = '') {
+  const text = String(renderedText || '').trim();
+  const metadata = {
+    sourceTool: 'napm-alert-query',
+    answerMode: 'deterministic'
+  };
+  if (reportSourceId) {
+    metadata.reportSourceId = reportSourceId;
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text
+      }
+    ],
+    details: result,
+    isError: result?.ok === false,
+    metadata,
+    finalAnswer: text,
+    displayText: text
+  };
 }
 
 function buildAlertPacketAnalysisReply(result = {}) {
@@ -5750,11 +5785,7 @@ function createAlertQueryToolDefinition() {
       // summary / 无数据包模式：displayText 直达用户，绕过 AI 叙述层
       // OpenClaw SDK: displayText 直接显示给用户，不经过 Bot/AI 处理
       // 防止 AI 从文本中解析数字后自行重组输出（算百分比、画 markdown 表格等）
-      return {
-        finalAnswer: renderedText,
-        displayText: renderedText,
-        metadata: reportSourceId ? { reportSourceId } : undefined
-      };
+      return buildAlertQueryToolResponse(result, renderedText, reportSourceId);
     }
   };
 }
@@ -7135,6 +7166,7 @@ const plugin = {
         const rememberedRecord = alertScopedPrompt
           ? getRememberedAlertRecordForPrompt(activePromptForReport, conversationState, conversationKey, guardState)
           : getRememberedRecordForPrompt(activePromptForReport, conversationState, conversationKey, guardState);
+        const currentAlertResult = isCurrentAlertQueryResultRecord(rememberedRecord, turnId);
         const recentReportReply = resultDeliveryFollowUp
           ? buildRecentReportExportReply(conversationKey)
           : '';
@@ -7226,6 +7258,21 @@ const plugin = {
             conversationState,
             guardState
           );
+        }
+        if (
+          currentAlertResult
+          && getTurnPolicyRoute(guardState || conversationState) === TURN_POLICY_ROUTES.MODEL_OWNED
+          && !isStreamingPreviewMessageEvent(event)
+        ) {
+          const content = buildAlertQueryReply(rememberedRecord.result);
+          appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            sourceTool: rememberedRecord.sourceTool,
+            contentLength: content.length,
+            hook: 'message_sending'
+          });
+          return { content };
         }
         const reportArtifactUrls = getReportArtifactUrlsFromOutgoingEvent(event);
         if (reportArtifactUrls.length > 0 && !isReportExportPrompt(activePromptForReport)) {
@@ -7497,10 +7544,6 @@ const plugin = {
           };
         }
 
-        if (activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED) {
-          return undefined;
-        }
-
         const activePrompt = selectActivePromptText(conversationState, guardState, extractMessageText(message));
         const alertScopedPrompt = Boolean(
           isAlertEventPrompt(activePrompt)
@@ -7514,6 +7557,19 @@ const plugin = {
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
         const existingText = extractMessageText(message);
         const turnId = getActiveTurnId(conversationState, guardState);
+        if (isCurrentAlertQueryResultRecord(rememberedRecord, turnId)) {
+          const content = buildAlertQueryReply(rememberedRecord.result);
+          appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            sourceTool: rememberedRecord.sourceTool,
+            contentLength: content.length,
+            hook: 'before_message_write'
+          });
+          return {
+            message: buildAssistantTextMessage(content, message)
+          };
+        }
         if (
           !shouldAllowNapmReasoningPreviewForCtx(ctx)
           && (
@@ -7726,6 +7782,7 @@ module.exports.__test__ = {
   buildInspectionSnapshotReply,
   buildSummaryReply,
   buildAlertQueryReply,
+  buildAlertQueryToolResponse,
   buildAlertPacketAnalysisReply,
   buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
@@ -7743,6 +7800,8 @@ module.exports.__test__ = {
   isFreshReportExportResult,
   dedupeOutgoingMediaForConversation,
   buildMediaDedupeKey,
+  getGuardState,
+  getActiveTurnId,
   getNapmResolvedQueryResolverService,
   resolvePromptWithAudit,
   runMainflowQuery,

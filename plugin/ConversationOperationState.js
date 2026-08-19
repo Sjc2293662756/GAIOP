@@ -28,7 +28,7 @@ class ConversationOperationState {
     this.preparedFinalByTurn = new Map();
   }
 
-  rememberSkillResult({ scope, turnId = '', promptKey, result, requestUrl = '', resolvedQuery = null }) {
+  rememberSkillResult({ scope, turnId = '', promptKey, result, requestUrl = '', resolvedQuery = null, sourceTool = '' }) {
     if (!this._isUsableScope(scope) || !promptKey || !result || typeof result !== 'object') {
       return null;
     }
@@ -51,6 +51,7 @@ class ConversationOperationState {
       promptKey,
       conversationKey: scope,
       turnId: normalizedTurnId || null,
+      sourceTool: String(sourceTool || '').trim() || null,
       updatedAt: this.now(),
       requestUrl: String(requestUrl || '').trim(),
       resolvedQuery: resolvedQuery && typeof resolvedQuery === 'object' ? resolvedQuery : null,

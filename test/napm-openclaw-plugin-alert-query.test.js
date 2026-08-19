@@ -96,6 +96,97 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(String(tool.execute)).toContain('packetInstruction');
   });
 
+  test('should expose alert answers through the standard deterministic tool content contract', () => {
+    const renderedText = [
+      '最近一小时 告警查询结果',
+      '',
+      '告警总数：62 条',
+      '① 网络性能告警 — 22 条',
+      '② 应用性能告警 — 40 条',
+      '③ 业务故障告警 — 0 条',
+      '无告警记录'
+    ].join('\n');
+
+    const response = plugin.__test__.buildAlertQueryToolResponse(
+      { ok: true, mode: 'summary' },
+      renderedText
+    );
+
+    expect(response).toMatchObject({
+      content: [{ type: 'text', text: renderedText }],
+      details: { ok: true, mode: 'summary' },
+      isError: false,
+      metadata: {
+        sourceTool: 'napm-alert-query',
+        answerMode: 'deterministic'
+      }
+    });
+    expect(response.finalAnswer).toBe(renderedText);
+    expect(response.displayText).toBe(renderedText);
+  });
+
+  test('should force current-turn alert text even when the model route is model_owned', async () => {
+    const { hooks } = createApiHarness();
+    const messageReceived = hooks.get('message_received');
+    const beforePromptBuild = hooks.get('before_prompt_build');
+    const messageSending = hooks.get('message_sending');
+    const beforeMessageWrite = hooks.get('before_message_write');
+    const ctx = createWeComCtx('alert-model-owned-final');
+    const prompt = '介绍一下你的背景';
+    const canonicalText = [
+      '最近一小时 告警查询结果',
+      '',
+      '告警总数：62 条',
+      '① 网络性能告警 — 22 条',
+      '② 应用性能告警 — 40 条',
+      '③ 业务故障告警 — 0 条',
+      '无告警记录'
+    ].join('\n');
+
+    messageReceived({ content: prompt }, ctx);
+    await beforePromptBuild({ prompt }, ctx);
+    const guardState = plugin.__test__.getGuardState(ctx);
+    const turnId = plugin.__test__.getActiveTurnId(null, guardState);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      narrationInput: {
+        schema: 'openclaw_napm_alert.v1',
+        displayText: canonicalText
+      },
+      summary: {
+        total: 62,
+        bySeverity: { critical: 23, major: 14, minor: 25 }
+      }
+    }, plugin.__test__.getConversationKey(ctx), 'napm-alert-query', turnId);
+
+    const modelText = [
+      '按严重程度：紧急 23、重大 14、轻微 25。',
+      'Top 对象：HTTPS。',
+      '主要触发指标：UEII。',
+      '典型告警事件：建议继续排查。'
+    ].join('\n');
+
+    const sendingResult = await messageSending({ content: modelText }, ctx);
+    expect(sendingResult).toMatchObject({ content: canonicalText });
+    expect(sendingResult.content).not.toContain('Top 对象');
+    expect(sendingResult.content).not.toContain('主要触发指标');
+    expect(sendingResult.content).not.toContain('典型告警事件');
+
+    const writeResult = beforeMessageWrite({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: modelText }]
+      }
+    }, ctx);
+    expect(writeResult).toMatchObject({
+      message: {
+        content: [{ type: 'text', text: canonicalText }]
+      }
+    });
+  });
+
   test('should instruct model to output alert finalAnswer verbatim', () => {
     const context = plugin.__test__.buildNapmRoutingSystemContext();
 

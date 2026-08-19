@@ -13,7 +13,8 @@ describe('NAPM turn state', () => {
       scope: 'session:one',
       turnId: 'turn-1',
       promptKey: 'session:one::original',
-      result: { ok: true, value: 'first' }
+      result: { ok: true, value: 'first' },
+      sourceTool: 'napm-alert-query'
     });
     const second = state.rememberSkillResult({
       scope: 'session:one',
@@ -23,6 +24,7 @@ describe('NAPM turn state', () => {
     });
 
     expect(state.getSkillResultForTurn('session:one', 'turn-1')).toBe(first);
+    expect(first.sourceTool).toBe('napm-alert-query');
     expect(state.getSkillResultForTurn('session:one', 'turn-2')).toBe(second);
     expect(state.claimFallbackDelivery('session:one', 'turn-1')).toBe(true);
     expect(state.claimFallbackDelivery('session:one', 'turn-1')).toBe(false);
