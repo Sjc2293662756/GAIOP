@@ -3405,6 +3405,71 @@ async function dispatchReportReplyPayload(payload = {}, event = {}, hookCtx = {}
   };
 }
 
+async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}, conversationKey = '', turnId = '') {
+  const content = isCurrentAlertQueryResultRecord(record, turnId)
+    ? buildAlertQueryReply(record.result)
+    : '';
+  if (
+    !content
+    || !conversationKey
+    || !turnId
+    || typeof hookCtx?.dispatcher?.sendFinalReply !== 'function'
+  ) {
+    return null;
+  }
+
+  const preparedFinal = napmOperationState.prepareFinalContent({
+    scope: conversationKey,
+    turnId,
+    content,
+    source: 'napm-alert-query',
+    workflowState: 'ALERT_QUERY_COMPLETED'
+  });
+  if (!preparedFinal) {
+    return null;
+  }
+
+  const claimed = napmOperationState.claimPreparedFinalDelivery(conversationKey, turnId);
+  const counts = () => (typeof hookCtx.dispatcher.getQueuedCounts === 'function'
+    ? hookCtx.dispatcher.getQueuedCounts()
+    : { tool: 0, block: 0, final: 0 });
+  if (!claimed) {
+    appendPluginAuditEvent('napm_alert_duplicate_reply_dispatch_suppressed', {
+      conversationKey,
+      turnId,
+      sourceTool: record.sourceTool,
+      fingerprint: preparedFinal.fingerprint
+    });
+    return {
+      handled: true,
+      queuedFinal: false,
+      counts: counts()
+    };
+  }
+
+  if (typeof hookCtx.onReplyStart === 'function') {
+    await hookCtx.onReplyStart();
+  }
+  const queuedFinal = Boolean(hookCtx.dispatcher.sendFinalReply({ text: preparedFinal.content }));
+  if (queuedFinal) {
+    hookCtx.recordProcessed?.('completed', { reason: 'napm_alert_reply_dispatched' });
+    hookCtx.markIdle?.('message_completed');
+  }
+  appendPluginAuditEvent('napm_alert_reply_dispatched', {
+    conversationKey,
+    turnId,
+    sourceTool: record.sourceTool,
+    contentLength: preparedFinal.content.length,
+    fingerprint: preparedFinal.fingerprint,
+    queuedFinal
+  });
+  return {
+    handled: true,
+    queuedFinal,
+    counts: counts()
+  };
+}
+
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
   return Boolean(
     record
@@ -6559,6 +6624,27 @@ const plugin = {
         }
 
         const turnId = getActiveTurnId(conversationState, null);
+        const alertRecord = getRememberedAlertRecordForPrompt(
+          prompt,
+          conversationState,
+          conversationKey,
+          null
+        );
+        if (
+          !isSummaryPrompt(prompt)
+          && !isReportExportPrompt(prompt)
+          && !isAlertPacketAnalysisPrompt(prompt)
+          && isCurrentAlertQueryResultRecord(alertRecord, turnId)
+        ) {
+          return dispatchAlertReplyPayload(
+            alertRecord,
+            event,
+            hookCtx,
+            conversationKey,
+            turnId
+          );
+        }
+
         const deliveryFollowUp = isResultDeliveryFollowUpPrompt(prompt, conversationState);
         if (deliveryFollowUp) {
           const recentReport = getRecentReportExportResult(conversationKey)?.result || null;

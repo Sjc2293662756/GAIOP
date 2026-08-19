@@ -25,6 +25,9 @@ describe('napm-openclaw-plugin alert query integration', () => {
         tools.set(definition.name, definition);
       },
       registerCommand() {},
+      on(name, handler) {
+        hooks.set(name, handler);
+      },
       registerHook(name, handler) {
         if (Array.isArray(name)) {
           name.forEach((item) => hooks.set(item, handler));
@@ -185,6 +188,187 @@ describe('napm-openclaw-plugin alert query integration', () => {
         content: [{ type: 'text', text: canonicalText }]
       }
     });
+  });
+
+  test('should own current-turn alert delivery through the native reply dispatcher exactly once', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('alert-native-reply-dispatch');
+    const prompt = '最近一小时系统都有那些告警？';
+    const canonicalText = [
+      '最近一小时 告警查询结果',
+      '',
+      '告警总数：207 条',
+      '① 网络性能告警 — 50 条',
+      '② 网络异常告警 — 0 条',
+      '无告警记录',
+      '⑦ 智能分析告警 — 0 条'
+    ].join('\n');
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const guardState = plugin.__test__.getGuardState(ctx);
+    const turnId = plugin.__test__.getActiveTurnId(null, guardState);
+    const conversationKey = plugin.__test__.getConversationKey(ctx);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      narrationInput: {
+        schema: 'openclaw_napm_alert.v1',
+        displayText: canonicalText
+      },
+      summary: {
+        total: 207,
+        bySeverity: { critical: 65, major: 80, minor: 62 }
+      }
+    }, conversationKey, 'napm-alert-query', turnId);
+
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+    const hookCtx = {
+      dispatcher,
+      onReplyStart: jest.fn(async () => {}),
+      recordProcessed: jest.fn(),
+      markIdle: jest.fn()
+    };
+    const event = {
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: ctx.accountId,
+        From: ctx.conversationId,
+        Body: prompt,
+        MessageSid: 'message-alert-native-reply-dispatch'
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    };
+
+    const first = await hooks.get('reply_dispatch')(event, hookCtx);
+    const duplicate = await hooks.get('reply_dispatch')(event, hookCtx);
+
+    expect(first).toMatchObject({ handled: true, queuedFinal: true });
+    expect(duplicate).toMatchObject({ handled: true, queuedFinal: false });
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: canonicalText });
+    expect(hookCtx.recordProcessed).toHaveBeenCalledWith('completed', {
+      reason: 'napm_alert_reply_dispatched'
+    });
+    expect(hookCtx.markIdle).toHaveBeenCalledWith('message_completed');
+  });
+
+  test('should not claim native reply dispatch without a current-turn alert result', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('alert-native-reply-dispatch-isolation');
+    const prompt = '最近一小时系统都有那些告警？';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 0 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: ctx.accountId,
+        From: ctx.conversationId,
+        Body: prompt
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toBeUndefined();
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
+  test('should not dispatch a stale alert result from the previous turn', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('alert-native-reply-dispatch-stale');
+    const alertPrompt = '最近一小时系统都有那些告警？';
+    hooks.get('message_received')({ content: alertPrompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: alertPrompt }, ctx);
+    const alertGuardState = plugin.__test__.getGuardState(ctx);
+    plugin.__test__.rememberSkillResult(alertPrompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      narrationInput: {
+        schema: 'openclaw_napm_alert.v1',
+        displayText: '上一轮告警文本'
+      }
+    }, plugin.__test__.getConversationKey(ctx), 'napm-alert-query', plugin.__test__.getActiveTurnId(null, alertGuardState));
+
+    const nextPrompt = '你好';
+    hooks.get('message_received')({ content: nextPrompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: nextPrompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 0 }))
+    };
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: ctx.accountId,
+        From: ctx.conversationId,
+        Body: nextPrompt
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toBeUndefined();
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
+  test('should leave report delivery prompts to the report reply dispatcher flow', async () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('alert-native-reply-dispatch-report');
+    const prompt = '把本轮告警结果导出为 Word';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const guardState = plugin.__test__.getGuardState(ctx);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      narrationInput: {
+        schema: 'openclaw_napm_alert.v1',
+        displayText: '告警查询文本，不应替代 Word 交付'
+      }
+    }, plugin.__test__.getConversationKey(ctx), 'napm-alert-query', plugin.__test__.getActiveTurnId(null, guardState));
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 0 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: ctx.accountId,
+        From: ctx.conversationId,
+        Body: prompt
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toBeUndefined();
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
 
   test('should instruct model to output alert finalAnswer verbatim', () => {
