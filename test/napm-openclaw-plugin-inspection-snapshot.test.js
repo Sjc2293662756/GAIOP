@@ -176,6 +176,56 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
       .toBe('inspection_report');
   });
 
+  test('should enforce the inspection tool boundary for timed inspection reports', async () => {
+    const hooks = new Map();
+    plugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool() {},
+      registerCommand() {},
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {}
+    });
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'inspection-boundary',
+      conversationId: 'inspection-boundary',
+      sessionKey: 'inspection-boundary',
+      runId: 'inspection-boundary'
+    };
+    const prompt = '给我最近七天的系统巡检报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const summaryResult = await hooks.get('before_tool_call')({
+      toolName: 'napm-summary',
+      params: { prompt }
+    }, ctx);
+    const queryResult = await hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      params: { prompt }
+    }, ctx);
+    const inspectionResult = await hooks.get('before_tool_call')({
+      toolName: 'napm-inspection-snapshot',
+      params: { prompt }
+    }, ctx);
+
+    expect(summaryResult).toMatchObject({
+      block: true,
+      blockReason: expect.stringContaining('napm-inspection-snapshot')
+    });
+    expect(queryResult).toMatchObject({
+      block: true,
+      blockReason: expect.stringContaining('napm-inspection-snapshot')
+    });
+    expect(inspectionResult).toMatchObject({
+      params: expect.objectContaining({
+        prompt,
+        traceId: expect.any(String)
+      })
+    });
+  });
+
   test('should expose user-facing inspection snapshot reply', () => {
     const text = plugin.__test__.buildInspectionSnapshotReply({
       ok: true,

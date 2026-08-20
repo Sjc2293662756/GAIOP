@@ -450,6 +450,288 @@ describe('NAPM plugin report handoff integration', () => {
     }));
   });
 
+  test('routes a first-turn timed inspection report through inspection snapshot, never summary', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      on(name, handler) {
+        hooks.set(name, handler);
+      },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-inspection-snapshot'), 'execute').mockResolvedValue({
+      details: {
+        ok: true,
+        reportSourceId: 'rps_first_turn_inspection',
+        reportData: {
+          reportType: 'inspection_report',
+          templateId: 'napm_traffic_health_inspection_v1'
+        }
+      },
+      metadata: { reportSourceId: 'rps_first_turn_inspection' }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true, reportSourceId: 'rps_wrong_summary' },
+      metadata: { reportSourceId: 'rps_wrong_summary' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
+      details: {
+        ok: true,
+        title: 'NAPM 系统巡检报告',
+        format: 'docx',
+        downloadUrl: '/reports/napm_inspection.docx',
+        filePath: '/tmp/napm_inspection.docx'
+      }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:first-turn-inspection',
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'first-turn-inspection-user',
+      runId: 'run-first-turn-inspection'
+    };
+    const prompt = '给我最近七天的系统巡检报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: 'default',
+        From: 'first-turn-inspection-user',
+        Body: prompt,
+        MessageSid: 'message-first-turn-inspection'
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, {
+      dispatcher,
+      onReplyStart: jest.fn(async () => {}),
+      recordProcessed: jest.fn(),
+      markIdle: jest.fn()
+    });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-inspection-snapshot').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-summary').execute).not.toHaveBeenCalled();
+    expect(tools.get('napm-report-export').execute).toHaveBeenCalledWith(
+      'automatic-inspection-report-export',
+      expect.objectContaining({
+        reportSourceId: 'rps_first_turn_inspection',
+        format: 'docx'
+      })
+    );
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining('报告已生成'),
+      mediaUrls: ['/tmp/napm_inspection.docx']
+    }));
+  });
+
+  test('does not repeat inspection collection, export, or delivery for duplicate reply dispatch', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-inspection-snapshot'), 'execute').mockResolvedValue({
+      details: {
+        ok: true,
+        reportData: {
+          reportType: 'inspection_report',
+          templateId: 'napm_traffic_health_inspection_v1'
+        }
+      },
+      metadata: { reportSourceId: 'rps_duplicate_inspection' }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true },
+      metadata: { reportSourceId: 'rps_wrong_duplicate_summary' }
+    });
+
+    const prompt = '给我最近七天的系统巡检报告！';
+    const reportDetails = {
+      ok: true,
+      title: 'NAPM 系统巡检报告',
+      format: 'docx',
+      downloadUrl: '/reports/napm_inspection_once.docx',
+      filePath: '/tmp/napm_inspection_once.docx'
+    };
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockImplementation(async (_id, args) => {
+      plugin.__test__.rememberReportExportResult(
+        prompt,
+        reportDetails,
+        plugin.__test__.getTrustedConversationKey(args),
+        plugin.__test__.getTrustedTurnId(args)
+      );
+      return { details: reportDetails };
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:duplicate-inspection',
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'duplicate-inspection-user',
+      runId: 'run-duplicate-inspection'
+    };
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+    const event = {
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: 'default',
+        From: 'duplicate-inspection-user',
+        Body: prompt,
+        MessageSid: 'message-duplicate-inspection'
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    };
+    const hookCtx = {
+      dispatcher,
+      onReplyStart: jest.fn(async () => {}),
+      recordProcessed: jest.fn(),
+      markIdle: jest.fn()
+    };
+
+    const first = await hooks.get('reply_dispatch')(event, hookCtx);
+    const duplicate = await hooks.get('reply_dispatch')(event, hookCtx);
+
+    expect(first).toMatchObject({ handled: true, queuedFinal: true });
+    expect(duplicate).toMatchObject({ handled: true, queuedFinal: false });
+    expect(tools.get('napm-inspection-snapshot').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-summary').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+  });
+
+  test('returns a deterministic inspection failure without falling back to summary', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-inspection-snapshot'), 'execute').mockResolvedValue({
+      details: { ok: false, errorCode: 'INSPECTION_TEST_FAILURE' }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true },
+      metadata: { reportSourceId: 'rps_wrong_failure_summary' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
+      details: { ok: true, filePath: '/tmp/should-not-exist.docx' }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:inspection-failure',
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'inspection-failure-user',
+      runId: 'run-inspection-failure'
+    };
+    const prompt = '给我最近七天的系统巡检报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: 'default',
+        From: 'inspection-failure-user',
+        Body: prompt
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, {
+      dispatcher,
+      onReplyStart: jest.fn(async () => {}),
+      recordProcessed: jest.fn(),
+      markIdle: jest.fn()
+    });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-inspection-snapshot').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(tools.get('napm-summary').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: expect.stringContaining('巡检报告生成失败')
+    });
+  });
+
+  test('does not auto-run either report workflow for a mixed inspection and summary request', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-inspection-snapshot'), 'execute');
+    jest.spyOn(tools.get('napm-summary'), 'execute');
+    jest.spyOn(tools.get('napm-report-export'), 'execute');
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:mixed-report',
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'mixed-report-user',
+      runId: 'run-mixed-report'
+    };
+    const prompt = '先巡检再生成综述报告';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 0 }))
+    };
+    const result = await hooks.get('reply_dispatch')({
+      ctx: {
+        SessionKey: ctx.sessionKey,
+        Surface: 'wecom',
+        AccountId: 'default',
+        From: 'mixed-report-user',
+        Body: prompt
+      },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toBeUndefined();
+    expect(tools.get('napm-inspection-snapshot').execute).not.toHaveBeenCalled();
+    expect(tools.get('napm-summary').execute).not.toHaveBeenCalled();
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
   test('derives last7days for a first-turn summary request and leaves sync transcript untouched', async () => {
     expect(plugin.__test__.buildAutomaticSummaryToolArgs('给我系统最近七天的综述报告！')).toMatchObject({
       scope: { type: 'global' },

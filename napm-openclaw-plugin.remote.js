@@ -8,6 +8,12 @@ const {
   prepareModelFinalContent: prepareAlertPacketModelFinalContent
 } = require('./plugin/AlertPacketFinalReplyService');
 const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
+const {
+  REPORT_INTENTS,
+  classifyReportPrompt,
+  isAutomaticReportIntent,
+  isReportWorkflowIntent
+} = require('./plugin/ReportIntentClassifier');
 const ReportSourceStore = require('./plugin/ReportSourceStore');
 const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
 
@@ -127,6 +133,7 @@ const napmTrustedToolContextStore = new TrustedToolContextStore({
 });
 const napmTrustedToolContextByTraceId = new Map();
 const napmAutomaticReportByTurn = new Map();
+const AUTOMATIC_REPORT_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-alert-packet-analysis', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
@@ -577,26 +584,19 @@ function isFaultDiagnosisPrompt(prompt = '', options = {}) {
 }
 
 function isSummaryPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) return false;
+  return classifyReportPrompt(prompt) === REPORT_INTENTS.SUMMARY;
+}
 
-  // Direct mentions of summary report types — always a summary report request
-  if (/(?:综述报告|全局综述|业务综述|应用综述|业务组综述|网络综述|告警综述|summary\s*report|overview\s*report)/i.test(text)) {
-    return true;
-  }
+function isInspectionPrompt(prompt = '') {
+  return classifyReportPrompt(prompt) === REPORT_INTENTS.INSPECTION;
+}
 
-  // Daily/weekly/monthly 报告 — always a report request
-  if (/(?:日报|周报|月报)/i.test(text)) {
-    return true;
-  }
+function isAutomaticReportPrompt(prompt = '') {
+  return isAutomaticReportIntent(classifyReportPrompt(prompt));
+}
 
-  // "报告" + time context = report request (not overview query)
-  // "最近X天的报告", "最近24小时的报告" etc.
-  if (/报告/.test(text) && /(?:最近|今天|昨天|本周|本月|过去)/i.test(text)) {
-    return true;
-  }
-
-  return false;
+function isReportWorkflowPrompt(prompt = '') {
+  return isReportWorkflowIntent(classifyReportPrompt(prompt));
 }
 
 function looksLikeNapmBypassProcessText(text = '') {
@@ -2053,9 +2053,8 @@ function normalizeGranularity(value) {
 }
 
 function isOverviewPrompt(prompt = '') {
-  // Summary report requests must NOT be treated as overview queries.
-  // "综述报告/日报/周报" → napm-summary (docx), not napm-skill-query overview (text).
-  if (isSummaryPrompt(prompt)) {
+  // Report workflows must not be treated as overview data queries.
+  if (isReportWorkflowPrompt(prompt)) {
     return false;
   }
   return getPromptRoutingService().isOverviewPrompt(prompt);
@@ -2530,8 +2529,9 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
   const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
   const resultDeliveryFollowUpPrompt = isResultDeliveryFollowUpPrompt(prompt, previousState);
   const reportExportPrompt = isReportExportPrompt(prompt);
+  const reportWorkflowPrompt = isReportWorkflowPrompt(prompt);
   const domainRelated = overviewRelated
-    || isSummaryPrompt(prompt)
+    || reportWorkflowPrompt
     || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
@@ -2541,7 +2541,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || resultDeliveryFollowUpPrompt
     || (previousState?.domainRelated && isContinuationPrompt(prompt));
   const napmRelated = overviewRelated
-    || isSummaryPrompt(prompt)
+    || reportWorkflowPrompt
     || reportExportPrompt
     || alertEventPrompt
     || alertMetaFollowUpPrompt
@@ -2697,6 +2697,7 @@ function clearNapmConversationScope(ctx = {}) {
     reportSources: napmReportSourceStore.clearScope(scope),
     trustedContexts: napmTrustedToolContextStore.clearScope(scope),
     inMemoryTrustedContexts: 0,
+    automaticReportOperations: 0,
     mediaState: napmSentMediaByConversation.delete(scope),
     nativeCommandState: nativeCommandByScope.delete(scope),
     scopeAliases: 0,
@@ -2708,6 +2709,11 @@ function clearNapmConversationScope(ctx = {}) {
     if (String(record?.conversationKey || '').trim() === scope) {
       napmTrustedToolContextByTraceId.delete(traceId);
       summary.inMemoryTrustedContexts += 1;
+    }
+  }
+  for (const key of napmAutomaticReportByTurn.keys()) {
+    if (key.startsWith(`${scope}::`) && napmAutomaticReportByTurn.delete(key)) {
+      summary.automaticReportOperations += 1;
     }
   }
   for (const [key, state] of napmGuardState.entries()) {
@@ -2729,6 +2735,33 @@ function clearNapmConversationScope(ctx = {}) {
     scopeHash: ReportSourceStore.hashScope(scope)
   });
   return summary;
+}
+
+function pruneAutomaticReportOperations() {
+  const now = Date.now();
+  for (const [key, record] of napmAutomaticReportByTurn.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > AUTOMATIC_REPORT_OPERATION_MAX_AGE_MS) {
+      napmAutomaticReportByTurn.delete(key);
+    }
+  }
+  while (napmAutomaticReportByTurn.size > 2000) {
+    napmAutomaticReportByTurn.delete(napmAutomaticReportByTurn.keys().next().value);
+  }
+}
+
+function getAutomaticReportOperation(operationKey = '') {
+  pruneAutomaticReportOperations();
+  return napmAutomaticReportByTurn.get(String(operationKey || '').trim())?.operation || null;
+}
+
+function rememberAutomaticReportOperation(operationKey = '', operation = null) {
+  const key = String(operationKey || '').trim();
+  if (!key || !operation || typeof operation.then !== 'function') {
+    return null;
+  }
+  pruneAutomaticReportOperations();
+  napmAutomaticReportByTurn.set(key, { operation, updatedAt: Date.now() });
+  return operation;
 }
 
 function pruneTrustedToolContexts() {
@@ -3238,6 +3271,142 @@ function buildAutomaticSummaryToolArgs(prompt = '') {
   };
 }
 
+function buildAutomaticInspectionToolArgs(prompt = '') {
+  const normalizedPrompt = String(prompt || '').trim();
+  return {
+    prompt: normalizedPrompt,
+    format: 'docx',
+    title: 'NAPM 系统巡检报告'
+  };
+}
+
+async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conversationKey = '', turnId = '') {
+  const normalizedPrompt = String(prompt || '').trim();
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  if (!normalizedPrompt || !scope || !normalizedTurnId || !isInspectionPrompt(normalizedPrompt)) {
+    return null;
+  }
+
+  const operationKey = `${scope}::${normalizedTurnId}::inspection`;
+  const existing = getAutomaticReportOperation(operationKey);
+  if (existing) {
+    return existing;
+  }
+
+  const operation = (async () => {
+    try {
+      const inspectionEvent = {
+        toolName: 'napm-inspection-snapshot',
+        params: buildAutomaticInspectionToolArgs(normalizedPrompt)
+      };
+      bindTrustedToolContext(inspectionEvent, ctx);
+      const inspectionArgs = {
+        ...inspectionEvent.params,
+        traceId: inspectionEvent.params.traceId
+      };
+      appendPluginAuditEvent('napm_automatic_inspection_started', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        prompt: normalizedPrompt,
+        sourceTool: 'napm-inspection-snapshot'
+      });
+
+      const inspectionResult = await inspectionSnapshotTool.execute(
+        'automatic-inspection-snapshot',
+        inspectionArgs
+      );
+      const inspectionDetails = inspectionResult?.details || null;
+      const reportData = inspectionDetails?.reportData || null;
+      if (!isPlainObject(inspectionDetails) || inspectionDetails.ok !== true) {
+        throw new Error('napm-inspection-snapshot returned no usable result');
+      }
+      if (
+        !isPlainObject(reportData)
+        || reportData.reportType !== 'inspection_report'
+        || reportData.templateId !== 'napm_traffic_health_inspection_v1'
+      ) {
+        throw new Error('napm-inspection-snapshot returned an invalid inspection report contract');
+      }
+
+      const reportSourceId = String(
+        inspectionResult?.metadata?.reportSourceId
+        || inspectionDetails?.reportSourceId
+        || ''
+      ).trim();
+      if (!reportSourceId) {
+        throw new Error('napm-inspection-snapshot did not provide reportSourceId');
+      }
+
+      const exportEvent = {
+        toolName: 'napm-report-export',
+        params: {
+          prompt: normalizedPrompt,
+          format: 'docx',
+          title: inspectionArgs.title,
+          reportSourceId
+        }
+      };
+      bindTrustedToolContext(exportEvent, ctx);
+      const exportArgs = {
+        ...exportEvent.params,
+        traceId: exportEvent.params.traceId
+      };
+      const exportResult = await reportExportTool.execute(
+        'automatic-inspection-report-export',
+        exportArgs
+      );
+      const reportDetails = exportResult?.details || null;
+      if (!isPlainObject(reportDetails) || reportDetails.ok !== true || !reportDetails.filePath) {
+        throw new Error('napm-report-export did not generate an inspection report');
+      }
+
+      appendPluginAuditEvent('napm_automatic_inspection_completed', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        sourceTool: 'napm-inspection-snapshot',
+        reportType: reportData.reportType,
+        templateId: reportData.templateId,
+        reportId: reportDetails.reportId || null,
+        format: reportDetails.format || null,
+        filePath: reportDetails.filePath
+      });
+      return {
+        content: buildReportExportReply(reportDetails),
+        mediaUrl: reportDetails.filePath,
+        mediaUrls: [reportDetails.filePath],
+        details: {
+          ...reportDetails,
+          sourceTool: 'napm-inspection-snapshot',
+          reportType: reportData.reportType,
+          templateId: reportData.templateId
+        }
+      };
+    } catch (error) {
+      appendPluginAuditEvent('napm_automatic_inspection_failed', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        sourceTool: 'napm-inspection-snapshot',
+        errorCode: error?.code || 'AUTOMATIC_INSPECTION_FAILED',
+        error: String(error?.message || error || 'unknown error').slice(0, 500)
+      });
+      return {
+        content: '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
+        mediaUrl: '',
+        mediaUrls: [],
+        failed: true,
+        details: {
+          ok: false,
+          errorCode: error?.code || 'AUTOMATIC_INSPECTION_FAILED'
+        }
+      };
+    }
+  })();
+
+  rememberAutomaticReportOperation(operationKey, operation);
+  return operation;
+}
+
 async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversationKey = '', turnId = '') {
   const normalizedPrompt = String(prompt || '').trim();
   const scope = String(conversationKey || '').trim();
@@ -3246,8 +3415,8 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
     return null;
   }
 
-  const operationKey = `${scope}::${normalizedTurnId}`;
-  const existing = napmAutomaticReportByTurn.get(operationKey);
+  const operationKey = `${scope}::${normalizedTurnId}::summary`;
+  const existing = getAutomaticReportOperation(operationKey);
   if (existing) {
     return existing;
   }
@@ -3323,12 +3492,8 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
     }
   })();
 
-  napmAutomaticReportByTurn.set(operationKey, operation);
-  try {
-    return await operation;
-  } finally {
-    napmAutomaticReportByTurn.delete(operationKey);
-  }
+  rememberAutomaticReportOperation(operationKey, operation);
+  return operation;
 }
 
 function buildReplyDispatchMessageContext(event = {}) {
@@ -3369,11 +3534,35 @@ function getReplyDispatchPrompt(event = {}, conversationState = null) {
   return selectActivePromptText(conversationState, null, fallbackPrompt);
 }
 
-async function dispatchReportReplyPayload(payload = {}, event = {}, hookCtx = {}, auditEvent = '') {
+async function dispatchReportReplyPayload(
+  payload = {},
+  event = {},
+  hookCtx = {},
+  auditEvent = '',
+  deliveryContext = {}
+) {
   const content = String(payload?.content || payload?.text || '').trim();
   const filePath = String(payload?.mediaUrl || payload?.filePath || '').trim();
-  if (!content || !filePath || typeof hookCtx?.dispatcher?.sendFinalReply !== 'function') {
+  if (!content || typeof hookCtx?.dispatcher?.sendFinalReply !== 'function') {
     return null;
+  }
+
+  const conversationKey = String(deliveryContext?.conversationKey || '').trim();
+  const turnId = normalizeTurnId(deliveryContext?.turnId);
+  if (conversationKey && turnId && !napmOperationState.claimFinalDelivery(conversationKey, turnId)) {
+    appendPluginAuditEvent('napm_report_duplicate_reply_dispatch_suppressed', {
+      conversationKey,
+      turnId,
+      reportKind: deliveryContext?.reportKind || null,
+      filePath: filePath || null
+    });
+    return {
+      handled: true,
+      queuedFinal: false,
+      counts: typeof hookCtx.dispatcher.getQueuedCounts === 'function'
+        ? hookCtx.dispatcher.getQueuedCounts()
+        : { tool: 0, block: 0, final: 0 }
+    };
   }
 
   if (typeof hookCtx.onReplyStart === 'function') {
@@ -3381,8 +3570,7 @@ async function dispatchReportReplyPayload(payload = {}, event = {}, hookCtx = {}
   }
   const replyPayload = {
     text: content,
-    mediaUrl: filePath,
-    mediaUrls: [filePath]
+    ...(filePath ? { mediaUrl: filePath, mediaUrls: [filePath] } : {})
   };
   const queuedFinal = Boolean(hookCtx.dispatcher.sendFinalReply(replyPayload));
   const counts = typeof hookCtx.dispatcher.getQueuedCounts === 'function'
@@ -3395,7 +3583,10 @@ async function dispatchReportReplyPayload(payload = {}, event = {}, hookCtx = {}
   appendPluginAuditEvent(auditEvent || 'napm_report_reply_dispatched', {
     sessionKey: event?.sessionKey || null,
     runId: event?.runId || null,
-    filePath,
+    conversationKey: conversationKey || null,
+    turnId: turnId || null,
+    reportKind: deliveryContext?.reportKind || null,
+    filePath: filePath || null,
     queuedFinal
   });
   return {
@@ -6337,11 +6528,12 @@ function buildNapmRoutingSystemContext(opts = {}) {
   }
 
   // Scene detection via existing classifiers (all accept prompt string)
-  var isFault = false, isSummary = false, isAlert = false, isPacket = false, isAlertPacket = false;
+  var isFault = false, isSummary = false, isInspection = false, isAlert = false, isPacket = false, isAlertPacket = false;
   try {
     if (prompt) {
       isFault = isFaultDiagnosisPrompt(prompt);
       isSummary = isSummaryPrompt(prompt);
+      isInspection = isInspectionPrompt(prompt);
       isAlert = isAlertEventPrompt(prompt);
       isPacket = isPacketCapturePrompt(prompt);
       isAlertPacket = isAlertPacketAnalysisPrompt(prompt);
@@ -6350,7 +6542,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
 
   var isNapm = Boolean(opts.napmRelated) || (prompt && isNapmRelatedPrompt(prompt));
   // Guard: if no scene detected, default to data-query + packet scenes to cover all possibilities
-  var anyScene = isFault || isSummary || isAlert || isPacket;
+  var anyScene = isFault || isSummary || isInspection || isAlert || isPacket;
   if (!anyScene) { isFault = true; isSummary = true; isAlert = true; isPacket = true; }
 
   var rules = [];
@@ -6624,6 +6816,7 @@ const plugin = {
         }
 
         const turnId = getActiveTurnId(conversationState, null);
+        const reportIntent = classifyReportPrompt(prompt);
         const alertRecord = getRememberedAlertRecordForPrompt(
           prompt,
           conversationState,
@@ -6658,11 +6851,15 @@ const plugin = {
             return dispatchReportReplyPayload({
               content: buildReportExportReply(recentReport),
               mediaUrl: recentReport.filePath
-            }, event, hookCtx, 'napm_report_followup_reply_dispatched');
+            }, event, hookCtx, 'napm_report_followup_reply_dispatched', {
+              conversationKey,
+              turnId,
+              reportKind: REPORT_INTENTS.EXPORT
+            });
           }
         }
 
-        if (!isSummaryPrompt(prompt)) {
+        if (!isAutomaticReportIntent(reportIntent)) {
           return undefined;
         }
 
@@ -6671,23 +6868,41 @@ const plugin = {
           return dispatchReportReplyPayload({
             content: buildReportExportReply(freshReport),
             mediaUrl: freshReport.filePath
-          }, event, hookCtx, 'napm_report_current_turn_reply_dispatched');
+          }, event, hookCtx, 'napm_report_current_turn_reply_dispatched', {
+            conversationKey,
+            turnId,
+            reportKind: reportIntent
+          });
         }
 
-        const automaticReport = await runAutomaticSummaryReportDelivery(
-          prompt,
-          messageCtx,
-          conversationKey,
-          turnId
-        );
-        if (!automaticReport?.content || !automaticReport?.mediaUrl) {
+        const automaticReport = reportIntent === REPORT_INTENTS.INSPECTION
+          ? await runAutomaticInspectionReportDelivery(
+            prompt,
+            messageCtx,
+            conversationKey,
+            turnId
+          )
+          : await runAutomaticSummaryReportDelivery(
+            prompt,
+            messageCtx,
+            conversationKey,
+            turnId
+          );
+        if (!automaticReport?.content) {
           return undefined;
         }
         return dispatchReportReplyPayload(
           automaticReport,
           event,
           hookCtx,
-          'napm_report_initial_reply_dispatched'
+          reportIntent === REPORT_INTENTS.INSPECTION
+            ? 'napm_inspection_report_dispatched'
+            : 'napm_report_initial_reply_dispatched',
+          {
+            conversationKey,
+            turnId,
+            reportKind: reportIntent
+          }
         );
       },
       {
@@ -6831,7 +7046,9 @@ const plugin = {
           || Boolean(activePromptState?.alertRelated)
         );
         const activeAlertPacketPrompt = Boolean(activePrompt) && isAlertPacketAnalysisPrompt(activePrompt);
-        const activeSummaryPrompt = Boolean(activePrompt) && isSummaryPrompt(activePrompt);
+        const activeReportIntent = classifyReportPrompt(activePrompt);
+        const activeInspectionPrompt = activeReportIntent === REPORT_INTENTS.INSPECTION;
+        const activeSummaryPrompt = activeReportIntent === REPORT_INTENTS.SUMMARY;
 
         if (activeAlertPacketPrompt && toolName !== 'napm-alert-packet-analysis') {
           api.logger.warn(`[napm-openclaw-plugin] blocked non-composite tool for alert packet workflow: tool=${toolName}`);
@@ -6921,6 +7138,33 @@ const plugin = {
         }
 
         if (toolName === 'napm-alert-query' && activeAlertPrompt) {
+          setGuardState(ctx, {
+            ...activePromptState,
+            turnNapmToolUsed: true,
+            updatedAt: Date.now()
+          });
+          return trustedParamsResult;
+        }
+
+        if (
+          activeInspectionPrompt
+          && isSafeNapmToolName(toolName)
+          && !['napm-inspection-snapshot', 'napm-report-export'].includes(toolName)
+        ) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked wrong tool for inspection prompt: tool=${toolName}`);
+          appendPluginAuditEvent('napm_plugin_inspection_prompt_wrong_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            expectedTool: 'napm-inspection-snapshot',
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'Inspection report requests must use napm-inspection-snapshot followed by napm-report-export. Do not use napm-summary or napm-skill-query.'
+          };
+        }
+
+        if (toolName === 'napm-inspection-snapshot' && activeInspectionPrompt) {
           setGuardState(ctx, {
             ...activePromptState,
             turnNapmToolUsed: true,
@@ -7200,6 +7444,7 @@ const plugin = {
         const guardState = getGuardState(ctx);
         const turnId = getActiveTurnId(conversationState, guardState);
         const activePromptForReport = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
+        const activeReportIntent = classifyReportPrompt(activePromptForReport);
         const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePromptForReport, guardState || conversationState);
         const progressOutput = assistantOutputLedger.consumeProgressDelivery({
           scope: conversationKey,
@@ -7275,16 +7520,23 @@ const plugin = {
           return { content: freshReportReply };
         }
         if (
-          isSummaryPrompt(activePromptForReport)
+          isAutomaticReportIntent(activeReportIntent)
           && !freshReportReply
           && !isStreamingPreviewMessageEvent(event)
         ) {
-          const automaticReport = await runAutomaticSummaryReportDelivery(
-            activePromptForReport,
-            ctx,
-            conversationKey,
-            turnId
-          );
+          const automaticReport = activeReportIntent === REPORT_INTENTS.INSPECTION
+            ? await runAutomaticInspectionReportDelivery(
+              activePromptForReport,
+              ctx,
+              conversationKey,
+              turnId
+            )
+            : await runAutomaticSummaryReportDelivery(
+              activePromptForReport,
+              ctx,
+              conversationKey,
+              turnId
+            );
           if (automaticReport?.content) {
             return automaticReport;
           }
@@ -7795,7 +8047,7 @@ const plugin = {
             message: buildAssistantTextMessage(rememberedReasoningFallbackText, message)
           };
         }
-        if (isSummaryPrompt(activePrompt) && !rememberedRecord) {
+        if (isAutomaticReportPrompt(activePrompt) && !rememberedRecord) {
           // reply_dispatch owns the primary async report workflow. message_sending
           // remains a compatibility fallback for OpenClaw runtimes without that hook.
           // Keep the transcript untouched until that operation has a result.
@@ -7878,6 +8130,9 @@ module.exports.__test__ = {
   auditReportExportSourceResolved,
   auditReportGenerated,
   buildReportExportReply,
+  classifyReportPrompt,
+  reportIntents: REPORT_INTENTS,
+  buildAutomaticInspectionToolArgs,
   buildAutomaticSummaryToolArgs,
   isReportExportPrompt,
   isReportGenerationBypassTool,
@@ -7904,6 +8159,7 @@ module.exports.__test__ = {
   isAlertPacketAnalysisPrompt,
   hasSpecificFaultDiagnosisTarget,
   isFaultDiagnosisPrompt,
+  isInspectionPrompt,
   isSummaryPrompt,
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,

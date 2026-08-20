@@ -176,6 +176,7 @@ try {
     'package-lock.json',
     'openclaw.plugin.json',
     'napm-openclaw-plugin.remote.js',
+    'plugin/ReportIntentClassifier.js',
     'plugin/TrustedToolContextStore.js',
     'scripts/install-release.sh',
     'scripts/rollback-release.sh',
