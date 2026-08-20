@@ -300,11 +300,15 @@ describe('NAPM plugin report handoff integration', () => {
       }
     }, ctx);
 
-    expect(rewritten?.message?.content?.[0]?.text).toContain('下载链接：/reports/napm_global.docx');
+    expect(rewritten?.message?.content?.[0]?.text).toContain('报告已生成：全局综述报告');
+    expect(rewritten?.message?.content?.[0]?.text).not.toContain('/reports/napm_global.docx');
+    expect(rewritten?.message?.content?.[0]?.text).not.toContain('/tmp/napm_global.docx');
     expect(rewritten?.message?.content?.[0]?.text).not.toContain('未拿到有效 skill 结果');
 
     const sending = await hooks.get('message_sending')({ content: genericGuardReply }, ctx);
-    expect(sending?.content).toContain('下载链接：/reports/napm_global.docx');
+    expect(sending?.content).toContain('报告已生成：全局综述报告');
+    expect(sending?.content).not.toContain('/reports/napm_global.docx');
+    expect(sending?.content).not.toContain('/tmp/napm_global.docx');
     expect(sending?.content).not.toContain('未拿到有效 skill 结果');
   });
 
@@ -467,6 +471,15 @@ describe('NAPM plugin report handoff integration', () => {
       details: {
         ok: true,
         reportSourceId: 'rps_first_turn_inspection',
+        summary: {
+          title: 'NAPM 系统巡检报告',
+          status: 'warning',
+          highlights: [
+            '近一日流量存在明显波动。',
+            '检测到 5 次慢访问。',
+            'HTTP 400 错误共 714 次。'
+          ]
+        },
         reportData: {
           reportType: 'inspection_report',
           templateId: 'napm_traffic_health_inspection_v1'
@@ -532,10 +545,22 @@ describe('NAPM plugin report handoff integration', () => {
       })
     );
     expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
-    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining('报告已生成'),
+    const finalPayload = dispatcher.sendFinalReply.mock.calls[0][0];
+    expect(finalPayload).toMatchObject({
+      mediaUrl: '/tmp/napm_inspection.docx',
       mediaUrls: ['/tmp/napm_inspection.docx']
-    }));
+    });
+    expect(finalPayload.text).toContain('系统巡检报告已生成：NAPM 系统巡检报告');
+    expect(finalPayload.text).toContain('总体状态：需关注');
+    expect(finalPayload.text).toContain('重点发现：');
+    expect(finalPayload.text).toContain('- 近一日流量存在明显波动。');
+    expect(finalPayload.text).toContain('- 检测到 5 次慢访问。');
+    expect(finalPayload.text).toContain('- HTTP 400 错误共 714 次。');
+    expect(finalPayload.text).toContain('完整巡检报告已作为附件发送。');
+    expect(finalPayload.text).not.toContain('下载链接');
+    expect(finalPayload.text).not.toContain('文件路径');
+    expect(finalPayload.text).not.toContain('/reports/napm_inspection.docx');
+    expect(finalPayload.text).not.toContain('/tmp/napm_inspection.docx');
   });
 
   test('does not repeat inspection collection, export, or delivery for duplicate reply dispatch', async () => {

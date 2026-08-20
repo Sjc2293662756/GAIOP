@@ -3372,7 +3372,7 @@ async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conve
         filePath: reportDetails.filePath
       });
       return {
-        content: buildReportExportReply(reportDetails),
+        content: buildInspectionReportDeliveryReply(inspectionDetails, reportDetails),
         mediaUrl: reportDetails.filePath,
         mediaUrls: [reportDetails.filePath],
         details: {
@@ -5028,20 +5028,76 @@ function buildReportInputForExport(args = {}) {
 }
 
 
+function normalizeInspectionStatusLabel(status = '') {
+  const value = String(status || '').trim();
+  if (!value) {
+    return '';
+  }
+  if (/^(?:ok|normal|healthy|正常|良好)$/i.test(value)) {
+    return '正常';
+  }
+  if (/^(?:warning|warn|attention|需关注|警告)$/i.test(value)) {
+    return '需关注';
+  }
+  if (/^(?:critical|error|failed|failure|abnormal|异常|严重)$/i.test(value)) {
+    return '异常';
+  }
+  return '';
+}
+
+function normalizeReportHighlights(highlights = [], limit = 5) {
+  if (!Array.isArray(highlights)) {
+    return [];
+  }
+  const normalizedLimit = Number.isInteger(limit) && limit > 0 ? limit : 5;
+  return highlights
+    .map((item) => String(item || '').trim())
+    .filter((item) => item && item !== '[object Object]' && item !== '[object Array]')
+    .slice(0, normalizedLimit);
+}
+
+function buildInspectionReportDeliveryReply(inspectionResult = {}, reportResult = {}) {
+  if (!reportResult?.ok) {
+    return buildReportExportReply(reportResult);
+  }
+
+  const summary = isPlainObject(inspectionResult?.summary) ? inspectionResult.summary : {};
+  const title = String(
+    reportResult?.title
+    || summary.title
+    || inspectionResult?.reportData?.title
+    || 'NAPM 系统巡检报告'
+  ).trim();
+  const statusLabel = normalizeInspectionStatusLabel(
+    summary.status || inspectionResult?.inspection?.summary?.overallStatus
+  );
+  const highlights = normalizeReportHighlights(summary.highlights, 5);
+  const conclusion = String(inspectionResult?.inspection?.summary?.conclusion || '').trim();
+  const lines = [`系统巡检报告已生成：${title}`];
+
+  if (statusLabel) {
+    lines.push(`总体状态：${statusLabel}`);
+  }
+  if (highlights.length > 0) {
+    lines.push('重点发现：');
+    highlights.forEach((item) => lines.push(`- ${item}`));
+  } else if (conclusion) {
+    lines.push(`巡检结论：${conclusion}`);
+  }
+
+  lines.push('', '完整巡检报告已作为附件发送。');
+  return lines.join('\n');
+}
+
 function buildReportExportReply(result = {}) {
   if (!result?.ok) {
     return String(result?.message || '报告导出失败。').trim();
   }
   const lines = [
     `报告已生成：${result.title || result.reportId || 'NAPM 报告'}`,
-    `格式：${result.format || 'docx'}`
+    `格式：${result.format || 'docx'}`,
+    '完整报告将以附件形式发送。'
   ];
-  if (result.downloadUrl) {
-    lines.push(`下载链接：${result.downloadUrl}`);
-  }
-  if (result.filePath) {
-    lines.push(`文件路径：${result.filePath}`);
-  }
   return lines.join('\n');
 }
 
@@ -8129,6 +8185,7 @@ module.exports.__test__ = {
   buildReportInputForExport,
   auditReportExportSourceResolved,
   auditReportGenerated,
+  buildInspectionReportDeliveryReply,
   buildReportExportReply,
   classifyReportPrompt,
   reportIntents: REPORT_INTENTS,
