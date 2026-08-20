@@ -3223,7 +3223,12 @@ function isFreshReportExportResult(conversationKey = '', turnId = '') {
 
 function buildFreshReportExportReply(conversationKey = '', turnId = '') {
   const record = getFreshReportExportResult(conversationKey, turnId);
-  return record?.result?.ok ? buildReportExportReply(record.result) : '';
+  if (!record?.result?.ok) {
+    return '';
+  }
+  return isMeaningfulText(record.deliveryContent)
+    ? String(record.deliveryContent).trim()
+    : buildReportExportReply(record.result);
 }
 
 function getRecentReportExportResult(conversationKey = '') {
@@ -3371,8 +3376,15 @@ async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conve
         format: reportDetails.format || null,
         filePath: reportDetails.filePath
       });
+      const deliveryContent = buildInspectionReportDeliveryReply(inspectionDetails, reportDetails);
+      napmOperationState.rememberReportDelivery({
+        scope,
+        turnId: normalizedTurnId,
+        content: deliveryContent,
+        reportKind: REPORT_INTENTS.INSPECTION
+      });
       return {
-        content: buildInspectionReportDeliveryReply(inspectionDetails, reportDetails),
+        content: deliveryContent,
         mediaUrl: reportDetails.filePath,
         mediaUrls: [reportDetails.filePath],
         details: {

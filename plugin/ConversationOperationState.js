@@ -296,6 +296,30 @@ class ConversationOperationState {
     return record.turnId === normalizedTurnId ? record : null;
   }
 
+  rememberReportDelivery({ scope, turnId = '', content = '', reportKind = '' }) {
+    const normalizedScope = String(scope || '').trim();
+    const normalizedTurnId = this._normalizeTurnId(turnId);
+    const normalizedContent = String(content || '').trim();
+    if (!normalizedScope || !normalizedTurnId || !normalizedContent) {
+      return null;
+    }
+
+    const existing = this.getReportExport(normalizedScope, normalizedTurnId);
+    if (!existing || existing.turnId !== normalizedTurnId) {
+      return null;
+    }
+
+    const record = {
+      ...existing,
+      deliveryContent: normalizedContent,
+      reportKind: String(reportKind || '').trim() || null,
+      updatedAt: this.now()
+    };
+    this.reportByScope.set(normalizedScope, record);
+    this._trim(this.reportByScope);
+    return record;
+  }
+
   claimFallbackDelivery(scope, turnId) {
     const key = this._buildTurnKey(scope, turnId);
     if (!key) {

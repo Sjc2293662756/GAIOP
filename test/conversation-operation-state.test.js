@@ -42,6 +42,34 @@ describe('ConversationOperationState', () => {
     expect(store.getReportExport('wecom:account:b').reportId).toBe('b');
   });
 
+  test('attaches deterministic delivery content only to the matching report turn', () => {
+    store.rememberReportExport({
+      scope: 'wecom:account:a',
+      turnId: 'turn-a',
+      prompt: 'inspection',
+      result: { ok: true },
+      reportId: 'inspection-a'
+    });
+
+    expect(store.rememberReportDelivery({
+      scope: 'wecom:account:a',
+      turnId: 'turn-b',
+      content: 'wrong turn',
+      reportKind: 'inspection'
+    })).toBeNull();
+
+    expect(store.rememberReportDelivery({
+      scope: 'wecom:account:a',
+      turnId: 'turn-a',
+      content: 'inspection overview',
+      reportKind: 'inspection'
+    })).toMatchObject({
+      deliveryContent: 'inspection overview',
+      reportKind: 'inspection',
+      reportId: 'inspection-a'
+    });
+  });
+
   test('keeps lightweight query context longer than result data and clears it by scope', () => {
     const resolvedQuery = {
       service: 'timeValues',

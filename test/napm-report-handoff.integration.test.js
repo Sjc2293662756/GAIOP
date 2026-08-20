@@ -491,14 +491,21 @@ describe('NAPM plugin report handoff integration', () => {
       details: { ok: true, reportSourceId: 'rps_wrong_summary' },
       metadata: { reportSourceId: 'rps_wrong_summary' }
     });
-    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
-      details: {
-        ok: true,
-        title: 'NAPM 系统巡检报告',
-        format: 'docx',
-        downloadUrl: '/reports/napm_inspection.docx',
-        filePath: '/tmp/napm_inspection.docx'
-      }
+    const reportDetails = {
+      ok: true,
+      title: 'NAPM 系统巡检报告',
+      format: 'docx',
+      downloadUrl: '/reports/napm_inspection.docx',
+      filePath: '/tmp/napm_inspection.docx'
+    };
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockImplementation(async (_id, args) => {
+      plugin.__test__.rememberReportExportResult(
+        prompt,
+        reportDetails,
+        plugin.__test__.getTrustedConversationKey(args),
+        plugin.__test__.getTrustedTurnId(args)
+      );
+      return { details: reportDetails };
     });
 
     const ctx = {
@@ -561,6 +568,22 @@ describe('NAPM plugin report handoff integration', () => {
     expect(finalPayload.text).not.toContain('文件路径');
     expect(finalPayload.text).not.toContain('/reports/napm_inspection.docx');
     expect(finalPayload.text).not.toContain('/tmp/napm_inspection.docx');
+
+    const sendingResult = await hooks.get('message_sending')({
+      content: finalPayload.text,
+      mediaUrl: finalPayload.mediaUrl,
+      mediaUrls: finalPayload.mediaUrls,
+      metadata: { isFinal: true }
+    }, ctx);
+    expect(sendingResult?.content).toBe(finalPayload.text);
+
+    const writeResult = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: finalPayload.text }]
+      }
+    }, ctx);
+    expect(writeResult?.message?.content?.[0]?.text).toBe(finalPayload.text);
   });
 
   test('does not repeat inspection collection, export, or delivery for duplicate reply dispatch', async () => {
