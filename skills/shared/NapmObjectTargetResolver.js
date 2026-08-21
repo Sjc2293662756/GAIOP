@@ -18,6 +18,13 @@ const GROUP_TYPE_BY_SUMMARY_SCOPE = Object.freeze({
   application: 'DefinedApp'
 });
 
+const REPORT_TARGET_CATALOG_TYPES = Object.freeze([
+  'WebApplication',
+  'DefinedApp',
+  'BuiltinApplication',
+  'CompositeApplication'
+]);
+
 function normalizeText(value = '') {
   return String(value || '').normalize('NFKC').trim();
 }
@@ -156,7 +163,7 @@ class NapmObjectTargetResolver {
 
     const groupTypes = Array.isArray(options.groupTypes) && options.groupTypes.length > 0
       ? options.groupTypes.slice()
-      : ['WebApplication', 'DefinedApp'];
+      : REPORT_TARGET_CATALOG_TYPES.slice();
 
     let rows;
     try {
@@ -242,7 +249,7 @@ class NapmObjectTargetResolver {
     const resolution = await this.resolveNamedTarget(prompt, {
       targetHint,
       preferredGroupType,
-      groupTypes: ['WebApplication', 'DefinedApp']
+      groupTypes: REPORT_TARGET_CATALOG_TYPES
     });
     if (!resolution.ok) {
       return { ...resolution, scope: normalizedScope };

@@ -70,6 +70,43 @@ describe('NapmObjectTargetResolver', () => {
     }
   });
 
+  test('includes built-in applications that execute through the DefinedApp dimension', async () => {
+    const metadataService = require('../skills/openclaw-napm-query/services/NapmMetadataService');
+    const listObjectInstances = jest.spyOn(metadataService, 'listObjectInstances')
+      .mockImplementation(async (groupType) => (groupType === 'BuiltinApplication'
+        ? [{
+          name: 'HTTPS',
+          Type: 1,
+          applicationType: 1,
+          effectiveObjectType: 'BuiltinApplication',
+          executionGroupType: 'DefinedApp'
+        }]
+        : []));
+
+    try {
+      const resolver = new NapmObjectTargetResolver();
+      const result = await resolver.resolveSummaryScope(
+        '给我HTTPS应用的综述报告！',
+        { type: 'application', label: '应用' }
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: TARGET_RESOLUTION_STATUS.RESOLVED,
+        scope: {
+          type: 'application',
+          target: {
+            groupType: 'DefinedApp',
+            groupArgument: 'HTTPS'
+          }
+        }
+      });
+      expect(listObjectInstances).toHaveBeenCalledWith('BuiltinApplication');
+    } finally {
+      listObjectInstances.mockRestore();
+    }
+  });
+
   test.each([
     ['给我应用最近七天的综述报告！', { type: 'application', label: '应用' }],
     ['给我业务组最近七天的综述报告！', { type: 'businessGroup', label: '业务组' }],
