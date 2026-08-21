@@ -178,6 +178,7 @@ try {
     'napm-openclaw-plugin.remote.js',
     'plugin/ReportIntentClassifier.js',
     'plugin/TrustedToolContextStore.js',
+    'skills/shared/NapmObjectTargetResolver.js',
     'scripts/install-release.sh',
     'scripts/rollback-release.sh',
     'scripts/verify-staged-release.sh',

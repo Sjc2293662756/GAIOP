@@ -32,7 +32,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-alert-packet-analysis/scripts/run_alert_packet_analysis.js',
   'openclaw-napm-inspection/scripts/run_inspection_snapshot.js',
   'openclaw-napm-summary/scripts/run_summary.js',
-  'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js'
+  'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js',
+  'shared/NapmObjectTargetResolver.js'
 ]);
 
 function hasCompleteNapmSkillRuntime(skillsRoot = '', existsSync = fs.existsSync) {
@@ -62,6 +63,10 @@ function resolveOpenClawSkillsRoot(options = {}) {
 }
 
 const OPENCLAW_SKILLS_ROOT = resolveOpenClawSkillsRoot();
+const {
+  NapmObjectTargetResolver,
+  TARGET_RESOLUTION_STATUS
+} = require(path.join(OPENCLAW_SKILLS_ROOT, 'shared', 'NapmObjectTargetResolver.js'));
 
 // ── In-process Skill loaders (2026-07-07) ─────────────────────────────────
 // 替代 execFileAsync subprocess spawn，改为同进程 require() 调用。
@@ -84,6 +89,11 @@ const napmAlertPacketSkill = () => loadSkill('openclaw-napm-alert-packet-analysi
 const napmInspectionSkill = () => loadSkill('openclaw-napm-inspection', 'run_inspection_snapshot.js');
 const napmSummarySkill = () => loadSkill('openclaw-napm-summary', 'run_summary.js');
 const napmFaultDiagnosisSkill = () => loadSkill('openclaw-napm-fault-diagnosis', 'run_fault_diagnosis.js');
+let automaticSummaryTargetResolver = new NapmObjectTargetResolver();
+
+function setAutomaticSummaryTargetResolver(resolver = null) {
+  automaticSummaryTargetResolver = resolver || new NapmObjectTargetResolver();
+}
 const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmSentMediaByConversation = new Map();
@@ -3240,7 +3250,7 @@ function buildRecentReportExportReply(conversationKey = '') {
   return record?.result?.ok ? buildReportExportReply(record.result) : '';
 }
 
-function buildAutomaticSummaryToolArgs(prompt = '') {
+function buildAutomaticSummaryToolArgs(prompt = '', resolvedScope = null) {
   const normalizedPrompt = String(prompt || '').trim();
   const timeRangeKey = inferOverviewTimeRangeKey(normalizedPrompt) || 'last24hours';
   const sceneKey = normalizeOverviewSceneKey(inferOverviewScene(normalizedPrompt));
@@ -3252,9 +3262,22 @@ function buildAutomaticSummaryToolArgs(prompt = '') {
     network: { type: 'network', label: '网络' },
     alert: { type: 'alert', label: '告警' }
   };
-  const scope = /告警|告警综述|alerts?|alert\s+overview/i.test(normalizedPrompt)
+  const inferredScope = /告警|告警综述|alerts?|alert\s+overview/i.test(normalizedPrompt)
     ? scopeByScene.alert
     : (scopeByScene[sceneKey] || scopeByScene.system);
+  const scope = isPlainObject(resolvedScope) && resolvedScope.type
+    ? {
+      type: String(resolvedScope.type).trim(),
+      label: String(resolvedScope.label || '').trim(),
+      ...(isPlainObject(resolvedScope.target) ? {
+        target: {
+          groupType: String(resolvedScope.target.groupType || '').trim(),
+          groupArgument: String(resolvedScope.target.groupArgument || '').trim(),
+          groupLabel: String(resolvedScope.target.groupLabel || resolvedScope.target.groupArgument || '').trim()
+        }
+      } : {})
+    }
+    : inferredScope;
   const titleByType = {
     global: 'NAPM 系统综述报告',
     webApplication: 'NAPM 业务综述报告',
@@ -3263,6 +3286,10 @@ function buildAutomaticSummaryToolArgs(prompt = '') {
     network: 'NAPM 网络综述报告',
     alert: 'NAPM 告警综述报告'
   };
+  const targetLabel = String(scope.target?.groupLabel || scope.target?.groupArgument || '').trim();
+  const summaryTitle = targetLabel
+    ? `${targetLabel} ${String(titleByType[scope.type] || titleByType.global).replace(/^NAPM\s*/, '')}`
+    : (titleByType[scope.type] || titleByType.global);
   return {
     prompt: normalizedPrompt,
     sourceQuestion: normalizedPrompt,
@@ -3272,8 +3299,19 @@ function buildAutomaticSummaryToolArgs(prompt = '') {
       displayText: normalizedPrompt
     },
     format: 'docx',
-    title: titleByType[scope.type] || titleByType.global
+    title: summaryTitle
   };
+}
+
+function buildSummaryTargetResolutionFailureReply(resolution = {}) {
+  const targetHint = String(resolution.targetHint || '指定对象').trim();
+  if (resolution.status === TARGET_RESOLUTION_STATUS.AMBIGUOUS) {
+    return `检测到多个名为“${targetHint}”的业务或应用，未生成综述报告。请明确说明要分析业务还是应用。`;
+  }
+  if (resolution.status === TARGET_RESOLUTION_STATUS.CATALOG_UNAVAILABLE) {
+    return 'NAPM 对象目录暂时不可用，无法确认综述报告对象，本轮未生成报告。请稍后重试。';
+  }
+  return `未在 NAPM 对象目录中找到“${targetHint}”，未生成综述报告。请确认对象名称后重试。`;
 }
 
 function buildAutomaticInspectionToolArgs(prompt = '') {
@@ -3435,9 +3473,36 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
 
   const operation = (async () => {
     try {
+      loadSkillDotenvIfAvailable();
+      const baseArgs = buildAutomaticSummaryToolArgs(normalizedPrompt);
+      const targetResolution = await automaticSummaryTargetResolver.resolveSummaryScope(
+        normalizedPrompt,
+        baseArgs.scope
+      );
+      appendPluginAuditEvent('napm_summary_target_resolved', {
+        conversationKey: scope,
+        turnId: normalizedTurnId,
+        status: targetResolution?.status || null,
+        scopeType: targetResolution?.scope?.type || baseArgs.scope.type,
+        groupType: targetResolution?.scope?.target?.groupType || null,
+        groupArgument: targetResolution?.scope?.target?.groupArgument || null
+      });
+      if (!targetResolution?.ok) {
+        return {
+          content: buildSummaryTargetResolutionFailureReply(targetResolution),
+          mediaUrl: '',
+          mediaUrls: [],
+          failed: true,
+          details: {
+            ok: false,
+            errorCode: `SUMMARY_${String(targetResolution?.status || 'TARGET_RESOLUTION_FAILED').toUpperCase()}`,
+            targetResolution
+          }
+        };
+      }
       const summaryEvent = {
         toolName: 'napm-summary',
-        params: buildAutomaticSummaryToolArgs(normalizedPrompt)
+        params: buildAutomaticSummaryToolArgs(normalizedPrompt, targetResolution.scope)
       };
       bindTrustedToolContext(summaryEvent, ctx);
       const summaryArgs = {
@@ -6214,12 +6279,13 @@ function createSummaryToolDefinition() {
             label: { type: 'string', description: 'Human-readable scope label, e.g. 全局, 业务, 应用, 业务组, 网络, 告警.' },
             target: {
               type: 'object',
-              description: 'Required for non-global scopes. The specific NAPM object to focus on.',
+              description: 'Required when the request names a specific NAPM object. Omit only for an explicit dimension-overview report.',
               properties: {
                 groupType: { type: 'string', description: 'NAPM group type, e.g. WebApplication, Application, BusinessGroup, IPAddress.' },
                 groupArgument: { type: 'string', description: 'NAPM group argument value, e.g. 239web.' },
                 groupLabel: { type: 'string', description: 'Display label for the target object.' }
               },
+              required: ['groupType', 'groupArgument'],
               additionalProperties: true
             }
           },
@@ -8203,6 +8269,8 @@ module.exports.__test__ = {
   reportIntents: REPORT_INTENTS,
   buildAutomaticInspectionToolArgs,
   buildAutomaticSummaryToolArgs,
+  buildSummaryTargetResolutionFailureReply,
+  setAutomaticSummaryTargetResolver,
   isReportExportPrompt,
   isReportGenerationBypassTool,
   textClaimsReportGenerated,

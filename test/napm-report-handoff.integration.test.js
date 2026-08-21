@@ -920,4 +920,116 @@ describe('NAPM plugin report handoff integration', () => {
       format: 'docx'
     });
   });
+
+  test('passes a resolved WebApplication target through the automatic summary handoff', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const { NapmObjectTargetResolver } = require('../skills/shared/NapmObjectTargetResolver');
+    plugin.__test__.setAutomaticSummaryTargetResolver(new NapmObjectTargetResolver({
+      catalogProvider: async () => [
+        { name: '回溯238web', applicationType: 3 },
+        { name: 'HTTPS', applicationType: 2 }
+      ]
+    }));
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true, reportSourceId: 'rps_single_business' },
+      metadata: { reportSourceId: 'rps_single_business' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
+      details: {
+        ok: true,
+        title: '回溯238web 业务综述报告',
+        format: 'docx',
+        filePath: '/tmp/backtrack-238.docx'
+      }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:single-business-summary',
+      channelId: 'wecom',
+      runId: 'run-single-business-summary'
+    };
+    const prompt = '给我回溯238web的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'single-business-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledWith(
+      'automatic-summary',
+      expect.objectContaining({
+        scope: {
+          type: 'webApplication',
+          label: '业务',
+          target: {
+            groupType: 'WebApplication',
+            groupArgument: '回溯238web',
+            groupLabel: '回溯238web'
+          }
+        },
+        title: '回溯238web 业务综述报告'
+      })
+    );
+    expect(tools.get('napm-report-export').execute).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not generate an overall report when a named summary target is unresolved', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    const { NapmObjectTargetResolver } = require('../skills/shared/NapmObjectTargetResolver');
+    plugin.__test__.setAutomaticSummaryTargetResolver(new NapmObjectTargetResolver({
+      catalogProvider: async () => []
+    }));
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute');
+    jest.spyOn(tools.get('napm-report-export'), 'execute');
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:missing-summary-target',
+      channelId: 'wecom',
+      runId: 'run-missing-summary-target'
+    };
+    const prompt = '给我不存在对象ABC的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'missing-target-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).not.toHaveBeenCalled();
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: expect.stringContaining('未在 NAPM 对象目录中找到')
+    });
+  });
 });

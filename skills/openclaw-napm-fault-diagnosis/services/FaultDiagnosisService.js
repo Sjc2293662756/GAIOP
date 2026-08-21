@@ -1,10 +1,14 @@
 'use strict';
 
 const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClient');
-const { classify, getFlow, isPerfDescription, extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
+const { getFlow, isPerfDescription } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
 const { requireExecutionTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
 const { evaluateSettledPlan } = require('../../shared/ExecutionOutcome');
+const {
+  NapmObjectTargetResolver,
+  TARGET_RESOLUTION_STATUS
+} = require('../../shared/NapmObjectTargetResolver');
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -33,6 +37,9 @@ class FaultDiagnosisService {
     this.steps = options.steps || new FaultDiagnosisSteps({ client: this.client });
     this.timeoutMs = options.timeoutMs || 120000;
     this._appCatalogCache = null;  // { list: [...], fetchedAt: timestamp }
+    this.targetResolver = options.targetResolver || new NapmObjectTargetResolver({
+      catalogProvider: async () => this._getAppCatalog()
+    });
   }
 
   /**
@@ -49,8 +56,10 @@ class FaultDiagnosisService {
       const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.rows) ? raw.rows : []);
       this._appCatalogCache = { list, fetchedAt: Date.now() };
       return list;
-    } catch (_) {
-      return null;
+    } catch (error) {
+      const catalogError = new Error('NAPM applications catalog is unavailable.');
+      catalogError.code = error?.code || 'NAPM_APPLICATION_CATALOG_UNAVAILABLE';
+      throw catalogError;
     }
   }
 
@@ -154,31 +163,20 @@ class FaultDiagnosisService {
     const description = String(input.description || input.fault?.description || '');
     const timeRange = requireExecutionTimeRange(input.executionTimeRange, 'FaultDiagnosisService');
 
-    // ── Resolve flowType — catalog ALWAYS wins ──
-    // The tool fully controls flowType and target. External input (e.g. AI guesses) is ignored.
-    let flowType = null;
-    let resolvedTarget = null;
+    // The NAPM catalog is authoritative for both target identity and BS/CS type.
+    const explicitTargetHint = String(input.target?.groupLabel || input.target?.groupArgument || '').trim();
+    const targetResolution = await this.targetResolver.resolveNamedTarget(description, {
+      targetHint: explicitTargetHint,
+      groupTypes: ['WebApplication', 'DefinedApp']
+    });
+    if (!targetResolution?.ok || targetResolution.status !== TARGET_RESOLUTION_STATUS.RESOLVED) {
+      return this._buildTargetResolutionFailure(targetResolution);
+    }
 
-    const candidateName = extractTargetName(input);
-    if (candidateName) {
-      const catalog = await this._getAppCatalog();
-      if (catalog) {
-        const match = matchAppByName(candidateName, catalog);
-        if (match) {
-          const resolved = resolveFlowTypeFromCatalog(match);
-          flowType = resolved.flowType;
-          resolvedTarget = {
-            groupType: resolved.groupType,
-            groupArgument: resolved.groupArgument,
-            groupLabel: resolved.groupLabel
-          };
-        }
-      }
-    }
-    // Fallback: keyword classifier
-    if (!flowType) {
-      flowType = classify(description);
-    }
+    const resolvedTarget = targetResolution.target;
+    let flowType = resolvedTarget.groupType === 'WebApplication'
+      ? 'bs_app_slow'
+      : 'cs_app_slow';
 
     // Secondary: override to bs_page_perf if description indicates performance intent
     // (catalog resolves WebApplication → bs_app_slow, but user wants page perf analysis)
@@ -213,6 +211,35 @@ class FaultDiagnosisService {
     };
 
     return this.executeStep(session, flow.steps[0]);
+  }
+
+  _buildTargetResolutionFailure(resolution = {}) {
+    const status = resolution?.status || TARGET_RESOLUTION_STATUS.NOT_FOUND;
+    const codeByStatus = {
+      [TARGET_RESOLUTION_STATUS.OVERALL]: 'FAULT_TARGET_REQUIRED',
+      [TARGET_RESOLUTION_STATUS.NOT_FOUND]: 'FAULT_TARGET_NOT_FOUND',
+      [TARGET_RESOLUTION_STATUS.AMBIGUOUS]: 'FAULT_TARGET_AMBIGUOUS',
+      [TARGET_RESOLUTION_STATUS.CATALOG_UNAVAILABLE]: 'FAULT_TARGET_CATALOG_UNAVAILABLE'
+    };
+    const messageByStatus = {
+      [TARGET_RESOLUTION_STATUS.OVERALL]: '故障诊断必须指定一个具体业务或应用名称。',
+      [TARGET_RESOLUTION_STATUS.NOT_FOUND]: '未在 NAPM 应用目录中找到指定的故障对象。',
+      [TARGET_RESOLUTION_STATUS.AMBIGUOUS]: '指定名称匹配到多个 NAPM 对象，请明确说明业务或应用。',
+      [TARGET_RESOLUTION_STATUS.CATALOG_UNAVAILABLE]: 'NAPM 应用目录暂时不可用，无法确认故障对象。'
+    };
+    return {
+      ok: false,
+      reportReady: false,
+      error: {
+        code: codeByStatus[status] || 'FAULT_TARGET_RESOLUTION_FAILED',
+        message: messageByStatus[status] || '无法确认故障诊断对象。'
+      },
+      targetResolution: {
+        status,
+        targetHint: resolution?.targetHint || '',
+        candidates: resolution?.candidates || []
+      }
+    };
   }
 
   /**
@@ -465,9 +492,9 @@ class FaultDiagnosisService {
       reportType: 'diagnostic_report',
       templateId: 'napm_bs_fault_diagnosis_v2',
       format: 'docx',
-      title: (diagnosis.description || '未命名故障') + '_业务故障分析报告',
+      title: (diagnosis.targetLabel || '未命名故障') + '_业务故障分析报告',
       systemName: 'Netlnside基于AI的全流量性能分析平台',
-      faultName: diagnosis.description,
+      faultName: diagnosis.targetLabel,
       timeRange: {
         start: session.context?.faultStart,
         end: session.context?.faultEnd,
@@ -682,9 +709,9 @@ class FaultDiagnosisService {
       reportType: 'diagnostic_report',
       templateId: 'napm_cs_fault_diagnosis_v1',
       format: 'docx',
-      title: (diagnosis.description || '未命名故障') + '_应用故障分析报告',
+      title: (diagnosis.targetLabel || '未命名故障') + '_应用故障分析报告',
       systemName: 'Netlnside基于AI的全流量性能分析平台',
-      faultName: diagnosis.description,
+      faultName: diagnosis.targetLabel,
       timeRange: {
         start: session.context?.faultStart,
         end: session.context?.faultEnd,
@@ -843,9 +870,9 @@ class FaultDiagnosisService {
       reportType: 'diagnostic_report',
       templateId: 'napm_bs_page_perf_v1',
       format: 'docx',
-      title: (diagnosis.description || '未命名故障') + '_页面性能分析报告',
+      title: (diagnosis.targetLabel || '未命名故障') + '_页面性能分析报告',
       systemName: 'Netlnside基于AI的全流量性能分析平台',
-      faultName: diagnosis.description,
+      faultName: diagnosis.targetLabel,
       timeRange: {
         start: session.context?.faultStart,
         end: session.context?.faultEnd,
