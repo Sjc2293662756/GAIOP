@@ -39,6 +39,37 @@ describe('NapmObjectTargetResolver', () => {
     });
   });
 
+  test('uses the shared NapmMetadataService singleton on the default production path', async () => {
+    const metadataService = require('../skills/openclaw-napm-query/services/NapmMetadataService');
+    const listObjectInstances = jest.spyOn(metadataService, 'listObjectInstances')
+      .mockImplementation(async (groupType) => (groupType === 'WebApplication'
+        ? [{ name: '回溯238web', applicationType: 3 }]
+        : []));
+
+    try {
+      const resolver = new NapmObjectTargetResolver();
+      const result = await resolver.resolveSummaryScope(
+        '给我回溯238web的综述报告！',
+        { type: 'global', label: '全局' }
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: TARGET_RESOLUTION_STATUS.RESOLVED,
+        scope: {
+          target: {
+            groupType: 'WebApplication',
+            groupArgument: '回溯238web'
+          }
+        }
+      });
+      expect(listObjectInstances).toHaveBeenCalledWith('WebApplication');
+      expect(listObjectInstances).toHaveBeenCalledWith('DefinedApp');
+    } finally {
+      listObjectInstances.mockRestore();
+    }
+  });
+
   test.each([
     ['给我应用最近七天的综述报告！', { type: 'application', label: '应用' }],
     ['给我业务组最近七天的综述报告！', { type: 'businessGroup', label: '业务组' }],

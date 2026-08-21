@@ -130,8 +130,7 @@ class NapmObjectTargetResolver {
     }
 
     if (!this.metadataService) {
-      const NapmMetadataService = require('../openclaw-napm-query/services/NapmMetadataService');
-      this.metadataService = new NapmMetadataService();
+      this.metadataService = require('../openclaw-napm-query/services/NapmMetadataService');
     }
 
     const lists = await Promise.all(groupTypes.map(async (groupType) => {
