@@ -11,6 +11,9 @@ const REPORT_INTENTS = Object.freeze({
 const INSPECTION_PATTERN = /(?:巡检(?:报告)?|健康(?:检查|巡检)(?:报告)?|inspection(?:\s+report)?|health\s*check(?:\s+report)?)/i;
 const SUMMARY_PATTERN = /(?:综述报告|全局综述|业务综述|应用综述|业务组综述|网络综述|告警综述|summary\s*report|overview\s*report)/i;
 const PERIODIC_SUMMARY_PATTERN = /(?:日报|周报|月报)/i;
+// A named business/application analysis report is the single-object summary
+// workflow. Fault terms stay outside this pattern and remain diagnostic-only.
+const SINGLE_OBJECT_SUMMARY_PATTERN = /(?:(?:单个|指定|某个)\s*)?(?:业务(?:系统)?|应用|web\s*应用|webapplication|definedapp)(?:\s*对象)?(?:\s*的)?\s*(?:分析(?:报告)?|综述(?:分析)?(?:报告)?)/i;
 const OTHER_REPORT_PATTERN = /(?:故障(?:诊断|分析)?报告|诊断报告|数据包分析报告|抓包分析报告)/i;
 const REPORT_PATTERN = /(?:报告|报表|report)/i;
 const TIME_CONTEXT_PATTERN = /(?:最近|近\s*\d+|过去|今天|昨天|本周|本月|近一|近两|近三)/i;
@@ -24,7 +27,9 @@ function classifyReportPrompt(prompt = '') {
   }
 
   const inspection = INSPECTION_PATTERN.test(text);
-  const summary = SUMMARY_PATTERN.test(text) || PERIODIC_SUMMARY_PATTERN.test(text);
+  const summary = SUMMARY_PATTERN.test(text)
+    || PERIODIC_SUMMARY_PATTERN.test(text)
+    || SINGLE_OBJECT_SUMMARY_PATTERN.test(text);
   const otherReport = OTHER_REPORT_PATTERN.test(text);
   const exportFollowUp = EXPORT_REFERENCE_PATTERN.test(text) && EXPORT_ACTION_PATTERN.test(text);
 

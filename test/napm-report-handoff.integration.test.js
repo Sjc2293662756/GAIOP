@@ -454,6 +454,263 @@ describe('NAPM plugin report handoff integration', () => {
     }));
   });
 
+  test('treats export success without a file path as a deterministic summary failure', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true, reportSourceId: 'rps_missing_file' },
+      metadata: { reportSourceId: 'rps_missing_file' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
+      details: {
+        ok: true,
+        title: 'NAPM 系统综述报告',
+        format: 'docx'
+      }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:summary-export-missing-file',
+      channelId: 'wecom',
+      runId: 'run-summary-export-missing-file'
+    };
+    const prompt = '给我系统最近七天的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'summary-missing-file-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).toHaveBeenCalledTimes(1);
+    const payload = dispatcher.sendFinalReply.mock.calls[0][0];
+    expect(payload).toEqual({
+      text: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。'
+    });
+    expect(payload.text).not.toContain('报告已生成');
+  });
+
+  test('returns a deterministic failure when automatic summary collection fails', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: false, errorCode: 'SUMMARY_TEST_FAILURE' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute');
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:automatic-summary-failure',
+      channelId: 'wecom',
+      runId: 'run-automatic-summary-failure'
+    };
+    const prompt = '给我系统最近七天的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'summary-failure-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。'
+    });
+  });
+
+  test('does not export when automatic summary has no report source', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute');
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:automatic-summary-no-source',
+      channelId: 'wecom',
+      runId: 'run-automatic-summary-no-source'
+    };
+    const prompt = '给我系统最近七天的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'summary-no-source-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。'
+    });
+  });
+
+  test('does not export when automatic summary omits its success flag', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { reportSourceId: 'rps_missing_success_flag' },
+      metadata: { reportSourceId: 'rps_missing_success_flag' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute');
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:automatic-summary-missing-success',
+      channelId: 'wecom',
+      runId: 'run-automatic-summary-missing-success'
+    };
+    const prompt = '给我系统最近七天的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'summary-missing-success-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。'
+    });
+  });
+
+  test('returns a deterministic failure when automatic summary export fails', async () => {
+    const hooks = new Map();
+    const tools = new Map();
+    plugin.register({
+      registerTool(definition) { tools.set(definition.name, definition); },
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+    jest.spyOn(tools.get('napm-summary'), 'execute').mockResolvedValue({
+      details: { ok: true, reportSourceId: 'rps_export_failure' },
+      metadata: { reportSourceId: 'rps_export_failure' }
+    });
+    jest.spyOn(tools.get('napm-report-export'), 'execute').mockResolvedValue({
+      details: { ok: false, errorCode: 'EXPORT_TEST_FAILURE' }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:automatic-summary-export-failure',
+      channelId: 'wecom',
+      runId: 'run-automatic-summary-export-failure'
+    };
+    const prompt = '给我系统最近七天的综述报告！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const dispatcher = {
+      sendFinalReply: jest.fn(() => true),
+      getQueuedCounts: jest.fn(() => ({ tool: 0, block: 0, final: 1 }))
+    };
+
+    const result = await hooks.get('reply_dispatch')({
+      ctx: { SessionKey: ctx.sessionKey, Surface: 'wecom', From: 'summary-export-failure-user', Body: prompt },
+      runId: ctx.runId,
+      sessionKey: ctx.sessionKey,
+      suppressUserDelivery: false,
+      sendPolicy: 'allow'
+    }, { dispatcher });
+
+    expect(result).toMatchObject({ handled: true, queuedFinal: true });
+    expect(tools.get('napm-summary').execute).toHaveBeenCalledTimes(1);
+    expect(tools.get('napm-report-export').execute).toHaveBeenCalledTimes(1);
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。'
+    });
+  });
+
+  test('keeps a single-business analysis report on summary instead of fault diagnosis', () => {
+    const hooks = new Map();
+    plugin.register({
+      registerTool() {},
+      on(name, handler) { hooks.set(name, handler); },
+      registerHook() {},
+      logger: { info() {}, warn() {}, error() {} }
+    });
+
+    const ctx = {
+      sessionKey: 'agent:main:explicit:single-business-analysis-routing',
+      runId: 'run-single-business-analysis-routing'
+    };
+    const prompt = '生成回溯238web的单个业务分析报告';
+    hooks.get('before_agent_start')({ prompt }, ctx);
+
+    const blocked = hooks.get('before_tool_call')({
+      toolName: 'napm-fault-diagnosis',
+      params: { prompt, description: prompt }
+    }, ctx);
+    expect(blocked).toMatchObject({ block: true });
+    expect(blocked.blockReason).toContain('napm-summary');
+
+    const allowed = hooks.get('before_tool_call')({
+      toolName: 'napm-summary',
+      params: {
+        prompt,
+        scope: { type: 'webApplication' },
+        timeRange: { key: 'last24hours' }
+      }
+    }, ctx);
+    expect(allowed?.params?.traceId).toMatch(/^napm-/);
+  });
+
   test('routes a first-turn timed inspection report through inspection snapshot, never summary', async () => {
     const hooks = new Map();
     const tools = new Map();
@@ -921,7 +1178,10 @@ describe('NAPM plugin report handoff integration', () => {
     });
   });
 
-  test('passes a resolved WebApplication target through the automatic summary handoff', async () => {
+  test.each([
+    '给我回溯238web的综述报告！',
+    '生成回溯238web的单个业务分析报告'
+  ])('passes a resolved WebApplication target through the automatic summary handoff: %s', async (prompt) => {
     const hooks = new Map();
     const tools = new Map();
     const { NapmObjectTargetResolver } = require('../skills/shared/NapmObjectTargetResolver');
@@ -955,7 +1215,6 @@ describe('NAPM plugin report handoff integration', () => {
       channelId: 'wecom',
       runId: 'run-single-business-summary'
     };
-    const prompt = '给我回溯238web的综述报告！';
     hooks.get('message_received')({ content: prompt }, ctx);
     const dispatcher = {
       sendFinalReply: jest.fn(() => true),

@@ -16,9 +16,13 @@ describe('ReportIntentClassifier', () => {
     ['给我最近七天的系统综述报告！', REPORT_INTENTS.SUMMARY],
     ['生成一份本周周报', REPORT_INTENTS.SUMMARY],
     ['生成最近七天的报告', REPORT_INTENTS.SUMMARY],
+    ['生成回溯238web的单个业务分析报告', REPORT_INTENTS.SUMMARY],
+    ['生成HTTPS的单个应用分析报告', REPORT_INTENTS.SUMMARY],
     ['将以上巡检结果导出为 Word', REPORT_INTENTS.EXPORT],
     ['先巡检再生成综述报告', REPORT_INTENTS.MIXED],
     ['先巡检再生成故障诊断报告', REPORT_INTENTS.MIXED],
+    ['生成回溯238web的业务故障分析报告', REPORT_INTENTS.NONE],
+    ['生成HTTPS的应用故障分析报告', REPORT_INTENTS.NONE],
     ['生成最近七天239web的故障诊断报告', REPORT_INTENTS.NONE],
     ['最近七天流量趋势怎么样', REPORT_INTENTS.NONE]
   ])('classifies %s as %s', (prompt, expected) => {

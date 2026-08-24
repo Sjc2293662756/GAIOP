@@ -565,6 +565,12 @@ function isFaultDiagnosisPrompt(prompt = '', options = {}) {
     return false;
   }
 
+  // Single-object analysis/overview reports are summary reports. Keep them
+  // out of the fault workflow even when the named object is a business or app.
+  if (isSummaryPrompt(text)) {
+    return false;
+  }
+
   // ── 2026-07-16: 排行/统计类查询快速排除 ──
   // 用户问的是"排行/哪个最多/TopN/数量多少"而不是"分析诊断某个具体业务"。
   // 特征：疑问词 + 排序词，但没有指定具体对象名 + 分析/诊断/排查意图。
@@ -3314,6 +3320,20 @@ function buildSummaryTargetResolutionFailureReply(resolution = {}) {
   return `未在 NAPM 对象目录中找到“${targetHint}”，未生成综述报告。请确认对象名称后重试。`;
 }
 
+function buildAutomaticSummaryFailureResult(errorCode = 'AUTOMATIC_SUMMARY_FAILED') {
+  return {
+    content: '综述报告生成失败：数据汇总或文档导出未完成，请稍后重试。',
+    mediaUrl: '',
+    mediaUrls: [],
+    failed: true,
+    details: {
+      ok: false,
+      errorCode: String(errorCode || 'AUTOMATIC_SUMMARY_FAILED').trim()
+        || 'AUTOMATIC_SUMMARY_FAILED'
+    }
+  };
+}
+
 function buildAutomaticInspectionToolArgs(prompt = '') {
   const normalizedPrompt = String(prompt || '').trim();
   return {
@@ -3517,7 +3537,7 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
       });
       const summaryResult = await summaryTool.execute('automatic-summary', summaryArgs);
       const summaryDetails = summaryResult?.details || null;
-      if (!isPlainObject(summaryDetails) || summaryDetails.ok === false) {
+      if (!isPlainObject(summaryDetails) || summaryDetails.ok !== true) {
         throw new Error('napm-summary returned no usable result');
       }
       const reportSourceId = String(
@@ -3525,6 +3545,9 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
         || summaryDetails?.reportSourceId
         || ''
       ).trim();
+      if (!reportSourceId) {
+        throw new Error('napm-summary did not provide reportSourceId');
+      }
 
       const exportEvent = {
         toolName: 'napm-report-export',
@@ -3532,7 +3555,7 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
           prompt: normalizedPrompt,
           format: 'docx',
           title: summaryArgs.title,
-          ...(reportSourceId ? { reportSourceId } : {})
+          reportSourceId
         }
       };
       bindTrustedToolContext(exportEvent, ctx);
@@ -3542,7 +3565,8 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
       };
       const exportResult = await reportExportTool.execute('automatic-report-export', exportArgs);
       const reportDetails = exportResult?.details || null;
-      if (!isPlainObject(reportDetails) || reportDetails.ok !== true) {
+      const reportFilePath = String(reportDetails?.filePath || '').trim();
+      if (!isPlainObject(reportDetails) || reportDetails.ok !== true || !reportFilePath) {
         throw new Error('napm-report-export did not generate a report');
       }
 
@@ -3554,9 +3578,12 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
       });
       return {
         content: buildReportExportReply(reportDetails),
-        mediaUrl: reportDetails.filePath || undefined,
-        mediaUrls: reportDetails.filePath ? [reportDetails.filePath] : undefined,
-        details: reportDetails
+        mediaUrl: reportFilePath,
+        mediaUrls: [reportFilePath],
+        details: {
+          ...reportDetails,
+          filePath: reportFilePath
+        }
       };
     } catch (error) {
       appendPluginAuditEvent('napm_automatic_summary_failed', {
@@ -3565,7 +3592,7 @@ async function runAutomaticSummaryReportDelivery(prompt = '', ctx = {}, conversa
         errorCode: error?.code || 'AUTOMATIC_SUMMARY_FAILED',
         error: String(error?.message || error || 'unknown error').slice(0, 500)
       });
-      return null;
+      return buildAutomaticSummaryFailureResult(error?.code || 'AUTOMATIC_SUMMARY_FAILED');
     }
   })();
 
@@ -6692,7 +6719,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     '  METRIC INVENTORY queries (支持哪些指标/可查哪些指标) → napm-skill-query with service=metrics, queryModeKey=metadata.',
     '  DRILLDOWN CATALOG queries (下钻/层级/路径/目录) → napm-skill-query with service=drilldownCatalog, queryModeKey=metadata.',
     '  fault/error diagnosis for a SPECIFIC named object (分析XXweb的故障/给XX出故障诊断报告/排查XX的报错根因/XX应用慢原因分析/XX业务性能诊断) → napm-fault-diagnosis (ONLY pass description + timeRange; the tool auto-detects flowType and target from NAPM catalog) → napm-report-export',
-    '  summary/overview report (综述报告/日报/周报/月报) → napm-summary (scope+timeRange) → napm-report-export (auto, no user prompt)',
+    '  summary/overview report (综述报告/单个业务分析报告/单个应用分析报告/日报/周报/月报) → napm-summary (scope+timeRange; named target is resolved from the NAPM catalog) → napm-report-export (auto, no user prompt)',
     '  inspection report (巡检/健康检查) → napm-inspection-snapshot → napm-report-export',
     '  alert events (告警/告警摘要/告警详情/告警时间线) → napm-alert-query',
     '  packet capture/analysis (数据包/报文/抓包/pcap) → napm-packet-analysis',
@@ -7205,6 +7232,27 @@ const plugin = {
             updatedAt: Date.now()
           });
           return { params: toolParams };
+        }
+
+        // A named business/application analysis report is the summary workflow.
+        // Prevent model retries through fault diagnosis or another NAPM entry
+        // point; reply_dispatch owns the deterministic summary -> export chain.
+        if (
+          activeSummaryPrompt
+          && isSafeNapmToolName(toolName)
+          && !['napm-summary', 'napm-report-export'].includes(toolName)
+        ) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked wrong tool for summary prompt: tool=${toolName}`);
+          appendPluginAuditEvent('napm_plugin_summary_prompt_wrong_tool_blocked', {
+            toolName,
+            prompt: activePrompt,
+            expectedTool: 'napm-summary',
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'Summary/overview report requests, including single-object business/application analysis reports, must use napm-summary followed by napm-report-export.'
+          };
         }
 
         // ── Fault diagnosis guard (MUST be first) ──
