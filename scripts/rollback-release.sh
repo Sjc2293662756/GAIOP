@@ -71,7 +71,7 @@ tar -tzf "$ARCHIVE" >/dev/null
 is_allowed_target() {
   local target="$1"
   case "$target" in
-    extensions/napm-openclaw-plugin|workspace/node_modules) return 0 ;;
+    extensions/napm-openclaw-plugin|workspace/node_modules|workspace/plugin) return 0 ;;
     workspace/config|workspace/references|workspace/src|workspace/tools) return 0 ;;
     workspace/AGENTS.md|workspace/CLAUDE.md|workspace/CONTEXT.md|workspace/HEARTBEAT.md) return 0 ;;
     workspace/IDENTITY.md|workspace/MEMORY.md|workspace/PROJECT.md|workspace/README.md) return 0 ;;

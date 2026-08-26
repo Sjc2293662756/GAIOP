@@ -239,13 +239,12 @@ class AlertReferenceStore {
 }
 
 function defaultBaseDir() {
-  // The system-level watcher runs with ProtectHome=read-only, so its HOME
-  // tree cannot be used for writes. The per-user runtime directory is shared
-  // with the user-level Gateway while remaining writable to the watcher.
+  // The system-level watcher runs with ProtectHome=read-only, which hides both
+  // HOME and /run/user from its mount namespace. /dev/shm remains visible to
+  // the watcher and the user-level Gateway, while explicit configuration can
+  // still select a persistent directory managed by the host.
   if (process.platform === 'linux') {
-    const runtimeDir = process.env.XDG_RUNTIME_DIR
-      || (typeof process.getuid === 'function' ? `/run/user/${process.getuid()}` : '');
-    if (runtimeDir) return path.join(runtimeDir, 'napm-alert-references');
+    return path.join('/dev/shm', 'napm-alert-references');
   }
   return path.join(
     process.env.HOME || process.env.USERPROFILE || process.cwd(),
