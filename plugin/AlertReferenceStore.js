@@ -66,10 +66,9 @@ function createReferenceId(randomBytes = crypto.randomBytes) {
 
 class AlertReferenceStore {
   constructor(options = {}) {
+    const configuredBaseDir = options.baseDir || process.env.NAPM_ALERT_REFERENCE_DIR;
     this.baseDir = path.resolve(String(
-      options.baseDir
-      || process.env.NAPM_ALERT_REFERENCE_DIR
-      || path.join(process.env.HOME || process.env.USERPROFILE || process.cwd(), '.openclaw', 'state', 'napm-alert-references')
+      configuredBaseDir || defaultBaseDir()
     ));
     this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.ttlMs = Number(options.ttlMs) > 0 ? Number(options.ttlMs) : DEFAULT_TTL_MS;
@@ -237,6 +236,23 @@ class AlertReferenceStore {
   _error(errorCode, message) {
     return { ok: false, errorCode, message };
   }
+}
+
+function defaultBaseDir() {
+  // The system-level watcher runs with ProtectHome=read-only, so its HOME
+  // tree cannot be used for writes. The per-user runtime directory is shared
+  // with the user-level Gateway while remaining writable to the watcher.
+  if (process.platform === 'linux') {
+    const runtimeDir = process.env.XDG_RUNTIME_DIR
+      || (typeof process.getuid === 'function' ? `/run/user/${process.getuid()}` : '');
+    if (runtimeDir) return path.join(runtimeDir, 'napm-alert-references');
+  }
+  return path.join(
+    process.env.HOME || process.env.USERPROFILE || process.cwd(),
+    '.openclaw',
+    'state',
+    'napm-alert-references'
+  );
 }
 
 AlertReferenceStore.DEFAULT_TTL_MS = DEFAULT_TTL_MS;
