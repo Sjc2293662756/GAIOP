@@ -109,6 +109,7 @@ WORKSPACE_VERIFY_DIR="$(mktemp -d /tmp/napm-workspace-verify-XXXXXXXX)"
 mkdir -p "$WORKSPACE_VERIFY_DIR/skills" "$WORKSPACE_VERIFY_DIR/plugin"
 rsync -a --delete "$RELEASE_ROOT/skills/" "$WORKSPACE_VERIFY_DIR/skills/"
 rsync -a --delete "$RELEASE_ROOT/plugin/" "$WORKSPACE_VERIFY_DIR/plugin/"
+NODE_PATH="$RELEASE_ROOT/node_modules" \
 OPENCLAW_SKILLS_ROOT="$WORKSPACE_VERIFY_DIR/skills" \
   node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
 
