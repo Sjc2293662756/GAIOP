@@ -127,7 +127,9 @@ const ALERT_REFERENCE_TTL_MS = Number(process.env.NAPM_ALERT_REFERENCE_TTL_MS) >
   ? Number(process.env.NAPM_ALERT_REFERENCE_TTL_MS)
   : 7 * 24 * 60 * 60 * 1000;
 const ALERT_REFERENCE_DIR = process.env.NAPM_ALERT_REFERENCE_DIR
-  || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-alert-references');
+  || (process.platform === 'linux'
+    ? path.join('/dev/shm', 'napm-alert-references')
+    : path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-alert-references'));
 const napmOperationState = new ConversationOperationState({
   resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
   reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS,
