@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in install mktemp node npm realpath rsync sha256sum tar; do
+for command_name in id install mktemp node npm ps realpath rsync sha256sum tar xargs; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -47,6 +47,10 @@ ACTIVE_OPENCLAW_HOME="$(realpath -m "$HOME/.openclaw")"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE:-$OPENCLAW_HOME/workspace}"
 WORKSPACE_DIR="$(realpath -m "$WORKSPACE_DIR")"
 EXTENSION_DIR="$OPENCLAW_HOME/extensions/napm-openclaw-plugin"
+SYSTEM_WATCHER_UNIT="napm-syslog-watcher.service"
+USER_WATCHER_UNIT="napm-syslog-watcher.service"
+SYSTEM_WATCHER_FROZEN_PID=""
+SYSTEM_WATCHER_CONTROL="none"
 
 case "$WORKSPACE_DIR/" in
   "$OPENCLAW_HOME"/*/) ;;
@@ -102,23 +106,129 @@ COMMIT="$(read_manifest_field commit)"
 SHORT_COMMIT="${COMMIT:0:8}"
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release commit: $COMMIT" >&2; exit 1; }
 
+is_running_state() {
+  case "$1" in
+    active|activating|reloading) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+system_watcher_state() {
+  systemctl is-active "$SYSTEM_WATCHER_UNIT" 2>/dev/null || true
+}
+
+user_watcher_state() {
+  systemctl --user is-active "$USER_WATCHER_UNIT" 2>/dev/null || true
+}
+
+system_watcher_main_pid() {
+  local pid
+  pid="$(systemctl show "$SYSTEM_WATCHER_UNIT" -p MainPID --value 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || pid=0
+  printf '%s' "$pid"
+}
+
+wait_for_system_watcher() {
+  local expected_pid="${1:-}" attempt state pid cwd
+  for attempt in $(seq 1 30); do
+    state="$(system_watcher_state)"
+    pid="$(system_watcher_main_pid)"
+    if is_running_state "$state" && [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+      [[ "$cwd" == *"(deleted)"* ]] || {
+        [[ -z "$expected_pid" || "$pid" != "$expected_pid" ]] && return 0
+      }
+    fi
+    sleep 1
+  done
+  echo "System watcher did not become healthy: state=$(system_watcher_state) pid=$(system_watcher_main_pid)" >&2
+  return 1
+}
+
+stop_system_watcher() {
+  local pid pid_user pid_args
+  if systemctl stop "$SYSTEM_WATCHER_UNIT" >/dev/null 2>&1; then
+    SYSTEM_WATCHER_CONTROL="systemctl"
+    return 0
+  fi
+
+  pid="$(system_watcher_main_pid)"
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    pid_user="$(ps -o user= -p "$pid" 2>/dev/null | xargs)"
+    pid_args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    [[ "$pid_user" == "$(id -un)" && "$pid_args" == *"run_syslog_watcher.js"* ]] || {
+      echo "Refusing to signal unexpected system watcher MainPID=$pid user=$pid_user" >&2
+      return 1
+    }
+    kill -STOP "$pid"
+    SYSTEM_WATCHER_FROZEN_PID="$pid"
+    SYSTEM_WATCHER_CONTROL="frozen-process"
+    echo "System watcher stop requires elevated systemd access; froze MainPID=$pid during deployment."
+    return 0
+  fi
+
+  # A failed/auto-restarting service may have no MainPID. It will retry after
+  # the workspace and dependencies are replaced, so there is nothing to stop.
+  if [[ "$(system_watcher_state)" == "activating" || "$(system_watcher_state)" == "failed" ]]; then
+    SYSTEM_WATCHER_CONTROL="auto-restart"
+    echo "System watcher has no live MainPID; allowing systemd auto-restart after deployment."
+    return 0
+  fi
+
+  echo "Unable to stop system watcher without a controllable MainPID." >&2
+  return 1
+}
+
+start_system_watcher() {
+  case "$SYSTEM_WATCHER_CONTROL" in
+    systemctl)
+      systemctl start "$SYSTEM_WATCHER_UNIT" >/dev/null 2>&1 || {
+        echo "Unable to start system watcher with systemctl." >&2
+        return 1
+      }
+      ;;
+    frozen-process)
+      kill -CONT "$SYSTEM_WATCHER_FROZEN_PID" 2>/dev/null || true
+      kill -TERM "$SYSTEM_WATCHER_FROZEN_PID" 2>/dev/null || true
+      ;;
+    auto-restart) ;;
+    none) return 0 ;;
+  esac
+  wait_for_system_watcher "$SYSTEM_WATCHER_FROZEN_PID"
+}
+
 if [[ "$NO_SERVICE_CONTROL" -eq 1 ]]; then
   gateway_state="inactive"
-  watcher_state="inactive"
+  system_watcher_state_value="inactive"
+  user_watcher_state_value="inactive"
+  watcher_scope="none"
 else
   gateway_state="$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true)"
-  watcher_state="$(systemctl --user is-active napm-syslog-watcher.service 2>/dev/null || true)"
+  system_watcher_state_value="$(system_watcher_state)"
+  user_watcher_state_value="$(user_watcher_state)"
+  if is_running_state "$system_watcher_state_value"; then
+    watcher_scope="system"
+  elif is_running_state "$user_watcher_state_value"; then
+    watcher_scope="user"
+  else
+    watcher_scope="none"
+  fi
 fi
+
+watcher_state="$system_watcher_state_value"
+[[ "$watcher_scope" == "user" ]] && watcher_state="$user_watcher_state_value"
 
 echo "NAPM release: $VERSION ($SHORT_COMMIT)"
 echo "Source:       $RELEASE_ROOT"
 echo "Workspace:    $WORKSPACE_DIR"
 echo "Extension:    $EXTENSION_DIR"
 echo "Gateway:      $gateway_state"
-echo "Watcher:      $watcher_state"
+echo "Watcher(system): $system_watcher_state_value"
+echo "Watcher(user):   $user_watcher_state_value"
+echo "Watcher scope:   $watcher_scope"
 echo "Preserved:    .env, logs, output, runtime data, watcher.config.json"
 
-if [[ "$SKIP_RESTART" -eq 1 && ( "$gateway_state" == "active" || "$watcher_state" == "active" ) ]]; then
+if [[ "$SKIP_RESTART" -eq 1 && ( "$gateway_state" == "active" || "$watcher_scope" != "none" ) ]]; then
   echo "--skip-restart is refused while managed services are active." >&2
   exit 1
 fi
@@ -183,7 +293,9 @@ cp "$ROLLBACK_SCRIPT" "$BACKUP_DIR/rollback-release.sh"
 {
   printf 'captured_at=%s\n' "$(date --iso-8601=seconds)"
   printf 'gateway_active=%s\n' "$gateway_state"
-  printf 'watcher_active=%s\n' "$watcher_state"
+  printf 'watcher_scope=%s\n' "$watcher_scope"
+  printf 'system_watcher_active=%s\n' "$system_watcher_state_value"
+  printf 'user_watcher_active=%s\n' "$user_watcher_state_value"
 } > "$BACKUP_DIR/runtime-state.txt"
 chmod 700 "$BACKUP_DIR"
 chmod 600 "$BACKUP_DIR"/*
@@ -228,8 +340,11 @@ MUTATION_STARTED=1
 if [[ "$NO_SERVICE_CONTROL" -eq 0 && "$gateway_state" == "active" ]]; then
   systemctl --user stop openclaw-gateway.service
 fi
-if [[ "$NO_SERVICE_CONTROL" -eq 0 && "$watcher_state" == "active" ]]; then
-  systemctl --user stop napm-syslog-watcher.service
+if [[ "$NO_SERVICE_CONTROL" -eq 0 && "$watcher_scope" == "system" ]]; then
+  stop_system_watcher
+fi
+if [[ "$NO_SERVICE_CONTROL" -eq 0 && "$watcher_scope" == "user" ]]; then
+  systemctl --user stop "$USER_WATCHER_UNIT"
 fi
 
 mkdir -p "$WORKSPACE_DIR/skills" "$WORKSPACE_DIR/plugin" "$EXTENSION_DIR"
@@ -291,9 +406,12 @@ if [[ "$SKIP_RESTART" -eq 0 && "$NO_SERVICE_CONTROL" -eq 0 ]]; then
     systemctl --user start openclaw-gateway.service
     systemctl --user is-active --quiet openclaw-gateway.service
   fi
-  if [[ "$watcher_state" == "active" ]]; then
-    systemctl --user start napm-syslog-watcher.service
-    systemctl --user is-active --quiet napm-syslog-watcher.service
+  if [[ "$watcher_scope" == "system" ]]; then
+    start_system_watcher
+  fi
+  if [[ "$watcher_scope" == "user" ]]; then
+    systemctl --user start "$USER_WATCHER_UNIT"
+    systemctl --user is-active --quiet "$USER_WATCHER_UNIT"
   fi
 fi
 

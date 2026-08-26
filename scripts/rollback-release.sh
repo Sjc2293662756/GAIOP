@@ -5,6 +5,10 @@ umask 077
 BACKUP_DIR=""
 NO_RESTART=0
 NO_SERVICE_CONTROL=0
+SYSTEM_WATCHER_UNIT="napm-syslog-watcher.service"
+USER_WATCHER_UNIT="napm-syslog-watcher.service"
+SYSTEM_WATCHER_FROZEN_PID=""
+SYSTEM_WATCHER_CONTROL="none"
 
 usage() {
   cat <<'EOF'
@@ -33,7 +37,7 @@ done
 
 [[ -n "$BACKUP_DIR" ]] || { usage >&2; exit 2; }
 
-for command_name in realpath sha256sum tar systemctl; do
+for command_name in id ps realpath sha256sum tar systemctl xargs; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -90,6 +94,86 @@ while IFS= read -r target; do
   esac
 done < "$TARGETS_FILE"
 
+is_running_state() {
+  case "$1" in
+    active|activating|reloading) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+system_watcher_state() {
+  systemctl is-active "$SYSTEM_WATCHER_UNIT" 2>/dev/null || true
+}
+
+system_watcher_main_pid() {
+  local pid
+  pid="$(systemctl show "$SYSTEM_WATCHER_UNIT" -p MainPID --value 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || pid=0
+  printf '%s' "$pid"
+}
+
+wait_for_system_watcher() {
+  local expected_pid="${1:-}" attempt state pid cwd
+  for attempt in $(seq 1 30); do
+    state="$(system_watcher_state)"
+    pid="$(system_watcher_main_pid)"
+    if is_running_state "$state" && [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+      [[ "$cwd" == *"(deleted)"* ]] || {
+        [[ -z "$expected_pid" || "$pid" != "$expected_pid" ]] && return 0
+      }
+    fi
+    sleep 1
+  done
+  echo "System watcher did not become healthy after rollback: state=$(system_watcher_state) pid=$(system_watcher_main_pid)" >&2
+  return 1
+}
+
+stop_system_watcher() {
+  local pid pid_user pid_args
+  if systemctl stop "$SYSTEM_WATCHER_UNIT" >/dev/null 2>&1; then
+    SYSTEM_WATCHER_CONTROL="systemctl"
+    return 0
+  fi
+
+  pid="$(system_watcher_main_pid)"
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    pid_user="$(ps -o user= -p "$pid" 2>/dev/null | xargs)"
+    pid_args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    [[ "$pid_user" == "$(id -un)" && "$pid_args" == *"run_syslog_watcher.js"* ]] || {
+      echo "Refusing to signal unexpected system watcher MainPID=$pid during rollback." >&2
+      return 1
+    }
+    kill -STOP "$pid"
+    SYSTEM_WATCHER_FROZEN_PID="$pid"
+    SYSTEM_WATCHER_CONTROL="frozen-process"
+    return 0
+  fi
+
+  if [[ "$(system_watcher_state)" == "activating" || "$(system_watcher_state)" == "failed" ]]; then
+    SYSTEM_WATCHER_CONTROL="auto-restart"
+    return 0
+  fi
+
+  echo "Unable to stop system watcher during rollback." >&2
+  return 1
+}
+
+start_system_watcher() {
+  case "$SYSTEM_WATCHER_CONTROL" in
+    systemctl)
+      systemctl start "$SYSTEM_WATCHER_UNIT" >/dev/null 2>&1 || return 1
+      ;;
+    frozen-process)
+      kill -CONT "$SYSTEM_WATCHER_FROZEN_PID" 2>/dev/null || true
+      kill -TERM "$SYSTEM_WATCHER_FROZEN_PID" 2>/dev/null || true
+      ;;
+    auto-restart) ;;
+    none) return 0 ;;
+  esac
+  wait_for_system_watcher "$SYSTEM_WATCHER_FROZEN_PID"
+}
+
 read_state() {
   local key="$1"
   local value
@@ -98,11 +182,29 @@ read_state() {
 }
 
 gateway_was_active="$(read_state gateway_active)"
-watcher_was_active="$(read_state watcher_active)"
+watcher_scope="$(read_state watcher_scope)"
+system_watcher_was_active="$(read_state system_watcher_active)"
+user_watcher_was_active="$(read_state user_watcher_active)"
+
+# Backward compatibility with backups created before system-level watcher
+# detection was added.
+if [[ -z "$watcher_scope" ]]; then
+  legacy_watcher_state="$(read_state watcher_active)"
+  if [[ "$legacy_watcher_state" == "active" ]]; then
+    watcher_scope="user"
+    user_watcher_was_active="$legacy_watcher_state"
+  else
+    watcher_scope="none"
+  fi
+fi
 
 if [[ "$NO_SERVICE_CONTROL" -eq 0 ]]; then
   systemctl --user stop openclaw-gateway.service 2>/dev/null || true
-  systemctl --user stop napm-syslog-watcher.service 2>/dev/null || true
+  if [[ "$watcher_scope" == "system" ]]; then
+    stop_system_watcher
+  elif [[ "$watcher_scope" == "user" ]]; then
+    systemctl --user stop "$USER_WATCHER_UNIT" 2>/dev/null || true
+  fi
 fi
 
 failed_archive="$BACKUP_DIR/failed-runtime-before-rollback-$(date +%Y%m%d_%H%M%S).tgz"
@@ -127,9 +229,11 @@ if [[ "$NO_RESTART" -eq 0 && "$NO_SERVICE_CONTROL" -eq 0 ]]; then
     systemctl --user start openclaw-gateway.service
     systemctl --user is-active --quiet openclaw-gateway.service
   fi
-  if [[ "$watcher_was_active" == "active" ]]; then
-    systemctl --user start napm-syslog-watcher.service
-    systemctl --user is-active --quiet napm-syslog-watcher.service
+  if [[ "$watcher_scope" == "system" ]]; then
+    start_system_watcher
+  elif [[ "$watcher_scope" == "user" && "$user_watcher_was_active" == "active" ]]; then
+    systemctl --user start "$USER_WATCHER_UNIT"
+    systemctl --user is-active --quiet "$USER_WATCHER_UNIT"
   fi
 fi
 
