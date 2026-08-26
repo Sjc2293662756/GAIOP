@@ -216,6 +216,43 @@ describe('InspectionFixedTemplateService', () => {
     }
   });
 
+  test('keeps missing chart values null and formats numeric timestamps in Asia/Shanghai', () => {
+    const option = __test__.buildEChartsOption({
+      chartType: 'line',
+      datasetPath: 'traffic',
+      xField: 'timestamp',
+      series: [{ field: 'TPIO', name: '总流量' }]
+    }, {
+      timezone: 'Asia/Shanghai',
+      traffic: {
+        points: [
+          { timestamp: 1700000000, TPIO: null },
+          { timestamp: 1700000060, TPIO: 0 }
+        ]
+      }
+    });
+
+    expect(option.series[0].data).toEqual([null, 0]);
+    expect(option.xAxis.axisLabel.formatter(1700000000)).toBe('11/15 06:13');
+  });
+
+  test('uses the chart-slot fallback when an inspection dataset is empty', async () => {
+    const service = new InspectionFixedTemplateService();
+    const template = service.loadTemplate();
+    const context = service.buildContext({
+      inspection: {
+        trafficAnalysis: {
+          recentHour: { dataset: { points: [] } },
+          recentDay: { dataset: { points: [] } }
+        },
+        businessPerformance: { slowAccess: [], httpErrors: [] }
+      }
+    });
+
+    const chartBuffers = await service.preRenderCharts(template, context);
+    expect(chartBuffers.size).toBe(0);
+  });
+
   test('renders configured header and footer into docx package', async () => {
     const service = new InspectionFixedTemplateService();
     const buffer = await service.renderDocx(makeReportData());

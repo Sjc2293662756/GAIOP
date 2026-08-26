@@ -817,13 +817,20 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
   const unit = chartSpec.unitPath ? getByPath(context, chartSpec.unitPath) : '';
   const xField = chartSpec.xField || 'time';
   const seriesDefs = asArray(chartSpec.series);
+  const timezone = context.timezone || dataset?.timezone || 'Asia/Shanghai';
+
+  function toChartValue(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
 
   let xData = [];
   let seriesData = [];
 
   if (chartType === 'bar' && Array.isArray(dataset)) {
     // Bar chart: dataset is an array of objects (e.g. slowAccess, httpErrors)
-    xData = dataset.map((item) => item?.[xField] || '');
+    xData = dataset.map((item) => item?.[xField] ?? '');
     seriesData = seriesDefs.map((s, seriesIndex) => {
       const color = NAPM_COLOR_PALETTE[seriesIndex % NAPM_COLOR_PALETTE.length];
       return {
@@ -844,24 +851,25 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
           fontSize: 10,
           fontFamily: NAPM_STYLE.fontFamily
         },
-        data: dataset.map((item) => Number(item?.[s.field]) || 0)
+        data: dataset.map((item) => toChartValue(item?.[s.field]))
       };
     });
   } else {
     // Line chart: dataset has a .points array (e.g. traffic time-series)
     const points = asArray(dataset?.points || dataset);
-    xData = points.map((p) => p?.[xField] || '');
+    xData = points.map((p) => p?.[xField] ?? '');
     seriesData = seriesDefs.map((s, seriesIndex) => {
       const color = NAPM_COLOR_PALETTE[seriesIndex % NAPM_COLOR_PALETTE.length];
       return {
         name: s.name || s.field,
         type: 'line',
         smooth: NAPM_STYLE.line.smooth,
+        connectNulls: false,
         symbolSize: NAPM_STYLE.line.symbolSize,
         showSymbol: NAPM_STYLE.line.showSymbol,
         lineStyle: { width: NAPM_STYLE.line.lineStyle.width, color },
         itemStyle: { color },
-        data: points.map((p) => Number(p?.[s.field]) || 0)
+        data: points.map((p) => toChartValue(p?.[s.field]))
       };
     });
   }
@@ -870,9 +878,18 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
   function formatTimeLabel(value) {
     const ts = Number(value);
     if (Number.isFinite(ts) && ts > 1000000000) {
-      const d = new Date(ts * 1000);
-      const pad = (n) => String(n).padStart(2, '0');
-      return pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      const parts = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: timezone,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).formatToParts(new Date(ts * 1000)).reduce((acc, part) => {
+        if (part.type !== 'literal') acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
     }
     return String(value);
   }
@@ -1205,6 +1222,7 @@ class InspectionFixedTemplateService {
       console.log(`[InspectionFixedTemplate] chart "${slot.id}" (${chart.chartType}): datasetPath=${chart.datasetPath}, dataPoints=${dataPoints}, hasData=${dataPoints > 0}`);
       if (dataPoints === 0) {
         console.warn(`[InspectionFixedTemplate] chart "${slot.id}" has NO DATA — check if inspection data contains "${chart.datasetPath}"`);
+        continue;
       }
       const option = buildEChartsOption(chart, context);
       // Verify series data isn't all empty — log first few values

@@ -2,6 +2,14 @@ const InspectionTrafficAnalysisService = require('../skills/openclaw-napm-inspec
 const { __test__ } = require('../skills/openclaw-napm-inspection/services/InspectionTrafficAnalysisService');
 
 describe('InspectionTrafficAnalysisService', () => {
+  test.each([
+    [3600, 60],
+    [86400, 3600],
+    [604800, 86400]
+  ])('selects a supported granularity from the window duration (%s seconds)', (duration, expected) => {
+    expect(__test__.selectGranularity(duration)).toBe(expected);
+  });
+
   test('normalizes timeValues rows and computes evidence-backed stats', () => {
     const dataset = __test__.normalizeTimeSeriesDataset({
       rows: [
@@ -61,6 +69,84 @@ describe('InspectionTrafficAnalysisService', () => {
       metrics: ['TPIO', 'TPI', 'TPO']
     });
     expect(result.findings[0].text).toContain('最近1小时');
+  });
+
+  test('uses response granularity for dataset timestamps and gap statistics', async () => {
+    const client = {
+      async getTimeValues(params) {
+        return {
+          data: {
+            interval: { start: params.start, end: params.end },
+            granularity: 3600,
+            metricValues: [
+              { metric: { id: 'TPIO' }, values: [10, 12] },
+              { metric: { id: 'TPI' }, values: [5, 6] },
+              { metric: { id: 'TPO' }, values: [5, 6] }
+            ]
+          }
+        };
+      }
+    };
+    const service = new InspectionTrafficAnalysisService({ client, nowSeconds: 1710003600 });
+
+    const result = await service.collect();
+    const recentHour = result.recentHour;
+
+    expect(recentHour.queryEvidence).toMatchObject({
+      granularity: 60,
+      requestedGranularity: 60,
+      actualGranularity: 3600,
+      granularityMismatch: true
+    });
+    expect(recentHour.dataset).toMatchObject({
+      requestedGranularity: 60,
+      actualGranularity: 3600,
+      granularitySource: 'response',
+      granularityMismatch: true,
+      stats: { missingPointCount: 0 }
+    });
+    expect(recentHour.dataset.points[1].timestamp - recentHour.dataset.points[0].timestamp).toBe(3600);
+  });
+
+  test('passes a duration-derived granularity for a non-default query window', async () => {
+    let request;
+    const service = new InspectionTrafficAnalysisService({
+      nowSeconds: 1710003600,
+      client: {
+        async getTimeValues(params) {
+          request = params;
+          return { data: { rows: [{ timestamp: params.start, TPIO: 1 }] } };
+        }
+      }
+    });
+
+    const window = await service.queryWindow({
+      id: 'traffic-custom-window',
+      title: '自定义窗口',
+      durationSeconds: 10800
+    });
+
+    expect(request).toMatchObject({
+      start: 1709992800,
+      end: 1710003600,
+      granularity: 300
+    });
+    expect(window.dataset.requestedGranularity).toBe(300);
+  });
+
+  test('does not fabricate 1970 timestamps when interval.start is absent', () => {
+    const dataset = __test__.normalizeTimeSeriesDataset({
+      granularity: 60,
+      metricValues: [
+        { metric: { id: 'TPIO' }, values: [10, 20] }
+      ]
+    }, { metrics: ['TPIO'], granularity: 60 });
+
+    expect(dataset.points).toEqual([
+      expect.objectContaining({ timestamp: null, time: '1', TPIO: 10 }),
+      expect.objectContaining({ timestamp: null, time: '2', TPIO: 20 })
+    ]);
+    expect(dataset.points.some((point) => String(point.time).includes('1970'))).toBe(false);
   });
 
   test('builds warning finding when dataset has gaps or zero traffic', () => {

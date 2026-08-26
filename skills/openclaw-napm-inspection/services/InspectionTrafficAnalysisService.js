@@ -1,8 +1,32 @@
 'use strict';
 
+const SUPPORTED_GRANULARITIES = Object.freeze([60, 300, 3600, 86400]);
+const DEFAULT_MAX_POINTS = 120;
+
 function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function toPositiveNumber(value) {
+  const numeric = toNumber(value);
+  return numeric !== null && numeric > 0 ? numeric : null;
+}
+
+function normalizeGranularity(value) {
+  const numeric = Number(value);
+  return SUPPORTED_GRANULARITIES.includes(numeric) ? numeric : null;
+}
+
+function selectGranularity(durationSeconds, maxPoints = DEFAULT_MAX_POINTS) {
+  const duration = Number(durationSeconds);
+  const pointBudget = Number(maxPoints);
+  if (!Number.isFinite(duration) || duration <= 0) return SUPPORTED_GRANULARITIES[0];
+  const budget = Number.isFinite(pointBudget) && pointBudget > 0 ? pointBudget : DEFAULT_MAX_POINTS;
+  const requiredStep = Math.max(1, Math.ceil(duration / budget));
+  return SUPPORTED_GRANULARITIES.find((step) => step >= requiredStep)
+    || SUPPORTED_GRANULARITIES[SUPPORTED_GRANULARITIES.length - 1];
 }
 
 function alignToMinute(value) {
@@ -58,21 +82,30 @@ function readMetric(row = {}, metric = '') {
 }
 
 function readTimestamp(row = {}) {
+  if (Object.prototype.hasOwnProperty.call(row, 'timestamp')) {
+    return toNumber(row.timestamp);
+  }
   return toNumber(row.timestamp ?? row.time ?? row.start ?? row.startTime ?? row.Time ?? row.X);
 }
 
 function normalizeTimeSeriesDataset(raw = {}, options = {}) {
   const timezone = options.timezone || 'Asia/Shanghai';
   const metrics = (options.metrics || ['TPIO', 'TPI', 'TPO']).map((item) => String(item).toUpperCase());
+  const requestedGranularity = normalizeGranularity(
+    options.requestedGranularity ?? options.granularity
+  ) || selectGranularity(options.durationSeconds, options.maxPoints);
+  const responseGranularityValue = toNumber(raw?.granularity);
+  const actualGranularity = normalizeGranularity(responseGranularityValue) || requestedGranularity;
+  const intervalStart = toPositiveNumber(raw?.interval?.start) ?? toPositiveNumber(options.interval?.start);
+  const intervalEnd = toPositiveNumber(raw?.interval?.end) ?? toPositiveNumber(options.interval?.end);
 
   // Handle column-based metricValues format from NAPM API
   let rows = extractRows(raw);
-  if (rows.length === 0 && Array.isArray(raw.metricValues)) {
+  if (rows.length === 0 && Array.isArray(raw?.metricValues)) {
     // Transpose column-based data to row-based
     // Input:  { metricValues: [{ metric:{id:"TPIO"}, values:[v1,v2,...] }, ...] }
     // Output: [{ TPIO: v1, TPI: v1, TPO: v1 }, { TPIO: v2, ... }, ...]
-    const granularity = Number(raw.granularity || options.granularity || 60);
-    const startTime = raw.interval?.start || 0;
+    const startTime = intervalStart !== null ? Math.floor(startTimeToMinute(intervalStart)) : null;
 
     const valueArrays = raw.metricValues.map((mv) => ({
       id: String((mv.metric?.id || mv.metric || '').toUpperCase()),
@@ -86,8 +119,8 @@ function normalizeTimeSeriesDataset(raw = {}, options = {}) {
       for (let i = 0; i < rowCount; i++) {
         const point = {
           index: i + 1,
-          timestamp: startTime + i * granularity,
-          time: formatTimestamp(startTime + i * granularity, timezone)
+          timestamp: startTime === null ? null : startTime + i * actualGranularity,
+          time: startTime === null ? String(i + 1) : formatTimestamp(startTime + i * actualGranularity, timezone)
         };
         for (const col of valueArrays) {
           point[col.id] = col.values[i];
@@ -121,10 +154,23 @@ function normalizeTimeSeriesDataset(raw = {}, options = {}) {
     points,
     stats: computeStats(points, {
       metric: options.primaryMetric || metrics[0],
-      granularity: options.granularity,
+      granularity: actualGranularity,
       spikeRatio: options.spikeRatio
-    })
+    }),
+    interval: { start: intervalStart, end: intervalEnd },
+    timezone,
+    requestedGranularity,
+    actualGranularity,
+    responseGranularity: responseGranularityValue,
+    granularitySource: normalizeGranularity(responseGranularityValue) ? 'response' : 'request_fallback',
+    granularityMismatch: normalizeGranularity(responseGranularityValue) !== null
+      && responseGranularityValue !== requestedGranularity
   };
+}
+
+function startTimeToMinute(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.floor(numeric / 60) * 60 : null;
 }
 
 function computeStats(points = [], options = {}) {
@@ -206,6 +252,9 @@ class InspectionTrafficAnalysisService {
     this.timezone = options.timezone || 'Asia/Shanghai';
     this.nowSeconds = options.nowSeconds || null;
     this.thresholds = options.thresholds || {};
+    this.maxPoints = Number.isFinite(Number(options.maxPoints)) && Number(options.maxPoints) > 0
+      ? Number(options.maxPoints)
+      : DEFAULT_MAX_POINTS;
   }
 
   getNowSeconds() {
@@ -216,20 +265,25 @@ class InspectionTrafficAnalysisService {
     if (!this.client || typeof this.client.getTimeValues !== 'function') {
       return null;
     }
+    const requestedGranularity = normalizeGranularity(granularity)
+      || selectGranularity(durationSeconds, this.maxPoints);
     const end = this.getNowSeconds();
     const start = end - durationSeconds;
     const params = {
       start,
       end,
       metrics: 'TPIO,TPI,TPO',
-      granularity,
+      granularity: requestedGranularity,
       numGroups: 1,
       groupType1: 'TotalTraffic'
     };
     const result = await this.client.getTimeValues(params);
-    const dataset = normalizeTimeSeriesDataset(result.data, {
+    const dataset = normalizeTimeSeriesDataset(result?.data || {}, {
       timezone: this.timezone,
-      granularity,
+      durationSeconds,
+      maxPoints: this.maxPoints,
+      requestedGranularity,
+      interval: { start, end },
       metrics: ['TPIO', 'TPI', 'TPO'],
       primaryMetric: 'TPIO',
       spikeRatio: this.thresholds.trafficSpikeRatio
@@ -241,10 +295,14 @@ class InspectionTrafficAnalysisService {
         service: 'timeValues',
         groups: [{ type: 'TotalTraffic' }],
         metrics: ['TPIO', 'TPI', 'TPO'],
-        granularity,
+        granularity: requestedGranularity,
+        requestedGranularity,
+        actualGranularity: dataset.actualGranularity,
+        granularitySource: dataset.granularitySource,
+        granularityMismatch: dataset.granularityMismatch,
         start,
         end,
-        requestUrlRedacted: result.requestUrlRedacted || ''
+        requestUrlRedacted: result?.requestUrlRedacted || ''
       },
       dataset
     };
@@ -274,14 +332,12 @@ class InspectionTrafficAnalysisService {
     const recentHour = await this.queryWindow({
       id: 'traffic-last-hour',
       title: '最近1小时流量分布状况',
-      durationSeconds: 3600,
-      granularity: 60
+      durationSeconds: 3600
     });
     const recentDay = await this.queryWindow({
       id: 'traffic-last-day',
       title: '最近1天流量分布状况',
-      durationSeconds: 86400,
-      granularity: 3600
+      durationSeconds: 86400
     });
     return this.buildFromWindows({ recentHour, recentDay });
   }
@@ -289,6 +345,10 @@ class InspectionTrafficAnalysisService {
 
 module.exports = InspectionTrafficAnalysisService;
 module.exports.__test__ = {
+  SUPPORTED_GRANULARITIES,
+  DEFAULT_MAX_POINTS,
+  normalizeGranularity,
+  selectGranularity,
   normalizeTimeSeriesDataset,
   computeStats,
   buildFindingForDataset,
