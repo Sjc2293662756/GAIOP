@@ -3,12 +3,19 @@ set -Eeuo pipefail
 
 SKIP_DEPENDENCIES=0
 EXTENSION_VERIFY_DIR=""
+WORKSPACE_VERIFY_DIR=""
 
 cleanup() {
   if [[ -n "$EXTENSION_VERIFY_DIR" && -d "$EXTENSION_VERIFY_DIR" ]]; then
     case "$EXTENSION_VERIFY_DIR/" in
       /tmp/napm-extension-verify-*/) rm -rf -- "$EXTENSION_VERIFY_DIR" ;;
       *) echo "Refusing to remove unexpected extension verification directory: $EXTENSION_VERIFY_DIR" >&2 ;;
+    esac
+  fi
+  if [[ -n "$WORKSPACE_VERIFY_DIR" && -d "$WORKSPACE_VERIFY_DIR" ]]; then
+    case "$WORKSPACE_VERIFY_DIR/" in
+      /tmp/napm-workspace-verify-*/) rm -rf -- "$WORKSPACE_VERIFY_DIR" ;;
+      *) echo "Refusing to remove unexpected workspace verification directory: $WORKSPACE_VERIFY_DIR" >&2 ;;
     esac
   fi
 }
@@ -96,6 +103,13 @@ fi
 
 node --check "$RELEASE_ROOT/napm-openclaw-plugin.remote.js"
 OPENCLAW_SKILLS_ROOT="$RELEASE_ROOT/skills" \
+  node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
+
+WORKSPACE_VERIFY_DIR="$(mktemp -d /tmp/napm-workspace-verify-XXXXXXXX)"
+mkdir -p "$WORKSPACE_VERIFY_DIR/skills" "$WORKSPACE_VERIFY_DIR/plugin"
+rsync -a --delete "$RELEASE_ROOT/skills/" "$WORKSPACE_VERIFY_DIR/skills/"
+rsync -a --delete "$RELEASE_ROOT/plugin/" "$WORKSPACE_VERIFY_DIR/plugin/"
+OPENCLAW_SKILLS_ROOT="$WORKSPACE_VERIFY_DIR/skills" \
   node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
 
 EXTENSION_VERIFY_DIR="$(mktemp -d /tmp/napm-extension-verify-XXXXXXXX)"

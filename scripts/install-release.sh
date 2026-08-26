@@ -143,6 +143,7 @@ add_managed_target() {
 }
 
 add_managed_target "extensions/napm-openclaw-plugin"
+add_managed_target "workspace/plugin"
 add_managed_target "workspace/node_modules"
 add_managed_target "workspace/RELEASE-MANIFEST.json"
 
@@ -231,7 +232,9 @@ if [[ "$NO_SERVICE_CONTROL" -eq 0 && "$watcher_state" == "active" ]]; then
   systemctl --user stop napm-syslog-watcher.service
 fi
 
-mkdir -p "$WORKSPACE_DIR/skills" "$EXTENSION_DIR"
+mkdir -p "$WORKSPACE_DIR/skills" "$WORKSPACE_DIR/plugin" "$EXTENSION_DIR"
+
+rsync -a --delete "$RELEASE_ROOT/plugin/" "$WORKSPACE_DIR/plugin/"
 
 rsync_options=(
   -a
