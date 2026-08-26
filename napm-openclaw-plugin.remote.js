@@ -16,6 +16,7 @@ const {
 } = require('./plugin/ReportIntentClassifier');
 const ReportSourceStore = require('./plugin/ReportSourceStore');
 const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
+const AlertReferenceStore = require('./plugin/AlertReferenceStore');
 
 const NAPM_DIRECT_SKILL_MODE = true;
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
@@ -122,6 +123,11 @@ const REPORT_SOURCE_DIR = process.env.NAPM_REPORT_SOURCE_DIR
   || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-report-sources');
 const TRUSTED_CONTEXT_DIR = process.env.NAPM_TRUSTED_CONTEXT_DIR
   || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-trusted-tool-contexts');
+const ALERT_REFERENCE_TTL_MS = Number(process.env.NAPM_ALERT_REFERENCE_TTL_MS) > 0
+  ? Number(process.env.NAPM_ALERT_REFERENCE_TTL_MS)
+  : 7 * 24 * 60 * 60 * 1000;
+const ALERT_REFERENCE_DIR = process.env.NAPM_ALERT_REFERENCE_DIR
+  || path.join(process.env.HOME || process.cwd(), '.openclaw', 'state', 'napm-alert-references');
 const napmOperationState = new ConversationOperationState({
   resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
   reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS,
@@ -141,6 +147,17 @@ const napmTrustedToolContextStore = new TrustedToolContextStore({
   baseDir: TRUSTED_CONTEXT_DIR,
   ttlMs: TRUSTED_TOOL_CONTEXT_MAX_AGE_MS
 });
+let napmAlertReferenceStore = null;
+
+function getNapmAlertReferenceStore() {
+  if (!napmAlertReferenceStore) {
+    napmAlertReferenceStore = new AlertReferenceStore({
+      baseDir: ALERT_REFERENCE_DIR,
+      ttlMs: ALERT_REFERENCE_TTL_MS,
+    });
+  }
+  return napmAlertReferenceStore;
+}
 const napmTrustedToolContextByTraceId = new Map();
 const napmAutomaticReportByTurn = new Map();
 const AUTOMATIC_REPORT_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
@@ -465,7 +482,14 @@ function isAlertEventPrompt(prompt = '') {
 
 function isAlertPacketAnalysisPrompt(prompt = '') {
   const text = String(prompt || '').trim();
-  if (!text || !/告警/i.test(text)) {
+  if (!text) {
+    return false;
+  }
+  const reference = extractAlertReference(text);
+  if (reference) {
+    return /(?:分析|查看|定位|数据包|报文|抓包|继续)/i.test(text);
+  }
+  if (!/告警/i.test(text)) {
     return false;
   }
   const hasPacketIntent = /(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text);
@@ -474,9 +498,125 @@ function isAlertPacketAnalysisPrompt(prompt = '') {
   return hasPacketIntent && hasEventId;
 }
 
+const ALERT_REFERENCE_PATTERN = /\bGJ-[A-Z2-9]{6,16}(?:-P\d{1,3})?\b/i;
+
+function extractAlertReference(prompt = '') {
+  const match = String(prompt || '').match(ALERT_REFERENCE_PATTERN);
+  if (!match) return null;
+  const value = String(match[0]).toUpperCase();
+  const candidateMatch = value.match(/^(GJ-[A-Z2-9]{6,16})-P(\d{1,3})$/);
+  return candidateMatch
+    ? { referenceId: candidateMatch[1], candidateId: value }
+    : { referenceId: value, candidateId: null };
+}
+
+function buildReferenceCanonicalPrompt(record = {}, analysisInput = {}) {
+  const lines = [
+    `分析告警数据包 eventId=${record.alert?.eventId || analysisInput.eventId}`,
+    `start=${analysisInput.start || record.packet?.window?.start || record.alert?.start}`,
+    `end=${analysisInput.end || record.packet?.window?.end || record.alert?.end || ((record.alert?.start || 0) + 120)}`,
+  ];
+  const trigger = analysisInput.triggerMetrics || {};
+  const names = Array.isArray(trigger.names) ? trigger.names : [];
+  const values = Array.isArray(trigger.values) ? trigger.values : [];
+  const units = Array.isArray(trigger.units) ? trigger.units : [];
+  if (names.length > 0) {
+    lines.push(`触发指标值: ${names.map((name, index) => `${name}=${values[index] ?? '?'}${units[index] || ''}`).join('，')}`);
+  }
+  if (trigger.severity) lines.push(`告警级别: ${trigger.severity}`);
+  if (trigger.condition) lines.push(`触发条件: ${trigger.condition}`);
+  return lines.join('\n');
+}
+
+function resolveAlertReferenceInput(prompt = '') {
+  const reference = extractAlertReference(prompt);
+  if (!reference) return null;
+  const recordResult = getNapmAlertReferenceStore().get(reference.referenceId);
+  if (!recordResult.ok) return { reference, error: recordResult };
+  const record = recordResult;
+  const candidates = Array.isArray(record.packet?.candidates) ? record.packet.candidates : [];
+  const candidate = reference.candidateId
+    ? candidates.find((item) => item.candidateId === reference.candidateId)
+    : null;
+  if (reference.candidateId && !candidate) {
+    return {
+      reference,
+      error: {
+        ok: false,
+        errorCode: 'ALERT_PACKET_CANDIDATE_NOT_FOUND',
+        message: '未找到指定的数据包候选。',
+      },
+    };
+  }
+  const packetWindow = candidate?.packetWindow || record.packet?.window || {
+    start: record.alert?.start,
+    end: record.alert?.end || ((record.alert?.start || 0) + 120),
+  };
+  const triggerMetrics = normalizeReferenceTriggerMetrics(record.triggerMetrics, record.analysis);
+  return {
+    reference,
+    record,
+    candidate,
+    input: {
+      referenceId: record.referenceId,
+      candidateId: candidate?.candidateId || null,
+      eventId: String(record.alert?.eventId || '').trim(),
+      start: Number(packetWindow.start) || null,
+      end: Number(packetWindow.end) || null,
+      triggerMetrics,
+      packetCandidate: candidate?.packetQuery || null,
+    },
+  };
+}
+
+function normalizeReferenceTriggerMetrics(metrics = [], analysis = {}) {
+  const items = Array.isArray(metrics) ? metrics : [];
+  return {
+    names: items.map((item) => item.label || item.name || item.code).filter(Boolean),
+    codes: items.map((item) => item.code || item.label || item.name).filter(Boolean),
+    values: items.map((item) => item.value).filter((value) => value !== null && value !== undefined && value !== ''),
+    units: items.map((item) => item.unit).filter(Boolean),
+    severity: items[0]?.severity || '',
+    condition: items[0]?.condition || '',
+    profileId: analysis.profileId || '',
+    profileVersion: analysis.profileVersion || null,
+  };
+}
+
 function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
   const text = String(prompt || '').trim();
   const source = isPlainObject(params) ? params : {};
+  const referenceInput = resolveAlertReferenceInput(text);
+  if (referenceInput?.error) {
+    const canonical = {
+      prompt: text,
+      eventId: '',
+      start: null,
+      end: null,
+      referenceId: referenceInput.reference?.referenceId || null,
+      candidateId: referenceInput.reference?.candidateId || null,
+      referenceErrorCode: referenceInput.error.errorCode || 'ALERT_REFERENCE_NOT_FOUND',
+      triggerMetrics: isPlainObject(source.triggerMetrics) ? source.triggerMetrics : {},
+    };
+    const traceId = normalizeTraceId(source.traceId);
+    if (traceId) canonical.traceId = traceId;
+    return canonical;
+  }
+  if (referenceInput?.input) {
+    const canonical = {
+      prompt: buildReferenceCanonicalPrompt(referenceInput.record, referenceInput.input),
+      eventId: referenceInput.input.eventId,
+      start: referenceInput.input.start,
+      end: referenceInput.input.end,
+      triggerMetrics: referenceInput.input.triggerMetrics,
+      referenceId: referenceInput.input.referenceId,
+      candidateId: referenceInput.input.candidateId,
+      packetCandidate: referenceInput.input.packetCandidate,
+    };
+    const traceId = normalizeTraceId(source.traceId);
+    if (traceId) canonical.traceId = traceId;
+    return canonical;
+  }
   const eventMatch = text.match(/\bevent\s*id\s*[:=]?\s*(\d+)\b/i)
     || text.match(/告警(?:事件)?\s*(?:id\s*[:=]?)?\s*(\d{3,})/i);
   const startMatch = text.match(/\bstart\s*[:=]\s*(\d{10,13})\b/i);
@@ -6233,6 +6373,10 @@ function createAlertPacketAnalysisToolDefinition() {
         start: { type: 'number', description: 'Fixed Unix-second packet window start.' },
         end: { type: 'number', description: 'Fixed Unix-second packet window end.' },
         triggerMetrics: { type: 'object', additionalProperties: true },
+        referenceId: { type: 'string', pattern: '^GJ-[A-Z2-9]{6,16}$', description: 'Cross-session alert reference restored by the plugin.' },
+        candidateId: { type: 'string', pattern: '^GJ-[A-Z2-9]{6,16}-P\\d{1,3}$', description: 'Selected single packet candidate reference.' },
+        packetCandidate: { type: 'object', additionalProperties: true, description: 'Trusted packet candidate restored from the alert reference store.' },
+        referenceErrorCode: { type: 'string', description: 'Plugin-owned alert reference lookup error code.' },
         traceId: { type: 'string', description: 'Plugin-owned trusted trace id.' }
       },
       required: ['prompt', 'eventId', 'start', 'end'],
@@ -6785,7 +6929,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
 
   if (isAlertPacket) {
     rules.push(
-      'ALERT_PACKET_WORKFLOW_REQUIRED: call napm-alert-packet-analysis exactly once. Preserve canonical eventId/start/end and triggerMetrics. Do not add timeRange.key and do not fall back to alertsSummary.'
+      'ALERT_PACKET_WORKFLOW_REQUIRED: call napm-alert-packet-analysis exactly once. For a GJ-xxxxxx reference, the plugin restores canonical eventId/start/end/triggerMetrics from the shared alert archive; do not invent or ask the user to repeat internal timestamps. Preserve canonical triggerMetrics. Do not add timeRange.key and do not fall back to alertsSummary.'
     );
   }
 
@@ -8389,6 +8533,9 @@ module.exports.__test__ = {
   isHierarchyCatalogPrompt,
   isAlertEventPrompt,
   isAlertPacketAnalysisPrompt,
+  extractAlertReference,
+  resolveAlertReferenceInput,
+  buildCanonicalAlertPacketToolParams,
   hasSpecificFaultDiagnosisTarget,
   isFaultDiagnosisPrompt,
   isInspectionPrompt,

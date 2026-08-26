@@ -19,6 +19,11 @@
     "_routing_comment": "可选：按严重级别路由到不同的群。格式: { '紧急': { 'webhookUrl': '...', 'mentionedMobileList': ['138...'] } }",
     "routing": {}
   },
+  "alertReference": {
+    "enabled": true,
+    "ttlHours": 168,
+    "packetBufferSeconds": 120
+  },
   "dedup": {
     "_comment": "同一 alertId 在 windowSeconds 秒内不重复推送",
     "windowSeconds": 0,

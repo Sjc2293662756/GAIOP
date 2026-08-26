@@ -16,6 +16,7 @@
 
 const crypto = require('crypto');
 const axios = require('axios');
+const AlertReferenceService = require('../../../plugin/AlertReferenceService');
 
 // 严重级别对应的显示标签
 const SEVERITY_LABEL = {
@@ -60,6 +61,18 @@ class WeComPushService {
     // NAPM 控制台地址（用于生成告警详情链接）
     const napmRaw = napm.host || napm.baseUrl || '';
     this.napmConsoleUrl = this._extractOrigin(napmRaw);
+
+    // 告警推送与 OpenClaw 查询可能运行在不同进程，引用档案必须写入共享存储。
+    const alertReference = config.alertReference || {};
+    this.alertReference = alertReference.enabled === false
+      ? null
+      : new AlertReferenceService({
+        baseDir: alertReference.baseDir || alertReference.dir,
+        ttlMs: Number(alertReference.ttlHours) > 0
+          ? Number(alertReference.ttlHours) * 60 * 60 * 1000
+          : undefined,
+        packetBufferSeconds: alertReference.packetBufferSeconds,
+      });
   }
 
   // ---- 公开方法 ----
@@ -83,6 +96,10 @@ class WeComPushService {
     }
 
     const signedUrl = this._signUrl(webhookUrl);
+    const reference = this.alertReference?.createOrReuse(alert);
+    if (reference?.ok) {
+      alert.referenceId = reference.referenceId;
+    }
     const message = this._buildMarkdownMessage(alert, mentionedMobileList);
 
     try {
@@ -174,7 +191,7 @@ class WeComPushService {
    * 卡片结构：
    *   标题 + 基本字段（名称/级别/类别/时间）
    *   详情区（触发条件 / 监控对象 / 指标）
-   *   标识区（alertId / elogid）
+   *   标识区（跨会话告警引用编号）
    *   操作区（NAPM 控制台链接）
    */
   _buildMarkdownMessage(alert, mentionedMobileList) {
@@ -231,10 +248,7 @@ class WeComPushService {
 
     // ---- 标识区 ----
     md += '\n';
-    md += `> Alert ID: **${alert.alertId || '-'}**`;
-    if (alert.extra?.elogid) {
-      md += ` | Event ID: **${this._escapeMd(alert.extra.elogid)}**`;
-    }
+    md += `> 告警引用：**${this._escapeMd(alert.referenceId || '暂不可用')}**`;
     md += '\n';
 
     // 告警窗口时间（endtime 可能为 0，表示告警仍在持续）
@@ -249,39 +263,10 @@ class WeComPushService {
       } else {
         md += `> ⏱ 告警开始: ${st}（持续中）\n`;
       }
-      // 快捷查询指令 — 灰色代码块
-      if (alert.extra?.elogid) {
-        const qStart = hasEnd
-          ? Math.floor(rawStart / 60) * 60 - 60
-          : Math.floor(rawStart / 60) * 60 - 120;
-        const qEnd = hasEnd
-          ? Math.floor(rawEnd / 60) * 60 + 60
-          : Math.floor(rawStart / 60) * 60 + 120;
-        // 构建指标信息（指标名 + 实际值 + 告警级别）
-        // 格式化为独立的上下文行，避免指标中文名被 AI 解析为 criteria.metrics 过滤条件
-        const metricNames = (alert.metrics || [])
-          .map(m => m.name)
-          .filter(Boolean);
-        const metricPart = metricNames.length > 0 ? ' ' + metricNames.join(' ') : '';
-
-        let metricDetail = '';
-        if (alert.metrics && alert.metrics.length > 0) {
-          const details = alert.metrics
-            .map(m => `${m.name}=${m.value}${m.unit || ''}`)
-            .join('，');
-          metricDetail = `\n触发指标值: ${details}`;
-        }
-        if (alert.alertSeverity) {
-          metricDetail += `\n告警级别: ${alert.alertSeverity}`;
-        }
-        if (alert.extra?.condition) {
-          metricDetail += `\n触发条件: ${alert.extra.condition}`;
-        }
-
-        // 2026-07-14: 改为 key=value 格式，避免 AI 漏掉 start/end 映射。
-        // 旧格式 "分析这个告警数据包 <id> <start> <end>" 是位置参数，
-        // AI 频繁漏传 start/end → ALERT_TIME_RANGE_REQUIRED。
-        md += `\n> 💬 深入分析\n\n\`\`\`\n分析告警数据包 eventId=${alert.extra.elogid} start=${qStart} end=${qEnd}${metricPart}${metricDetail}\n\`\`\`\n`;
+      if (alert.referenceId) {
+        md += `\n> 💬 深入分析\n\n请回复：**分析告警 ${this._escapeMd(alert.referenceId)}**\n`;
+      } else {
+        md += '\n> 💬 深入分析\n\n当前告警缺少可用引用编号，暂无法自动定位数据包。\n';
       }
     }
 

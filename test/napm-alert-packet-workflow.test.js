@@ -1,5 +1,10 @@
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const AlertReferenceStore = require('../plugin/AlertReferenceStore');
+const AlertPacketWorkflowService = require('../skills/openclaw-napm-alert-packet-analysis/services/AlertPacketWorkflowService');
 const {
   executeAlertPacketAnalysis
 } = require('../skills/openclaw-napm-alert-packet-analysis/scripts/run_alert_packet_analysis');
@@ -183,5 +188,124 @@ describe('NAPM alert packet analysis workflow', () => {
     });
     expect(JSON.stringify(result)).not.toContain('alertsSummary');
     expect(JSON.stringify(result)).not.toContain('告警总数');
+  });
+
+  test('returns a persisted candidate selection and does not analyze the first candidate automatically', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-candidates-'));
+    try {
+      const referenceStore = new AlertReferenceStore({ baseDir });
+      referenceStore.put({
+        referenceId: 'GJ-MULTI23',
+        alert: { eventId: '795097', start: 1787647440 },
+        packet: { window: { start: 1787647320, end: 1787647680 }, candidates: [] },
+        triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2311.6599, unit: '毫秒' }],
+        analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+      });
+      const candidateQuery = (ips) => ({
+        mode: 'preview_download_analyze',
+        criteria: { ips, start: 1787647320, end: 1787647680 }
+      });
+      const alertSkill = {
+        handleSkillCall: jest.fn().mockResolvedValue({
+          ok: true,
+          details: [{ id: '795097', name: '告警推送应用测试1' }],
+          narrationInput: {
+            packetInstruction: {
+              callPacketAnalysis: true,
+              candidates: [
+                { rank: 1, ipPair: '10.0.0.1 -> 10.0.0.2', suggestedPacketQuery: candidateQuery(['10.0.0.1', '10.0.0.2']) },
+                { rank: 2, ipPair: '10.0.0.3 -> 10.0.0.4', suggestedPacketQuery: candidateQuery(['10.0.0.3', '10.0.0.4']) }
+              ]
+            }
+          }
+        })
+      };
+      const packetSkill = { handleSkillCall: jest.fn() };
+      const service = new AlertPacketWorkflowService({
+        alertSkill,
+        packetSkill,
+        referenceStore,
+        retryDelaysMs: [0]
+      });
+
+      const result = await service.execute({
+        prompt: '分析告警 GJ-MULTI23',
+        referenceId: 'GJ-MULTI23',
+        eventId: '795097',
+        start: 1787647320,
+        end: 1787647680,
+        triggerMetrics: { names: ['用户体验时间（服务器）'], values: [2311.6599], units: ['毫秒'] }
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        workflowState: 'CANDIDATE_SELECTION_REQUIRED',
+        referenceId: 'GJ-MULTI23',
+        candidateOptions: [
+          { candidateId: 'GJ-MULTI23-P1' },
+          { candidateId: 'GJ-MULTI23-P2' }
+        ]
+      });
+      expect(packetSkill.handleSkillCall).not.toHaveBeenCalled();
+      expect(referenceStore.get('GJ-MULTI23').packet.candidates.map((item) => item.candidateId))
+        .toEqual(['GJ-MULTI23-P1', 'GJ-MULTI23-P2']);
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  test('analyzes only the explicitly selected candidate from a cross-session reference', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-selected-'));
+    try {
+      const referenceStore = new AlertReferenceStore({ baseDir });
+      const p1 = {
+        candidateId: 'GJ-SELECT2-P1',
+        rank: 1,
+        ips: ['10.0.0.1', '10.0.0.2'],
+        packetWindow: { start: 100, end: 200 },
+        packetQuery: { mode: 'preview_download_analyze', criteria: { ips: ['10.0.0.1', '10.0.0.2'], start: 100, end: 200 } }
+      };
+      const p2 = {
+        candidateId: 'GJ-SELECT2-P2',
+        rank: 2,
+        ips: ['10.0.0.3', '10.0.0.4'],
+        packetWindow: { start: 300, end: 400 },
+        packetQuery: { mode: 'preview_download_analyze', criteria: { ips: ['10.0.0.3', '10.0.0.4'], start: 300, end: 400 } }
+      };
+      referenceStore.put({
+        referenceId: 'GJ-SELECT2',
+        alert: { eventId: '795098', start: 120 },
+        packet: { window: { start: 100, end: 200 }, candidates: [p1, p2] },
+        triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2311.6599, unit: '毫秒' }],
+        analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+      });
+      const packetResult = { ok: true, summary: { highlights: ['P1 证据'] } };
+      const packetSkill = { handleSkillCall: jest.fn().mockResolvedValue(packetResult) };
+      const alertSkill = { handleSkillCall: jest.fn() };
+      const service = new AlertPacketWorkflowService({ alertSkill, packetSkill, referenceStore });
+
+      const result = await service.execute({
+        prompt: '分析告警 GJ-SELECT2-P1',
+        referenceId: 'GJ-SELECT2',
+        candidateId: 'GJ-SELECT2-P1',
+        eventId: '795098',
+        start: 100,
+        end: 200,
+        triggerMetrics: { names: ['用户体验时间（服务器）'], values: [2311.6599], units: ['毫秒'] },
+        packetCandidate: p1.packetQuery
+      });
+
+      expect(alertSkill.handleSkillCall).not.toHaveBeenCalled();
+      expect(packetSkill.handleSkillCall).toHaveBeenCalledTimes(1);
+      expect(packetSkill.handleSkillCall.mock.calls[0][0].criteria.ips).toEqual(['10.0.0.1', '10.0.0.2']);
+      expect(result).toMatchObject({
+        ok: true,
+        workflowState: 'COMPLETED',
+        referenceId: 'GJ-SELECT2',
+        candidateId: 'GJ-SELECT2-P1'
+      });
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
   });
 });

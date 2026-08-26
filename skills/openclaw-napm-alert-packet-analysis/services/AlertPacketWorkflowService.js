@@ -1,6 +1,8 @@
 'use strict';
 
 const AlertPacketResultContractService = require('./AlertPacketResultContractService');
+const AlertReferenceStore = require('../../../plugin/AlertReferenceStore');
+const { buildAnalysisContext } = require('./AlertMetricProfileService');
 
 const DEFAULT_RETRY_DELAYS_MS = Object.freeze([0, 2000, 4000, 8000]);
 const MAX_RETRY_ATTEMPTS = 4;
@@ -19,6 +21,7 @@ class AlertPacketWorkflowService {
     this.maxWindowSeconds = positiveInteger(options.maxWindowSeconds, DEFAULT_MAX_WINDOW_SECONDS);
     this.maxCandidates = Math.min(10, positiveInteger(options.maxCandidates, DEFAULT_MAX_CANDIDATES));
     this.resultContract = options.resultContract || new AlertPacketResultContractService();
+    this.referenceStore = options.referenceStore || null;
   }
 
   async execute(rawInput = {}) {
@@ -27,11 +30,36 @@ class AlertPacketWorkflowService {
       return this.resultContract.buildFailure({
         input: validation.input,
         workflowState: 'INVALID_INPUT',
+        errorCode: validation.errorCode,
         message: validation.message
       });
     }
 
     const input = validation.input;
+
+    // A candidate reference is already resolved by the plugin from the shared
+    // alert archive. Reuse its trusted packet query and avoid rediscovering or
+    // analyzing other candidates.
+    if (input.candidateId && input.packetCandidate) {
+      const candidate = {
+        rank: Number(input.packetCandidate.rank) || 1,
+        candidateId: input.candidateId,
+        ip: input.packetCandidate.ip || null,
+        ips: Array.isArray(input.packetCandidate.ips) ? input.packetCandidate.ips : input.packetCandidate.criteria?.ips,
+        ipPair: input.packetCandidate.ipPair || null,
+        metricValue: input.packetCandidate.metricValue || null,
+        suggestedPacketQuery: input.packetCandidate,
+      };
+      const packetAnalyses = await this._analyzeCandidates([candidate], input);
+      return this.resultContract.buildSuccess({
+        input,
+        alertResult: null,
+        packetAnalyses,
+        detailAttempts: 0,
+        selectedCandidateId: input.candidateId,
+      });
+    }
+
     let alertResult = null;
     let detailAttempts = 0;
 
@@ -88,10 +116,74 @@ class AlertPacketWorkflowService {
       });
     }
 
+    const persistedCandidates = this._persistCandidates(input, candidates);
+    if (input.referenceId && !input.candidateId && persistedCandidates.length > 1) {
+      return this.resultContract.buildCandidateSelection({
+        input,
+        alertResult,
+        detailAttempts,
+        candidates: persistedCandidates,
+      });
+    }
+
+    const packetAnalyses = await this._analyzeCandidates(persistedCandidates, input);
+
+    return this.resultContract.buildSuccess({
+      input,
+      alertResult,
+      packetAnalyses,
+      detailAttempts,
+      selectedCandidateId: persistedCandidates.length === 1 ? persistedCandidates[0].candidateId : null,
+    });
+  }
+
+  _persistCandidates(input, candidates = []) {
+    const enriched = candidates.map((candidate, index) => {
+      const candidateId = candidate.candidateId
+        || (input.referenceId ? `${input.referenceId}-P${candidate.rank || index + 1}` : null);
+      const packetQuery = buildAuthoritativePacketQuery(candidate.suggestedPacketQuery, input);
+      return {
+        ...candidate,
+        candidateId,
+        packetQuery,
+        packetWindow: {
+          start: packetQuery.criteria?.start || null,
+          end: packetQuery.criteria?.end || null,
+        },
+        status: candidate.status || 'DISCOVERED',
+      };
+    });
+    if (input.referenceId && enriched.length > 0) {
+      try {
+        if (!this.referenceStore) this.referenceStore = new AlertReferenceStore();
+        this.referenceStore.update(input.referenceId, {
+          status: enriched.length === 1 ? 'CANDIDATE_SELECTED' : 'CANDIDATES_READY',
+          packet: {
+            candidates: enriched.map((candidate) => ({
+              candidateId: candidate.candidateId,
+              rank: candidate.rank || null,
+              ip: candidate.ip || null,
+              ips: candidate.ips || [],
+              ipPair: candidate.ipPair || null,
+              metricValue: candidate.metricValue || null,
+              packetWindow: candidate.packetWindow,
+              packetQuery: candidate.packetQuery,
+              status: candidate.status,
+            })),
+          },
+        });
+      } catch (_error) {
+        // The analysis result remains valid even when candidate persistence is unavailable.
+      }
+    }
+    return enriched;
+  }
+
+  async _analyzeCandidates(candidates, input) {
     const packetAnalyses = [];
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];
-      const packetQuery = buildAuthoritativePacketQuery(candidate.suggestedPacketQuery, input);
+      const packetQuery = buildAuthoritativePacketQuery(candidate.packetQuery || candidate.suggestedPacketQuery, input);
       try {
         const packetResult = await this.packetSkill.handleSkillCall(packetQuery);
         packetAnalyses.push({
@@ -112,13 +204,7 @@ class AlertPacketWorkflowService {
         });
       }
     }
-
-    return this.resultContract.buildSuccess({
-      input,
-      alertResult,
-      packetAnalyses,
-      detailAttempts
-    });
+    return packetAnalyses;
   }
 }
 
@@ -133,8 +219,31 @@ function normalizeAndValidateInput(rawInput = {}, maxWindowSeconds = DEFAULT_MAX
     ...(isPlainObject(source.triggerMetrics) ? source.triggerMetrics : {}),
     ...(isPlainObject(promptFields.triggerMetrics) ? promptFields.triggerMetrics : {})
   });
-  const input = { prompt, eventId, start, end, triggerMetrics };
+  const input = {
+    prompt,
+    eventId,
+    start,
+    end,
+    triggerMetrics,
+    referenceId: String(source.referenceId || '').trim() || null,
+    candidateId: String(source.candidateId || '').trim() || null,
+    referenceErrorCode: String(source.referenceErrorCode || '').trim() || null,
+    packetCandidate: isPlainObject(source.packetCandidate) ? source.packetCandidate : null,
+  };
 
+  if (input.referenceErrorCode) {
+    const referenceErrors = {
+      ALERT_REFERENCE_NOT_FOUND: '未找到该告警引用。请确认引用编号是否正确，或重新获取告警推送。',
+      ALERT_REFERENCE_EXPIRED: '该告警引用已过期（默认保留 7 天），请重新获取告警推送。',
+      ALERT_PACKET_CANDIDATE_NOT_FOUND: '未找到指定的数据包候选。请先发送告警引用，获取最新候选列表。',
+    };
+    return {
+      ok: false,
+      input,
+      errorCode: input.referenceErrorCode,
+      message: referenceErrors[input.referenceErrorCode] || '告警引用不可用，请重新获取告警推送。',
+    };
+  }
   if (!/^\d+$/.test(eventId)) {
     return { ok: false, input, message: '告警数据包分析需要数字 eventId。' };
   }
@@ -203,7 +312,10 @@ function normalizeTriggerMetrics(value = {}) {
     values: toNumberArray(source.values ?? source.value),
     units: toStringArray(source.units || source.unit),
     condition: String(source.condition || '').trim(),
-    severity: String(source.severity || '').trim()
+    severity: String(source.severity || '').trim(),
+    profileId: String(source.profileId || source.analysisProfile || '').trim(),
+    profileVersion: Number(source.profileVersion || 0) || null,
+    evidenceChecks: toStringArray(source.evidenceChecks),
   };
 }
 
@@ -240,9 +352,29 @@ function buildAuthoritativePacketQuery(suggestedPacketQuery = {}, input = {}) {
     end: input.end
   };
   delete criteria.timeRange;
+  const analysisContext = buildAnalysisContext(input.triggerMetrics || {});
+  const analysis = isPlainObject(source.analysis)
+    ? { ...source.analysis }
+    : {};
+  if (analysisContext.hasTriggerMetrics && !source.analysis?.hasTriggerMetrics) {
+    Object.assign(analysis, {
+      hasTriggerMetrics: true,
+      metrics: analysis.metrics || analysisContext.metrics,
+      metricLabels: analysis.metricLabels || analysisContext.metricLabels,
+      values: analysis.values || analysisContext.values,
+      units: analysis.units || analysisContext.units,
+      condition: analysis.condition || analysisContext.condition,
+      severity: analysis.severity || analysisContext.severity,
+      profileId: analysis.profileId || analysisContext.profileId,
+      profileVersion: analysis.profileVersion || analysisContext.profileVersion,
+      evidenceChecks: analysis.evidenceChecks || analysisContext.evidenceChecks,
+      instruction: analysis.instruction || analysisContext.instruction,
+    });
+  }
   return {
     ...source,
-    criteria
+    criteria,
+    ...(Object.keys(analysis).length > 0 ? { analysis } : {})
   };
 }
 
@@ -252,6 +384,7 @@ function hasAlertDetail(result = {}) {
 
 function candidateMetadata(candidate = {}) {
   return {
+    candidateId: candidate.candidateId || null,
     rank: candidate.rank || null,
     ip: candidate.ip || null,
     ips: Array.isArray(candidate.ips) ? candidate.ips : null,

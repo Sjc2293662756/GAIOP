@@ -176,6 +176,9 @@ try {
     'package-lock.json',
     'openclaw.plugin.json',
     'napm-openclaw-plugin.remote.js',
+    'plugin/AlertReferenceStore.js',
+    'plugin/AlertReferenceService.js',
+    'plugin/AlertPacketFinalReplyService.js',
     'plugin/ReportIntentClassifier.js',
     'plugin/TrustedToolContextStore.js',
     'skills/shared/NapmObjectTargetResolver.js',
@@ -186,6 +189,9 @@ try {
     'scripts/stage-openclaw-extension.sh',
     'scripts/verify-openclaw-extension-runtime.js',
     'skills/openclaw-napm-query/scripts/run_napm_query.js',
+    'skills/openclaw-napm-alert-packet-analysis/services/AlertMetricProfileService.js',
+    'skills/openclaw-napm-alert-packet-analysis/services/AlertPacketWorkflowService.js',
+    'skills/openclaw-napm-alert-packet-analysis/services/AlertPacketResultContractService.js',
     'skills/openclaw-napm-syslog-receiver/scripts/run_syslog_receiver.js'
   )
   foreach ($relativePath in $requiredPaths) {

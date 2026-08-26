@@ -14,6 +14,7 @@
  */
 
 const { CATEGORY_TYPE_TO_GROUP_TYPE } = require('./AlertConstants');
+const { buildAnalysisContext } = require('../../openclaw-napm-alert-packet-analysis/services/AlertMetricProfileService');
 
 // ── Discovery group chain 映射表 ────────────────────────────────────
 
@@ -450,6 +451,14 @@ function buildFocusAnalysis(event = {}, options = {}) {
   // event 自身有指标 → 走原有逻辑
   if (metrics.length > 0) {
     const metricLabels = metrics.map((code) => getMetricLabel(code));
+    const profile = buildAnalysisContext({
+      names: metricLabels,
+      codes: metrics,
+      values: value,
+      units: unit,
+      condition,
+      severity: severityLabel,
+    });
     return {
       hasTriggerMetrics: true,
       metrics,
@@ -458,14 +467,16 @@ function buildFocusAnalysis(event = {}, options = {}) {
       units: unit,
       condition,
       severity: severityLabel,
+      profileId: profile.profileId,
+      profileVersion: profile.profileVersion,
+      evidenceChecks: profile.evidenceChecks,
+      supported: profile.supported,
       summary: metrics.map((m, i) => {
         const label = metricLabels[i] || m;
         return `${label}(${m})=${value[i] ?? '?'}${unit[i] ?? ''}`;
       }).join(', '),
-      instruction: `数据包分析报告必须围绕 ${metricLabels.join('、')}(${metrics.join('、')}) 展开。`
-        + `解释为什么 ${metricLabels.join('、')} 达到 ${value.join('、')}${unit[0] || ''}，`
-        + `结合数据包中的 TCP 重传、延迟、连接失败等证据，`
-        + `找出导致指标异常的具体 IP 会话和时间点。`
+      instruction: profile.instruction
+        + ` 指标原始代码: ${metrics.join('、')}。`
         + (condition ? ` 触发条件: ${condition}` : ''),
     };
   }
@@ -502,6 +513,16 @@ function buildFocusFromExternalMetrics(external = {}) {
   const units = external.units || [];
   const condition = external.condition || null;
   const severity = external.severity || null;
+  const profile = buildAnalysisContext({
+    names,
+    codes,
+    values,
+    units,
+    condition,
+    severity,
+    profileId: external.profileId,
+    profileVersion: external.profileVersion,
+  });
 
   return {
     hasTriggerMetrics: true,
@@ -511,11 +532,12 @@ function buildFocusFromExternalMetrics(external = {}) {
     units,
     condition,
     severity,
+    profileId: profile.profileId,
+    profileVersion: profile.profileVersion,
+    evidenceChecks: profile.evidenceChecks,
+    supported: profile.supported,
     summary: names.map((n, i) => `${n}(${codes[i] || n})=${values[i] ?? '?'}${units[i] ?? ''}`).join(', '),
-    instruction: `数据包分析报告必须围绕 ${names.join('、')} 展开。`
-      + `解释为什么 ${names.join('、')} 达到 ${values.join('、')}${units[0] || ''}，`
-      + `结合数据包中的 TCP 重传、延迟、连接失败等证据，`
-      + `找出导致指标异常的具体 IP 会话和时间点。`
+    instruction: profile.instruction
       + (condition ? ` 触发条件: ${condition}` : ''),
     _source: 'external_injected', // 标记数据来源
   };

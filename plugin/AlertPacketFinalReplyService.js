@@ -12,7 +12,18 @@ function prepareModelFinalContent(content, result = {}) {
   if (!isEligibleModelFinalContent(sanitized, result)) {
     return '';
   }
-  return sanitized;
+  return result?.referenceId ? hideReferenceInternals(sanitized) : sanitized;
+}
+
+function hideReferenceInternals(text) {
+  return String(text || '')
+    .replace(/["']?eventId["']?\s*[:=]\s*["']?\d{1,20}["']?/gi, '')
+    .replace(/["']?start["']?\s*[:=]\s*["']?\d{10,13}["']?/gi, '')
+    .replace(/["']?end["']?\s*[:=]\s*["']?\d{10,13}["']?/gi, '')
+    .replace(/告警事件\s*\d{1,20}/g, '告警事件')
+    .replace(/\b(?:Alert\s*ID|Event\s*ID)\s*[:=]?\s*\d{1,20}/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function isEligibleModelFinalContent(content, result = {}) {
@@ -36,8 +47,9 @@ function isEligibleModelFinalContent(content, result = {}) {
 
 function buildDeterministicFinalReply(result = {}) {
   const eventId = sanitizeText(result?.eventId || '') || '未知';
+  const referenceId = sanitizeText(result?.referenceId || '');
   const workflowState = sanitizeText(result?.workflowState || '') || 'UNKNOWN';
-  const lines = [`告警事件 ${eventId} 数据包分析结果`];
+  const lines = [referenceId ? `告警引用 ${referenceId} 数据包分析结果` : `告警事件 ${eventId} 数据包分析结果`];
 
   lines.push(`工作流状态：${workflowState}（${workflowStateLabel(workflowState)}）`);
   const range = formatTimeRange(result?.timeRange);
@@ -55,6 +67,27 @@ function buildDeterministicFinalReply(result = {}) {
   if (alertDetails.length > 0) {
     lines.push('', '告警详情');
     lines.push(...alertDetails);
+  }
+
+  if (workflowState === 'CANDIDATE_SELECTION_REQUIRED') {
+    lines.push('', '候选数据包');
+    const options = Array.isArray(result.candidateOptions) ? result.candidateOptions : [];
+    if (options.length === 0) {
+      lines.push('- 当前没有可展示的候选数据包。');
+    } else {
+      for (const [index, option] of options.entries()) {
+        const candidateId = sanitizeText(option.candidateId || `${referenceId}-P${index + 1}`);
+        const endpoint = [option.ipPair, option.ip, ...(Array.isArray(option.ips) ? option.ips : [])]
+          .map(sanitizeText)
+          .filter(Boolean)
+          .filter((value, itemIndex, values) => values.indexOf(value) === itemIndex)
+          .join(' -> ');
+        lines.push(`- ${candidateId}${endpoint ? `：${endpoint}` : ''}`);
+      }
+      lines.push('', `请回复：分析 ${sanitizeText(options[0]?.candidateId || `${referenceId}-P1`)}`);
+    }
+    lines.push('', '结论：请先选择一个候选数据包，系统不会自动选择第一个候选。');
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   const packetLines = buildPacketAnalysisLines(result?.packetAnalyses);
@@ -179,7 +212,8 @@ function workflowStateLabel(state) {
     ALERT_DETAIL_QUERY_FAILED: '告警详情查询失败',
     NO_PACKET_CANDIDATE: '无可执行数据包候选',
     INVALID_INPUT: '输入无效',
-    WORKFLOW_RUNTIME_FAILED: '工作流运行失败'
+    WORKFLOW_RUNTIME_FAILED: '工作流运行失败',
+    CANDIDATE_SELECTION_REQUIRED: '等待选择数据包候选'
   };
   return labels[state] || '未识别状态';
 }
@@ -188,7 +222,7 @@ function formatTimeRange(timeRange = null) {
   const start = normalizeUnixSeconds(timeRange?.start);
   const end = normalizeUnixSeconds(timeRange?.end);
   if (!start || !end) return '';
-  return `${formatShanghaiTime(start)} 至 ${formatShanghaiTime(end)}（start=${start}, end=${end}）`;
+  return `${formatShanghaiTime(start)} 至 ${formatShanghaiTime(end)}`;
 }
 
 function formatShanghaiTime(unixSeconds) {
@@ -229,5 +263,6 @@ module.exports = {
   buildDeterministicFinalReply,
   isEligibleModelFinalContent,
   prepareModelFinalContent,
+  hideReferenceInternals,
   sanitizeText
 };

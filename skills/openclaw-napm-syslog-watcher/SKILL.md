@@ -40,11 +40,27 @@ skills/openclaw-napm-syslog-watcher/
 {
   "wecom": {
     "webhookUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY_HERE"
+  },
+  "alertReference": {
+    "enabled": true,
+    "ttlHours": 168,
+    "packetBufferSeconds": 120
   }
 }
 ```
 
 将 `YOUR_KEY_HERE` 替换为企业微信群机器人的 Webhook Key。
+
+告警推送与 OpenClaw 查询通过共享告警档案跨会话关联。默认告警引用保留 7 天，数据包文件保留 24 小时。生产环境可通过环境变量覆盖：
+
+```text
+NAPM_ALERT_REFERENCE_DIR=<共享告警引用目录>
+NAPM_ALERT_REFERENCE_TTL_MS=604800000
+NAPM_ALERT_REFERENCE_MAX_ENTRIES=10000
+ALERT_REFERENCE_PACKET_ARTIFACT_TTL_HOURS=24
+```
+
+推送正文只展示 `GJ-XXXXXX` 引用编号，不展示 `eventId`、Unix `start/end` 或内部下载参数。多候选时使用 `GJ-XXXXXX-P1` 选择具体数据包。
 
 ## 部署
 

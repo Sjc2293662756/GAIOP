@@ -34,6 +34,23 @@ describe('AlertPacketFinalReplyService', () => {
     expect(prepared).not.toContain('abc123');
   });
 
+  test('hides internal event and Unix window fields for reference-based replies', () => {
+    const prepared = prepareModelFinalContent([
+      '告警引用 GJ-ABC234 数据包分析结论。',
+      'eventId=745506 start=1786341600 end=1786341840',
+      '告警事件 745506 的服务端响应等待证据已核对。'
+    ].join('\n'), {
+      ...result,
+      referenceId: 'GJ-ABC234'
+    });
+
+    expect(prepared).toContain('告警引用 GJ-ABC234');
+    expect(prepared).not.toMatch(/eventId\s*[=:]?/i);
+    expect(prepared).not.toMatch(/\bstart\s*=\s*\d{10,13}/i);
+    expect(prepared).not.toMatch(/\bend\s*=\s*\d{10,13}/i);
+    expect(prepared).not.toContain('告警事件 745506');
+  });
+
   test('rejects internal narration payloads as user-facing final content', () => {
     const internalPayload = [
       '告警详情与数据包分析已完成。请仅依据下面的结构化证据解释告警触发原因。',
@@ -71,5 +88,18 @@ describe('AlertPacketFinalReplyService', () => {
     expect(reply).not.toContain('secret');
     expect(reply).not.toContain('/tmp/private');
     expect(reply).not.toContain('raw tshark row');
+  });
+
+  test('uses the reference in deterministic fallback replies without exposing hidden fields', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-ABC234',
+      packetAnalyses: [{ rank: 1, ok: true, result: { summary: { highlights: ['服务端响应等待偏高。'] } } }]
+    });
+
+    expect(reply).toContain('告警引用 GJ-ABC234');
+    expect(reply).not.toContain('745506');
+    expect(reply).not.toMatch(/\bstart\s*=\s*\d+/i);
+    expect(reply).not.toMatch(/\bend\s*=\s*\d+/i);
   });
 });

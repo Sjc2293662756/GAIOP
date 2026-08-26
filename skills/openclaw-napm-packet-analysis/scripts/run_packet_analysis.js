@@ -1334,6 +1334,7 @@ async function analyzePacketFile(filePath, analysisOptions) {
     // 告警触发指标上下文（从 alert-query 透传），
     // 使 AI 层能围绕告警根因展开叙述，而非只输出泛化的协议分布。
     alertContext,
+    alertEvidence: null,
     error: null,
   };
 
@@ -1372,7 +1373,64 @@ async function analyzePacketFile(filePath, analysisOptions) {
     if (tls.ok) result.tlsSni = topValues(tls.stdout.split(/\r?\n/).filter(Boolean), 20);
   }
 
+  if (alertContext?.hasTriggerMetrics) {
+    result.alertEvidence = await analyzeAlertEvidence(tsharkBin, resolvedPath, alertContext, timeoutMs);
+  }
+
   return result;
+}
+
+async function analyzeAlertEvidence(tsharkBin, filePath, alertContext, timeoutMs) {
+  const profileId = String(alertContext.profileId || 'unknown_alert_metric');
+  const evidence = {
+    profileId,
+    profileVersion: alertContext.profileVersion || null,
+    metricLabels: alertContext.metricLabels || alertContext.metrics || [],
+    values: alertContext.values || [],
+    units: alertContext.units || [],
+    evidenceChecks: alertContext.evidenceChecks || [],
+    retransmissionRows: [],
+    rttRows: [],
+    httpTimingRows: [],
+    status: alertContext.supported === false ? 'UNSUPPORTED_PROFILE' : 'NOT_CAPTURED',
+  };
+
+  // These extracts are deliberately bounded and contain metadata only. Raw payloads are never returned.
+  const retransmission = await runCommand(tsharkBin, [
+    '-r', filePath, '-Y', 'tcp.analysis.retransmission || tcp.analysis.fast_retransmission',
+    '-T', 'fields', '-E', 'separator=|',
+    '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst', '-e', 'tcp.stream',
+  ], { timeoutMs });
+  if (retransmission.ok) evidence.retransmissionRows = boundedRows(retransmission.stdout);
+
+  const rtt = await runCommand(tsharkBin, [
+    '-r', filePath, '-Y', 'tcp.analysis.ack_rtt',
+    '-T', 'fields', '-E', 'separator=|',
+    '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst', '-e', 'tcp.stream', '-e', 'tcp.analysis.ack_rtt',
+  ], { timeoutMs });
+  if (rtt.ok) evidence.rttRows = boundedRows(rtt.stdout);
+
+  if (profileId === 'server_user_experience_time' || profileId === 'page_load_time' || profileId === 'http_error_rate') {
+    const httpTiming = await runCommand(tsharkBin, [
+      '-r', filePath, '-Y', 'http',
+      '-T', 'fields', '-E', 'separator=|',
+      '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst',
+      '-e', 'tcp.stream', '-e', 'http.host', '-e', 'http.request.uri',
+      '-e', 'http.response.code', '-e', 'http.time',
+    ], { timeoutMs });
+    if (httpTiming.ok) evidence.httpTimingRows = boundedRows(httpTiming.stdout);
+  }
+
+  const evidenceCount = evidence.retransmissionRows.length + evidence.rttRows.length + evidence.httpTimingRows.length;
+  if (alertContext.supported === false) evidence.status = 'UNSUPPORTED_PROFILE';
+  else if (evidenceCount === 0) evidence.status = 'NOT_CAPTURED';
+  else if ((alertContext.evidenceChecks || []).length > 0 && evidenceCount < 2) evidence.status = 'PARTIAL';
+  else evidence.status = 'SUPPORTED';
+  return evidence;
+}
+
+function boundedRows(text, limit = 100) {
+  return String(text || '').split(/\r?\n/).map((row) => row.trim()).filter(Boolean).slice(0, limit);
 }
 
 function analysisFailure(code, message, partial) {
@@ -2002,6 +2060,7 @@ function buildAlertRenderHint(alertContext = {}) {
   const unitText = (alertContext.units || [])[0] || '';
 
   let hint = '⚠️ 本次数据包分析由告警事件触发，报告必须聚焦于告警根因：\n';
+  hint += `分析画像: ${alertContext.profileId || 'unknown_alert_metric'}\n`;
   hint += `触发指标: ${metricText} = ${valueText}${unitText}\n`;
   if (alertContext.condition) {
     hint += `触发条件: ${alertContext.condition}\n`;
@@ -2015,6 +2074,7 @@ function buildAlertRenderHint(alertContext = {}) {
   hint += '2. 找出数据包中导致指标异常的具体 IP 会话和时间点\n';
   hint += '3. 将数据包时间线与告警触发时刻关联，给出根因结论\n';
   hint += '4. 不要只输出泛化的协议分布统计——每一个发现都要与告警指标关联\n';
+  hint += '5. 如果专项证据未在抓包中捕获，必须明确写“未捕获/证据不足”，不得推测为已证实\n';
 
   if (alertContext.instruction) {
     hint += `\n补充指令: ${alertContext.instruction}`;
@@ -2095,6 +2155,7 @@ function summarizeAnalysis(analysis) {
     // 告警触发指标上下文：透传给 AI 层的 narrationInput，
     // 确保数据包分析报告围绕告警根因展开，而非只做泛化的协议描述。
     alertContext: analysis.alertContext || null,
+    alertEvidence: analysis.alertEvidence || null,
     error: analysis.error,
   };
 }
@@ -2149,6 +2210,10 @@ function buildAlertAnalysisContext(options = {}) {
   if (!options.hasTriggerMetrics) {
     return {
       hasTriggerMetrics: false,
+      profileId: null,
+      profileVersion: null,
+      evidenceChecks: [],
+      supported: false,
       note: options.note || '该查询未携带告警触发指标上下文。',
     };
   }
@@ -2163,6 +2228,10 @@ function buildAlertAnalysisContext(options = {}) {
     severity: options.severity || null,
     summary: options.summary || null,
     instruction: options.instruction || null,
+    profileId: options.profileId || null,
+    profileVersion: options.profileVersion || null,
+    evidenceChecks: Array.isArray(options.evidenceChecks) ? options.evidenceChecks : [],
+    supported: options.supported !== false,
   };
 }
 
@@ -2171,7 +2240,12 @@ function normalizeFilePolicy(policy = {}) {
     downloadDir: policy.downloadDir || process.env.PACKET_DOWNLOAD_DIR || defaultDownloadDir(),
     maxBytes: Number(policy.maxBytes || process.env.PACKET_MAX_BYTES || 524288000),
     keepFiles: policy.keepFiles != null ? Boolean(policy.keepFiles) : envBool('PACKET_KEEP_FILES', true),
-    retentionHours: Number(policy.retentionHours || process.env.PACKET_RETENTION_HOURS || 24),
+    retentionHours: Number(
+      policy.retentionHours
+      || process.env.ALERT_REFERENCE_PACKET_ARTIFACT_TTL_HOURS
+      || process.env.PACKET_RETENTION_HOURS
+      || 24
+    ),
     requirePreviewBeforeDownload: policy.requirePreviewBeforeDownload != null
       ? Boolean(policy.requirePreviewBeforeDownload)
       : envBool('PACKET_REQUIRE_PREVIEW_BEFORE_DOWNLOAD', true),
