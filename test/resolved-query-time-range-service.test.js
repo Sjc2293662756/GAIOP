@@ -91,4 +91,56 @@ describe('ResolvedQueryTimeRangeService', () => {
       end: 1786092960
     });
   });
+
+  test.each([
+    ['last30days', 30 * 86400],
+    ['last90days', 90 * 86400],
+    ['last365days', 365 * 86400]
+  ])('supports long rolling window %s', (key, durationSeconds) => {
+    const result = TimeRangeService.resolveKnownTimeRangeKey(key, 1786093000);
+    expect(result).toMatchObject({
+      key,
+      start: 1786092960 - durationSeconds,
+      end: 1786092960,
+      source: 'time_range_resolver'
+    });
+  });
+
+  test('supports natural quarter and year windows in Asia/Shanghai', () => {
+    const currentQuarter = TimeRangeService.resolveKnownTimeRangeKey('currentQuarter', 1786093000);
+    const previousQuarter = TimeRangeService.resolveKnownTimeRangeKey('previousQuarter', 1786093000);
+    const currentYear = TimeRangeService.resolveKnownTimeRangeKey('currentYear', 1786093000);
+    const previousYear = TimeRangeService.resolveKnownTimeRangeKey('previousYear', 1786093000);
+
+    expect(currentQuarter).toMatchObject({ key: 'currentQuarter', boundary: 'local_quarter', end: 1786092960 });
+    expect(previousQuarter).toMatchObject({
+      key: 'previousQuarter',
+      boundary: 'local_quarter',
+      end: currentQuarter.start - 60
+    });
+    expect(currentYear).toMatchObject({ key: 'currentYear', boundary: 'local_year', end: 1786092960 });
+    expect(previousYear).toMatchObject({
+      key: 'previousYear',
+      boundary: 'local_year',
+      end: currentYear.start - 60
+    });
+
+    expect(new Date((currentQuarter.start + 8 * 3600) * 1000).toISOString()).toContain('-07-01T00:00:00.000Z');
+    expect(new Date((currentYear.start + 8 * 3600) * 1000).toISOString()).toContain('-01-01T00:00:00.000Z');
+  });
+
+  test.each([
+    ['最近一个季度的巡检', 'last90days'],
+    ['最近一年巡检', 'last365days'],
+    ['当前季度巡检', 'currentQuarter'],
+    ['今年巡检', 'currentYear']
+  ])('parses inspection calendar wording %s as %s', (prompt, key) => {
+    expect(TimeRangeService.resolveTimeRange(prompt, { nowSeconds: 1786093000 }).key).toBe(key);
+  });
+
+  test('parses the explicit English 365-day rolling window without converting to hours', () => {
+    expect(TimeRangeService.resolveTimeRange('last 365 days traffic inspection', {
+      nowSeconds: 1786093000
+    })).toMatchObject({ key: 'last365days', start: 1786092960 - 365 * 86400 });
+  });
 });

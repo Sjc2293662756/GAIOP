@@ -2,6 +2,7 @@
 
 const SUPPORTED_GRANULARITIES = Object.freeze([60, 300, 3600, 86400]);
 const DEFAULT_MAX_POINTS = 120;
+const WEEK_SECONDS = 7 * 86400;
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -52,6 +53,35 @@ function formatTimestamp(seconds, timezone = 'Asia/Shanghai') {
     return acc;
   }, {});
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function getLocalDateParts(seconds, timezone = 'Asia/Shanghai') {
+  const numeric = Number(seconds);
+  if (!Number.isFinite(numeric)) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = Number(part.value);
+    return acc;
+  }, {});
+}
+
+function localWeekStartSeconds(seconds, timezone = 'Asia/Shanghai') {
+  const parts = getLocalDateParts(seconds, timezone);
+  if (!parts || !Number.isFinite(parts.year) || !Number.isFinite(parts.month) || !Number.isFinite(parts.day)) {
+    return null;
+  }
+  const dateUtc = Date.UTC(parts.year, parts.month - 1, parts.day);
+  const dayOfWeek = new Date(dateUtc).getUTCDay();
+  const daysFromMonday = (dayOfWeek + 6) % 7;
+  const mondayUtc = dateUtc - daysFromMonday * 86400000;
+  // Production reports use Asia/Shanghai (UTC+08:00), which has no DST.
+  // For other zones, UTC midnight remains a deterministic fallback label.
+  const offsetSeconds = timezone === 'Asia/Shanghai' ? 8 * 3600 : 0;
+  return Math.floor(mondayUtc / 1000) - offsetSeconds;
 }
 
 function extractRows(raw = {}) {
@@ -168,6 +198,86 @@ function normalizeTimeSeriesDataset(raw = {}, options = {}) {
   };
 }
 
+function aggregateDatasetByLocalWeek(dataset = {}, options = {}) {
+  const points = Array.isArray(dataset.points) ? dataset.points : [];
+  const metrics = Array.isArray(dataset.metrics) ? dataset.metrics : ['TPIO', 'TPI', 'TPO'];
+  const timezone = options.timezone || dataset.timezone || 'Asia/Shanghai';
+  const buckets = new Map();
+
+  for (const point of points) {
+    const timestamp = toNumber(point?.timestamp);
+    const bucketStart = timestamp === null ? null : localWeekStartSeconds(timestamp, timezone);
+    if (bucketStart === null) continue;
+    const bucketKey = String(bucketStart);
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, {
+        timestamp: bucketStart,
+        values: Object.fromEntries(metrics.map((metric) => [metric, []]))
+      });
+    }
+    const bucket = buckets.get(bucketKey);
+    for (const metric of metrics) {
+      const value = toNumber(point?.[metric]);
+      if (value !== null) bucket.values[metric].push(value);
+    }
+  }
+
+  if (buckets.size === 0) {
+    return {
+      ...dataset,
+      effectiveGranularity: dataset.actualGranularity,
+      aggregation: {
+        method: 'calendar_week_average',
+        sourceGranularity: dataset.actualGranularity,
+        effectiveGranularity: dataset.actualGranularity,
+        timezone,
+        status: 'skipped_missing_timestamps'
+      }
+    };
+  }
+
+  const aggregatedPoints = Array.from(buckets.values())
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .map((bucket, index) => {
+      const point = {
+        index: index + 1,
+        timestamp: bucket.timestamp,
+        time: formatTimestamp(bucket.timestamp, timezone)
+      };
+      for (const metric of metrics) {
+        const values = bucket.values[metric];
+        if (values.length > 0) {
+          point[metric] = Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(4));
+        }
+      }
+      return point;
+    });
+  const sourceStats = dataset.stats || {};
+  const stats = computeStats(aggregatedPoints, {
+    metric: metrics[0],
+    granularity: WEEK_SECONDS,
+    spikeRatio: options.spikeRatio
+  });
+  // Preserve anomalies detected at the source resolution. Weekly averaging
+  // must not hide a daily gap, zero segment, or spike from the report.
+  stats.missingPointCount = Number(sourceStats.missingPointCount) || 0;
+  stats.zeroSegmentCount = Number(sourceStats.zeroSegmentCount) || 0;
+  stats.spikeCount = Number(sourceStats.spikeCount) || 0;
+  return {
+    ...dataset,
+    points: aggregatedPoints,
+    stats,
+    effectiveGranularity: WEEK_SECONDS,
+    aggregation: {
+      method: 'calendar_week_average',
+      sourceGranularity: dataset.actualGranularity,
+      effectiveGranularity: WEEK_SECONDS,
+      timezone,
+      status: 'applied'
+    }
+  };
+}
+
 function startTimeToMinute(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.floor(numeric / 60) * 60 : null;
@@ -246,6 +356,27 @@ function buildFindingForDataset(label, ref, dataset = {}) {
       };
 }
 
+function normalizeWindowInput(window = {}, defaults = {}) {
+  const start = toPositiveNumber(window.start);
+  const end = toPositiveNumber(window.end);
+  const durationSeconds = toPositiveNumber(window.durationSeconds)
+    || (start !== null && end !== null ? end - start : toPositiveNumber(defaults.durationSeconds));
+  const key = String(window.key || defaults.key || '').trim();
+  const displayText = String(window.displayText || defaults.displayText || key || '').trim();
+  return {
+    id: String(window.id || defaults.id || key || 'traffic-window').trim(),
+    key,
+    mode: String(window.mode || defaults.mode || 'rolling').trim(),
+    start,
+    end,
+    durationSeconds,
+    displayText,
+    title: String(window.title || defaults.title || `${displayText}流量分布状况`).trim(),
+    narrativeLabel: String(window.narrativeLabel || defaults.narrativeLabel || `${displayText}总流量趋势`).trim(),
+    timezone: window.timezone || defaults.timezone || 'Asia/Shanghai'
+  };
+}
+
 class InspectionTrafficAnalysisService {
   constructor(options = {}) {
     this.client = options.client || null;
@@ -261,36 +392,57 @@ class InspectionTrafficAnalysisService {
     return alignToMinute(this.nowSeconds || Math.floor(Date.now() / 1000));
   }
 
-  async queryWindow({ id, title, durationSeconds, granularity }) {
+  async queryWindow({ id, title, durationSeconds, granularity, start, end, key, mode, displayText, narrativeLabel }) {
     if (!this.client || typeof this.client.getTimeValues !== 'function') {
       return null;
     }
+    const resolvedEnd = alignToMinute(end) || this.getNowSeconds();
+    const resolvedDuration = toPositiveNumber(durationSeconds) || 3600;
+    const resolvedStart = alignToMinute(start) || (resolvedEnd - resolvedDuration);
     const requestedGranularity = normalizeGranularity(granularity)
-      || selectGranularity(durationSeconds, this.maxPoints);
-    const end = this.getNowSeconds();
-    const start = end - durationSeconds;
+      || selectGranularity(resolvedDuration, this.maxPoints);
     const params = {
-      start,
-      end,
+      start: resolvedStart,
+      end: resolvedEnd,
       metrics: 'TPIO,TPI,TPO',
       granularity: requestedGranularity,
       numGroups: 1,
       groupType1: 'TotalTraffic'
     };
     const result = await this.client.getTimeValues(params);
-    const dataset = normalizeTimeSeriesDataset(result?.data || {}, {
+    const normalizedDataset = normalizeTimeSeriesDataset(result?.data || {}, {
       timezone: this.timezone,
-      durationSeconds,
+      durationSeconds: resolvedDuration,
       maxPoints: this.maxPoints,
       requestedGranularity,
-      interval: { start, end },
+      interval: { start: resolvedStart, end: resolvedEnd },
       metrics: ['TPIO', 'TPI', 'TPO'],
       primaryMetric: 'TPIO',
       spikeRatio: this.thresholds.trafficSpikeRatio
     });
+    const sourceStep = normalizedDataset.actualGranularity || requestedGranularity;
+    const needsWeeklyAggregation = resolvedDuration > this.maxPoints * sourceStep
+      && sourceStep <= 86400;
+    const dataset = needsWeeklyAggregation
+      ? aggregateDatasetByLocalWeek(normalizedDataset, {
+          timezone: this.timezone,
+          spikeRatio: this.thresholds.trafficSpikeRatio
+        })
+      : {
+          ...normalizedDataset,
+          effectiveGranularity: normalizedDataset.actualGranularity,
+          aggregation: null
+        };
     return {
       id,
       title,
+      key,
+      mode,
+      displayText,
+      narrativeLabel,
+      start: resolvedStart,
+      end: resolvedEnd,
+      durationSeconds: resolvedDuration,
       queryEvidence: {
         service: 'timeValues',
         groups: [{ type: 'TotalTraffic' }],
@@ -298,10 +450,17 @@ class InspectionTrafficAnalysisService {
         granularity: requestedGranularity,
         requestedGranularity,
         actualGranularity: dataset.actualGranularity,
+        effectiveGranularity: dataset.effectiveGranularity,
         granularitySource: dataset.granularitySource,
         granularityMismatch: dataset.granularityMismatch,
-        start,
-        end,
+        aggregation: dataset.aggregation,
+        start: resolvedStart,
+        end: resolvedEnd,
+        windowKey: key || null,
+        windowMode: mode || null,
+        displayText: displayText || title || '',
+        effectiveStart: dataset.interval?.start,
+        effectiveEnd: dataset.interval?.end,
         requestUrlRedacted: result?.requestUrlRedacted || ''
       },
       dataset
@@ -309,49 +468,97 @@ class InspectionTrafficAnalysisService {
   }
 
   buildFromWindows(windows = {}) {
-    const recentHour = windows.recentHour || null;
-    const recentDay = windows.recentDay || null;
-    const findings = [];
-    if (recentHour) {
-      findings.push(buildFindingForDataset('最近1小时', 'trafficAnalysis.recentHour.dataset.stats', recentHour.dataset));
+    // Legacy callers only provide recentHour/recentDay. Treat recentHour as
+    // the primary window so their findings and status remain meaningful.
+    const primary = windows.primary || windows.recentHour || null;
+    const contextWindows = Array.isArray(windows.contextWindows)
+      ? windows.contextWindows.filter(Boolean)
+      : [];
+    const contextDay = windows.contextDay
+      || windows.recentDay
+      || contextWindows.find((item) => item.key === 'last1day' || item.id === 'recent-day')
+      || null;
+    const contextHour = windows.contextHour
+      || contextWindows.find((item) => item.key === 'last1hour' || item.id === 'recent-hour')
+      || null;
+    const recentHour = windows.recentHour || (primary?.durationSeconds === 3600 ? primary : contextHour);
+    const recentDay = windows.recentDay || (primary?.durationSeconds === 86400 ? primary : contextDay);
+    const findingEntries = [];
+    if (primary) findingEntries.push([windows.primary ? 'primary' : 'recentHour', primary]);
+    if (contextDay && contextDay !== primary) {
+      findingEntries.push([windows.contextDay || windows.contextWindows ? 'contextDay' : 'recentDay', contextDay]);
     }
-    if (recentDay) {
-      findings.push(buildFindingForDataset('最近1天', 'trafficAnalysis.recentDay.dataset.stats', recentDay.dataset));
-    }
+    if (contextHour && contextHour !== primary && contextHour !== contextDay) findingEntries.push(['contextHour', contextHour]);
+    const findings = findingEntries.map(([path, window]) => buildFindingForDataset(
+      window.narrativeLabel || window.title || window.displayText || window.key,
+      `trafficAnalysis.${path}.dataset.stats`,
+      window.dataset
+    ));
     const warning = findings.some((item) => item.level === 'warning');
     const unknown = findings.length === 0 || findings.some((item) => item.level === 'unknown');
     return {
       status: warning ? 'warning' : (unknown ? 'unknown' : 'ok'),
+      reportWindow: windows.reportWindow || null,
+      primary,
+      contextWindows,
+      contextDay,
+      contextHour,
       recentHour,
       recentDay,
       findings
     };
   }
 
-  async collect() {
-    const recentHour = await this.queryWindow({
+  async collect(windowContract = {}) {
+    const primary = normalizeWindowInput(windowContract.primaryWindow || {}, {
       id: 'traffic-last-hour',
-      title: '最近1小时流量分布状况',
-      durationSeconds: 3600
+      key: 'last1hour',
+      displayText: '最近1小时',
+      durationSeconds: 3600,
+      timezone: this.timezone
     });
-    const recentDay = await this.queryWindow({
-      id: 'traffic-last-day',
-      title: '最近1天流量分布状况',
-      durationSeconds: 86400
-    });
-    return this.buildFromWindows({ recentHour, recentDay });
+    if (!windowContract.primaryWindow?.title) {
+      primary.title = `${primary.displayText}流量分布趋势`;
+    }
+    const contextWindows = (Array.isArray(windowContract.contextWindows) && windowContract.contextWindows.length > 0
+      ? windowContract.contextWindows
+      : [{
+          id: 'recent-day',
+          key: 'last1day',
+          displayText: '最近1天',
+          durationSeconds: 86400,
+          timezone: this.timezone
+        }])
+      .map((window) => normalizeWindowInput(window, {
+        timezone: this.timezone,
+        title: `报告截止时${window.displayText || window.key || ''}流量分布状况`,
+        narrativeLabel: `${window.displayText || window.key || ''}总流量趋势`
+      }));
+    const primaryResult = await this.queryWindow(primary);
+    const contextResults = await Promise.all(contextWindows.map((window) => this.queryWindow(window)));
+    const results = {
+      primary: primaryResult,
+      contextWindows: contextResults,
+      contextDay: contextResults.find((item) => item?.key === 'last1day' || item?.id === 'recent-day') || null,
+      contextHour: contextResults.find((item) => item?.key === 'last1hour' || item?.id === 'recent-hour') || null,
+      reportWindow: windowContract.reportWindow || null
+    };
+    return this.buildFromWindows(results);
   }
 }
 
 module.exports = InspectionTrafficAnalysisService;
 module.exports.__test__ = {
   SUPPORTED_GRANULARITIES,
+  WEEK_SECONDS,
   DEFAULT_MAX_POINTS,
   normalizeGranularity,
   selectGranularity,
   normalizeTimeSeriesDataset,
+  aggregateDatasetByLocalWeek,
   computeStats,
   buildFindingForDataset,
+  normalizeWindowInput,
   extractRows,
   readMetric
 };

@@ -3,24 +3,24 @@
   "groups": {
     "traffic.summary": [
       {
-        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.missingPointCount > 0",
-        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.missingPointCount}} 个疑似缺失点，应结合采集状态和镜像链路进行核查。"
+        "when": "inspection.trafficAnalysis.primary.dataset.stats.missingPointCount > 0",
+        "text": "{{inspection.trafficAnalysis.primary.narrativeLabel}}存在 {{inspection.trafficAnalysis.primary.dataset.stats.missingPointCount}} 个疑似缺失点，应结合采集状态和镜像链路进行核查。"
       },
       {
-        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.zeroSegmentCount > 0",
-        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.zeroSegmentCount}} 个零流量点，应确认该时段是否存在采集停顿或业务空窗。"
+        "when": "inspection.trafficAnalysis.primary.dataset.stats.zeroSegmentCount > 0",
+        "text": "{{inspection.trafficAnalysis.primary.narrativeLabel}}存在 {{inspection.trafficAnalysis.primary.dataset.stats.zeroSegmentCount}} 个零流量点，应确认该时段是否存在采集停顿或业务空窗。"
       },
       {
-        "when": "inspection.trafficAnalysis.recentHour.dataset.stats.spikeCount > 0",
-        "text": "最近1小时总流量趋势存在 {{inspection.trafficAnalysis.recentHour.dataset.stats.spikeCount}} 个疑似尖峰，建议关注对应时间点的业务突增或异常流量。"
+        "when": "inspection.trafficAnalysis.primary.dataset.stats.spikeCount > 0",
+        "text": "{{inspection.trafficAnalysis.primary.narrativeLabel}}存在 {{inspection.trafficAnalysis.primary.dataset.stats.spikeCount}} 个疑似尖峰，建议关注对应时间点的业务突增或异常流量。"
       },
       {
-        "when": "inspection.trafficAnalysis.recentDay.dataset.stats.missingPointCount > 0",
-        "text": "最近1天总流量趋势存在 {{inspection.trafficAnalysis.recentDay.dataset.stats.missingPointCount}} 个疑似缺失点，应进一步确认历史采集连续性。"
+        "when": "inspection.trafficAnalysis.contextDay.dataset.stats.missingPointCount > 0",
+        "text": "{{inspection.trafficAnalysis.contextDay.narrativeLabel}}存在 {{inspection.trafficAnalysis.contextDay.dataset.stats.missingPointCount}} 个疑似缺失点，应进一步确认历史采集连续性。"
       },
       {
         "when": "inspection.trafficAnalysis.status == ok",
-        "text": "最近1小时和最近1天总流量趋势连续，未发现明显中断、零流量片段或异常尖峰。"
+        "text": "{{inspection.trafficAnalysis.summaryLabel}}连续，未发现明显中断、零流量片段或异常尖峰。"
       },
       {
         "when": "default",
@@ -30,15 +30,15 @@
     "business.summary": [
       {
         "when": "inspection.businessPerformance.slowAccess.length > 0",
-        "text": "最近7日业务性能查询发现 {{inspection.businessPerformance.slowAccess.0.businessName}} 慢访问占比为 {{inspection.businessPerformance.slowAccess.0.ratio}}，慢访问次数为 {{inspection.businessPerformance.slowAccess.0.slowCount}}。"
+        "text": "{{inspection.businessPerformance.windowLabel}}业务性能查询发现 {{inspection.businessPerformance.slowAccess.0.businessName}} 慢访问占比为 {{inspection.businessPerformance.slowAccess.0.ratio}}，慢访问次数为 {{inspection.businessPerformance.slowAccess.0.slowCount}}。"
       },
       {
         "when": "inspection.businessPerformance.httpErrors.length > 0",
-        "text": "最近7日业务性能查询发现存在 HTTP 400/500 报错业务，需结合应用日志和访问路径进一步定位。"
+        "text": "{{inspection.businessPerformance.windowLabel}}业务性能查询发现存在 HTTP 400/500 报错业务，需结合应用日志和访问路径进一步定位。"
       },
       {
         "when": "inspection.businessPerformance.status == ok",
-        "text": "最近7日业务慢访问和 HTTP 400/500 报错未发现明显异常。"
+        "text": "{{inspection.businessPerformance.windowLabel}}业务慢访问和 HTTP 400/500 报错未发现明显异常。"
       },
       {
         "when": "default",

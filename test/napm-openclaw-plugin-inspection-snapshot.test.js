@@ -98,7 +98,16 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
       reportDate: { type: 'string', description: expect.any(String) },
       source: { type: 'object', description: expect.any(String), additionalProperties: true }
     });
+    expect(tool.parameters.properties.timeRange.type).toBe('object');
+    expect(tool.parameters.properties.timeRange.properties.key).toMatchObject({ type: 'string' });
+    expect(tool.parameters.properties.timeRange.properties.mode).toMatchObject({ type: 'string' });
     expect(tool.parameters.additionalProperties).toBe(false);
+  });
+
+  test('should infer a canonical inspection time window for automatic reports', () => {
+    expect(plugin.__test__.buildAutomaticInspectionToolArgs('最近7天巡检').timeRange).toMatchObject({
+      key: 'last7days'
+    });
   });
 
   test('should execute inspection snapshot and remember reportData', async () => {

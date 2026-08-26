@@ -97,7 +97,7 @@ function buildCanonicalRelativeTimeKey(amountValue, unitValue = '') {
     }
   }
   if (isDay) {
-    if (Number.isInteger(amount) && amount <= 99) {
+    if (Number.isInteger(amount) && amount <= 999) {
       return amount === 1 ? 'last1day' : `last${amount}days`;
     }
     const hours = amount * 24;
@@ -112,6 +112,25 @@ function buildCanonicalRelativeTimeKey(amountValue, unitValue = '') {
 function parseExplicitTimeRangePrompt(prompt = '') {
   const text = normalizeText(prompt);
   if (!text) return null;
+
+  if (/(?:\u672c\u5b63\u5ea6|\u5f53\u524d\u5b63\u5ea6|\u8fd9\u4e2a\u5b63\u5ea6|\u672c\u5b63|\bcurrent\s+quarter\b)/i.test(text)) {
+    return { key: 'currentQuarter', displayText: '\u5f53\u524d\u81ea\u7136\u5b63\u5ea6' };
+  }
+  if (/(?:\u4e0a\u4e2a\u5b63\u5ea6|\u4e0a\u4e00\u5b63\u5ea6|\u4e0a\u5b63|\bprevious\s+quarter\b)/i.test(text)) {
+    return { key: 'previousQuarter', displayText: '\u4e0a\u4e00\u4e2a\u81ea\u7136\u5b63\u5ea6' };
+  }
+  if (/(?:\u6700\u8fd1\u4e00\u4e2a\u5b63\u5ea6|\u6700\u8fd1\u4e00\u5b63|\u8fc7\u53bb\u4e00\u4e2a\u5b63\u5ea6|\u8fd1\u4e00\u4e2a\u5b63\u5ea6|\b(?:last|past)\s+quarter\b)/i.test(text)) {
+    return { key: 'last90days', displayText: '\u6700\u8fd1\u4e00\u4e2a\u5b63\u5ea6' };
+  }
+  if (/(?:\u672c\u5e74|\u4eca\u5e74|\u5f53\u524d\u5e74\u5ea6|\u672c\u5e74\u5ea6|\bcurrent\s+year\b)/i.test(text)) {
+    return { key: 'currentYear', displayText: '\u5f53\u524d\u81ea\u7136\u5e74' };
+  }
+  if (/(?:\u53bb\u5e74|\u4e0a\u4e00\u5e74|\u4e0a\u5e74\u5ea6|\u4e0a\u4e00\u5e74\u5ea6|\bprevious\s+year\b|\blast\s+year\b)/i.test(text)) {
+    return { key: 'previousYear', displayText: '\u4e0a\u4e00\u4e2a\u81ea\u7136\u5e74' };
+  }
+  if (/(?:\u6700\u8fd1\u4e00\u5e74|\u8fc7\u53bb\u4e00\u5e74|\u8fd1\u4e00\u5e74|\blast\s+365\s+days?\b)/i.test(text)) {
+    return { key: 'last365days', displayText: '\u6700\u8fd1\u4e00\u5e74' };
+  }
 
   const todayMatch = text.match(/(\u4eca\u5929|\u4eca\u65e5|\u5f53\u5929|\btoday\b)/i);
   if (todayMatch) {
@@ -167,6 +186,7 @@ function hasExplicitTimeRangeExpression(prompt = '') {
     || /(?:\u6700\u8fd1|\u8fd1|\u8fc7\u53bb|\u524d)\s*[^\uff0c\u3002\uff01\uff1f\n]{0,12}\s*(?:\u5468|\u661f\u671f)/i.test(text)
     || /(?:last|past)\s*[^,.;!?\n]{0,16}\s*(?:minutes?|mins?|hours?|hrs?|days?)/i.test(text)
     || /(?:\u5f53\u524d\u5c0f\u65f6|\u8fd9\u4e2a\u5c0f\u65f6)/.test(text)
+    || /(?:\u5b63\u5ea6|\u5e74\u5ea6|\u672c\u5e74|\u4eca\u5e74|\u53bb\u5e74|\b(?:current|previous|last)\s+(?:quarter|year)\b)/i.test(text)
   );
 }
 
@@ -211,6 +231,57 @@ function buildLocalDayTimeRange(key, dayOffset, nowSeconds = DEFAULT_NOW_SECONDS
   };
 }
 
+function getShanghaiDateParts(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  const instant = new Date(alignToMinute(nowSeconds) * 1000);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(instant).reduce((result, part) => {
+    if (part.type !== 'literal') result[part.type] = Number(part.value);
+    return result;
+  }, {});
+}
+
+function shanghaiLocalStartSeconds(year, monthIndex, day = 1) {
+  return Math.floor(Date.UTC(year, monthIndex, day) / 1000) - SHANGHAI_OFFSET_SECONDS;
+}
+
+function buildCalendarPeriodTimeRange(key, period, offset = 0, nowSeconds = DEFAULT_NOW_SECONDS(), displayText = '') {
+  const parts = getShanghaiDateParts(nowSeconds);
+  let year = Number(parts.year);
+  let monthIndex = Number(parts.month) - 1;
+  if (period === 'quarter') {
+    monthIndex = Math.floor(monthIndex / 3) * 3 + Number(offset || 0) * 3;
+  } else {
+    monthIndex = Number(offset || 0) * 12;
+  }
+  year += Math.floor(monthIndex / 12);
+  monthIndex %= 12;
+  if (monthIndex < 0) {
+    monthIndex += 12;
+    year -= 1;
+  }
+
+  const start = alignToMinute(shanghaiLocalStartSeconds(year, monthIndex, 1));
+  const nextMonthIndex = period === 'quarter' ? monthIndex + 3 : monthIndex + 12;
+  const nextYear = year + Math.floor(nextMonthIndex / 12);
+  const nextStart = shanghaiLocalStartSeconds(nextYear, nextMonthIndex % 12, 1);
+  const end = Number(offset || 0) === 0
+    ? alignToMinute(nowSeconds)
+    : alignToMinute(nextStart - 60);
+  return {
+    key,
+    displayText: displayText || key,
+    start,
+    end,
+    source: 'time_range_resolver',
+    alignment: 'minute_floor',
+    boundary: period === 'quarter' ? 'local_quarter' : 'local_year'
+  };
+}
+
 function buildLast1HourTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
   return buildRelativeTimeRange('last1hour', 60 * 60, nowSeconds, '\u6700\u8fd11\u5c0f\u65f6');
 }
@@ -227,6 +298,22 @@ function buildYesterdayTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
   return buildLocalDayTimeRange('yesterday', -1, nowSeconds, '\u6628\u5929');
 }
 
+function buildCurrentQuarterTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('currentQuarter', 'quarter', 0, nowSeconds, '\u5f53\u524d\u81ea\u7136\u5b63\u5ea6');
+}
+
+function buildPreviousQuarterTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('previousQuarter', 'quarter', -1, nowSeconds, '\u4e0a\u4e00\u4e2a\u81ea\u7136\u5b63\u5ea6');
+}
+
+function buildCurrentYearTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('currentYear', 'year', 0, nowSeconds, '\u5f53\u524d\u81ea\u7136\u5e74');
+}
+
+function buildPreviousYearTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('previousYear', 'year', -1, nowSeconds, '\u4e0a\u4e00\u4e2a\u81ea\u7136\u5e74');
+}
+
 function resolveKnownTimeRangeKey(key = '', nowSeconds = DEFAULT_NOW_SECONDS()) {
   const normalized = normalizeLower(key).replace(/[_\s-]+/g, '');
   switch (normalized) {
@@ -241,6 +328,14 @@ function resolveKnownTimeRangeKey(key = '', nowSeconds = DEFAULT_NOW_SECONDS()) 
     case 'last24hour':
     case 'last1day':
       return buildLast24HoursTimeRange(nowSeconds);
+    case 'currentquarter':
+      return buildCurrentQuarterTimeRange(nowSeconds);
+    case 'previousquarter':
+      return buildPreviousQuarterTimeRange(nowSeconds);
+    case 'currentyear':
+      return buildCurrentYearTimeRange(nowSeconds);
+    case 'previousyear':
+      return buildPreviousYearTimeRange(nowSeconds);
     default:
       break;
   }
@@ -269,7 +364,7 @@ function resolveKnownTimeRangeKey(key = '', nowSeconds = DEFAULT_NOW_SECONDS()) 
     }
   }
 
-  const daysMatch = normalized.match(/^last(\d{1,2})days?$/);
+  const daysMatch = normalized.match(/^last(\d{1,3})days?$/);
   if (daysMatch) {
     const days = Number(daysMatch[1]);
     if (Number.isFinite(days) && days > 0) {
@@ -328,6 +423,10 @@ module.exports = {
   buildLast24HoursTimeRange,
   buildTodayTimeRange,
   buildYesterdayTimeRange,
+  buildCurrentQuarterTimeRange,
+  buildPreviousQuarterTimeRange,
+  buildCurrentYearTimeRange,
+  buildPreviousYearTimeRange,
   parseDurationAmount,
   buildCanonicalRelativeTimeKey,
   parseExplicitTimeRangePrompt,

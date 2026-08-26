@@ -134,6 +134,87 @@ describe('InspectionTrafficAnalysisService', () => {
     expect(window.dataset.requestedGranularity).toBe(300);
   });
 
+  test('aggregates oversized daily windows by Shanghai calendar week', async () => {
+    const start = 1750003200;
+    const end = start + 365 * 86400;
+    const service = new InspectionTrafficAnalysisService({
+      nowSeconds: end,
+      maxPoints: 120,
+      client: {
+        async getTimeValues(params) {
+          return {
+            data: {
+              interval: { start: params.start, end: params.end },
+              granularity: 86400,
+              rows: Array.from({ length: 365 }, (_value, index) => ({
+                timestamp: start + index * 86400,
+                TPIO: index + 1,
+                TPI: index,
+                TPO: 1
+              }))
+            }
+          };
+        }
+      }
+    });
+
+    const result = await service.queryWindow({
+      id: 'traffic-year',
+      title: '最近一年流量分布趋势',
+      start,
+      end,
+      durationSeconds: end - start
+    });
+
+    expect(result.dataset.points.length).toBeLessThanOrEqual(53);
+    expect(result.dataset.effectiveGranularity).toBe(604800);
+    expect(result.dataset.aggregation).toMatchObject({
+      method: 'calendar_week_average',
+      sourceGranularity: 86400,
+      effectiveGranularity: 604800,
+      status: 'applied'
+    });
+    expect(result.queryEvidence).toMatchObject({
+      actualGranularity: 86400,
+      effectiveGranularity: 604800,
+      aggregation: expect.objectContaining({ method: 'calendar_week_average' })
+    });
+  });
+
+  test('collects the selected primary window plus explicit context windows', async () => {
+    const calls = [];
+    const service = new InspectionTrafficAnalysisService({
+      nowSeconds: 1786093000,
+      client: {
+        async getTimeValues(params) {
+          calls.push(params);
+          return {
+            data: { rows: [{ timestamp: params.start, TPIO: 1, TPI: 1, TPO: 0 }] }
+          };
+        }
+      }
+    });
+
+    const result = await service.collect({
+      reportWindow: { key: 'last7days', displayText: '最近7天' },
+      primaryWindow: {
+        id: 'traffic-primary', key: 'last7days', displayText: '最近7天',
+        start: 1785488160, end: 1786092960, durationSeconds: 604800
+      },
+      contextWindows: [
+        { id: 'recent-day', key: 'last1day', displayText: '最近1天', start: 1786006560, end: 1786092960, durationSeconds: 86400 },
+        { id: 'recent-hour', key: 'last1hour', displayText: '最近1小时', start: 1786089360, end: 1786092960, durationSeconds: 3600 }
+      ]
+    });
+
+    expect(calls.map((item) => item.granularity)).toEqual([86400, 3600, 60]);
+    expect(result.primary).toMatchObject({ key: 'last7days', durationSeconds: 604800, title: '最近7天流量分布趋势' });
+    expect(result.contextDay).toMatchObject({ key: 'last1day' });
+    expect(result.contextHour).toMatchObject({ key: 'last1hour' });
+    expect(result.recentHour).toBe(result.contextHour);
+    expect(result.recentDay).toBe(result.contextDay);
+  });
+
   test('does not fabricate 1970 timestamps when interval.start is absent', () => {
     const dataset = __test__.normalizeTimeSeriesDataset({
       granularity: 60,

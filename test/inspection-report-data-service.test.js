@@ -105,4 +105,33 @@ describe('InspectionReportDataService', () => {
 
     expect(evidence.map((item) => item.id)).toEqual(['hour', 'day', 'slow']);
   });
+
+  test.each([
+    ['最近7天巡检', 'last7days', ['last1day', 'last1hour']],
+    ['最近30天巡检', 'last30days', ['last1day', 'last1hour']],
+    ['最近一年巡检', 'last365days', ['last1day', 'last1hour']],
+    ['当前季度巡检', 'currentQuarter', ['last1day', 'last1hour']]
+  ])('builds a primary window and context windows for %s', (prompt, key, contextKeys) => {
+    const contract = __test__.resolveInspectionWindowContract({ prompt, nowSeconds: 1786093000 }, {
+      prompt,
+      nowSeconds: 1786093000,
+      timezone: 'Asia/Shanghai'
+    });
+
+    expect(contract.reportWindow).toMatchObject({ key, timezone: 'Asia/Shanghai', explicit: true });
+    expect(contract.primaryWindow.durationSeconds).toBeGreaterThan(86400);
+    expect(contract.contextWindows.map((item) => item.key)).toEqual(contextKeys);
+  });
+
+  test('passes the selected window contract into reportData while retaining legacy traffic aliases', async () => {
+    const result = await new InspectionReportDataService().run({
+      prompt: '最近7天巡检',
+      nowSeconds: 1786093000,
+      source: makeSource()
+    });
+
+    expect(result.inspection.reportWindow).toMatchObject({ key: 'last7days', start: 1785488160, end: 1786092960 });
+    expect(result.inspection.primaryWindow).toMatchObject({ id: 'traffic-primary', key: 'last7days' });
+    expect(result.reportData.timeRange).toMatchObject({ key: 'last7days', displayText: '最近7天' });
+  });
 });

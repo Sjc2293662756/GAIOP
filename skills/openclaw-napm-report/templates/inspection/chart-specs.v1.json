@@ -2,6 +2,45 @@
   "schema": "openclaw_napm_inspection_chart_specs.v1",
   "charts": [
     {
+      "id": "traffic.primary.total",
+      "title": "{{inspection.trafficAnalysis.primary.title}}",
+      "chartType": "line",
+      "datasetPath": "inspection.trafficAnalysis.primary.dataset",
+      "xField": "time",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "inspection.trafficAnalysis.primary.dataset.unit"
+    },
+    {
+      "id": "traffic.contextDay.total",
+      "title": "{{inspection.trafficAnalysis.contextDay.title}}",
+      "chartType": "line",
+      "datasetPath": "inspection.trafficAnalysis.contextDay.dataset",
+      "xField": "time",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "inspection.trafficAnalysis.contextDay.dataset.unit"
+    },
+    {
+      "id": "traffic.contextHour.total",
+      "title": "{{inspection.trafficAnalysis.contextHour.title}}",
+      "chartType": "line",
+      "datasetPath": "inspection.trafficAnalysis.contextHour.dataset",
+      "xField": "time",
+      "series": [
+        { "field": "TPIO", "name": "总流量" },
+        { "field": "TPI", "name": "流入流量" },
+        { "field": "TPO", "name": "流出流量" }
+      ],
+      "unitPath": "inspection.trafficAnalysis.contextHour.dataset.unit"
+    },
+    {
       "id": "traffic.recentHour.total",
       "title": "最近1小时总流量趋势图",
       "chartType": "line",

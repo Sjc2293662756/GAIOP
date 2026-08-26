@@ -249,6 +249,8 @@ function buildInspectionReportData(result = {}, options = {}) {
     title,
     systemName,
     sourceQuestion: String(options.sourceQuestion || options.prompt || result.sourceQuestion || '').trim() || undefined,
+    timeRange: inspection.reportWindow || result.reportWindow || result.timeRange || undefined,
+    reportWindow: inspection.reportWindow || result.reportWindow || result.timeRange || undefined,
     dataSource: {
       system: systemName,
       sourceSkill: 'openclaw-napm-inspection',

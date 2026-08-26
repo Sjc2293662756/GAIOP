@@ -86,4 +86,30 @@ describe('InspectionBusinessPerformanceService', () => {
       [{ businessName: '业务A', PGHTTP500: 2 }]
     )[0]).toMatchObject({ http400: 1, http500: 2 });
   });
+
+  test('uses the selected report window for business TopN queries', async () => {
+    const calls = [];
+    const service = new InspectionBusinessPerformanceService({
+      nowSeconds: 1786093000,
+      client: {
+        async getTopValues(params) {
+          calls.push(params);
+          return { data: [] };
+        }
+      }
+    });
+    const result = await service.collect({
+      businessWindow: {
+        key: 'last30days',
+        displayText: '最近30天',
+        start: 1783500960,
+        end: 1786092960,
+        timezone: 'Asia/Shanghai'
+      }
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every((item) => item.start === 1783500960 && item.end === 1786092960)).toBe(true);
+    expect(result.timeWindow).toMatchObject({ key: 'last30days', displayText: '最近30天', durationSeconds: 30 * 86400 });
+  });
 });

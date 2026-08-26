@@ -3336,10 +3336,24 @@ function buildAutomaticSummaryFailureResult(errorCode = 'AUTOMATIC_SUMMARY_FAILE
 
 function buildAutomaticInspectionToolArgs(prompt = '') {
   const normalizedPrompt = String(prompt || '').trim();
+  const resolver = getNapmResolvedQueryResolverService();
+  let timeRange;
+  try {
+    const resolved = resolver?.resolveTimeRange?.(normalizedPrompt);
+    if (resolved?.key) {
+      timeRange = {
+        key: resolved.key,
+        displayText: resolved.displayText || normalizedPrompt
+      };
+    }
+  } catch (_error) {
+    timeRange = undefined;
+  }
   return {
     prompt: normalizedPrompt,
     format: 'docx',
-    title: 'NAPM 系统巡检报告'
+    title: 'NAPM 系统巡检报告',
+    ...(timeRange ? { timeRange } : {})
   };
 }
 
@@ -6257,6 +6271,19 @@ function createInspectionSnapshotToolDefinition() {
         title: { type: 'string', description: 'Optional report title override.' },
         format: { type: 'string', enum: ['docx', 'word'], description: 'Requested reportData format. word is normalized by the report skill.' },
         inspectionQuery: { type: 'object', description: 'Full inspection query payload accepted by openclaw-napm-inspection.', additionalProperties: true },
+        timeRange: {
+          type: 'object',
+          description: 'Report time window. Use a concrete key such as last7days, last30days, last90days, last365days, currentQuarter, previousQuarter, currentYear, or previousYear. Fixed windows use mode=custom with start/end.',
+          properties: {
+            key: { type: 'string' },
+            mode: { type: 'string', enum: ['rolling', 'calendar', 'custom'] },
+            start: { type: 'number' },
+            end: { type: 'number' },
+            displayText: { type: 'string' },
+            timezone: { type: 'string' }
+          },
+          additionalProperties: false
+        },
         source: { type: 'object', description: 'Optional fixture source for tests/offline rendering. Omit for live NAPM collection.', additionalProperties: true },
         thresholds: { type: 'object', description: 'Optional inspection threshold overrides.', additionalProperties: true },
         nowSeconds: { type: 'number', description: 'Optional deterministic current Unix timestamp in seconds for tests.' },
@@ -7167,6 +7194,26 @@ const plugin = {
         }
         if (toolName === 'napm-alert-packet-analysis' && activePrompt) {
           toolParams = buildCanonicalAlertPacketToolParams(activePrompt, toolParams);
+        }
+        if (toolName === 'napm-inspection-snapshot' && activePrompt) {
+          const resolver = getNapmResolvedQueryResolverService();
+          let inferredTimeRange = null;
+          try {
+            const resolved = resolver?.resolveTimeRange?.(activePrompt);
+            if (resolved?.key) {
+              inferredTimeRange = {
+                key: resolved.key,
+                displayText: resolved.displayText || activePrompt
+              };
+            }
+          } catch (_error) {
+            inferredTimeRange = null;
+          }
+          toolParams = {
+            ...toolParams,
+            prompt: activePrompt,
+            ...(toolParams.timeRange || !inferredTimeRange ? {} : { timeRange: inferredTimeRange })
+          };
         }
         const trustedParamsResult = (trustedTraceId || toolParams !== originalToolParams)
           ? { params: toolParams }

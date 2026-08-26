@@ -97,7 +97,7 @@
         [
           "巡检信息汇总",
           "流量分析状况",
-          "检测系统流量分析信息，给出最近1小时、最近1天的流量分布趋势图。如果流量图中有明显的中断或少量高峰现象，需要在检查结果中说明。"
+          "检测系统流量分析信息，给出用户选择的主时间窗口及必要的报告截止时辅助窗口流量分布趋势图。如果流量图中有明显的中断或少量高峰现象，需要在检查结果中说明。"
         ],
         [
           "巡检信息汇总",
@@ -273,7 +273,7 @@
       "level": 2,
       "paragraphs": [
         "检查要求：",
-        "检测系统流量分析信息，给出最近1小时、最近1天的流量分布趋势图。",
+        "检测系统流量分析信息，给出用户选择的主时间窗口流量分布趋势图；必要时补充报告截止时最近1天、最近1小时的状态图。",
         "如果流量图中有明显的中断或少量高峰现象，需要在检查结果中说明。",
         "点击“网络回溯-总流量仪表板”。拖动总流量时序图变化情况曲线图右下角，调整图形显示大小。"
       ]
@@ -281,14 +281,45 @@
     {
       "id": "traffic_chart_recent_hour",
       "type": "chartSlot",
-      "title": "最近1小时流量分布状况",
-      "chartId": "traffic.recentHour.total"
+      "title": "{{inspection.trafficAnalysis.primary.title}}",
+      "chartId": "traffic.primary.total"
     },
     {
       "id": "traffic_chart_recent_day",
       "type": "chartSlot",
-      "title": "最近1天流量分布状况",
-      "chartId": "traffic.recentDay.total"
+      "title": "{{inspection.trafficAnalysis.contextDay.title}}",
+      "chartId": "traffic.contextDay.total",
+      "whenPath": "inspection.trafficAnalysis.contextDay"
+    },
+    {
+      "id": "traffic_chart_context_hour",
+      "type": "chartSlot",
+      "title": "{{inspection.trafficAnalysis.contextHour.title}}",
+      "chartId": "traffic.contextHour.total",
+      "whenPath": "inspection.trafficAnalysis.contextHour"
+    },
+    {
+      "id": "traffic_window_metadata",
+      "type": "table",
+      "rowBuilder": "trafficStats",
+      "columns": [
+        "窗口",
+        "标题",
+        "有效起止时间",
+        "时区",
+        "请求粒度(s)",
+        "实际粒度(s)",
+        "图表有效粒度(s)",
+        "聚合方式",
+        "数据状态",
+        "数据点",
+        "最大值",
+        "最小值",
+        "平均值",
+        "疑似缺失",
+        "零流量点",
+        "尖峰"
+      ]
     },
     {
       "id": "traffic_result_label",
@@ -319,13 +350,13 @@
     {
       "id": "business_slow_chart",
       "type": "chartSlot",
-      "title": "最近七日业务健康状况",
+      "title": "{{inspection.businessPerformance.windowLabel}}业务健康状况",
       "chartId": "business.slowAccess.top"
     },
     {
       "id": "business_error_chart",
       "type": "chartSlot",
-      "title": "HTTP 400/500 业务健康状况",
+      "title": "{{inspection.businessPerformance.windowLabel}} HTTP 400/500 业务健康状况",
       "chartId": "business.httpErrors.top"
     },
     {

@@ -1,6 +1,7 @@
 const {
   normalizeReportInput,
   buildPacketReportData,
+  buildInspectionReportData,
   isPacketSourceResult
 } = require('../skills/openclaw-napm-report/services/ReportInputContractService');
 
@@ -83,5 +84,26 @@ describe('openclaw-napm-report input contract', () => {
     expect(reportData.reportType).toBe('quick_report');
     expect(reportData.templateId).toBe('napm_generic_query_v1');
     expect(reportData.audit.reportInputSource).toBe('reportData');
+  });
+
+  test('should preserve inspection report windows when normalizing a direct inspection payload', () => {
+    const reportData = buildInspectionReportData({
+      schema: 'openclaw_napm_inspection_result.v1',
+      inspection: {
+        schema: 'openclaw_napm_inspection.v1',
+        reportWindow: {
+          key: 'last30days',
+          start: 1783500960,
+          end: 1786092960,
+          timezone: 'Asia/Shanghai'
+        }
+      }
+    });
+
+    expect(reportData).toMatchObject({
+      reportType: 'inspection_report',
+      timeRange: { key: 'last30days', timezone: 'Asia/Shanghai' },
+      reportWindow: { key: 'last30days', start: 1783500960, end: 1786092960 }
+    });
   });
 });

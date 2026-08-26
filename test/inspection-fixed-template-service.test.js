@@ -193,6 +193,43 @@ describe('InspectionFixedTemplateService', () => {
     ]));
   });
 
+  test('renders primary and context window metadata with effective granularity', () => {
+    const rows = __test__.buildTrafficStatsRows({
+      primary: {
+        title: '最近365天流量分布趋势',
+        displayText: '最近365天',
+        timezone: 'Asia/Shanghai',
+        start: 1750003200,
+        end: 1781539200,
+        queryEvidence: {
+          requestedGranularity: 86400,
+          actualGranularity: 86400
+        },
+        dataset: {
+          timezone: 'Asia/Shanghai',
+          effectiveGranularity: 604800,
+          aggregation: { method: 'calendar_week_average' },
+          points: [{ timestamp: 1750003200, TPIO: 1 }],
+          stats: { max: 1, min: 1, avg: 1, missingPointCount: 0, zeroSegmentCount: 0, spikeCount: 0 }
+        }
+      },
+      contextDay: null,
+      contextHour: null
+    });
+
+    expect(rows[0]).toEqual(expect.arrayContaining([
+      '最近365天',
+      '最近365天流量分布趋势',
+      'Asia/Shanghai',
+      86400,
+      86400,
+      604800,
+      'calendar_week_average',
+      '有数据'
+    ]));
+    expect(rows[0][2]).toContain('2025-06-16 00:00');
+  });
+
   test('renders docx from fixed inspection template', async () => {
     const service = new InspectionFixedTemplateService();
     const buffer = await service.renderDocx(makeReportData());
@@ -251,6 +288,65 @@ describe('InspectionFixedTemplateService', () => {
 
     const chartBuffers = await service.preRenderCharts(template, context);
     expect(chartBuffers.size).toBe(0);
+  });
+
+  test('renders a selected primary window and only the available context charts', async () => {
+    const report = makeReportData();
+    report.inspection.trafficAnalysis = {
+      status: 'ok',
+      primary: {
+        id: 'traffic-primary',
+        key: 'last7days',
+        title: '最近7天流量分布趋势',
+        displayText: '最近7天',
+        narrativeLabel: '最近7天总流量趋势',
+        dataset: {
+          unit: 'Kbps',
+          points: [{ time: '2026-06-10 10:00:00', TPIO: 10, TPI: 4, TPO: 6 }],
+          stats: { missingPointCount: 0, zeroSegmentCount: 0, spikeCount: 0 }
+        }
+      },
+      contextDay: {
+        id: 'recent-day',
+        key: 'last1day',
+        title: '报告截止时最近1天流量分布状况',
+        displayText: '最近1天',
+        dataset: { unit: 'Kbps', points: [{ time: '2026-06-16 10:00:00', TPIO: 2, TPI: 1, TPO: 1 }] }
+      },
+      contextHour: {
+        id: 'recent-hour',
+        key: 'last1hour',
+        title: '报告截止时最近1小时流量分布状况',
+        displayText: '最近1小时',
+        dataset: { unit: 'Kbps', points: [{ time: '2026-06-16 10:00:00', TPIO: 1, TPI: 1, TPO: 0 }] }
+      }
+    };
+    const service = new InspectionFixedTemplateService();
+    const context = service.buildContext(report);
+    const primaryChart = service.loadChartSpecs().charts.find((item) => item.id === 'traffic.primary.total');
+    const option = __test__.buildEChartsOption(primaryChart, context);
+    const chartBuffers = await service.preRenderCharts(service.loadTemplate(), context);
+
+    expect(context.inspection.trafficAnalysis.primary.title).toBe('最近7天流量分布趋势');
+    expect(option.title.text).toBe('最近7天流量分布趋势');
+    expect(chartBuffers.size).toBe(5);
+    expect(__test__.buildNarrativeTexts(
+      context,
+      service.loadNarrativeRules(),
+      'traffic.summary',
+      'all'
+    )[0]).toContain('最近7天总流量趋势');
+  });
+
+  test('skips an absent context chart slot instead of emitting an empty placeholder', () => {
+    const service = new InspectionFixedTemplateService();
+    const context = service.buildContext(makeReportData());
+    expect(service.renderSection({
+      id: 'traffic_chart_context_hour',
+      type: 'chartSlot',
+      chartId: 'traffic.contextHour.total',
+      whenPath: 'inspection.trafficAnalysis.contextHour'
+    }, context)).toEqual([]);
   });
 
   test('renders configured header and footer into docx package', async () => {

@@ -54,8 +54,16 @@ User-facing output and audit summaries must redact password values as `Password=
 The skill collects:
 
 - `applianceInfo`, `packetsInfo`, `About.jsp` for device and retention sections.
-- `timeValues` with `TotalTraffic` and metrics `TPIO,TPI,TPO` for recent 1 hour and recent 1 day traffic analysis.
-- `topValues` with `WebApplication` and metrics `PGSLPCT,PGNSLPGE,PGTME`, `PGHTTP400`, `PGHTTP500` for business performance.
+- `timeValues` with `TotalTraffic` and metrics `TPIO,TPI,TPO` for a user-selected primary traffic window plus optional report-cutoff context windows.
+- `topValues` with `WebApplication` and metrics `PGSLPCT,PGNSLPGE,PGTME`, `PGHTTP400`, `PGHTTP500` for business performance. When the user supplies a report window, these aggregations use the same primary range; without one, they retain the default recent 7-day range.
+
+The input may provide a `timeRange`/`reportWindow` with a concrete rolling key (`last7days`, `last30days`, `last90days`, `last365days`), a calendar key (`currentQuarter`, `previousQuarter`, `currentYear`, `previousYear`), or `mode=custom` with `start/end`. When only `prompt` is provided, the shared server-side time resolver derives the window. Relative timestamps are never calculated by the model.
+
+The result separates:
+
+- `primaryWindow`: the user-requested report range;
+- `contextWindows`: optional recent 1-day and recent 1-hour status ranges;
+- legacy `recentHour`/`recentDay` aliases for backward compatibility.
 
 Traffic analysis and business performance findings must come from query rows and must include `evidenceRefs` or query evidence. The report skill must only render this data; it must not re-query NAPM or invent conclusions.
 
@@ -94,6 +102,12 @@ The skill returns:
     "reportType": "inspection_report",
     "templateId": "napm_traffic_health_inspection_v1",
     "format": "docx",
+    "timeRange": {
+      "key": "last7days",
+      "start": 0,
+      "end": 0,
+      "timezone": "Asia/Shanghai"
+    },
     "inspection": {},
     "sections": [
       { "type": "inspection", "title": "巡检报告", "dataPath": "inspection" }

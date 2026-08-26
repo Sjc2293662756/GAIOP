@@ -573,11 +573,74 @@ function buildAbnormalItemRows(summary = {}) {
   return asArray(summary.abnormalItems).map((item, index) => [index + 1, item]);
 }
 
+function formatTrafficWindowTimestamp(value, timezone = 'Asia/Shanghai') {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
 function buildTrafficStatsRows(trafficAnalysis = {}) {
-  const windows = [
-    ['最近1小时', trafficAnalysis.recentHour],
-    ['最近1天', trafficAnalysis.recentDay]
-  ];
+  const windows = trafficAnalysis.primary
+    ? [
+        [trafficAnalysis.primary.displayText || trafficAnalysis.primary.title, trafficAnalysis.primary],
+        [trafficAnalysis.contextDay?.displayText || trafficAnalysis.contextDay?.title, trafficAnalysis.contextDay],
+        [trafficAnalysis.contextHour?.displayText || trafficAnalysis.contextHour?.title, trafficAnalysis.contextHour]
+      ]
+    : [
+        ['最近1小时', trafficAnalysis.recentHour],
+        ['最近1天', trafficAnalysis.recentDay]
+      ];
+  if (trafficAnalysis.primary) {
+    return windows
+      .filter(([, window]) => window)
+      .map(([label, window]) => {
+        const dataset = window.dataset || {};
+        const evidence = window.queryEvidence || {};
+        const stats = dataset.stats || {};
+        const pointCount = asArray(dataset.points).length;
+        const timezone = dataset.timezone || window.timezone || evidence.timezone || 'Asia/Shanghai';
+        const start = dataset.interval?.start ?? evidence.effectiveStart ?? window.start ?? evidence.start;
+        const end = dataset.interval?.end ?? evidence.effectiveEnd ?? window.end ?? evidence.end;
+        const requestedGranularity = evidence.requestedGranularity
+          ?? dataset.requestedGranularity
+          ?? evidence.granularity;
+        const actualGranularity = dataset.actualGranularity ?? evidence.actualGranularity;
+        const effectiveGranularity = dataset.effectiveGranularity
+          ?? evidence.effectiveGranularity
+          ?? actualGranularity;
+        return [
+          label,
+          window.title,
+          `${formatTrafficWindowTimestamp(start, timezone)} ~ ${formatTrafficWindowTimestamp(end, timezone)}`,
+          timezone,
+          requestedGranularity,
+          actualGranularity,
+          effectiveGranularity,
+          dataset.aggregation?.method || '',
+          pointCount > 0 ? '有数据' : '无数据',
+          pointCount,
+          stats.max,
+          stats.min,
+          stats.avg,
+          stats.missingPointCount,
+          stats.zeroSegmentCount,
+          stats.spikeCount
+        ];
+      });
+  }
+
   return windows
     .filter(([, window]) => window?.dataset)
     .map(([label, window]) => {
@@ -646,8 +709,15 @@ function collectInspectionEvidence(inspection = {}, audit = {}) {
   const append = (item) => {
     if (isPlainObject(item)) evidence.push(item);
   };
-  append(inspection.trafficAnalysis?.recentHour?.queryEvidence);
-  append(inspection.trafficAnalysis?.recentDay?.queryEvidence);
+  const traffic = inspection.trafficAnalysis || {};
+  [
+    traffic.primary,
+    traffic.contextDay,
+    traffic.contextHour,
+    ...(Array.isArray(traffic.contextWindows) ? traffic.contextWindows : []),
+    traffic.recentHour,
+    traffic.recentDay
+  ].forEach((window) => append(window?.queryEvidence));
   asArray(inspection.businessPerformance?.queryEvidence).forEach(append);
   asArray(audit.queryEvidence).forEach(append);
 
@@ -765,11 +835,64 @@ function countDatasetRows(dataset) {
   return 0;
 }
 
+function normalizeTrafficWindow(window = {}, defaults = {}) {
+  if (!isPlainObject(window)) return null;
+  const fallbackDisplayText = defaults.displayText || '最近1小时';
+  const title = asText(window.title) || `${asText(window.displayText) || fallbackDisplayText}流量分布状况`;
+  const displayText = asText(window.displayText)
+    || title.replace(/^(?:报告截止时)?(.+?)流量分布(?:趋势|状况)$/, '$1')
+    || fallbackDisplayText;
+  return {
+    ...window,
+    title,
+    displayText,
+    narrativeLabel: asText(window.narrativeLabel) || `${displayText}总流量趋势`
+  };
+}
+
+function normalizeTrafficAnalysisContext(trafficAnalysis = {}) {
+  const source = isPlainObject(trafficAnalysis) ? trafficAnalysis : {};
+  const primary = normalizeTrafficWindow(source.primary || source.recentHour, { displayText: '最近1小时' });
+  const contextDay = normalizeTrafficWindow(source.contextDay || source.recentDay, { displayText: '最近1天' });
+  const contextHour = normalizeTrafficWindow(
+    source.contextHour && source.contextHour !== primary ? source.contextHour : null,
+    { displayText: '最近1小时' }
+  );
+  return {
+    ...source,
+    primary,
+    contextDay: contextDay && contextDay !== primary ? contextDay : null,
+    contextHour,
+    recentHour: source.recentHour || (primary?.displayText === '最近1小时' ? primary : contextHour),
+    recentDay: source.recentDay || (primary?.displayText === '最近1天' ? primary : contextDay),
+    contextWindows: Array.isArray(source.contextWindows) ? source.contextWindows : [
+      ...(contextDay ? [contextDay] : []),
+      ...(contextHour ? [contextHour] : [])
+    ],
+    summaryLabel: [primary, contextDay, contextHour]
+      .filter(Boolean)
+      .map((window) => window.narrativeLabel)
+      .join('\u548c')
+  };
+}
+
+function normalizeBusinessPerformanceContext(businessPerformance = {}) {
+  const source = isPlainObject(businessPerformance) ? businessPerformance : {};
+  const displayText = asText(source.timeWindow?.displayText)
+    || asText(source.window?.displayText)
+    || '最近7日';
+  return {
+    ...source,
+    timeWindow: source.timeWindow || source.window || { displayText },
+    windowLabel: displayText
+  };
+}
+
 function buildChartSlotRows(context = {}, chart = {}) {
   const dataset = getByPath(context, chart.datasetPath || '');
   const unit = chart.unitPath ? getByPath(context, chart.unitPath) : '';
   return [
-    ['图表名称', chart.title],
+    ['图表名称', interpolate(chart.title, context)],
     ['图表类型', chartTypeText(chart.chartType)],
     ['数据绑定', chart.datasetPath],
     ['数据点数量', countDatasetRows(dataset)],
@@ -818,6 +941,7 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
   const xField = chartSpec.xField || 'time';
   const seriesDefs = asArray(chartSpec.series);
   const timezone = context.timezone || dataset?.timezone || 'Asia/Shanghai';
+  const chartTitle = interpolate(chartSpec.title || '', context);
 
   function toChartValue(value) {
     if (value === null || value === undefined || value === '') return null;
@@ -915,7 +1039,7 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
   return {
     backgroundColor: NAPM_STYLE.backgroundColor,
     title: {
-      text: chartSpec.title || '',
+      text: chartTitle,
       left: 'center',
       top: '3%',
       textStyle: { ...NAPM_STYLE.title, fontFamily: NAPM_STYLE.fontFamily }
@@ -1014,10 +1138,15 @@ class InspectionFixedTemplateService {
   buildContext(report = {}) {
     const inspectionSection = asArray(report.sections).find((section) => section?.type === 'inspection') || {};
     const inspection = report.inspection || getByPath(report, inspectionSection.dataPath || 'inspection') || {};
+    const normalizedInspection = {
+      ...inspection,
+      trafficAnalysis: normalizeTrafficAnalysisContext(inspection.trafficAnalysis || {}),
+      businessPerformance: normalizeBusinessPerformanceContext(inspection.businessPerformance || {})
+    };
     return {
       ...report,
       report,
-      inspection,
+      inspection: normalizedInspection,
       audit: report.audit || {}
     };
   }
@@ -1224,7 +1353,10 @@ class InspectionFixedTemplateService {
         console.warn(`[InspectionFixedTemplate] chart "${slot.id}" has NO DATA — check if inspection data contains "${chart.datasetPath}"`);
         continue;
       }
-      const option = buildEChartsOption(chart, context);
+      const option = buildEChartsOption({
+        ...chart,
+        title: interpolate(chart.title, context)
+      }, context);
       // Verify series data isn't all empty — log first few values
       const totalValues = (option.series || []).reduce((sum, s) => sum + (Array.isArray(s.data) ? s.data.length : 0), 0);
       const sampleValues = (option.series || []).map((s) => {
@@ -1248,8 +1380,9 @@ class InspectionFixedTemplateService {
     const buffers = chartBuffers || this._chartBuffers || new Map();
     const cached = buffers.get(section.id);
     const children = [];
-    if (section.title) {
-      children.push(buildCaption(section.title));
+    const sectionTitle = interpolate(section.title || '', context);
+    if (sectionTitle) {
+      children.push(buildCaption(sectionTitle));
     }
     if (cached && cached.buffer) {
       // Embed real chart PNG image
@@ -1262,8 +1395,8 @@ class InspectionFixedTemplateService {
             data: cached.buffer,
             transformation: { width: cached.width || NAPM_STYLE.chartWidth, height: cached.height || NAPM_STYLE.chartHeight },
             altText: {
-              title: section.title || 'chart',
-              description: section.title || 'chart'
+              title: sectionTitle || 'chart',
+              description: sectionTitle || 'chart'
             }
           })
         ]
@@ -1285,6 +1418,8 @@ class InspectionFixedTemplateService {
     // TOC pages are disabled for every report type. Ignore both the field and
     // its legacy page-break companion so stale templates cannot reintroduce it.
     if (section.type === 'toc' || section.id === 'toc_break') return [];
+    if (section.whenPath && !existsValue(getByPath(context, section.whenPath))) return [];
+    if (section.whenAbsentPath && existsValue(getByPath(context, section.whenAbsentPath))) return [];
     if (section.type === 'cover') return this.renderCover(section, context);
     if (section.type === 'pageBreak') return [new Paragraph({ children: [new PageBreak()] })];
     if (section.type === 'heading') return [buildHeading(section.title, section.level || 1)];

@@ -5,6 +5,10 @@ const InspectionFieldMapperService = require('./InspectionFieldMapperService');
 const InspectionRuleService = require('./InspectionRuleService');
 const InspectionTrafficAnalysisService = require('./InspectionTrafficAnalysisService');
 const InspectionBusinessPerformanceService = require('./InspectionBusinessPerformanceService');
+const TimeRangeService = require('../../openclaw-napm-query/services/ResolvedQueryTimeRangeService');
+const { resolveExecutionTime } = require('../../openclaw-napm-query/src/shared/timeResolver');
+
+const DEFAULT_TIMEZONE = 'Asia/Shanghai';
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -14,9 +18,163 @@ function asText(value) {
   return value === null || value === undefined ? '' : String(value).trim();
 }
 
+function toFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeWindowMode(key = '', mode = '') {
+  const requestedMode = asText(mode).toLowerCase();
+  if (['rolling', 'calendar', 'custom'].includes(requestedMode)) return requestedMode;
+  if (String(key).toLowerCase() === 'custom') return 'custom';
+  if (/quarter|year/i.test(String(key))) return 'calendar';
+  return 'rolling';
+}
+
+function getWindowInput(input = {}) {
+  const nestedQuery = isPlainObject(input.inspectionQuery) ? input.inspectionQuery : {};
+  const candidate = [
+    input.reportWindow,
+    input.timeRange,
+    input.executionTimeRange,
+    nestedQuery.reportWindow,
+    nestedQuery.timeRange,
+    nestedQuery.executionTimeRange
+  ].find(isPlainObject);
+  return candidate || {};
+}
+
+function makeWindowDescriptor(range = {}, options = {}) {
+  const requestedKey = asText(options.requestedKey || range.requestedKey || range.key) || 'custom';
+  const displayText = asText(options.displayText || range.displayText || requestedKey);
+  const mode = normalizeWindowMode(requestedKey, options.mode || range.mode);
+  const start = Number(range.start);
+  const end = Number(range.end);
+  return {
+    id: asText(options.id) || requestedKey,
+    key: requestedKey,
+    resolvedKey: asText(range.key) || requestedKey,
+    mode,
+    start,
+    end,
+    durationSeconds: Math.max(0, end - start),
+    timezone: options.timezone || DEFAULT_TIMEZONE,
+    displayText,
+    requestedKey,
+    source: asText(options.source || range.source) || 'time_range_resolver',
+    boundary: asText(range.boundary) || undefined
+  };
+}
+
+function resolveInspectionWindowContract(input = {}, options = {}) {
+  const nowSeconds = toFiniteNumber(options.nowSeconds) || Math.floor(Date.now() / 1000);
+  const timezone = asText(options.timezone) || DEFAULT_TIMEZONE;
+  const candidate = getWindowInput(input);
+  const prompt = asText(input.prompt || input.sourceQuestion || input.userQuery);
+  const requestedKey = asText(candidate.key || candidate.timeRangeKey);
+  const requestedMode = asText(candidate.mode || candidate.timeMode);
+  const explicitStart = toFiniteNumber(candidate.start);
+  const explicitEnd = toFiniteNumber(candidate.end);
+  const fixedMode = requestedMode === 'custom' || requestedKey.toLowerCase() === 'custom';
+
+  let parsedPrompt = null;
+  let resolved;
+  if (requestedKey || explicitStart !== null || explicitEnd !== null) {
+    resolved = resolveExecutionTime({
+      timeRangeKey: fixedMode ? '' : requestedKey,
+      start: explicitStart,
+      end: explicitEnd,
+      nowSeconds,
+      defaultKey: 'last1hour'
+    });
+  } else {
+    parsedPrompt = TimeRangeService.resolvePromptTimeRange(prompt, { nowSeconds });
+    resolved = parsedPrompt
+      ? resolveExecutionTime({ timeRangeKey: parsedPrompt.key, nowSeconds })
+      : resolveExecutionTime({ defaultKey: 'last1hour', nowSeconds });
+  }
+
+  if (!resolved || resolved.ok === false) {
+    const error = new Error(resolved?.message || 'Unable to resolve inspection report time range.');
+    error.code = 'INSPECTION_TIME_RANGE_INVALID';
+    error.details = {
+      requestedKey: requestedKey || parsedPrompt?.key || null,
+      reason: resolved?.reason || 'unresolved'
+    };
+    throw error;
+  }
+
+  const primaryKey = requestedKey || parsedPrompt?.key || resolved.key;
+  const primary = makeWindowDescriptor(resolved, {
+    id: 'traffic-primary',
+    requestedKey: primaryKey,
+    displayText: candidate.displayText || parsedPrompt?.displayText,
+    mode: requestedMode || (parsedPrompt?.key ? normalizeWindowMode(parsedPrompt.key) : undefined),
+    timezone,
+    source: candidate.source || parsedPrompt?.source || resolved.source
+  });
+  const explicitWindow = Boolean(requestedKey || explicitStart !== null || explicitEnd !== null || parsedPrompt);
+
+  const contextKeys = !explicitWindow
+    ? ['last1day']
+    : (primary.durationSeconds > 86400
+      ? ['last1day', 'last1hour']
+      : (primary.durationSeconds > 3600 ? ['last1hour'] : ['last1day']));
+  const contextWindows = contextKeys
+    .filter((key) => key !== primary.key && !(key === 'last1day' && primary.durationSeconds === 86400))
+    .map((key) => {
+      const contextRange = resolveExecutionTime({ timeRangeKey: key, nowSeconds });
+      const isDay = key === 'last1day';
+      return makeWindowDescriptor(contextRange, {
+        id: isDay ? 'recent-day' : 'recent-hour',
+        requestedKey: key,
+        displayText: isDay ? '\u6700\u8fd11\u5929' : '\u6700\u8fd11\u5c0f\u65f6',
+        timezone,
+        source: 'inspection_context_window'
+      });
+    });
+
+  const businessRange = explicitWindow
+    ? primary
+    : makeWindowDescriptor(resolveExecutionTime({ timeRangeKey: 'last7days', nowSeconds }), {
+      id: 'business-primary',
+      requestedKey: 'last7days',
+      displayText: '\u6700\u8fd17\u5929',
+      timezone,
+      source: 'inspection_default_business_window'
+    });
+
+  return {
+    reportWindow: {
+      ...primary,
+      id: 'report-window',
+      displayText: candidate.displayText || parsedPrompt?.displayText || primary.displayText,
+      explicit: explicitWindow
+    },
+    primaryWindow: primary,
+    contextWindows,
+    businessWindow: businessRange,
+    explicit: explicitWindow,
+    timezone
+  };
+}
+
 function collectQueryEvidence(inspection = {}) {
   const evidence = [];
-  for (const section of [inspection.trafficAnalysis?.recentHour, inspection.trafficAnalysis?.recentDay]) {
+  const traffic = inspection.trafficAnalysis || {};
+  const dynamicWindows = [
+    traffic.primary,
+    traffic.contextDay,
+    traffic.contextHour,
+    ...(Array.isArray(traffic.contextWindows) ? traffic.contextWindows : []),
+    traffic.recentHour,
+    traffic.recentDay
+  ];
+  const seen = new Set();
+  for (const section of dynamicWindows) {
+    const evidenceKey = section?.queryEvidence && JSON.stringify(section.queryEvidence);
+    if (evidenceKey && seen.has(evidenceKey)) continue;
+    if (evidenceKey) seen.add(evidenceKey);
     if (section?.queryEvidence) evidence.push(section.queryEvidence);
   }
   if (Array.isArray(inspection.businessPerformance?.queryEvidence)) {
@@ -39,6 +197,9 @@ class InspectionReportDataService {
     const mapped = this.fieldMapper.mapInspection(source, options);
     const withAnalysis = {
       ...mapped,
+      reportWindow: options.windowContract?.reportWindow || mapped.reportWindow,
+      primaryWindow: options.windowContract?.primaryWindow || mapped.primaryWindow,
+      contextWindows: options.windowContract?.contextWindows || mapped.contextWindows,
       trafficAnalysis: isPlainObject(source.trafficAnalysis)
         ? source.trafficAnalysis
         : mapped.trafficAnalysis,
@@ -65,6 +226,8 @@ class InspectionReportDataService {
         sourceSkill: 'openclaw-napm-inspection',
         queryService: 'inspectionSnapshot'
       },
+      timeRange: inspection.reportWindow || undefined,
+      reportWindow: inspection.reportWindow || undefined,
       inspection,
       sections: [
         {
@@ -124,11 +287,13 @@ class InspectionReportDataService {
     const businessService = this.businessService || new InspectionBusinessPerformanceService({
       client,
       nowSeconds: options.nowSeconds,
+      timezone: options.timezone,
       thresholds: options.thresholds
     });
+    const windowContract = options.windowContract || resolveInspectionWindowContract(options, options);
     const [trafficAnalysis, businessPerformance] = await Promise.all([
-      trafficService.collect(),
-      businessService.collect()
+      trafficService.collect(windowContract),
+      businessService.collect({ businessWindow: windowContract.businessWindow })
     ]);
     return {
       applianceInfo: appliance.data,
@@ -136,6 +301,9 @@ class InspectionReportDataService {
       aboutHtml: about.data,
       trafficAnalysis,
       businessPerformance,
+      reportWindow: windowContract.reportWindow,
+      primaryWindow: windowContract.primaryWindow,
+      contextWindows: windowContract.contextWindows,
       requestHistory: typeof client.getRequestHistory === 'function' ? client.getRequestHistory() : []
     };
   }
@@ -158,6 +326,8 @@ class InspectionReportDataService {
       tlsInsecure: input.tlsInsecure,
       timeoutMs: input.timeoutMs
     };
+    const windowContract = resolveInspectionWindowContract(input, options);
+    options.windowContract = windowContract;
     const collected = source
       ? {
           ...source,
@@ -174,5 +344,8 @@ class InspectionReportDataService {
 
 module.exports = InspectionReportDataService;
 module.exports.__test__ = {
-  collectQueryEvidence
+  collectQueryEvidence,
+  resolveInspectionWindowContract,
+  makeWindowDescriptor,
+  normalizeWindowMode
 };

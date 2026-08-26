@@ -102,6 +102,7 @@ class InspectionBusinessPerformanceService {
   constructor(options = {}) {
     this.client = options.client || null;
     this.nowSeconds = options.nowSeconds || null;
+    this.timezone = options.timezone || 'Asia/Shanghai';
     this.topCount = Number(options.topCount || 20);
     this.thresholds = {
       businessSlowRatioWarningGreaterThan: 0,
@@ -112,19 +113,35 @@ class InspectionBusinessPerformanceService {
     };
   }
 
-  getTimeRange() {
-    const end = alignToMinute(this.nowSeconds || Math.floor(Date.now() / 1000));
+  getTimeRange(window = null) {
+    const start = alignToMinute(window?.start);
+    const end = alignToMinute(window?.end);
+    if (start !== null && end !== null && end > start) {
+      return {
+        start,
+        end,
+        key: String(window.key || '').trim() || 'custom',
+        displayText: String(window.displayText || '').trim() || '自定义时间范围',
+        timezone: window.timezone || this.timezone,
+        durationSeconds: end - start
+      };
+    }
+    const fallbackEnd = alignToMinute(this.nowSeconds || Math.floor(Date.now() / 1000));
     return {
-      start: end - 7 * 86400,
-      end
+      start: fallbackEnd - 7 * 86400,
+      end: fallbackEnd,
+      key: 'last7days',
+      displayText: '最近7天',
+      timezone: this.timezone,
+      durationSeconds: 7 * 86400
     };
   }
 
-  async queryTop(id, params) {
+  async queryTop(id, params, window = null) {
     if (!this.client || typeof this.client.getTopValues !== 'function') {
       return null;
     }
-    const range = this.getTimeRange();
+    const range = this.getTimeRange(window);
     const result = await this.client.getTopValues({
       start: range.start,
       end: range.end,
@@ -141,20 +158,21 @@ class InspectionBusinessPerformanceService {
     };
   }
 
-  async collect() {
+  async collect(options = {}) {
+    const businessWindow = options.businessWindow || options.timeRange || null;
     const slow = await this.queryTop('business-slow-access-top', {
       metrics: 'PGSLPCT,PGNSLPGE,PGTME',
       topMetric: 'PGSLPCT'
-    });
+    }, businessWindow);
     const http400 = await this.queryTop('business-http400-top', {
       metrics: 'PGHTTP400',
       topMetric: 'PGHTTP400'
-    });
+    }, businessWindow);
     const http500 = await this.queryTop('business-http500-top', {
       metrics: 'PGHTTP500',
       topMetric: 'PGHTTP500'
-    });
-    return this.buildFromQueryResults({ slow, http400, http500 });
+    }, businessWindow);
+    return this.buildFromQueryResults({ slow, http400, http500 }, { businessWindow });
   }
 
   buildEvidence(record, metrics = [], topMetric = '') {
@@ -168,11 +186,14 @@ class InspectionBusinessPerformanceService {
       topCount: this.topCount,
       start: record.range?.start,
       end: record.range?.end,
+      windowKey: record.range?.key || null,
+      displayText: record.range?.displayText || null,
+      timezone: record.range?.timezone || this.timezone,
       requestUrlRedacted: record.requestUrlRedacted || ''
     };
   }
 
-  buildFromQueryResults(results = {}) {
+  buildFromQueryResults(results = {}, options = {}) {
     const slowRows = normalizeTopRows(results.slow?.raw, ['PGSLPCT', 'PGNSLPGE', 'PGTME']);
     const http400Rows = normalizeTopRows(results.http400?.raw, ['PGHTTP400']);
     const http500Rows = normalizeTopRows(results.http500?.raw, ['PGHTTP500']);
@@ -192,6 +213,8 @@ class InspectionBusinessPerformanceService {
       http400Rows.filter((row) => (row.PGHTTP400 || 0) > Number(this.thresholds.businessHttp400WarningGreaterThan)),
       http500Rows.filter((row) => (row.PGHTTP500 || 0) > Number(this.thresholds.businessHttp500WarningGreaterThan))
     );
+    const timeWindow = this.getTimeRange(options.businessWindow || results.slow?.range || null);
+    const narrativeLabel = `${timeWindow.displayText}业务性能查询`;
     const findings = [];
     if (slowAccess.length > 0) {
       findings.push({
@@ -215,6 +238,8 @@ class InspectionBusinessPerformanceService {
         this.buildEvidence(results.http400, ['PGHTTP400'], 'PGHTTP400'),
         this.buildEvidence(results.http500, ['PGHTTP500'], 'PGHTTP500')
       ].filter(Boolean),
+      timeWindow,
+      window: timeWindow,
       rows: {
         slow: slowRows,
         http400: http400Rows,
@@ -225,7 +250,7 @@ class InspectionBusinessPerformanceService {
       findings: findings.length > 0
         ? findings
         : (hasAnyQueryRows
-          ? [{ level: 'ok', text: '最近7日业务慢访问和 HTTP 400/500 报错未发现明显异常。', evidenceRefs: ['businessPerformance.rows'] }]
+          ? [{ level: 'ok', text: `${narrativeLabel}慢访问和 HTTP 400/500 报错未发现明显异常。`, evidenceRefs: ['businessPerformance.rows'] }]
           : [{ level: 'unknown', text: '未获取到业务性能数据。', evidenceRefs: ['businessPerformance.queryEvidence'] }]),
       recommendations: findings.length > 0
         ? [{ text: '建议进一步定位慢访问和 HTTP 报错原因。', basedOn: ['businessPerformance.findings'] }]
