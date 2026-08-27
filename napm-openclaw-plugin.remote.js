@@ -4,8 +4,7 @@ const path = require('node:path');
 const AssistantOutputLedger = require('./plugin/AssistantOutputLedger');
 const ConversationOperationState = require('./plugin/ConversationOperationState');
 const {
-  buildDeterministicFinalReply: buildAlertPacketFinalReply,
-  prepareModelFinalContent: prepareAlertPacketModelFinalContent
+  buildDeterministicFinalReply: buildAlertPacketFinalReply
 } = require('./plugin/AlertPacketFinalReplyService');
 const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
 const {
@@ -8453,36 +8452,25 @@ const plugin = {
           && isAlertPacketSkillResultRecord(rememberedRecord)
           && isSkillResultRecordForTurn(rememberedRecord, turnId)
         ) {
-          if (rememberedRecord.result.workflowState !== 'COMPLETED') {
-            appendPluginAuditEvent('napm_plugin_alert_packet_failed_model_final_rewritten', {
-              conversationKey: conversationKey || null,
-              turnId: turnId || null,
-              workflowState: rememberedRecord.result.workflowState || null
-            });
-            return {
-              message: buildAssistantTextMessage(
-                buildAlertPacketFinalReply(rememberedRecord.result),
-                message
-              )
-            };
-          }
-          const preparedContent = prepareAlertPacketModelFinalContent(existingText, rememberedRecord.result);
-          if (preparedContent) {
-            const preparedFinal = napmOperationState.prepareFinalContent({
-              scope: conversationKey,
-              turnId,
-              content: preparedContent,
-              source: 'assistant_final',
-              workflowState: rememberedRecord.result.workflowState
-            });
-            appendPluginAuditEvent('napm_plugin_alert_packet_model_final_prepared', {
-              conversationKey: conversationKey || null,
-              turnId: turnId || null,
-              workflowState: rememberedRecord.result.workflowState || null,
-              fingerprint: preparedFinal?.fingerprint || null
-            });
-            return undefined;
-          }
+          const deterministicContent = buildAlertPacketFinalReply(rememberedRecord.result);
+          const preparedFinal = napmOperationState.prepareFinalContent({
+            scope: conversationKey,
+            turnId,
+            content: deterministicContent,
+            source: 'deterministic_alert_packet',
+            workflowState: rememberedRecord.result.workflowState
+          });
+          appendPluginAuditEvent('napm_plugin_alert_packet_deterministic_final_prepared', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            workflowState: rememberedRecord.result.workflowState || null,
+            source: preparedFinal?.source || null,
+            fingerprint: preparedFinal?.fingerprint || null,
+            replacedModelContent: Boolean(existingText)
+          });
+          return {
+            message: buildAssistantTextMessage(deterministicContent, message)
+          };
         }
         if (isReportExportPrompt(activePrompt) && textClaimsReportGenerated(existingText) && !isFreshReportExportResult(conversationKey)) {
           appendPluginAuditEvent('napm_report_direct_claim_rewritten_before_write', {

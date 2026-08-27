@@ -1,14 +1,38 @@
 'use strict';
 
-const INTERNAL_CONTENT_PATTERNS = [
-  /openclaw_napm_alert_packet_analysis\.v1/i,
-  /["']?renderPolicy["']?\s*:/i,
-  /["']?narrationInput["']?\s*:/i,
-  /请仅依据下面的结构化证据解释告警触发原因/
-];
+const ALERT_EVIDENCE_LABELS = Object.freeze({
+  server_response_wait: '服务端响应等待',
+  http_response_time: 'HTTP 响应耗时',
+  tcp_rtt: 'TCP RTT',
+  tcp_retransmission: 'TCP 重传',
+  alert_time_correlation: '告警时间相关性',
+  packet_loss: '丢包',
+  dns_time: 'DNS 耗时',
+  tcp_connect_time: 'TCP 建连耗时',
+  tls_handshake_time: 'TLS 握手耗时',
+  http_status_code: 'HTTP 状态码',
+  http_request_uri: 'HTTP 请求 URI',
+  server_response: '服务端响应',
+  tcp_stream: 'TCP 会话',
+  endpoint_direction: '端点方向'
+});
+
+const PROFILE_EVIDENCE_CHECKS = Object.freeze({
+  server_user_experience_time: ['server_response_wait', 'http_response_time', 'tcp_rtt', 'tcp_retransmission', 'alert_time_correlation'],
+  network_user_experience_time: ['tcp_rtt', 'tcp_retransmission', 'packet_loss', 'alert_time_correlation'],
+  page_load_time: ['dns_time', 'tcp_connect_time', 'tls_handshake_time', 'http_response_time', 'alert_time_correlation'],
+  http_error_rate: ['http_status_code', 'http_request_uri', 'server_response', 'alert_time_correlation'],
+  tcp_retransmission: ['tcp_retransmission', 'tcp_stream', 'alert_time_correlation'],
+  network_latency: ['tcp_rtt', 'endpoint_direction', 'alert_time_correlation']
+});
 
 function prepareModelFinalContent(content, result = {}) {
   const sanitized = sanitizeText(content);
+  // Alert packet analysis has a deterministic final-reply contract. Keeping a
+  // model-authored final here would let a generic packet summary bypass it.
+  if (result?.workflowType === 'alert_packet_analysis') {
+    return '';
+  }
   if (!isEligibleModelFinalContent(sanitized, result)) {
     return '';
   }
@@ -31,22 +55,9 @@ function isEligibleModelFinalContent(content, result = {}) {
   if (!text || text.length < 16 || result?.workflowType !== 'alert_packet_analysis') {
     return false;
   }
-  const workflowState = String(result?.workflowState || '').trim();
-  if (result?.ok === false || (workflowState && workflowState !== 'COMPLETED')) {
-    return false;
-  }
-  if (INTERNAL_CONTENT_PATTERNS.some((pattern) => pattern.test(text))) {
-    return false;
-  }
-
-  const eventId = String(result?.eventId || '').trim();
-  const metricNames = toStringArray(result?.triggerMetrics?.names);
-  const evidenceTerms = ['告警', '数据包', '抓包', 'packet', 'alert', '重传', '时延', '响应'];
-  return Boolean(
-    (eventId && text.includes(eventId))
-    || metricNames.some((name) => text.includes(name))
-    || evidenceTerms.some((term) => text.toLowerCase().includes(term.toLowerCase()))
-  );
+  // There is intentionally no model-owned final path for this workflow.
+  // `buildDeterministicFinalReply` is the only supported renderer.
+  return false;
 }
 
 function buildDeterministicFinalReply(result = {}) {
@@ -94,7 +105,10 @@ function buildDeterministicFinalReply(result = {}) {
     return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
-  const packetLines = buildPacketAnalysisLines(result?.packetAnalyses);
+  const focused = hasAlertTriggerMetrics(result);
+  const packetLines = focused
+    ? buildFocusedPacketAnalysisLines(result)
+    : buildPacketAnalysisLines(result?.packetAnalyses);
   if (packetLines.length > 0) {
     lines.push('', '数据包证据');
     lines.push(...packetLines);
@@ -109,7 +123,7 @@ function buildDeterministicFinalReply(result = {}) {
   if (workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED') {
     lines.push('', '下一步：请回复“开始分析”或“确认下载”，系统将继续下载并分析该数据包。');
   }
-  lines.push('', buildConclusion(workflowState, result?.packetAnalyses));
+  lines.push('', buildConclusion(workflowState, result?.packetAnalyses, result));
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -129,7 +143,57 @@ function buildMetricLines(triggerMetrics = {}) {
   const condition = sanitizeText(triggerMetrics?.condition || '');
   if (severity) lines.push(`- 告警级别：${severity}`);
   if (condition) lines.push(`- 触发条件：${condition}`);
+  lines.push(...buildThresholdEvaluationLines(triggerMetrics));
   return lines;
+}
+
+function buildThresholdEvaluationLines(triggerMetrics = {}) {
+  const names = toStringArray(triggerMetrics?.names);
+  const values = toArray(triggerMetrics?.values);
+  const units = toStringArray(triggerMetrics?.units);
+  const condition = sanitizeText(triggerMetrics?.condition || '');
+  if (!condition || names.length === 0 || values.length === 0) return [];
+
+  const value = Number(values[0]);
+  if (!Number.isFinite(value)) return [];
+  const rules = parseThresholdRules(condition);
+  if (rules.length === 0) return ['- 触发判定：条件未包含可计算的数值阈值，无法计算超阈值差值。'];
+
+  const matched = rules.find((rule) => evaluateThreshold(value, rule.operator, rule.threshold));
+  if (!matched) return ['- 触发判定：实际值未命中已解析的阈值条件，请核对告警规则与指标值。'];
+
+  const unit = sanitizeText(units[0] || '');
+  const delta = value - matched.threshold;
+  const deltaText = formatNumber(Math.abs(delta));
+  const level = sanitizeText(matched.level || triggerMetrics?.severity || '当前规则');
+  const unitText = unit ? ` ${unit}` : '';
+  const comparison = `${formatNumber(value)}${unitText} ${matched.operator} ${formatNumber(matched.threshold)}${unitText}`;
+  const relation = delta >= 0
+    ? `超过 ${deltaText}${unitText}`
+    : `低于 ${deltaText}${unitText}`;
+  return [`- 触发判定：${comparison}，${relation}，命中阈值：${level}`];
+}
+
+function parseThresholdRules(condition = '') {
+  const rules = [];
+  const pattern = /(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)(?:\s*(?:则为|为|->|→)\s*([A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{1,12}))?/g;
+  let match;
+  while ((match = pattern.exec(String(condition))) !== null) {
+    rules.push({
+      operator: match[1],
+      threshold: Number(match[2]),
+      level: String(match[3] || '').trim()
+    });
+  }
+  return rules.filter((rule) => Number.isFinite(rule.threshold));
+}
+
+function evaluateThreshold(value, operator, threshold) {
+  if (operator === '>') return value > threshold;
+  if (operator === '>=') return value >= threshold;
+  if (operator === '<') return value < threshold;
+  if (operator === '<=') return value <= threshold;
+  return value === threshold;
 }
 
 function buildAlertDetailLines(alert = {}) {
@@ -169,6 +233,205 @@ function buildPacketAnalysisLines(packetAnalyses = []) {
   return lines;
 }
 
+function hasAlertTriggerMetrics(result = {}) {
+  const triggerMetrics = result?.triggerMetrics;
+  if (toStringArray(triggerMetrics?.names).length > 0 || toArray(triggerMetrics?.values).length > 0) {
+    return true;
+  }
+  const items = Array.isArray(result?.packetAnalyses) ? result.packetAnalyses : [];
+  return items.some((item) => {
+    const evidence = extractAlertEvidence(item);
+    return toStringArray(evidence?.metricLabels).length > 0
+      || toStringArray(evidence?.evidenceChecks).length > 0;
+  });
+}
+
+function buildFocusedPacketAnalysisLines(result = {}) {
+  const items = Array.isArray(result?.packetAnalyses) ? result.packetAnalyses : [];
+  if (items.length === 0) return ['- 当前没有可展示的候选数据包分析结果。'];
+
+  const lines = ['专项分析画像：按告警触发指标逐项核对数据包证据。'];
+  for (const [index, item] of items.slice(0, 10).entries()) {
+    const rank = Number(item?.rank) || index + 1;
+    const endpoint = formatCandidate(item);
+    const status = item?.ok ? '成功' : '失败';
+    lines.push(`- 候选 ${rank}${endpoint ? `（${endpoint}）` : ''}：${status}`);
+    if (!item?.ok) {
+      const message = sanitizeText(item?.error?.message || item?.result?.error?.message || '');
+      lines.push(`  - 专项证据状态：${message ? `未形成（${message}）` : '未形成，证据不足'}`);
+      continue;
+    }
+
+    const evidence = extractAlertEvidence(item);
+    const profile = resolveAlertProfile(result, evidence);
+    lines.push(`  - 分析画像：${profile.label}`);
+    lines.push(`  - 专项证据总状态：${formatEvidenceStatus(evidence?.status)}`);
+    for (const check of resolveEvidenceChecks(result, evidence, profile.id)) {
+      lines.push(`  - ${formatEvidenceCheck(check, evidence, item, result)}`);
+    }
+    const observations = collectSafeHighlights(item).filter(isAlertEvidenceObservation);
+    if (observations.length > 0) {
+      lines.push(`  - 专项观察：${observations.slice(0, 3).join('；')}`);
+    }
+    lines.push(`  - 专项结论：${buildCandidateFocusedConclusion(evidence, item, result)}`);
+  }
+  return lines;
+}
+
+function extractAlertEvidence(item = {}) {
+  const candidates = [
+    item?.result?.analysis?.alertEvidence,
+    item?.result?.narrationInput?.analysis?.alertEvidence,
+    item?.result?.alertEvidence,
+    item?.alertEvidence
+  ];
+  return candidates.find((value) => value && typeof value === 'object') || {};
+}
+
+function resolveAlertProfile(result = {}, evidence = {}) {
+  const profileId = String(
+    evidence?.profileId
+      || result?.triggerMetrics?.profileId
+      || inferProfileId(result?.triggerMetrics)
+      || ''
+  ).trim();
+  const label = profileId === 'server_user_experience_time'
+    ? '服务端用户体验时间专项分析'
+    : profileId === 'network_user_experience_time'
+      ? '网络侧用户体验时间专项分析'
+      : profileId === 'page_load_time'
+        ? '页面加载时间专项分析'
+        : profileId === 'http_error_rate'
+          ? 'HTTP 错误专项分析'
+          : profileId === 'tcp_retransmission'
+            ? 'TCP 重传专项分析'
+            : profileId === 'network_latency'
+              ? '网络时延专项分析'
+              : '告警指标专项分析';
+  return { id: profileId, label };
+}
+
+function resolveEvidenceChecks(result = {}, evidence = {}, profileId = '') {
+  const explicit = toStringArray(evidence?.evidenceChecks);
+  if (explicit.length > 0) return explicit;
+  const triggerChecks = toStringArray(result?.triggerMetrics?.evidenceChecks);
+  if (triggerChecks.length > 0) return triggerChecks;
+  return PROFILE_EVIDENCE_CHECKS[profileId] || [];
+}
+
+function inferProfileId(triggerMetrics = {}) {
+  const text = [
+    ...toStringArray(triggerMetrics?.names),
+    ...toStringArray(triggerMetrics?.codes)
+  ].join(' ');
+  if (/用户体验时间.*服务器|服务器.*用户体验时间|server.*user.*experience|servbusytime/i.test(text)) {
+    return 'server_user_experience_time';
+  }
+  if (/用户体验时间.*网络|网络.*用户体验时间|network.*user.*experience|netbusytime/i.test(text)) {
+    return 'network_user_experience_time';
+  }
+  if (/页面加载时间|页面.*耗时|page.*load|pagetime/i.test(text)) return 'page_load_time';
+  if (/http.*(?:4\d\d|5\d\d|错误|异常)|4xx|5xx|pghttp(?:400|500)/i.test(text)) return 'http_error_rate';
+  if (/tcp.*重传|重传率|retransmission|rdti/i.test(text)) return 'tcp_retransmission';
+  if (/网络.*(?:时延|延迟)|(?:时延|延迟).*网络|rtti|rtt/i.test(text)) return 'network_latency';
+  return '';
+}
+
+function formatEvidenceStatus(status) {
+  const normalized = String(status || '').trim().toUpperCase();
+  const labels = {
+    SUPPORTED: '已捕获',
+    PARTIAL: '部分捕获',
+    NOT_CAPTURED: '未捕获',
+    UNSUPPORTED_PROFILE: '不支持该画像'
+  };
+  return labels[normalized] || '证据不足';
+}
+
+function isAlertEvidenceObservation(text) {
+  return /服务端响应|响应等待|HTTP|RTT|时延|延迟|重传|丢包|错误|失败|超时|连接/i.test(String(text || ''));
+}
+
+function formatEvidenceCheck(check, evidence = {}, item = {}, result = {}) {
+  const label = ALERT_EVIDENCE_LABELS[check] || check;
+  const rows = rowsForEvidenceCheck(check, evidence);
+  if (check === 'alert_time_correlation') {
+    return `${label}：${formatTimeCorrelation(rows, item, result)}`;
+  }
+  if (rows.length > 0) {
+    const detail = check === 'server_response_wait'
+      ? `已捕获（HTTP 时序 ${rows.length} 条，可核对）`
+      : `已捕获（${rows.length} 条）`;
+    return `${label}：${detail}`;
+  }
+  if (check === 'server_response_wait' || check === 'http_response_time') {
+    return `${label}：未捕获（无可核对的 HTTP 时序）`;
+  }
+  return `${label}：未捕获`;
+}
+
+function rowsForEvidenceCheck(check, evidence = {}) {
+  if (check === 'tcp_retransmission') return asRows(evidence?.retransmissionRows);
+  if (check === 'tcp_rtt') return asRows(evidence?.rttRows);
+  if (check === 'server_response_wait' || check === 'http_response_time') return asRows(evidence?.httpTimingRows);
+  if (check === 'http_status_code' || check === 'http_request_uri' || check === 'server_response') {
+    return asRows(evidence?.httpTimingRows);
+  }
+  if (check === 'tcp_stream') return [...asRows(evidence?.rttRows), ...asRows(evidence?.retransmissionRows)];
+  if (check === 'alert_time_correlation') {
+    return [
+      ...asRows(evidence?.retransmissionRows),
+      ...asRows(evidence?.rttRows),
+      ...asRows(evidence?.httpTimingRows)
+    ];
+  }
+  return [];
+}
+
+function formatTimeCorrelation(rows, item = {}, result = {}) {
+  if (rows.length === 0) return '未捕获';
+  const range = item?.query?.criteria || result?.timeRange || {};
+  const start = normalizeUnixSeconds(range.start);
+  const end = normalizeUnixSeconds(range.end);
+  if (!start || !end) return '证据不足（缺少告警时间窗口）';
+  const timestamps = rows.map(extractRowTimestamp).filter(Number.isFinite);
+  if (timestamps.length === 0) return '证据不足（抓包时间戳不可解析）';
+  const inside = timestamps.filter((timestamp) => timestamp >= start && timestamp <= end).length;
+  if (inside > 0) return `已关联（${inside} 条在告警窗口内）`;
+  return '未关联（捕获记录均在告警窗口外）';
+}
+
+function extractRowTimestamp(row) {
+  if (row && typeof row === 'object') {
+    return Number(row.timestamp || row.time || row.frameTime || row.frame_time_epoch);
+  }
+  const first = String(row || '').split('|')[0].trim();
+  return Number(first);
+}
+
+function asRows(value) {
+  return Array.isArray(value) ? value.filter((item) => item != null && String(item).trim()) : [];
+}
+
+function buildCandidateFocusedConclusion(evidence = {}, item = {}, result = {}) {
+  const retransmissions = asRows(evidence?.retransmissionRows).length;
+  const rtts = asRows(evidence?.rttRows).length;
+  const httpTimings = asRows(evidence?.httpTimingRows).length;
+  const correlation = formatTimeCorrelation(
+    [...asRows(evidence?.retransmissionRows), ...asRows(evidence?.rttRows), ...asRows(evidence?.httpTimingRows)],
+    item,
+    result
+  );
+  const findings = [];
+  if (httpTimings > 0) findings.push(`HTTP 时序 ${httpTimings} 条，可核对服务端响应等待和 HTTP 响应耗时`);
+  if (rtts > 0) findings.push(`TCP RTT ${rtts} 条`);
+  if (retransmissions > 0) findings.push(`TCP 重传 ${retransmissions} 条`);
+  if (findings.length === 0) {
+    return '未捕获可用于解释该告警指标的专项证据，无法据此判断触发原因。';
+  }
+  return `已捕获 ${findings.join('、')}；告警时间相关性为${correlation}，仅凭当前证据不能把未关联项认定为根因。`;
+}
+
 function collectSafeHighlights(item = {}) {
   const candidates = [
     ...(Array.isArray(item?.result?.summary?.highlights) ? item.result.summary.highlights : []),
@@ -181,6 +444,7 @@ function collectSafeHighlights(item = {}) {
     .filter(Boolean)
     .filter((text) => !/https?:\/\//i.test(text))
     .filter((text) => !/(?:raw packet|原始数据包|tshark\s+rows?)/i.test(text))
+    .filter((text) => !/\b(?:eventId|start|end)\s*[:=]\s*\d{1,20}/i.test(text))
   )];
 }
 
@@ -198,10 +462,14 @@ function formatCandidate(item = {}) {
   return [...new Set(values)].join(' -> ');
 }
 
-function buildConclusion(workflowState, packetAnalyses = []) {
+function buildConclusion(workflowState, packetAnalyses = [], result = {}) {
   const items = Array.isArray(packetAnalyses) ? packetAnalyses : [];
   const successCount = items.filter((item) => item?.ok).length;
   if (workflowState === 'COMPLETED') {
+    if (hasAlertTriggerMetrics(result)) {
+      const metricName = toStringArray(result?.triggerMetrics?.names)[0] || '告警触发指标';
+      return `结论：已完成 ${successCount} 个候选会话的${metricName}专项证据核对；仅将标记为“已捕获”且与告警窗口关联的证据作为依据，未捕获或证据不足项不能认定为告警根因。`;
+    }
     return `结论：已完成 ${successCount} 个候选会话的数据包分析，请以上述数据包证据作为告警原因判断依据。`;
   }
   if (workflowState === 'PARTIAL_PACKET_ANALYSIS') {
@@ -260,6 +528,12 @@ function normalizeUnixSeconds(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
   return numeric > 9999999999 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+}
+
+function formatNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value ?? '未知');
+  return String(Number(numeric.toFixed(4)));
 }
 
 function toArray(value) {

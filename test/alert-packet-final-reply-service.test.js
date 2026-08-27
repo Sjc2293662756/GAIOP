@@ -2,7 +2,9 @@
 
 const {
   buildDeterministicFinalReply,
-  prepareModelFinalContent
+  hideReferenceInternals,
+  prepareModelFinalContent,
+  sanitizeText
 } = require('../plugin/AlertPacketFinalReplyService');
 
 describe('AlertPacketFinalReplyService', () => {
@@ -19,13 +21,13 @@ describe('AlertPacketFinalReplyService', () => {
     }
   };
 
-  test('accepts a current-turn final report and masks credentials', () => {
+  test('sanitizes credentials before deterministic alert rendering', () => {
     const content = [
       '告警事件 745506 数据包分析结论：服务器响应等待升高。',
       'Debug API: https://example.test/query?UserName=GAIOP&Password=secret&token=abc123'
     ].join('\n');
 
-    const prepared = prepareModelFinalContent(content, result);
+    const prepared = sanitizeText(content);
 
     expect(prepared).toContain('告警事件 745506');
     expect(prepared).toContain('Password=***');
@@ -34,8 +36,65 @@ describe('AlertPacketFinalReplyService', () => {
     expect(prepared).not.toContain('abc123');
   });
 
+  test('rejects a generic completed packet summary instead of treating it as an alert-root-cause report', () => {
+    const genericSummary = [
+      '告警 GJ-L9CUNLY9 数据包分析结果',
+      '候选1 IP 对流量约 4.39 kB。',
+      '大量外部 IP 疑似扫描探测。',
+      '未发现明显大流量异常或 TCP 重传迹象。'
+    ].join('\n');
+
+    expect(prepareModelFinalContent(genericSummary, {
+      ...result,
+      referenceId: 'GJ-L9CUNLY9',
+      eventId: '800362'
+    })).toBe('');
+  });
+
+  test('renders the trigger threshold and focused evidence status for completed alert packet analysis', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-L9CUNLY9',
+      eventId: '800362',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [1373.96],
+        units: ['毫秒'],
+        severity: '轻微',
+        condition: '如果 用户体验时间（服务器） > 3000.0 则为 Critical 否则 如果 用户体验时间（服务器） > 2000.0 则为 Major 否则 如果 用户体验时间（服务器） > 1000.0 则为 Minor 否则 None'
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { candidateId: 'GJ-L9CUNLY9-P1', ipPair: '101.254.114.238 <-> 172.236.228.193' },
+        query: { criteria: { start: 1787835780, end: 1787836020 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt', 'tcp_retransmission', 'alert_time_correlation'],
+              httpTimingRows: ['1787835900|101.254.114.238|172.236.228.193|1|example.test|/|200|0.250'],
+              rttRows: ['1787835901|101.254.114.238|172.236.228.193|1|0.120'],
+              retransmissionRows: [],
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('命中阈值：Minor');
+    expect(reply).toContain('超过 373.96 毫秒');
+    expect(reply).toContain('服务端响应等待：已捕获');
+    expect(reply).toContain('HTTP 响应耗时：已捕获');
+    expect(reply).toContain('TCP RTT：已捕获');
+    expect(reply).toContain('TCP 重传：未捕获');
+    expect(reply).toContain('告警时间相关性：已关联');
+    expect(reply).not.toContain('14:43:00 至 14:48:00');
+  });
+
   test('hides internal event and Unix window fields for reference-based replies', () => {
-    const prepared = prepareModelFinalContent([
+    const prepared = hideReferenceInternals([
       '告警引用 GJ-ABC234 数据包分析结论。',
       'eventId=745506 start=1786341600 end=1786341840',
       '告警事件 745506 的服务端响应等待证据已核对。'
@@ -78,6 +137,7 @@ describe('AlertPacketFinalReplyService', () => {
   test('renders safe deterministic evidence without raw rows, local files, or URLs', () => {
     const reply = buildDeterministicFinalReply({
       ...result,
+      triggerMetrics: {},
       packetAnalyses: [{
         rank: 1,
         ok: true,

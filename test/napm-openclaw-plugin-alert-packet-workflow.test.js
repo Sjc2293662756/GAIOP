@@ -337,7 +337,9 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
         content: [{ type: 'text', text: finalReport }]
       }
     }, ctx);
-    expect(finalWriteResult).toBeUndefined();
+    expect(finalWriteResult?.message?.content?.[0]?.text).toContain('告警事件 745506 数据包分析结果');
+    expect(finalWriteResult?.message?.content?.[0]?.text).toContain('告警触发信息');
+    expect(finalWriteResult?.message?.content?.[0]?.text).not.toContain('服务器响应等待是本次用户体验时间升高的主要原因');
 
     const progressDelivery = await hooks.get('message_sending')({
       content: toolPreamble,
@@ -356,7 +358,9 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     }, ctx);
 
     expect(progressDelivery).toEqual({ cancel: true });
-    expect(terminalDelivery).toEqual({ content: finalReport });
+    expect(terminalDelivery?.content).toContain('告警事件 745506 数据包分析结果');
+    expect(terminalDelivery?.content).toContain('告警触发信息');
+    expect(terminalDelivery?.content).not.toContain('服务器响应等待是本次用户体验时间升高的主要原因');
     expect(terminalDelivery.content).not.toContain("I'll analyze");
     expect(duplicateFinal).toEqual({ cancel: true });
   });
@@ -403,7 +407,7 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     expect(outgoing?.content).toContain('告警事件 745506');
     expect(outgoing?.content).toContain('12289');
     expect(outgoing?.content).toContain('PARTIAL_PACKET_ANALYSIS');
-    expect(outgoing?.content).toContain('发现 TCP 重传率升高');
+    expect(outgoing?.content).toContain('专项观察：发现 TCP 重传率升高。');
     expect(outgoing?.content).not.toContain('narrationInput');
     expect(outgoing?.content).not.toContain('Password=');
   });
