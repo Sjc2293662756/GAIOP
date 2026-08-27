@@ -73,6 +73,15 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     return query;
   }
 
+  function buildDefinedAppTrendQuery(options = {}) {
+    const query = buildTrendQuery('last7days', 86400);
+    query.groups = [{ type: 'DefinedApp' }];
+    if (options.argument !== undefined) {
+      query.groups[0].argument = options.argument;
+    }
+    return query;
+  }
+
   async function startTurn(ctx, prompt) {
     hooks.get('message_received')({ content: prompt }, ctx);
     return hooks.get('before_prompt_build')({ prompt }, ctx);
@@ -118,6 +127,35 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       reason: 'incomplete_resolved_query'
     });
     expect(validation.message).toContain('groups');
+  });
+
+  test('requires a concrete DefinedApp argument for a single-object trend query', () => {
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec(
+      buildDefinedAppTrendQuery(),
+      { phase: 'construction' }
+    );
+
+    expect(validation).toMatchObject({
+      ok: false,
+      reason: 'group_argument_required'
+    });
+    expect(validation.message).toContain('DefinedApp');
+    expect(validation.message).toContain('argument');
+  });
+
+  test('rejects an argument on the TotalTraffic scope', () => {
+    const query = buildTrendQuery();
+    query.groups = [{ type: 'TotalTraffic', argument: 'HTTP' }];
+
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec(
+      query,
+      { phase: 'construction' }
+    );
+
+    expect(validation).toMatchObject({
+      ok: false,
+      reason: 'group_argument_forbidden'
+    });
   });
 
   test('documents TotalTraffic in the query tool contract', () => {

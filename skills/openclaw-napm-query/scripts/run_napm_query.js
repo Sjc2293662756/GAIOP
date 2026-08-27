@@ -32,6 +32,7 @@ const NapmMetadataService = require(path.join(skillRoot, 'services/NapmMetadataS
 const GroupPathPlannerService = require(path.join(skillRoot, 'services/GroupPathPlannerService'));
 const PromptRoutingService = require(path.join(skillRoot, 'services/PromptRoutingService'));
 const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionSpecService'));
+const ClarificationGateService = require(path.join(skillRoot, 'services/ClarificationGateService'));
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
@@ -1779,6 +1780,36 @@ async function executeSkillCall(args = {}, payload = {}) {
       supportedMetrics: MetricMappingService.getAllMetricCodes().length
     }, clarificationGate);
     return output;
+  }
+
+  const argumentPolicyValidation = typeof ResolutionSpecService.evaluateQueryArgumentPolicy === 'function'
+    ? ResolutionSpecService.evaluateQueryArgumentPolicy(resolvedQuery)
+    : null;
+  const argumentPolicyGate = ClarificationGateService.buildArgumentPolicyGate(
+    argumentPolicyValidation,
+    resolvedQuery
+  );
+  if (argumentPolicyGate?.required) {
+    logSkillAudit('napm_skill_execution_completed', {
+      traceId,
+      prompt,
+      service: String(resolvedQuery?.service || '').trim() || null,
+      resolvedQuery,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(resolvedQuery),
+      ok: true,
+      responseType: 'clarification_required',
+      clarificationQuestion: argumentPolicyGate.question,
+      clarificationReason: argumentPolicyGate.reason
+    }, traceId);
+    return buildClarificationContract({
+      prompt,
+      service: resolvedQuery?.service || null,
+      resolvedQuery,
+      intentResult,
+      semanticResolutionResult,
+      assistantDecision: argumentPolicyGate,
+      supportedMetrics: MetricMappingService.getAllMetricCodes().length
+    }, argumentPolicyGate);
   }
 
   if (resolvedQuery?.executionGuard?.blockExecution && !isOverviewResolvedQuery(resolvedQuery)) {

@@ -834,6 +834,77 @@ class RequirementParserService {
     }
   }
 
+  evaluateQueryArgumentPolicy(gatewayRequest = {}) {
+    if (typeof ResolutionSpecService.evaluateQueryArgumentPolicy !== 'function') {
+      return { ok: true, status: 'not_available' };
+    }
+    return ResolutionSpecService.evaluateQueryArgumentPolicy(gatewayRequest);
+  }
+
+  buildArgumentPolicyError(validation = {}, gatewayRequest = {}) {
+    const error = new Error(
+      validation.message || 'Query group argument policy validation failed.'
+    );
+    error.code = validation.code || 'QUERY_ARGUMENT_POLICY_INVALID';
+    error.details = {
+      ...(validation.details || {}),
+      policy: validation.policy || validation.details?.policy || null,
+      status: validation.status || null,
+      gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest)
+    };
+    return error;
+  }
+
+  buildArgumentPolicyFailureResult(gatewayRequest = {}, validation = {}) {
+    const error = this.buildExecutionFailureError(
+      this.buildArgumentPolicyError(validation, gatewayRequest),
+      gatewayRequest
+    );
+    return {
+      ok: false,
+      service: gatewayRequest?.service || null,
+      data: [],
+      error,
+      metadata: null,
+      requestParams: null,
+      requestParamsMasked: null,
+      requestUrl: null,
+      argumentPolicy: validation
+    };
+  }
+
+  validateMetadataGroupArgument(gatewayRequest = {}, metadataReview = null) {
+    const issues = Array.isArray(metadataReview?.issues) ? metadataReview.issues : [];
+    const issue = issues.find((item) => String(item || '').startsWith('group_argument_not_found:'));
+    if (!issue) {
+      return { ok: true, status: 'not_available' };
+    }
+
+    const match = String(issue).match(/^group_argument_not_found:([^:]+):(.+)$/);
+    const groupType = String(match?.[1] || gatewayRequest?.groups?.[0]?.type || '').trim() || null;
+    const argument = String(match?.[2] || gatewayRequest?.groups?.[0]?.argument || '').trim() || null;
+    return {
+      ok: false,
+      status: 'invalid',
+      policy: 'metadata',
+      reason: 'invalid_group_argument',
+      code: 'INVALID_GROUP_ARGUMENT',
+      message: `The ${groupType || 'query'} argument ${argument || 'value'} was not found in NAPM metadata.`,
+      details: {
+        service: gatewayRequest?.service || null,
+        queryModeKey: gatewayRequest?.queryModeKey || null,
+        groupType,
+        argument,
+        candidates: Array.isArray(metadataReview?.suggestions)
+          ? metadataReview.suggestions
+            .filter((item) => item?.type === 'group_argument_candidates')
+            .flatMap((item) => Array.isArray(item?.candidates) ? item.candidates : [])
+            .slice(0, 20)
+          : []
+      }
+    };
+  }
+
   /**
    * 统一准备执行态查询。
    * 这里会依次做形态归一化、静态约束、动态约束、最终收口，以及回退链路预判。
@@ -845,6 +916,18 @@ class RequirementParserService {
       normalizedQuery?.userRequirement || ''
     );
     let preparedQuery = staticConstraint?.query || normalizedQuery;
+    const initialArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
+    if (!initialArgumentPolicy.ok) {
+      return {
+        query: preparedQuery,
+        metadataReview: null,
+        staticConstraint,
+        dynamicConstraint: null,
+        inventoryFallback: null,
+        serviceFallbackQuery: null,
+        argumentPolicyValidation: initialArgumentPolicy
+      };
+    }
     const metadataReview = await this.reviewGatewayRequestMetadata(preparedQuery);
     const dynamicConstraint = await this.queryMetadataConstraintService.constrainWithDynamicMetadata(
       preparedQuery,
@@ -856,6 +939,32 @@ class RequirementParserService {
       preparedQuery,
       preparedQuery?.pathPlanning || null
     );
+
+    const finalArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
+    if (!finalArgumentPolicy.ok) {
+      return {
+        query: preparedQuery,
+        metadataReview,
+        staticConstraint,
+        dynamicConstraint,
+        inventoryFallback: null,
+        serviceFallbackQuery: null,
+        argumentPolicyValidation: finalArgumentPolicy
+      };
+    }
+
+    const metadataArgumentValidation = this.validateMetadataGroupArgument(preparedQuery, metadataReview);
+    if (!metadataArgumentValidation.ok) {
+      return {
+        query: preparedQuery,
+        metadataReview,
+        staticConstraint,
+        dynamicConstraint,
+        inventoryFallback: null,
+        serviceFallbackQuery: null,
+        argumentPolicyValidation: metadataArgumentValidation
+      };
+    }
 
     const inventoryFallback = await this.tryExecuteInventoryFallback(preparedQuery, metadataReview, requestContext);
     const serviceFallbackQuery = this.buildMultilevelDataServiceFallbackQuery(preparedQuery, metadataReview);
@@ -1009,6 +1118,11 @@ class RequirementParserService {
         })) : []
       };
 
+      const argumentPolicyValidation = this.evaluateQueryArgumentPolicy(queryRequest);
+      if (!argumentPolicyValidation.ok) {
+        throw this.buildArgumentPolicyError(argumentPolicyValidation, queryRequest);
+      }
+
       const attachDebugRequestInfo = (params = {}) => {
         const fullParams = {
           UserName: this.napmClient.username,
@@ -1111,6 +1225,12 @@ class RequirementParserService {
    */
   async executeGatewayRequest(gatewayRequest, requestContext = null) {
     const prepared = await this.prepareGatewayExecution(gatewayRequest, requestContext);
+    if (prepared?.argumentPolicyValidation && !prepared.argumentPolicyValidation.ok) {
+      return this.buildArgumentPolicyFailureResult(
+        prepared.query || gatewayRequest,
+        prepared.argumentPolicyValidation
+      );
+    }
     if (prepared?.inventoryFallback) {
       return prepared.inventoryFallback;
     }

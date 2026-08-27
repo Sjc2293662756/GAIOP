@@ -2038,6 +2038,19 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
+  const argumentPolicyValidation = typeof service.evaluateQueryArgumentPolicy === 'function'
+    ? service.evaluateQueryArgumentPolicy(normalizedResolvedQuery)
+    : null;
+  if (argumentPolicyValidation && !argumentPolicyValidation.ok) {
+    return {
+      ok: false,
+      reason: argumentPolicyValidation.reason || 'invalid_group_argument_policy',
+      message: argumentPolicyValidation.message || 'resolvedQuery group argument policy validation failed.',
+      details: argumentPolicyValidation.details || null,
+      resolvedQuery: normalizedResolvedQuery
+    };
+  }
+
   const relativeTimeValidation = validateRelativeTimeRangeFreshness(normalizedResolvedQuery, options);
   if (!relativeTimeValidation.ok) {
     return relativeTimeValidation;
@@ -6132,7 +6145,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}]. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. A single-object DefinedApp/WebApplication trend or average query requires groups[0].argument with the concrete object name; missing names must be clarified. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}] without an argument. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -6160,7 +6173,9 @@ function createSkillToolDefinition() {
                 type: 'object',
                 properties: {
                   type: { type: 'string' },
-                  argument: {}
+                  argument: {
+                    description: 'Concrete object name for single-object trend/average queries. Omit for TotalTraffic, inventory, or ranking discovery.'
+                  }
                 },
                 additionalProperties: true
               }

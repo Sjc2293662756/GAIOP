@@ -132,6 +132,166 @@ function getRuntimeMetadataContracts() {
   return cloneJson(spec?.runtimeMetadataContracts || {});
 }
 
+// 读取按 service、queryModeKey 和对象类型计算的参数策略。
+function getQueryArgumentPolicies() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.queryArgumentPolicies || {});
+}
+
+function normalizePolicyList(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  const normalized = String(value || '').trim();
+  return normalized ? [normalized] : [];
+}
+
+function policyMatches(rule, field, value) {
+  const candidates = normalizePolicyList(rule?.[field]);
+  if (candidates.length === 0 || candidates.includes('*')) {
+    return true;
+  }
+  return candidates.includes(String(value || '').trim());
+}
+
+function resolveQueryArgumentOperation(query = {}, groups = []) {
+  const explicitOperation = String(
+    query?.argumentPolicyOperation
+    || query?.semanticConstraints?.argumentPolicyOperation
+    || query?.semanticConstraints?.operation
+    || query?.candidateSpec?.semantic_constraints?.argumentPolicyOperation
+    || query?.candidateSpec?.semantic_constraints?.operation
+    || ''
+  ).trim();
+  if (explicitOperation) {
+    return explicitOperation;
+  }
+
+  const service = String(query?.service || '').trim();
+  if (service === 'groups' || service === 'metrics') {
+    return 'metadata_list';
+  }
+  if (service === 'topValues') {
+    return 'topn';
+  }
+  if (['timeValues', 'averageValues'].includes(service)) {
+    return groups.length === 1 ? 'single_object_value' : 'multi_object_value';
+  }
+  return '';
+}
+
+function normalizePolicyGroupType(value = '') {
+  const type = String(value || '').trim();
+  return type === 'Application' ? 'DefinedApp' : type;
+}
+
+// 在插件边界和 Skill 执行器之间共享同一套对象参数判断，避免各层各自推断。
+function evaluateQueryArgumentPolicy(query = {}) {
+  const policies = getQueryArgumentPolicies();
+  const rules = Array.isArray(policies?.rules) ? policies.rules : [];
+  const groups = Array.isArray(query?.groups) ? query.groups.filter(Boolean) : [];
+  const service = String(query?.service || '').trim();
+  const queryModeKey = String(
+    query?.queryModeKey
+    || ({
+      topValues: 'topn',
+      averageValues: 'average',
+      timeValues: 'timeseries',
+      groups: 'metadata',
+      metrics: 'metadata',
+      drilldownCatalog: 'metadata'
+    }[service] || '')
+  ).trim();
+  const operation = resolveQueryArgumentOperation(query, groups);
+
+  for (const group of groups) {
+    const groupType = normalizePolicyGroupType(group?.type);
+    const argument = String(group?.argument ?? '').trim();
+    const matchingRule = rules.find(rule => (
+      policyMatches(rule, 'services', service)
+      && policyMatches(rule, 'queryModes', queryModeKey)
+      && policyMatches(rule, 'groupTypes', groupType)
+      && policyMatches(rule, 'operations', operation)
+    ));
+
+    if (!matchingRule) {
+      continue;
+    }
+
+    const policy = String(
+      matchingRule.argumentPolicy
+      || matchingRule.policy
+      || policies.defaultPolicy
+      || 'optional'
+    ).trim();
+    if (policy === 'required' && !argument) {
+      return {
+        ok: false,
+        status: 'missing',
+        policy,
+        reason: 'group_argument_required',
+        code: 'GROUP_ARGUMENT_REQUIRED',
+        message: `${groupType} requires a concrete group argument for service=${service} queryModeKey=${queryModeKey || 'unknown'}.`,
+        details: {
+          service: service || null,
+          queryModeKey: queryModeKey || null,
+          operation: operation || null,
+          groupType,
+          argument: null,
+          policy,
+          ruleId: matchingRule.id || null
+        }
+      };
+    }
+
+    if (policy === 'forbidden' && argument) {
+      return {
+        ok: false,
+        status: 'forbidden',
+        policy,
+        reason: 'group_argument_forbidden',
+        code: 'GROUP_ARGUMENT_FORBIDDEN',
+        message: `${groupType} does not accept a group argument for service=${service || 'unknown'}.`,
+        details: {
+          service: service || null,
+          queryModeKey: queryModeKey || null,
+          operation: operation || null,
+          groupType,
+          argument,
+          policy,
+          ruleId: matchingRule.id || null
+        }
+      };
+    }
+
+    const satisfied = {
+      ok: true,
+      status: 'satisfied',
+      policy,
+      operation,
+      groupType,
+      argument: argument || null,
+      ruleId: matchingRule.id || null
+    };
+    // Continue checking the remaining path groups, since a later group can
+    // carry its own forbidden or required argument policy.
+    if (groups.length > 1) {
+      continue;
+    }
+    return satisfied;
+  }
+
+  return {
+    ok: true,
+    status: 'not_applicable',
+    policy: policies.defaultPolicy || 'optional',
+    operation,
+    groupType: null,
+    argument: null,
+    ruleId: null
+  };
+}
+
 // 读取查询构造策略，用于控制语义结果到最终请求体的组装方式。
 function getQueryConstructionPolicy() {
   const spec = loadResolutionSpec();
@@ -174,6 +334,8 @@ module.exports = {
   getTimeSpec,
   getTemplateSpec,
   getRuntimeMetadataContracts,
+  getQueryArgumentPolicies,
+  evaluateQueryArgumentPolicy,
   getQueryConstructionPolicy,
   getBoundaryMode,
   isStrictBoundaryMode,
