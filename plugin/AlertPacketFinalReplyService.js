@@ -31,6 +31,10 @@ function isEligibleModelFinalContent(content, result = {}) {
   if (!text || text.length < 16 || result?.workflowType !== 'alert_packet_analysis') {
     return false;
   }
+  const workflowState = String(result?.workflowState || '').trim();
+  if (result?.ok === false || (workflowState && workflowState !== 'COMPLETED')) {
+    return false;
+  }
   if (INTERNAL_CONTENT_PATTERNS.some((pattern) => pattern.test(text))) {
     return false;
   }

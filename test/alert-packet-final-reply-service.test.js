@@ -60,6 +60,21 @@ describe('AlertPacketFinalReplyService', () => {
     expect(prepareModelFinalContent(internalPayload, result)).toBe('');
   });
 
+  test('rejects model final content for failed packet workflows', () => {
+    const failedResult = {
+      ...result,
+      ok: false,
+      workflowState: 'PACKET_ANALYSIS_FAILED',
+      referenceId: 'GJ-ABC234'
+    };
+    const modelFailureSummary = [
+      'The packet analysis for this alert reference returned no successful results. Let me check if there is additional context I can gather about this alert.',
+      'The result indicates that the packet candidate analysis for alert GJ-ABC234 did not succeed. Let me provide the summary to the user based on what the tool returned.'
+    ].join('\n\n');
+
+    expect(prepareModelFinalContent(modelFailureSummary, failedResult)).toBe('');
+  });
+
   test('renders safe deterministic evidence without raw rows, local files, or URLs', () => {
     const reply = buildDeterministicFinalReply({
       ...result,

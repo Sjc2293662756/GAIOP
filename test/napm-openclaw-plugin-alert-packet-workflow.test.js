@@ -309,6 +309,68 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     expect(outgoing?.content).not.toContain('Password=');
   });
 
+  test('does not deliver model planning text when reference packet analysis fails', async () => {
+    const prompt = '分析告警 GJ-DTWFTMGF';
+    const ctx = {
+      channelId: 'wecom', accountId: 'failed-reference-account', conversationId: 'failed-reference-conversation',
+      sessionKey: 'failed-reference-session', sessionId: 'failed-reference-session', runId: 'failed-reference-run'
+    };
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const bound = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-packet-analysis',
+      params: { prompt, referenceId: 'GJ-DTWFTMGF' }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.rememberSkillResult(prompt, {
+      ok: false,
+      workflowType: 'alert_packet_analysis',
+      workflowState: 'PACKET_ANALYSIS_FAILED',
+      referenceId: 'GJ-DTWFTMGF',
+      eventId: '800086',
+      timeRange: { start: 1787803920, end: 1787804160 },
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'], values: [2808.1201], units: ['毫秒'], severity: '重大',
+        condition: '如果 用户体验时间（服务器） > 3000.0 则为 Critical 否则 如果 用户体验时间（服务器） > 2000.0 则为 Major'
+      },
+      packetAnalyses: [{
+        rank: 1,
+        candidate: { ipPair: '101.254.114.237 -> 101.254.114.238' },
+        ok: false,
+        error: { message: '数据包分析接口未返回有效结果。' }
+      }],
+      error: { code: 'PACKET_ANALYSIS_FAILED', message: '数据包候选分析均未成功。' },
+      narrationInput: { schema: 'openclaw_napm_alert_packet_analysis.v1' }
+    }, scope, 'napm-alert-packet-analysis', turnId);
+
+    const modelPlanningText = [
+      "The packet analysis for this alert reference returned no successful results. Let me check if there's additional context I can gather about this alert.",
+      'The result indicates that the packet candidate analysis for alert GJ-DTWFTMGF did not succeed. Let me provide the summary to the user based on what the tool returned.',
+      '**告警 GJ-DTWFTMGF 分析结果：数据包候选分析未成功。**',
+      '如需进一步排查，可尝试：直接提供该告警对应的 eventId，或确认是否为 linkType=2 告警。'
+    ].join('\n\n');
+
+    const writeResult = hooks.get('before_message_write')({
+      message: { role: 'assistant', content: [{ type: 'text', text: modelPlanningText }] }
+    }, ctx);
+    const writtenText = writeResult?.message?.content?.[0]?.text || '';
+    expect(writtenText).toContain('告警引用 GJ-DTWFTMGF 数据包分析结果');
+    expect(writtenText).toContain('用户体验时间（服务器）');
+    expect(writtenText).not.toContain('The packet analysis for this alert reference');
+    expect(writtenText).not.toContain('直接提供该告警对应的 eventId');
+
+    const outgoing = await hooks.get('message_sending')({
+      content: modelPlanningText,
+      kind: 'final',
+      metadata: { isFinal: true }
+    }, ctx);
+    expect(outgoing?.content).toContain('告警引用 GJ-DTWFTMGF 数据包分析结果');
+    expect(outgoing?.content).toContain('PACKET_ANALYSIS_FAILED');
+    expect(outgoing?.content).not.toContain('The result indicates');
+    expect(outgoing?.content).not.toContain('linkType=2');
+  });
+
   test('/new clears the prepared and claimed final state for the next alert packet turn', async () => {
     const prompt = '分析告警数据包 eventId=745506 start=1786341600 end=1786341840';
     const ctx = {

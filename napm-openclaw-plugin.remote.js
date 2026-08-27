@@ -402,6 +402,13 @@ function looksLikeInternalReasoningPreview(text = '') {
     /\bit\s+only\s+returned\b/ig,
     /\blet\s+me\s+try\b/ig,
     /\blet\s+me\s+(?:re-?run|use|check|query|call|fetch|look|inspect)\b/ig,
+    /\breturned\s+no\s+successful\s+results\b/ig,
+    /\bthe\s+result\s+indicates\b/ig,
+    /\bpacket\s+candidate\s+analysis\b[\s\S]{0,80}\b(?:did\s+not\s+succeed|failed)\b/ig,
+    /\blet\s+me\s+check\s+if\s+there(?:'|’)s\s+(?:additional\s+)?context\b/ig,
+    /\blet\s+me\s+provide\s+the\s+summary\b/ig,
+    /\b(?:directly\s+)?provide\s+the\s+(?:corresponding\s+)?eventid\b/ig,
+    /\bconfirm\s+(?:whether|if)\s+.+\blinktype\b/ig,
     /\bpreviously\s+i\s+(?:checked|queried|tried)\b/ig,
     /\bactually,\s*wait\b/ig,
     /\bnow\s+i\s+see\b/ig,
@@ -5563,6 +5570,10 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
     return '';
   }
 
+  if (isAlertPacketSkillResultRecord(rememberedRecord)) {
+    return buildAlertPacketFinalReply(rememberedRecord.result);
+  }
+
   if (isAlertSkillResultRecord(rememberedRecord)) {
     return buildAlertQueryReply(rememberedRecord.result);
   }
@@ -8366,6 +8377,19 @@ const plugin = {
           && isAlertPacketSkillResultRecord(rememberedRecord)
           && isSkillResultRecordForTurn(rememberedRecord, turnId)
         ) {
+          if (rememberedRecord.result.workflowState !== 'COMPLETED') {
+            appendPluginAuditEvent('napm_plugin_alert_packet_failed_model_final_rewritten', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              workflowState: rememberedRecord.result.workflowState || null
+            });
+            return {
+              message: buildAssistantTextMessage(
+                buildAlertPacketFinalReply(rememberedRecord.result),
+                message
+              )
+            };
+          }
           const preparedContent = prepareAlertPacketModelFinalContent(existingText, rememberedRecord.result);
           if (preparedContent) {
             const preparedFinal = napmOperationState.prepareFinalContent({
