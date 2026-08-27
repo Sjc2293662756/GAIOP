@@ -119,7 +119,12 @@ class AlertPacketWorkflowService {
     }
 
     const persistedCandidates = this._persistCandidates(input, candidates);
-    if (input.referenceId && !input.candidateId && persistedCandidates.length > 1) {
+    if (
+      input.referenceId
+      && !input.candidateId
+      && persistedCandidates.length > 1
+      && !input.analyzeAllCandidates
+    ) {
       return this.resultContract.buildCandidateSelection({
         input,
         alertResult,
@@ -219,6 +224,27 @@ class AlertPacketWorkflowService {
       .map((item) => item?.candidate?.candidateId || null)
       .filter(Boolean);
     try {
+      const current = this.referenceStore.get(input.referenceId);
+      const currentCandidates = Array.isArray(current?.packet?.candidates)
+        ? current.packet.candidates
+        : [];
+      const analysisByCandidateId = new Map(
+        analyses
+          .map((item) => [String(item?.candidate?.candidateId || '').trim(), item])
+          .filter(([candidateId]) => candidateId)
+      );
+      const candidates = currentCandidates.map((candidate) => {
+        const analysis = analysisByCandidateId.get(String(candidate?.candidateId || '').trim());
+        if (!analysis) return candidate;
+        return {
+          ...candidate,
+          status: analysis.ok
+            ? 'ANALYZED'
+            : (isDownloadConfirmationRequired(analysis)
+              ? 'AWAITING_DOWNLOAD_CONFIRMATION'
+              : 'ANALYSIS_FAILED'),
+        };
+      });
       this.referenceStore.update(input.referenceId, {
         status: result.workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED'
           ? 'AWAITING_DOWNLOAD_CONFIRMATION'
@@ -227,6 +253,7 @@ class AlertPacketWorkflowService {
           workflowState: result.workflowState,
           pendingAction: result.decision?.next_action || null,
           pendingCandidateIds,
+          candidates,
           lastAnalysisAt: Date.now(),
         },
       });
@@ -267,6 +294,7 @@ function normalizeAndValidateInput(rawInput = {}, maxWindowSeconds = DEFAULT_MAX
     referenceErrorCode: String(source.referenceErrorCode || '').trim() || null,
     packetCandidate: isPlainObject(source.packetCandidate) ? source.packetCandidate : null,
     previewRiskAccepted: Boolean(source.previewRiskAccepted || source.forceDownload),
+    analyzeAllCandidates: Boolean(source.analyzeAllCandidates),
   };
 
   if (input.referenceErrorCode) {
