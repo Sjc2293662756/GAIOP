@@ -2460,12 +2460,61 @@ function validateObjectInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
   };
 }
 
+function isApplicationTrafficTrendPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text) {
+    return false;
+  }
+
+  const hasApplication = /(?:应用|application|app)/i.test(text);
+  const hasTraffic = /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text);
+  const hasTrendOrAverage = /(?:趋势|走势|变化|曲线|按时间|平均|均值|trend|timeseries|time\s*series|average|mean)/i.test(text);
+  return hasApplication && hasTraffic && hasTrendOrAverage;
+}
+
+function validateApplicationTrafficScopeResolvedQuery(prompt = '', resolvedQuery = {}) {
+  if (!isApplicationTrafficTrendPrompt(prompt)) {
+    return { ok: true };
+  }
+
+  const service = String(resolvedQuery?.service || '').trim();
+  if (!['timeValues', 'averageValues'].includes(service)) {
+    return { ok: true };
+  }
+
+  const groups = Array.isArray(resolvedQuery?.groups) ? resolvedQuery.groups : [];
+  const totalTrafficGroup = groups.find((group) => (
+    String(group?.type || '').trim() === 'TotalTraffic'
+  ));
+  if (!totalTrafficGroup) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    enforce: true,
+    reason: 'application_scope_mismatch',
+    code: 'APPLICATION_SCOPE_MISMATCH',
+    expectedGroupType: 'DefinedApp',
+    actualGroupType: 'TotalTraffic',
+    message: '应用流量趋势或平均值不能使用 TotalTraffic（总流量）范围。请在有具体应用名称时使用 DefinedApp 并提供 groups[0].argument；没有具体名称时先向用户追问。只有明确询问总流量或全局流量时才使用 TotalTraffic。',
+    details: {
+      service,
+      queryModeKey: String(resolvedQuery?.queryModeKey || '').trim() || null,
+      expectedGroupType: 'DefinedApp',
+      actualGroupType: 'TotalTraffic',
+      argument: String(totalTrafficGroup?.argument ?? '').trim() || null
+    }
+  };
+}
+
 function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
   if (getQuerySemanticGuardMode() === 'off') {
     return { ok: true };
   }
 
   return [
+    validateApplicationTrafficScopeResolvedQuery(prompt, resolvedQuery),
     validateCompositeApplicationInventoryResolvedQuery(prompt, resolvedQuery),
     validateObjectInventoryResolvedQuery(prompt, resolvedQuery)
   ].find((validation) => validation && validation.ok === false) || { ok: true };
@@ -6145,7 +6194,7 @@ function createSkillToolDefinition() {
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. A single-object DefinedApp/WebApplication trend or average query requires groups[0].argument with the concrete object name; missing names must be clarified. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}] without an argument. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. A single-object DefinedApp/WebApplication trend or average query requires groups[0].argument with the concrete object name; missing names must be clarified. Plain 应用流量趋势/平均值 means DefinedApp, never TotalTraffic; without a concrete application name, ask the user to clarify instead of querying. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}] without an argument. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
@@ -7050,7 +7099,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
-    'Trend contract: service=timeValues requires a non-empty groups array. Global/overall/total traffic trends use groups=[{type:"TotalTraffic"}]. A contextual time follow-up must submit a complete resolvedQuery; do not submit only changed time fields.',
+    'Trend contract: service=timeValues requires a non-empty groups array. Plain 应用流量趋势/平均值 must use groups=[{type:"DefinedApp",argument:"具体应用名称"}]; if the name is missing, ask a clarification question and do not use TotalTraffic. Global/overall/total traffic trends use groups=[{type:"TotalTraffic"}]. A contextual time follow-up must submit a complete resolvedQuery; do not submit only changed time fields.',
     'Traffic semantics: 流量趋势/流量速率/吞吐/带宽 use TPIO (throughput rate). 流量/累计流量/流量大小/字节数 use BYTIO (accumulated byte traffic). TotalTraffic is the object scope, not a metric.',
     'Query construction rules → skills/openclaw-napm-query/references/query-construction.md; service and mode mapping → skills/openclaw-napm-query/references/service-modes.md.'
   );
@@ -7792,14 +7841,14 @@ const plugin = {
               prompt: activePrompt,
               boundaryMode,
               semanticGuardMode,
-              enforced: semanticGuardMode === 'enforce',
+              enforced: semanticGuardMode === 'enforce' || promptSemanticObservation.enforce === true,
               reason: promptSemanticObservation.reason,
               message: promptSemanticObservation.message,
               resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
               resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
               context: buildAuditContextSnapshot(ctx)
             });
-            if (semanticGuardMode === 'enforce') {
+            if (semanticGuardMode === 'enforce' || promptSemanticObservation.enforce === true) {
               const failureRecord = rememberResolvedQueryBoundaryFailureForTurn(
                 activePrompt,
                 promptSemanticObservation,

@@ -158,6 +158,41 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     });
   });
 
+  test('rejects TotalTraffic when the prompt asks for an application traffic trend', async () => {
+    const ctx = createCtx('application-total-traffic-mismatch');
+    const prompt = '最近 7 天应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('DefinedApp');
+    expect(attemptedQuery.result.blockReason).toContain('TotalTraffic');
+  });
+
+  test('keeps an explicit global traffic trend on TotalTraffic', async () => {
+    const ctx = createCtx('explicit-global-traffic');
+    const prompt = '最近 7 天总流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result?.block).not.toBe(true);
+    expect(attemptedQuery.params.resolvedQuery.groups).toEqual([{ type: 'TotalTraffic' }]);
+  });
+
+  test('keeps a named application trend on DefinedApp', async () => {
+    const ctx = createCtx('named-application-traffic');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const query = buildTrendQuery('last7days', 86400);
+    query.groups = [{ type: 'DefinedApp', argument: 'HTTP' }];
+    const attemptedQuery = callQueryTool(ctx, prompt, query);
+
+    expect(attemptedQuery.result?.block).not.toBe(true);
+    expect(attemptedQuery.params.resolvedQuery.groups).toEqual([
+      { type: 'DefinedApp', argument: 'HTTP' }
+    ]);
+  });
+
   test('documents TotalTraffic in the query tool contract', () => {
     const definition = tools.get('napm-skill-query');
 
