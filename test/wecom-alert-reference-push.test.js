@@ -46,7 +46,12 @@ describe('WeCom alert reference push', () => {
     await expect(service.pushAlert(alert)).resolves.toBe(true);
     const content = axios.post.mock.calls[0][1].markdown_v2.content;
     expect(content).toContain('GJ-');
-    expect(content).toContain('请回复：**分析告警 GJ-');
+    const instruction = content.match(/\n```\n(分析告警 GJ-[A-Z0-9]+)\n```\n/);
+    expect(instruction).not.toBeNull();
+    expect(instruction[1]).toMatch(/^分析告警 GJ-[A-Z0-9]+$/);
+    expect(content).not.toContain('请回复：**分析告警');
+    expect(content).not.toContain('**分析告警');
+    expect(content).toContain('请复制下面这条指令发送给观枢AI');
     expect(content).not.toMatch(/eventId\s*[=:]\s*\d+/i);
     expect(content).not.toMatch(/\bstart\s*=\s*\d+/i);
     expect(content).not.toMatch(/\bend\s*=\s*\d+/i);

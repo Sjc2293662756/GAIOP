@@ -1,6 +1,6 @@
 {
   "name": "intelligence-reports-js",
-  "version": "1.1.0-rc.28",
+  "version": "1.1.0-rc.29",
   "description": "NAPM OpenClaw skill direct-query runtime",
   "scripts": {
     "query": "node skills/openclaw-napm-query/scripts/run_napm_query.js",

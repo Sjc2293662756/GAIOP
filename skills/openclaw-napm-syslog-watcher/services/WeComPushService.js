@@ -264,7 +264,9 @@ class WeComPushService {
         md += `> ⏱ 告警开始: ${st}（持续中）\n`;
       }
       if (alert.referenceId) {
-        md += `\n> 💬 深入分析\n\n请回复：**分析告警 ${this._escapeMd(alert.referenceId)}**\n`;
+        const analysisInstruction = `分析告警 ${this._escapeMd(alert.referenceId)}`;
+        md += '\n> 💬 深入分析\n\n请复制下面这条指令发送给观枢AI：\n\n';
+        md += `\`\`\`\n${analysisInstruction}\n\`\`\`\n`;
       } else {
         md += '\n> 💬 深入分析\n\n当前告警缺少可用引用编号，暂无法自动定位数据包。\n';
       }
