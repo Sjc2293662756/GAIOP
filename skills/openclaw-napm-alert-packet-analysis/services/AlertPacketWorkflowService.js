@@ -51,13 +51,15 @@ class AlertPacketWorkflowService {
         suggestedPacketQuery: input.packetCandidate,
       };
       const packetAnalyses = await this._analyzeCandidates([candidate], input);
-      return this.resultContract.buildSuccess({
+      const result = this.resultContract.buildSuccess({
         input,
         alertResult: null,
         packetAnalyses,
         detailAttempts: 0,
         selectedCandidateId: input.candidateId,
       });
+      this._persistWorkflowState(input, result);
+      return result;
     }
 
     let alertResult = null;
@@ -128,13 +130,15 @@ class AlertPacketWorkflowService {
 
     const packetAnalyses = await this._analyzeCandidates(persistedCandidates, input);
 
-    return this.resultContract.buildSuccess({
+    const result = this.resultContract.buildSuccess({
       input,
       alertResult,
       packetAnalyses,
       detailAttempts,
       selectedCandidateId: persistedCandidates.length === 1 ? persistedCandidates[0].candidateId : null,
     });
+    this._persistWorkflowState(input, result);
+    return result;
   }
 
   _persistCandidates(input, candidates = []) {
@@ -206,6 +210,39 @@ class AlertPacketWorkflowService {
     }
     return packetAnalyses;
   }
+
+  _persistWorkflowState(input, result) {
+    if (!input.referenceId || !this.referenceStore || !result) return;
+    const analyses = Array.isArray(result.packetAnalyses) ? result.packetAnalyses : [];
+    const pendingCandidateIds = analyses
+      .filter(isDownloadConfirmationRequired)
+      .map((item) => item?.candidate?.candidateId || null)
+      .filter(Boolean);
+    try {
+      this.referenceStore.update(input.referenceId, {
+        status: result.workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED'
+          ? 'AWAITING_DOWNLOAD_CONFIRMATION'
+          : result.workflowState === 'COMPLETED' ? 'ANALYSIS_COMPLETED' : 'ANALYSIS_FAILED',
+        packet: {
+          workflowState: result.workflowState,
+          pendingAction: result.decision?.next_action || null,
+          pendingCandidateIds,
+          lastAnalysisAt: Date.now(),
+        },
+      });
+    } catch (_error) {
+      // The tool result remains authoritative when archive state persistence is unavailable.
+    }
+  }
+}
+
+function isDownloadConfirmationRequired(item = {}) {
+  const result = item?.result || {};
+  const code = String(item?.error?.code || result?.error?.code || '').trim().toUpperCase();
+  const nextAction = String(item?.decision?.next_action || result?.decision?.next_action || '').trim().toUpperCase();
+  return code === 'PACKET_PREVIEW_REQUIRES_CONFIRMATION'
+    || code === 'DOWNLOAD_CONFIRMATION_REQUIRED'
+    || nextAction === 'CONFIRM_DOWNLOAD';
 }
 
 function normalizeAndValidateInput(rawInput = {}, maxWindowSeconds = DEFAULT_MAX_WINDOW_SECONDS) {
@@ -229,6 +266,7 @@ function normalizeAndValidateInput(rawInput = {}, maxWindowSeconds = DEFAULT_MAX
     candidateId: String(source.candidateId || '').trim() || null,
     referenceErrorCode: String(source.referenceErrorCode || '').trim() || null,
     packetCandidate: isPlainObject(source.packetCandidate) ? source.packetCandidate : null,
+    previewRiskAccepted: Boolean(source.previewRiskAccepted || source.forceDownload),
   };
 
   if (input.referenceErrorCode) {
@@ -374,6 +412,7 @@ function buildAuthoritativePacketQuery(suggestedPacketQuery = {}, input = {}) {
   return {
     ...source,
     criteria,
+    ...(input.previewRiskAccepted ? { previewRiskAccepted: true } : {}),
     ...(Object.keys(analysis).length > 0 ? { analysis } : {})
   };
 }

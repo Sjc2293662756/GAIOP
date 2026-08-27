@@ -190,6 +190,76 @@ describe('NAPM alert packet analysis workflow', () => {
     expect(JSON.stringify(result)).not.toContain('告警总数');
   });
 
+  test('preserves confirmation-required packet errors and persists resumable state', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-confirmation-'));
+    try {
+      const referenceStore = new AlertReferenceStore({ baseDir });
+      referenceStore.put({
+        referenceId: 'GJ-CONFIRM2',
+        alert: { eventId: '800183', start: 1787835240, end: 1787835480 },
+        packet: { window: { start: 1787835240, end: 1787835480 }, candidates: [] },
+        triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2926.1699, unit: '毫秒' }],
+        analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+      });
+      const packetQuery = {
+        mode: 'preview_download_analyze',
+        criteria: { ips: ['10.0.0.1', '10.0.0.2'], start: 1787835240, end: 1787835480 }
+      };
+      const packetSkill = {
+        handleSkillCall: jest.fn().mockResolvedValue({
+          ok: false,
+          error: { code: 'PACKET_PREVIEW_REQUIRES_CONFIRMATION', message: '预览结果需要用户确认。' },
+          decision: { next_action: 'CONFIRM_DOWNLOAD' },
+          preview: { risk: { recommendation: 'CONFIRM_DOWNLOAD', level: 'unknown' } }
+        })
+      };
+      const service = new AlertPacketWorkflowService({
+        alertSkill: {
+          handleSkillCall: jest.fn().mockResolvedValue({
+            ok: true,
+            details: [{ id: '800183', name: '告警推送应用测试1' }],
+            narrationInput: {
+              packetInstruction: { callPacketAnalysis: true, candidates: [{ rank: 1, suggestedPacketQuery: packetQuery }] }
+            }
+          })
+        },
+        packetSkill,
+        referenceStore,
+        retryDelaysMs: [0]
+      });
+
+      const result = await service.execute({
+        prompt: '分析告警 GJ-CONFIRM2',
+        referenceId: 'GJ-CONFIRM2',
+        eventId: '800183',
+        start: 1787835240,
+        end: 1787835480,
+        triggerMetrics: { names: ['用户体验时间（服务器）'], values: [2926.1699], units: ['毫秒'] }
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        workflowState: 'DOWNLOAD_CONFIRMATION_REQUIRED',
+        error: { code: 'DOWNLOAD_CONFIRMATION_REQUIRED' },
+        decision: { next_action: 'CONFIRM_DOWNLOAD' }
+      });
+      expect(result.narrationInput.decision).toMatchObject({ next_action: 'CONFIRM_DOWNLOAD' });
+      expect(packetSkill.handleSkillCall).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'preview_download_analyze'
+      }));
+      expect(referenceStore.get('GJ-CONFIRM2')).toMatchObject({
+        status: 'AWAITING_DOWNLOAD_CONFIRMATION',
+        packet: {
+          workflowState: 'DOWNLOAD_CONFIRMATION_REQUIRED',
+          pendingAction: 'CONFIRM_DOWNLOAD',
+          pendingCandidateIds: ['GJ-CONFIRM2-P1']
+        }
+      });
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
   test('returns a persisted candidate selection and does not analyze the first candidate automatically', async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-candidates-'));
     try {

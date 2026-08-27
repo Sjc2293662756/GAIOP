@@ -16,6 +16,7 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     process.env.NAPM_AUDIT_LOG_PATH = path.join(baseDir, 'audit.log');
     process.env.NAPM_REPORT_SOURCE_DIR = path.join(baseDir, 'report-sources');
     process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(baseDir, 'trusted-contexts');
+    process.env.NAPM_ALERT_REFERENCE_DIR = baseDir;
     jest.resetModules();
     plugin = require('../napm-openclaw-plugin.remote');
     hooks = new Map();
@@ -38,6 +39,7 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     delete process.env.NAPM_AUDIT_LOG_PATH;
     delete process.env.NAPM_REPORT_SOURCE_DIR;
     delete process.env.NAPM_TRUSTED_CONTEXT_DIR;
+    delete process.env.NAPM_ALERT_REFERENCE_DIR;
     fs.rmSync(baseDir, { recursive: true, force: true });
   });
 
@@ -169,6 +171,103 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     }, ctx);
     expect(writeResult?.message?.content?.[0]?.text).toContain('当前告警引用尚未完成数据包分析');
     expect(writeResult?.message?.content?.[0]?.text).not.toContain('The guard is intercepting');
+  });
+
+  test('restores a pending packet confirmation when the next turn only says start analysis', async () => {
+    const referenceStore = new (require('../plugin/AlertReferenceStore'))({ baseDir });
+    referenceStore.put({
+      referenceId: 'GJ-C2NT23',
+      alert: { eventId: '800183', start: 1787835240, end: 1787835480 },
+      packet: {
+        window: { start: 1787835240, end: 1787835480 },
+        candidates: [{
+          candidateId: 'GJ-C2NT23-P1',
+          rank: 1,
+          ips: ['10.0.0.1', '10.0.0.2'],
+          packetWindow: { start: 1787835240, end: 1787835480 },
+          packetQuery: {
+            mode: 'preview_download_analyze',
+            criteria: { ips: ['10.0.0.1', '10.0.0.2'], start: 1787835240, end: 1787835480 }
+          }
+        }]
+      },
+      triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2926.1699, unit: '毫秒' }],
+      analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+    });
+
+    const ctx = {
+      channelId: 'wecom', accountId: 'confirm-account', conversationId: 'confirm-conversation',
+      sessionKey: 'confirm-session', sessionId: 'confirm-session', runId: 'confirm-run-1'
+    };
+    const firstPrompt = '分析告警 GJ-C2NT23';
+    hooks.get('message_received')({ content: firstPrompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: firstPrompt }, ctx);
+    const firstCall = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-packet-analysis',
+      params: { prompt: firstPrompt, referenceId: 'GJ-C2NT23' }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(firstCall.params);
+    const firstTurnId = plugin.__test__.getTrustedTurnId(firstCall.params);
+    plugin.__test__.rememberSkillResult(firstPrompt, {
+      ok: false,
+      workflowType: 'alert_packet_analysis',
+      workflowState: 'DOWNLOAD_CONFIRMATION_REQUIRED',
+      referenceId: 'GJ-C2NT23',
+      eventId: '800183',
+      timeRange: { start: 1787835240, end: 1787835480 },
+      candidateId: 'GJ-C2NT23-P1',
+      triggerMetrics: { names: ['用户体验时间（服务器）'], values: [2926.1699], units: ['毫秒'] },
+      packetAnalyses: [{
+        rank: 1,
+        candidate: { candidateId: 'GJ-C2NT23-P1' },
+        ok: false,
+        result: {
+          ok: false,
+          error: { code: 'PACKET_PREVIEW_REQUIRES_CONFIRMATION', message: '下载前需要用户确认。' },
+          decision: { next_action: 'CONFIRM_DOWNLOAD' }
+        }
+      }],
+      error: { code: 'DOWNLOAD_CONFIRMATION_REQUIRED', message: '数据包预览完成，下载前需要用户确认。' },
+      narrationInput: { schema: 'openclaw_napm_alert_packet_analysis.v1' }
+    }, scope, 'napm-alert-packet-analysis', firstTurnId);
+
+    const confirmationPrompt = '开始分析！';
+    const nextCtx = { ...ctx, runId: 'confirm-run-2' };
+    hooks.get('message_received')({ content: confirmationPrompt }, nextCtx);
+    const promptBuild = await hooks.get('before_prompt_build')({ prompt: confirmationPrompt }, nextCtx);
+    expect(promptBuild.appendSystemContext).toContain('napm-alert-packet-analysis');
+
+    const guard = plugin.__test__.getGuardState(nextCtx);
+    expect(guard).toMatchObject({
+      canonicalPrompt: '分析 GJ-C2NT23-P1',
+      userPrompt: confirmationPrompt,
+      alertPacketContinuationPrompt: true,
+      alertPacketPreviewRiskAccepted: true,
+      alertPacketReferenceId: 'GJ-C2NT23',
+      alertPacketCandidateId: 'GJ-C2NT23-P1'
+    });
+
+    const wrongTool = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-query',
+      params: { prompt: confirmationPrompt }
+    }, nextCtx);
+    expect(wrongTool).toMatchObject({ block: true });
+
+    const continued = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-packet-analysis',
+      params: { prompt: confirmationPrompt }
+    }, nextCtx);
+    expect(continued).toMatchObject({
+      params: {
+        prompt: expect.stringContaining('分析告警数据包 eventId=800183'),
+        referenceId: 'GJ-C2NT23',
+        candidateId: 'GJ-C2NT23-P1',
+        previewRiskAccepted: true,
+        eventId: '800183',
+        start: 1787835240,
+        end: 1787835480
+      }
+    });
   });
 
   test('describes referenceId as a supported composite-tool entry point', () => {

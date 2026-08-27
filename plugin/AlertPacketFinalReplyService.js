@@ -106,6 +106,9 @@ function buildDeterministicFinalReply(result = {}) {
   if (errorMessage) {
     lines.push('', `未完成项：${errorMessage}`);
   }
+  if (workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED') {
+    lines.push('', '下一步：请回复“开始分析”或“确认下载”，系统将继续下载并分析该数据包。');
+  }
   lines.push('', buildConclusion(workflowState, result?.packetAnalyses));
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -204,6 +207,9 @@ function buildConclusion(workflowState, packetAnalyses = []) {
   if (workflowState === 'PARTIAL_PACKET_ANALYSIS') {
     return `结论：已获得 ${successCount} 个候选会话的有效证据，但仍有候选分析失败；当前结论仅覆盖成功部分。`;
   }
+  if (workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED') {
+    return '结论：数据包预览已完成，但下载需要用户确认，当前尚未形成数据包分析证据。';
+  }
   return '结论：本轮未形成完整的数据包证据，不能据此推测告警根因。';
 }
 
@@ -211,6 +217,7 @@ function workflowStateLabel(state) {
   const labels = {
     COMPLETED: '已完成',
     PARTIAL_PACKET_ANALYSIS: '部分完成',
+    DOWNLOAD_CONFIRMATION_REQUIRED: '等待下载确认',
     PACKET_ANALYSIS_FAILED: '数据包分析失败',
     ALERT_DETAIL_NOT_VISIBLE: '告警详情暂不可见',
     ALERT_DETAIL_QUERY_FAILED: '告警详情查询失败',

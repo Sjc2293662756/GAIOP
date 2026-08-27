@@ -3,9 +3,12 @@
 class AlertPacketResultContractService {
   buildSuccess({ input, alertResult, packetAnalyses, detailAttempts, selectedCandidateId = null }) {
     const failedCount = packetAnalyses.filter((item) => !item.ok).length;
+    const confirmationCount = packetAnalyses.filter(isDownloadConfirmationRequired).length;
     const workflowState = failedCount === 0
       ? 'COMPLETED'
-      : (failedCount < packetAnalyses.length ? 'PARTIAL_PACKET_ANALYSIS' : 'PACKET_ANALYSIS_FAILED');
+      : (confirmationCount === packetAnalyses.length
+        ? 'DOWNLOAD_CONFIRMATION_REQUIRED'
+        : (failedCount < packetAnalyses.length ? 'PARTIAL_PACKET_ANALYSIS' : 'PACKET_ANALYSIS_FAILED'));
     const ok = workflowState === 'COMPLETED';
     const result = {
       ok,
@@ -21,11 +24,19 @@ class AlertPacketResultContractService {
       packetAnalyses,
       error: ok ? null : {
         code: workflowState,
-        message: workflowState === 'PARTIAL_PACKET_ANALYSIS'
-          ? '部分数据包候选分析失败，已保留成功结果。'
-          : '数据包候选分析均未成功。'
+        message: workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED'
+          ? '数据包预览完成，下载前需要用户确认。'
+          : workflowState === 'PARTIAL_PACKET_ANALYSIS'
+            ? '部分数据包候选分析失败，已保留成功结果。'
+            : '数据包候选分析均未成功。'
       }
     };
+    if (workflowState === 'DOWNLOAD_CONFIRMATION_REQUIRED') {
+      result.decision = {
+        next_action: 'CONFIRM_DOWNLOAD',
+        message: '请回复“开始分析”或“确认下载”继续数据包分析。'
+      };
+    }
     result.narrationInput = this.buildNarrationInput(result);
     return result;
   }
@@ -98,6 +109,7 @@ class AlertPacketResultContractService {
       alert: result.alert,
       packetAnalyses: result.packetAnalyses,
       error: result.error,
+      decision: result.decision || null,
       renderPolicy: {
         target: 'final_user_reply',
         requirePacketEvidence: true,
@@ -106,5 +118,16 @@ class AlertPacketResultContractService {
     };
   }
 }
+
+function isDownloadConfirmationRequired(item = {}) {
+  const result = item?.result || {};
+  const code = String(item?.error?.code || result?.error?.code || '').trim().toUpperCase();
+  const nextAction = String(item?.decision?.next_action || result?.decision?.next_action || '').trim().toUpperCase();
+  return code === 'PACKET_PREVIEW_REQUIRES_CONFIRMATION'
+    || code === 'DOWNLOAD_CONFIRMATION_REQUIRED'
+    || nextAction === 'CONFIRM_DOWNLOAD';
+}
+
+AlertPacketResultContractService.isDownloadConfirmationRequired = isDownloadConfirmationRequired;
 
 module.exports = AlertPacketResultContractService;
