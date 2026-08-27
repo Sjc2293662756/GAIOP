@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const Ajv = require('ajv');
 
 describe('NAPM OpenClaw alert packet workflow boundary', () => {
   let baseDir;
@@ -99,6 +100,81 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
       }
     });
     expect(allowed.params).not.toHaveProperty('timeRange');
+  });
+
+  test('accepts reference-only input for the composite tool before plugin restoration', () => {
+    const definition = tools.get('napm-alert-packet-analysis');
+    const validate = new Ajv({ allErrors: true }).compile(definition.parameters);
+
+    expect(validate({
+      prompt: '分析告警 GJ-QFH9QC4Z',
+      referenceId: 'GJ-QFH9QC4Z'
+    })).toBe(true);
+  });
+
+  test('keeps numeric compatibility while rejecting incomplete or unsafe composite inputs', () => {
+    const definition = tools.get('napm-alert-packet-analysis');
+    const validate = new Ajv({ allErrors: true }).compile(definition.parameters);
+
+    expect(validate({
+      prompt: '分析告警数据包 eventId=795097 start=1787647440 end=1787647680',
+      eventId: '795097',
+      start: 1787647440,
+      end: 1787647680
+    })).toBe(true);
+    expect(validate({ prompt: '分析告警 GJ-QFH9QC4Z' })).toBe(false);
+    expect(validate({
+      prompt: '分析告警 GJ-QFH9QC4Z',
+      referenceId: 'not-a-gj-reference'
+    })).toBe(false);
+    expect(validate({
+      prompt: '分析告警 GJ-QFH9QC4Z',
+      referenceId: 'GJ-QFH9QC4Z',
+      timeRange: { key: 'last1hour' }
+    })).toBe(false);
+  });
+
+  test('classifies a GJ alert analysis as alert-packet and suppresses leaked final reasoning', async () => {
+    const prompt = '分析告警 GJ-QFH9QC4Z';
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'gj-alert-account',
+      conversationId: 'gj-alert-conversation',
+      sessionKey: 'gj-alert-session',
+      sessionId: 'gj-alert-session',
+      runId: 'gj-alert-run'
+    };
+
+    expect(plugin.__test__.isAlertPacketAnalysisPrompt(prompt)).toBe(true);
+    expect(plugin.__test__.isAlertEventPrompt(prompt)).toBe(true);
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const leakedReasoning = [
+      'The guard is intercepting all my secondary tool attempts.',
+      'The problem is that the schema validation still demands eventId/start/end.',
+      'I should explain this limitation to the user.'
+    ].join(' ');
+    await expect(hooks.get('message_sending')({
+      content: leakedReasoning,
+      kind: 'final'
+    }, ctx)).resolves.toMatchObject({ cancel: true });
+
+    const writeResult = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: leakedReasoning }]
+      }
+    }, ctx);
+    expect(writeResult?.message?.content?.[0]?.text).toContain('当前告警引用尚未完成数据包分析');
+    expect(writeResult?.message?.content?.[0]?.text).not.toContain('The guard is intercepting');
+  });
+
+  test('describes referenceId as a supported composite-tool entry point', () => {
+    const definition = tools.get('napm-alert-packet-analysis');
+    expect(definition.description).toMatch(/GJ-[^ ]*|referenceId/i);
+    expect(definition.description).toMatch(/引用|reference/i);
   });
 
   test('suppresses a tool-call preamble and delivers the captured terminal report once', async () => {

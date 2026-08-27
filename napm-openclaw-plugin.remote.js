@@ -406,7 +406,11 @@ function looksLikeInternalReasoningPreview(text = '') {
     /\bactually,\s*wait\b/ig,
     /\bnow\s+i\s+see\b/ig,
     /\blet\s+me\s+take\s+a\s+(?:different|step\s+back)\s+approach\b/ig,
-    /\bthat'?s\s+suspicious\b/ig
+    /\bthat'?s\s+suspicious\b/ig,
+    /\bthe\s+guard\s+is\b/ig,
+    /\bthe\s+problem\s+is\b/ig,
+    /\bi\s+should\s+(?:explain|be\s+transparent|tell)\b/ig,
+    /\bi\s+need\s+to\s+(?:explain|ask|tell)\b/ig
   ];
 
   const matches = strongPatterns
@@ -465,6 +469,16 @@ function isAlertEventPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
     return false;
+  }
+
+  // A cross-session GJ reference is already a trusted alert identity. Treat
+  // reference-based analysis as an alert turn even though the prompt does not
+  // expose the internal eventId/start/end fields to the user.
+  if (
+    extractAlertReference(text)
+    && /(?:告警|分析|查看|定位|数据包|报文|抓包|详情|事件|继续)/i.test(text)
+  ) {
+    return true;
   }
 
   if (/\b(?:alertsSummary|alertsSummaryTimeLine|alertsDetail)\b/i.test(text)) {
@@ -4287,6 +4301,10 @@ function isNapmRelatedPrompt(prompt) {
     return true;
   }
 
+  if (isAlertPacketAnalysisPrompt(text)) {
+    return true;
+  }
+
   if (isPacketCapturePrompt(text)) {
     return true;
   }
@@ -5588,6 +5606,13 @@ function buildAlertSkillRequiredReply() {
   ].join('\n');
 }
 
+function buildAlertPacketSkillRequiredReply() {
+  return [
+    '当前告警引用尚未完成数据包分析，系统未执行推测性分析。',
+    '请稍后重试该告警引用；不需要补充 eventId、start 或 end。'
+  ].join('\n');
+}
+
 function buildHierarchySkillRequiredReply() {
   return [
     '当前问题属于 NAPM 下钻/层级目录查询，不能手动读取 groups-tree.static.json、不能只看某个 children=[] 节点，也不能用组合路径推测回答。',
@@ -5597,6 +5622,9 @@ function buildHierarchySkillRequiredReply() {
 }
 
 function buildSkillRequiredReplyForPrompt(prompt = '') {
+  if (isAlertPacketAnalysisPrompt(prompt)) {
+    return buildAlertPacketSkillRequiredReply();
+  }
   if (isAlertEventPrompt(prompt) || isAlertSkillMetaFollowUpPrompt(prompt)) {
     return buildAlertSkillRequiredReply();
   }
@@ -5855,8 +5883,10 @@ function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardStat
     return false;
   }
 
+  const alertPacketPrompt = isAlertPacketAnalysisPrompt(prompt);
   const napmPrompt = Boolean(
-    guardState?.napmRelated
+    alertPacketPrompt
+    || guardState?.napmRelated
     || isNapmRelatedPrompt(prompt)
     || isOverviewPrompt(prompt)
     || isHierarchyCatalogPrompt(prompt)
@@ -5868,6 +5898,22 @@ function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardStat
   }
 
   if (isStreamingPreviewMessageEvent(event)) {
+    return true;
+  }
+
+  // A failed tool attempt can leave a model's English planning text as the
+  // first final message. Suppress it for alert references even before a
+  // remembered tool result exists; only a deterministic Chinese status or
+  // verified analysis may reach the WeCom channel.
+  if (
+    alertPacketPrompt
+    && looksLikeInternalReasoningPreview(extractTextContent(event?.content))
+  ) {
+    appendPluginAuditEvent('napm_alert_packet_internal_reasoning_suppressed', {
+      prompt,
+      conversationKey: getConversationKey(ctx) || null,
+      reason: 'alert_packet_without_verified_result'
+    });
     return true;
   }
 
@@ -6366,7 +6412,7 @@ function createAlertPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Alert Packet Analysis',
     name: 'napm-alert-packet-analysis',
-    description: 'Deterministic composite workflow for packet evidence around one specified NAPM alert event. Use only when the prompt combines 告警 with 数据包/报文/抓包 and provides eventId plus fixed start/end. This tool owns alertsDetail retries and calls the existing packet Skill in-process.',
+    description: 'Deterministic composite workflow for packet evidence around one specified NAPM alert event. Use for 告警数据包/报文/抓包 requests with either (1) eventId plus fixed start/end or (2) a cross-session GJ-XXXXXX referenceId such as “分析告警 GJ-QFH9QC4Z”. For referenceId input, the plugin restores the canonical eventId, fixed packet window, trigger metrics, and candidate data from the shared alert archive; users must not be asked to provide those internal fields. This tool owns alertsDetail retries and calls the existing packet Skill in-process. Do not call napm-alert-query, napm-packet-analysis, exec, or memory_search for this workflow.',
     parameters: {
       type: 'object',
       properties: {
@@ -6381,7 +6427,10 @@ function createAlertPacketAnalysisToolDefinition() {
         referenceErrorCode: { type: 'string', description: 'Plugin-owned alert reference lookup error code.' },
         traceId: { type: 'string', description: 'Plugin-owned trusted trace id.' }
       },
-      required: ['prompt', 'eventId', 'start', 'end'],
+      anyOf: [
+        { required: ['prompt', 'referenceId'] },
+        { required: ['prompt', 'eventId', 'start', 'end'] }
+      ],
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
@@ -8414,6 +8463,12 @@ const plugin = {
             message: buildAssistantTextMessage(rememberedReplyText, message)
           };
         }
+        if (isAlertPacketAnalysisPrompt(activePrompt) && looksLikeInternalReasoningPreview(existingText)) {
+          const safeReply = buildRememberedSkillReplyText(rememberedRecord) || buildAlertPacketSkillRequiredReply();
+          return {
+            message: buildAssistantTextMessage(safeReply, message)
+          };
+        }
         const rememberedReasoningFallbackText = !shouldAllowNapmReasoningPreviewForCtx(ctx) && looksLikeInternalReasoningPreview(existingText)
           ? buildRememberedSkillReplyText(rememberedRecord)
           : '';
@@ -8546,6 +8601,7 @@ module.exports.__test__ = {
   isAlertSkillResultRecord,
   isAlertPacketSkillResultRecord,
   buildAlertSkillRequiredReply,
+  buildAlertPacketSkillRequiredReply,
   buildAlertExecutionTraceReplyFromRememberedRecord,
   isMetricInventoryPrompt,
   isMetricInventoryDetailPrompt,
