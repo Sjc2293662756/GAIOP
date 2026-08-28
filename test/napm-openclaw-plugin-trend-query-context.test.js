@@ -169,6 +169,78 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     expect(attemptedQuery.result.blockReason).toContain('TotalTraffic');
   });
 
+  test('rejects the same application scope mismatch at direct tool execution', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [],
+        error: null
+      });
+    try {
+      const prompt = '最近 7 天应用流量趋势如何？';
+      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch', {
+        prompt,
+        resolvedQuery: buildTrendQuery('last7days', 3600)
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        error: { reason: 'application_scope_mismatch' }
+      });
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('uses resolvedQuery.userRequirement when direct execution omits the trace prompt', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, service: 'timeValues', data: [], error: null });
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch-without-prompt', {
+        resolvedQuery: {
+          ...buildTrendQuery('last7days', 3600),
+          userRequirement: '最近 7 天应用流量趋势如何？'
+        }
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        error: { reason: 'application_scope_mismatch' }
+      });
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('keeps an explicit global traffic trend executable at direct tool execution', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [],
+        error: null
+      });
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-global-trend', {
+        prompt: '最近 7 天总流量趋势如何？',
+        resolvedQuery: buildTrendQuery('last7days', 3600)
+      });
+
+      expect(executeGatewayRequest).toHaveBeenCalledTimes(1);
+      expect(result.details).toMatchObject({ ok: true, service: 'timeValues' });
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
   test('keeps an explicit global traffic trend on TotalTraffic', async () => {
     const ctx = createCtx('explicit-global-traffic');
     const prompt = '最近 7 天总流量趋势如何？';

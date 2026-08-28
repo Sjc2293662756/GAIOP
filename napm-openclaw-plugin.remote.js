@@ -6345,6 +6345,58 @@ function createSkillToolDefinition() {
           return makeToolResult(failureResult);
         }
 
+        // before_tool_call is not guaranteed to run for every OpenClaw execution
+        // path. Keep prompt/query scope validation at the tool boundary as well,
+        // so a malformed application trend can never reach the southbound API.
+        const semanticPrompt = normalizePrompt(preparedArgs)
+          || String(preparedArgs?.resolvedQuery?.userRequirement || '').trim();
+        const promptSemanticObservation = observePromptQuerySemanticMismatch(
+          semanticPrompt,
+          preparedArgs?.resolvedQuery
+        );
+        if (
+          !promptSemanticObservation.ok
+          && (
+            getQuerySemanticGuardMode() === 'enforce'
+            || promptSemanticObservation.enforce === true
+          )
+        ) {
+          appendPluginAuditEvent('napm_plugin_tool_execute_prompt_query_semantic_mismatch_observed', {
+            traceId,
+            prompt: semanticPrompt,
+            enforced: true,
+            reason: promptSemanticObservation.reason,
+            message: promptSemanticObservation.message,
+            resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
+            resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
+          });
+          const semanticArgs = semanticPrompt && !normalizePrompt(preparedArgs)
+            ? { ...preparedArgs, prompt: semanticPrompt }
+            : preparedArgs;
+          const failureRecord = rememberResolvedQueryFailureForTurn(
+            semanticPrompt,
+            promptSemanticObservation,
+            semanticArgs,
+            conversationKey,
+            turnId
+          );
+          appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
+            traceId,
+            prompt: semanticPrompt,
+            reason: promptSemanticObservation.reason || null,
+            message: promptSemanticObservation.message || null,
+            resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
+            resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
+          });
+          if (failureRecord?.result) {
+            return makeToolResult(failureRecord.result);
+          }
+          return makeToolResult(buildResolvedQueryBoundaryFailureResult(
+            promptSemanticObservation,
+            semanticArgs
+          ));
+        }
+
         napmOperationState.clearQueryFailureForTurn(conversationKey, turnId);
         napmOperationState.clearSkillExecutionFailureForTurn(conversationKey, turnId);
         const result = await napmQuerySkill().handleSkillCall(preparedArgs);
