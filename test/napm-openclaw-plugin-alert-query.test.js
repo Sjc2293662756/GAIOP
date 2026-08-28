@@ -493,10 +493,10 @@ describe('napm-openclaw-plugin alert query integration', () => {
 
     expect(text).toContain('最近一小时 告警查询结果');
     expect(text).toContain('告警总数：3 条');
-    expect(text).toContain('**① 网络性能告警 — 2 条**');
+    expect(text).toContain('# **① 网络性能告警 — 2 条（🔴 1 / 🟠 0 / 🟢 1）**');
     expect(text).toContain('🔴 紧急 1 条 | 🟢 轻微 1 条');
     expect(text).toContain('对象：192.168.1.16（吞吐过高）');
-    expect(text).toContain('**② 应用性能告警 — 1 条**');
+    expect(text).toContain('# **② 应用性能告警 — 1 条（🔴 0 / 🟠 1 / 🟢 0）**');
     expect(text).toContain('🟠 重大 1 条');
     expect(text).toContain('🔴 吞吐过高 — 192.168.1.16（紧急，持续 2 分钟）');
     expect(text).toContain('🟠 外部应用性能下降 — HTTPS（重大，持续 1 分钟）');

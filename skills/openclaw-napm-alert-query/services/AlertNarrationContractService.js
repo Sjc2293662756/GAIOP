@@ -2,6 +2,7 @@
 
 const { shouldDiscover } = require('./AlertIndirectPacketDiscoveryService');
 const { ALERT_CATEGORY_LABELS, ALERT_SEVERITY_LABELS } = require('./AlertConstants');
+const { formatAlertCategoryHeading } = require('./AlertDisplayFormatService');
 
 function buildTimeRange(criteria = {}) {
   return {
@@ -163,7 +164,6 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
 
   // ── 按类别 + name+severity 分组 ──
   const categoryOrder = ['networkAlerts', 'networkIssueAlerts', 'appAlerts', 'busAlerts', 'userAlerts', 'securityAlerts', 'AIAlerts'];
-  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦'];
 
   // 按类别归类事件
   const eventsByCategory = new Map();
@@ -212,10 +212,20 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
 
     if (catTotal === 0) {
       // 空类别：显式标注
-      lines.push(`**${symbols[i]} ${catLabel} — 0 条（🔴 0 / 🟠 0 / 🟢 0）**`);
+      lines.push(formatAlertCategoryHeading({
+        index: i + 1,
+        label: catLabel,
+        total: 0,
+        bySeverity: { critical: 0, major: 0, minor: 0 },
+      }));
       lines.push('   无告警记录');
     } else {
-      lines.push(`**${symbols[i]} ${catLabel} — ${catTotal} 条（🔴 ${catCritical} / 🟠 ${catMajor} / 🟢 ${catMinor}）**`);
+      lines.push(formatAlertCategoryHeading({
+        index: i + 1,
+        label: catLabel,
+        total: catTotal,
+        bySeverity: { critical: catCritical, major: catMajor, minor: catMinor },
+      }));
       lines.push('');
 
       // 按 name + severity 分组聚合
@@ -297,8 +307,12 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     const unkMinor = Number.isFinite(Number(unknownSeverity.minor))
       ? Number(unknownSeverity.minor)
       : retainedUnknownEvents.filter(e => e.severity === 2).length;
-    const symIndex = Math.min(categoryOrder.length, 7);
-    lines.push(`**${symbols[symIndex] || '⑧'} 其他告警 — ${unknownTotal} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）**`);
+    lines.push(formatAlertCategoryHeading({
+      index: categoryOrder.length + 1,
+      label: '其他告警',
+      total: unknownTotal,
+      bySeverity: { critical: unkCritical, major: unkMajor, minor: unkMinor },
+    }));
     lines.push('');
 
     const groupMap = new Map();

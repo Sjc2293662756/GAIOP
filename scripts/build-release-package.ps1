@@ -189,6 +189,7 @@ try {
     'scripts/stage-openclaw-extension.sh',
     'scripts/verify-openclaw-extension-runtime.js',
     'skills/openclaw-napm-query/scripts/run_napm_query.js',
+    'skills/openclaw-napm-alert-query/services/AlertDisplayFormatService.js',
     'skills/openclaw-napm-alert-packet-analysis/services/AlertMetricProfileService.js',
     'skills/openclaw-napm-alert-packet-analysis/services/AlertPacketWorkflowService.js',
     'skills/openclaw-napm-alert-packet-analysis/services/AlertPacketResultContractService.js',

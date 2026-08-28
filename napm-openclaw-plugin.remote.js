@@ -67,6 +67,12 @@ const {
   NapmObjectTargetResolver,
   TARGET_RESOLUTION_STATUS
 } = require(path.join(OPENCLAW_SKILLS_ROOT, 'shared', 'NapmObjectTargetResolver.js'));
+const { formatAlertCategoryHeading } = require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-alert-query',
+  'services',
+  'AlertDisplayFormatService.js'
+));
 
 // ── In-process Skill loaders (2026-07-07) ─────────────────────────────────
 // 替代 execFileAsync subprocess spawn，改为同进程 require() 调用。
@@ -4918,7 +4924,12 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
   for (const [index, detail] of details.filter((item) => Number(item?.total || 0) > 0).entries()) {
     const bySeverity = detail.bySeverity || {};
     const overviewEvents = Array.isArray(detail.overviewEvents) ? detail.overviewEvents.slice(0, 3) : [];
-    lines.push(`**${formatCategoryIndex(index + 1)} ${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)} — ${detail.total || 0} 条**`);
+    lines.push(formatAlertCategoryHeading({
+      index: index + 1,
+      label: formatAlertCategorySectionTitle(detail.categoryLabel || detail.category),
+      total: detail.total,
+      bySeverity,
+    }));
     lines.push(formatAlertSeveritySummaryLine(bySeverity));
     const focusText = buildAlertCategoryFocusText(overviewEvents);
     if (focusText) {
@@ -4940,11 +4951,6 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
   }
 
   return lines;
-}
-
-function formatCategoryIndex(index) {
-  const symbols = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
-  return symbols[index - 1] || `${index}.`;
 }
 
 function formatAlertSeveritySummaryLine(bySeverity = {}) {

@@ -276,6 +276,8 @@ describe('openclaw-napm-alert-query services', () => {
       }],
     });
 
-    expect(displayText).toMatch(/\*\*① 网络性能告警 — 8 条（🔴 1 \/ 🟠 0 \/ 🟢 0）\*\*/);
+    expect(displayText).toMatch(/^# \*\*① 网络性能告警 — 8 条（🔴 1 \/ 🟠 0 \/ 🟢 0）\*\*$/mu);
+    expect(displayText).toMatch(/^# \*\*② 网络异常告警 — 0 条（🔴 0 \/ 🟠 0 \/ 🟢 0）\*\*$/mu);
+    expect(displayText).not.toMatch(/^\*\*① 网络性能告警/mu);
   });
 });
