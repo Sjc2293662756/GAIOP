@@ -212,10 +212,10 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
 
     if (catTotal === 0) {
       // 空类别：显式标注
-      lines.push(`${symbols[i]} ${catLabel} — 0 条（🔴 0 / 🟠 0 / 🟢 0）`);
+      lines.push(`**${symbols[i]} ${catLabel} — 0 条（🔴 0 / 🟠 0 / 🟢 0）**`);
       lines.push('   无告警记录');
     } else {
-      lines.push(`${symbols[i]} ${catLabel} — ${catTotal} 条（🔴 ${catCritical} / 🟠 ${catMajor} / 🟢 ${catMinor}）`);
+      lines.push(`**${symbols[i]} ${catLabel} — ${catTotal} 条（🔴 ${catCritical} / 🟠 ${catMajor} / 🟢 ${catMinor}）**`);
       lines.push('');
 
       // 按 name + severity 分组聚合
@@ -298,7 +298,7 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
       ? Number(unknownSeverity.minor)
       : retainedUnknownEvents.filter(e => e.severity === 2).length;
     const symIndex = Math.min(categoryOrder.length, 7);
-    lines.push(`${symbols[symIndex] || '⑧'} 其他告警 — ${unknownTotal} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）`);
+    lines.push(`**${symbols[symIndex] || '⑧'} 其他告警 — ${unknownTotal} 条（🔴 ${unkCritical} / 🟠 ${unkMajor} / 🟢 ${unkMinor}）**`);
     lines.push('');
 
     const groupMap = new Map();
@@ -649,4 +649,3 @@ module.exports = {
   resolveAlertTimeWindow,
   looksLikeIp,
 };
-

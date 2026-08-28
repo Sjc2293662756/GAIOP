@@ -9,6 +9,7 @@ const {
 const { analyzeEvents } = require('../skills/openclaw-napm-alert-query/services/AlertAnalyzerService');
 const {
   buildPacketHandoff,
+  buildDisplayText,
 } = require('../skills/openclaw-napm-alert-query/services/AlertNarrationContractService');
 
 describe('openclaw-napm-alert-query services', () => {
@@ -252,5 +253,29 @@ describe('openclaw-napm-alert-query services', () => {
         }
       }
     });
+  });
+
+  test('should bold category summary headings in canonical display text', () => {
+    const displayText = buildDisplayText({
+      ok: true,
+      mode: 'summary',
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 8,
+        bySeverity: { critical: 2, major: 4, minor: 2 },
+        byCategory: { networkAlerts: 8 },
+      },
+      events: [{
+        category: 'networkAlerts',
+        name: '网络延时增大',
+        severity: 4,
+        severityLabel: '紧急',
+        group: '192.0.2.1',
+        period: 1,
+        start: 1786327200,
+      }],
+    });
+
+    expect(displayText).toMatch(/\*\*① 网络性能告警 — 8 条（🔴 1 \/ 🟠 0 \/ 🟢 0）\*\*/);
   });
 });

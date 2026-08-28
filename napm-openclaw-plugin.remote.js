@@ -4918,7 +4918,7 @@ function buildAlertCategorySections(categoryDetails = [], fallbackEvents = []) {
   for (const [index, detail] of details.filter((item) => Number(item?.total || 0) > 0).entries()) {
     const bySeverity = detail.bySeverity || {};
     const overviewEvents = Array.isArray(detail.overviewEvents) ? detail.overviewEvents.slice(0, 3) : [];
-    lines.push(`${formatCategoryIndex(index + 1)} ${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)} — ${detail.total || 0} 条`);
+    lines.push(`**${formatCategoryIndex(index + 1)} ${formatAlertCategorySectionTitle(detail.categoryLabel || detail.category)} — ${detail.total || 0} 条**`);
     lines.push(formatAlertSeveritySummaryLine(bySeverity));
     const focusText = buildAlertCategoryFocusText(overviewEvents);
     if (focusText) {
