@@ -548,6 +548,33 @@ function isAlertPacketConfirmationPrompt(prompt = '', previousState = null) {
   );
 }
 
+function normalizeAlertPacketCommand(prompt = '') {
+  return String(prompt || '')
+    .trim()
+    .replace(/[!！。．.]+$/u, '')
+    .trim();
+}
+
+function isAlertPacketBatchPrompt(prompt = '', previousState = null) {
+  const text = normalizeAlertPacketCommand(prompt);
+  if (!text) return false;
+  const reference = previousState?.alertPacketReferenceId
+    || extractAlertReference(previousState?.canonicalPrompt || previousState?.prompt)?.referenceId;
+  if (!reference) return false;
+  const workflowState = String(previousState?.alertPacketWorkflowState || '').trim().toUpperCase();
+  const candidateSelectionPending = workflowState === 'CANDIDATE_SELECTION_REQUIRED'
+    || workflowState === 'CANDIDATES_READY';
+  if (!candidateSelectionPending) return false;
+  return /^(?:按顺序分析|按顺序都进行分析|按顺序全部分析|依次分析|依次都进行分析|依次全部分析|逐一分析|逐一进行分析|逐个分析|逐个进行分析|全部分析|全部进行分析|全部候选分析|所有候选分析|所有候选都分析|分析全部候选|分析所有候选|按顺序分析全部候选|按顺序分析所有候选|依次分析全部候选|依次分析所有候选)$/i.test(text);
+}
+
+function buildAlertPacketBatchContinuationPrompt(prompt = '', previousState = null) {
+  if (!isAlertPacketBatchPrompt(prompt, previousState)) return '';
+  const reference = previousState?.alertPacketReferenceId
+    || extractAlertReference(previousState?.canonicalPrompt || previousState?.prompt)?.referenceId;
+  return reference ? `分析告警 ${reference} 按顺序分析全部候选` : '';
+}
+
 function buildAlertPacketContinuationPrompt(prompt = '', previousState = null) {
   if (!isAlertPacketConfirmationPrompt(prompt, previousState)) return '';
   const previousPrompt = String(
@@ -650,7 +677,12 @@ function normalizeReferenceTriggerMetrics(metrics = [], analysis = {}) {
 function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
   const text = String(prompt || '').trim();
   const source = isPlainObject(params) ? params : {};
-  const referenceInput = resolveAlertReferenceInput(text);
+  const sourceReference = extractAlertReference(source.referenceId || '');
+  const sourceReferencePrompt = sourceReference
+    ? `分析告警 ${sourceReference.candidateId || sourceReference.referenceId}`
+    : '';
+  const referenceInput = resolveAlertReferenceInput(text)
+    || (sourceReferencePrompt ? resolveAlertReferenceInput(sourceReferencePrompt) : null);
   if (referenceInput?.error) {
     const canonical = {
       prompt: text,
@@ -661,6 +693,7 @@ function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
       candidateId: referenceInput.reference?.candidateId || null,
       referenceErrorCode: referenceInput.error.errorCode || 'ALERT_REFERENCE_NOT_FOUND',
       triggerMetrics: isPlainObject(source.triggerMetrics) ? source.triggerMetrics : {},
+      ...(source.analyzeAllCandidates ? { analyzeAllCandidates: true } : {}),
       ...(source.previewRiskAccepted ? { previewRiskAccepted: true } : {}),
     };
     const traceId = normalizeTraceId(source.traceId);
@@ -677,6 +710,7 @@ function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
       referenceId: referenceInput.input.referenceId,
       candidateId: referenceInput.input.candidateId,
       packetCandidate: referenceInput.input.packetCandidate,
+      ...(source.analyzeAllCandidates ? { analyzeAllCandidates: true } : {}),
       ...(source.previewRiskAccepted ? { previewRiskAccepted: true } : {}),
     };
     const traceId = normalizeTraceId(source.traceId);
@@ -720,6 +754,7 @@ function buildCanonicalAlertPacketToolParams(prompt = '', params = {}) {
       condition: conditionMatch ? conditionMatch[1].trim() : String(sourceMetrics.condition || '').trim()
     }
   };
+  if (source.analyzeAllCandidates) canonical.analyzeAllCandidates = true;
   if (source.previewRiskAccepted) canonical.previewRiskAccepted = true;
   const traceId = normalizeTraceId(source.traceId);
   if (traceId) canonical.traceId = traceId;
@@ -6486,7 +6521,7 @@ function createAlertPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Alert Packet Analysis',
     name: 'napm-alert-packet-analysis',
-    description: 'Deterministic composite workflow for packet evidence around one specified NAPM alert event. Use for 告警数据包/报文/抓包 requests with either (1) eventId plus fixed start/end or (2) a cross-session GJ-XXXXXX referenceId such as “分析告警 GJ-QFH9QC4Z”. For referenceId input, the plugin restores the canonical eventId, fixed packet window, trigger metrics, and candidate data from the shared alert archive; users must not be asked to provide those internal fields. This tool owns alertsDetail retries and calls the existing packet Skill in-process. Do not call napm-alert-query, napm-packet-analysis, exec, or memory_search for this workflow.',
+    description: 'Deterministic composite workflow for packet evidence around one specified NAPM alert event. Use for 告警数据包/报文/抓包 requests with either (1) eventId plus fixed start/end or (2) a cross-session GJ-XXXXXX referenceId such as “分析告警 GJ-QFH9QC4Z”. For referenceId input, the plugin restores the canonical eventId, fixed packet window, trigger metrics, and candidate data from the shared alert archive; users must not be asked to provide those internal fields. When the user says 按顺序分析/依次分析/逐一分析, pass analyzeAllCandidates=true to analyze every restored candidate in rank order. This tool owns alertsDetail retries and calls the existing packet Skill in-process. Do not call napm-alert-query, napm-packet-analysis, exec, or memory_search for this workflow.',
     parameters: {
       type: 'object',
       properties: {
@@ -6498,6 +6533,7 @@ function createAlertPacketAnalysisToolDefinition() {
         referenceId: { type: 'string', pattern: '^GJ-[A-Z2-9]{6,16}$', description: 'Cross-session alert reference restored by the plugin.' },
         candidateId: { type: 'string', pattern: '^GJ-[A-Z2-9]{6,16}-P\\d{1,3}$', description: 'Selected single packet candidate reference.' },
         packetCandidate: { type: 'object', additionalProperties: true, description: 'Trusted packet candidate restored from the alert reference store.' },
+        analyzeAllCandidates: { type: 'boolean', description: 'Plugin-owned request to analyze every restored packet candidate in rank order.' },
         referenceErrorCode: { type: 'string', description: 'Plugin-owned alert reference lookup error code.' },
         previewRiskAccepted: { type: 'boolean', description: 'Plugin-owned confirmation that the preview risk may proceed to download.' },
         traceId: { type: 'string', description: 'Plugin-owned trusted trace id.' }
@@ -7161,7 +7197,10 @@ const plugin = {
 
         clearNativeCommandTurn(ctx);
         const previousState = conversationKey ? (napmConversationState.get(conversationKey) || null) : null;
-        const continuationPrompt = buildAlertPacketContinuationPrompt(content, previousState);
+        const batchContinuationPrompt = buildAlertPacketBatchContinuationPrompt(content, previousState);
+        const continuationPrompt = batchContinuationPrompt
+          || buildAlertPacketContinuationPrompt(content, previousState);
+        const analyzeAllCandidates = Boolean(batchContinuationPrompt);
         const effectivePrompt = continuationPrompt || content;
         const turnId = buildNapmTurnId();
         const nextState = {
@@ -7171,11 +7210,14 @@ const plugin = {
           canonicalPrompt: effectivePrompt,
           userPrompt: content,
           alertPacketContinuationPrompt: Boolean(continuationPrompt),
-          alertPacketPreviewRiskAccepted: Boolean(continuationPrompt),
+          alertPacketPreviewRiskAccepted: Boolean(continuationPrompt) && !analyzeAllCandidates,
+          alertPacketAnalyzeAllCandidates: analyzeAllCandidates,
           alertPacketReferenceId: continuationPrompt
             ? (extractAlertReference(continuationPrompt)?.referenceId || previousState?.alertPacketReferenceId || null)
             : (previousState?.alertPacketReferenceId || extractAlertReference(effectivePrompt)?.referenceId || null),
-          alertPacketCandidateId: continuationPrompt
+          alertPacketCandidateId: analyzeAllCandidates
+            ? null
+            : continuationPrompt
             ? (extractAlertReference(continuationPrompt)?.candidateId || previousState?.alertPacketCandidateId || null)
             : (previousState?.alertPacketCandidateId || extractAlertReference(effectivePrompt)?.candidateId || null),
           turnId,
@@ -7475,6 +7517,12 @@ const plugin = {
         }
         if (toolName === 'napm-alert-packet-analysis' && activePrompt) {
           toolParams = buildCanonicalAlertPacketToolParams(activePrompt, toolParams);
+          if (activePromptState?.alertPacketAnalyzeAllCandidates) {
+            toolParams = {
+              ...toolParams,
+              analyzeAllCandidates: true
+            };
+          }
           if (activePromptState?.alertPacketPreviewRiskAccepted) {
             toolParams = {
               ...toolParams,
@@ -8685,6 +8733,8 @@ module.exports.__test__ = {
   isAlertEventPrompt,
   isAlertPacketAnalysisPrompt,
   extractAlertReference,
+  isAlertPacketBatchPrompt,
+  buildAlertPacketBatchContinuationPrompt,
   resolveAlertReferenceInput,
   buildCanonicalAlertPacketToolParams,
   hasSpecificFaultDiagnosisTarget,

@@ -324,6 +324,92 @@ describe('NAPM alert packet analysis workflow', () => {
     }
   });
 
+  test('analyzes all candidates in rank order when explicitly requested', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-batch-'));
+    try {
+      const referenceStore = new AlertReferenceStore({ baseDir });
+      referenceStore.put({
+        referenceId: 'GJ-BATCH23',
+        alert: { eventId: '800300', start: 1787819820, end: 1787820060 },
+        packet: { window: { start: 1787819700, end: 1787820180 }, candidates: [] },
+        triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2803.78, unit: '毫秒' }],
+        analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+      });
+      const candidateQuery = (rank) => ({
+        mode: 'preview_download_analyze',
+        criteria: {
+          ips: [`10.0.0.${rank}`, `10.0.1.${rank}`],
+          start: 1787819700,
+          end: 1787820180
+        }
+      });
+      const alertSkill = {
+        handleSkillCall: jest.fn().mockResolvedValue({
+          ok: true,
+          details: [{ id: '800300', name: '告警推送应用测试1' }],
+          narrationInput: {
+            packetInstruction: {
+              callPacketAnalysis: true,
+              candidates: [1, 2, 3].map((rank) => ({ rank, suggestedPacketQuery: candidateQuery(rank) }))
+            }
+          }
+        })
+      };
+      const packetResult = { ok: true, summary: { highlights: ['专项证据'] } };
+      const packetSkill = { handleSkillCall: jest.fn().mockResolvedValue(packetResult) };
+      const service = new AlertPacketWorkflowService({
+        alertSkill,
+        packetSkill,
+        referenceStore,
+        retryDelaysMs: [0]
+      });
+
+      const result = await service.execute({
+        prompt: '分析告警 GJ-BATCH23 按顺序分析全部候选',
+        referenceId: 'GJ-BATCH23',
+        eventId: '800300',
+        start: 1787819700,
+        end: 1787820180,
+        analyzeAllCandidates: true,
+        triggerMetrics: {
+          names: ['用户体验时间（服务器）'],
+          values: [2803.78],
+          units: ['毫秒']
+        }
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        workflowState: 'COMPLETED',
+        referenceId: 'GJ-BATCH23',
+        packetAnalyses: [
+          { rank: 1, ok: true },
+          { rank: 2, ok: true },
+          { rank: 3, ok: true }
+        ]
+      });
+      expect(packetSkill.handleSkillCall).toHaveBeenCalledTimes(3);
+      expect(packetSkill.handleSkillCall.mock.calls.map(([query]) => query.criteria.ips))
+        .toEqual([
+          ['10.0.0.1', '10.0.1.1'],
+          ['10.0.0.2', '10.0.1.2'],
+          ['10.0.0.3', '10.0.1.3']
+        ]);
+      expect(packetSkill.handleSkillCall.mock.calls.every(([query]) => (
+        query.analysis?.profileId === 'server_user_experience_time'
+      ))).toBe(true);
+      expect(referenceStore.get('GJ-BATCH23')).toMatchObject({
+        status: 'ANALYSIS_COMPLETED',
+        packet: {
+          workflowState: 'COMPLETED',
+          lastAnalysisAt: expect.any(Number)
+        }
+      });
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
   test('analyzes only the explicitly selected candidate from a cross-session reference', async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-alert-selected-'));
     try {

@@ -28,13 +28,82 @@ function cloneSafe(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => cloneSafe(item, seen));
+  try {
+    if (Array.isArray(value)) return value.map((item) => cloneSafe(item, seen));
 
-  const output = {};
-  for (const [key, item] of Object.entries(value)) {
-    output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : cloneSafe(item, seen);
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : cloneSafe(item, seen);
+    }
+    return output;
+  } finally {
+    // Track only the current recursion path. Reused arrays/objects are shared
+    // values, not circular references, and must survive persistence intact.
+    seen.delete(value);
   }
-  return output;
+}
+
+function isLegacyCircularMarker(value) {
+  return value === '[Circular]';
+}
+
+function repairLegacyReference(record) {
+  const candidates = Array.isArray(record?.packet?.candidates) ? record.packet.candidates : [];
+  if (candidates.length === 0) return false;
+
+  const triggerItems = Array.isArray(record.triggerMetrics) ? record.triggerMetrics : [];
+  const analysis = isPlainObject(record.analysis) ? record.analysis : {};
+  const context = {
+    metrics: triggerItems.map((item) => item?.code || item?.label || item?.name).filter(Boolean),
+    metricLabels: triggerItems.map((item) => item?.label || item?.name || item?.code).filter(Boolean),
+    values: triggerItems.map((item) => item?.value).filter((value) => value !== null && value !== undefined && value !== ''),
+    units: triggerItems.map((item) => item?.unit).filter(Boolean),
+    condition: triggerItems[0]?.condition || null,
+    severity: triggerItems[0]?.severity || null,
+    profileId: analysis.profileId || null,
+    profileVersion: analysis.profileVersion || null,
+    evidenceChecks: Array.isArray(analysis.evidenceChecks) ? analysis.evidenceChecks : []
+  };
+  let changed = false;
+
+  for (const candidate of candidates) {
+    if (!isPlainObject(candidate)) continue;
+    const query = isPlainObject(candidate.packetQuery) ? candidate.packetQuery : null;
+    if (!query) continue;
+
+    if (isPlainObject(query.criteria)) {
+      if (isLegacyCircularMarker(query.criteria.ips) && Array.isArray(candidate.ips)) {
+        query.criteria.ips = [...candidate.ips];
+        changed = true;
+      }
+    }
+
+    if (!isPlainObject(query.analysis)) continue;
+    const analysisFields = ['metrics', 'metricLabels', 'values', 'units', 'evidenceChecks'];
+    for (const field of analysisFields) {
+      if (isLegacyCircularMarker(query.analysis[field]) && Array.isArray(context[field])) {
+        query.analysis[field] = [...context[field]];
+        changed = true;
+      }
+    }
+    if (isLegacyCircularMarker(query.analysis.condition) && context.condition) {
+      query.analysis.condition = context.condition;
+      changed = true;
+    }
+    if (isLegacyCircularMarker(query.analysis.severity) && context.severity) {
+      query.analysis.severity = context.severity;
+      changed = true;
+    }
+    if (!query.analysis.profileId && context.profileId) {
+      query.analysis.profileId = context.profileId;
+      changed = true;
+    }
+    if (!query.analysis.profileVersion && context.profileVersion) {
+      query.analysis.profileVersion = context.profileVersion;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function hashEventId(eventId) {
@@ -114,6 +183,9 @@ class AlertReferenceStore {
     if (!this._isFresh(record)) {
       this._delete(id);
       return this._error('ALERT_REFERENCE_EXPIRED', '指定的告警引用已过期。');
+    }
+    if (repairLegacyReference(record)) {
+      this._writeAtomic(record);
     }
     return { ok: true, ...record };
   }

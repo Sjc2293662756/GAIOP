@@ -93,6 +93,92 @@ describe('AlertPacketFinalReplyService', () => {
     expect(reply).not.toContain('14:43:00 至 14:48:00');
   });
 
+  test('renders quantitative candidate evidence against the alert trigger value', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-QUANT234',
+      eventId: '802358',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [2216],
+        units: ['毫秒'],
+        severity: '轻微',
+        condition: '如果 用户体验时间（服务器） > 3000.0 则为 Critical 否则 如果 用户体验时间（服务器） > 2500.0 则为 Major 否则 如果 用户体验时间（服务器） > 2000.0 则为 Minor 否则 None'
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { candidateId: 'GJ-QUANT234-P1', ipPair: '101.254.114.235|39.34.186.250' },
+        query: { criteria: { start: 1787880000, end: 1787880240 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt', 'tcp_retransmission', 'alert_time_correlation'],
+              httpTimingRows: [
+                '1787880100|101.254.114.235|39.34.186.250|1|example.test|/slow|200|0.250',
+                '1787880101|101.254.114.235|39.34.186.250|1|example.test|/slow|200|2.500'
+              ],
+              rttRows: [
+                '1787880100|101.254.114.235|39.34.186.250|1|0.100',
+                '1787880101|101.254.114.235|39.34.186.250|1|0.400'
+              ],
+              retransmissionRows: [
+                '1787880102|101.254.114.235|39.34.186.250|1',
+                '1787880103|101.254.114.235|39.34.186.250|1'
+              ],
+              retransmissionTruncated: true,
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('服务端响应等待：已捕获（HTTP 时序 2 条；平均 1375 毫秒，最大 2500 毫秒）');
+    expect(reply).toContain('HTTP 响应耗时：已捕获（2 条；平均 1375 毫秒，最大 2500 毫秒）');
+    expect(reply).toContain('TCP RTT：已捕获（2 条；平均 250 毫秒，最大 400 毫秒）');
+    expect(reply).toContain('告警指标对照：告警触发值 2216 毫秒');
+    expect(reply).toContain('HTTP 响应耗时平均 1375 毫秒，最大 2500 毫秒，高于触发值，支持该候选作为重点排查对象');
+    expect(reply).toContain('TCP 重传：已捕获（至少 2 条，已达到展示上限）');
+  });
+
+  test('downgrades a stale supported status when a required evidence class is empty', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-PARTIAL2',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [2216],
+        units: ['毫秒']
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { ipPair: '101.254.114.235|39.34.186.250' },
+        query: { criteria: { start: 1787880000, end: 1787880240 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt', 'tcp_retransmission'],
+              httpTimingRows: [],
+              rttRows: ['1787880100|101.254.114.235|39.34.186.250|1|0.100'],
+              retransmissionRows: [],
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('专项证据总状态：部分捕获');
+    expect(reply).toContain('服务端响应等待：未捕获（无可核对的 HTTP 时序）');
+    expect(reply).toContain('HTTP 响应耗时：未捕获（无可核对的 HTTP 时序）');
+    expect(reply).toContain('TCP RTT：已捕获');
+    expect(reply).toContain('TCP 重传：未捕获');
+  });
+
   test('hides internal event and Unix window fields for reference-based replies', () => {
     const prepared = hideReferenceInternals([
       '告警引用 GJ-ABC234 数据包分析结论。',

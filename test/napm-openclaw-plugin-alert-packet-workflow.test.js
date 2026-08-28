@@ -270,6 +270,108 @@ describe('NAPM OpenClaw alert packet workflow boundary', () => {
     });
   });
 
+  test('restores a pending candidate selection when the next turn asks to analyze candidates in order', async () => {
+    const referenceStore = new (require('../plugin/AlertReferenceStore'))({ baseDir });
+    referenceStore.put({
+      referenceId: 'GJ-BATCH23',
+      alert: { eventId: '800300', start: 1787819820, end: 1787820060 },
+      packet: {
+        window: { start: 1787819700, end: 1787820180 },
+        candidates: [1, 2, 3].map((rank) => ({
+          candidateId: `GJ-BATCH23-P${rank}`,
+          rank,
+          ips: [`10.0.0.${rank}`, `10.0.1.${rank}`],
+          packetWindow: { start: 1787819700, end: 1787820180 },
+          packetQuery: {
+            mode: 'preview_download_analyze',
+            criteria: {
+              ips: [`10.0.0.${rank}`, `10.0.1.${rank}`],
+              start: 1787819700,
+              end: 1787820180
+            }
+          }
+        }))
+      },
+      triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2803.78, unit: '毫秒' }],
+      analysis: { profileId: 'server_user_experience_time', profileVersion: 1 }
+    });
+
+    const ctx = {
+      channelId: 'wecom', accountId: 'batch-account', conversationId: 'batch-conversation',
+      sessionKey: 'batch-session', sessionId: 'batch-session', runId: 'batch-run-1'
+    };
+    const firstPrompt = '分析告警 GJ-BATCH23';
+    hooks.get('message_received')({ content: firstPrompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt: firstPrompt }, ctx);
+    const firstCall = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-packet-analysis',
+      params: { prompt: firstPrompt, referenceId: 'GJ-BATCH23' }
+    }, ctx);
+    const scope = plugin.__test__.getTrustedConversationKey(firstCall.params);
+    const firstTurnId = plugin.__test__.getTrustedTurnId(firstCall.params);
+    plugin.__test__.rememberSkillResult(firstPrompt, {
+      ok: true,
+      workflowType: 'alert_packet_analysis',
+      workflowState: 'CANDIDATE_SELECTION_REQUIRED',
+      referenceId: 'GJ-BATCH23',
+      eventId: '800300',
+      timeRange: { start: 1787819700, end: 1787820180 },
+      candidateOptions: [
+        { candidateId: 'GJ-BATCH23-P1', rank: 1 },
+        { candidateId: 'GJ-BATCH23-P2', rank: 2 },
+        { candidateId: 'GJ-BATCH23-P3', rank: 3 }
+      ],
+      packetAnalyses: [],
+      triggerMetrics: { names: ['用户体验时间（服务器）'], values: [2803.78], units: ['毫秒'] },
+      error: { code: 'CANDIDATE_SELECTION_REQUIRED' },
+      narrationInput: { schema: 'openclaw_napm_alert_packet_analysis.v1' }
+    }, scope, 'napm-alert-packet-analysis', firstTurnId);
+
+    const nextCtx = { ...ctx, runId: 'batch-run-2' };
+    const batchPrompt = '按顺序分析！';
+    expect([
+      '按顺序分析！',
+      '按顺序都进行分析！',
+      '依次分析',
+      '逐一进行分析',
+      '分析所有候选'
+    ].every((prompt) => plugin.__test__.isAlertPacketBatchPrompt(prompt, {
+      alertPacketReferenceId: 'GJ-BATCH23',
+      alertPacketWorkflowState: 'CANDIDATE_SELECTION_REQUIRED'
+    }))).toBe(true);
+    hooks.get('message_received')({ content: batchPrompt }, nextCtx);
+    await hooks.get('before_prompt_build')({ prompt: batchPrompt }, nextCtx);
+
+    const guard = plugin.__test__.getGuardState(nextCtx);
+    expect(guard).toMatchObject({
+      canonicalPrompt: '分析告警 GJ-BATCH23 按顺序分析全部候选',
+      userPrompt: batchPrompt,
+      alertPacketContinuationPrompt: true,
+      alertPacketPreviewRiskAccepted: false,
+      alertPacketAnalyzeAllCandidates: true,
+      alertPacketReferenceId: 'GJ-BATCH23'
+    });
+
+    const continued = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-packet-analysis',
+      params: { prompt: batchPrompt }
+    }, nextCtx);
+    expect(continued).toMatchObject({
+      params: {
+        prompt: expect.stringContaining('分析告警数据包 eventId=800300'),
+        referenceId: 'GJ-BATCH23',
+        analyzeAllCandidates: true,
+        eventId: '800300',
+        start: 1787819700,
+        end: 1787820180,
+        triggerMetrics: {
+          names: ['用户体验时间（服务器）'],
+          values: [2803.78]
+        }
+      }
+    });
+  });
+
   test('describes referenceId as a supported composite-tool entry point', () => {
     const definition = tools.get('napm-alert-packet-analysis');
     expect(definition.description).toMatch(/GJ-[^ ]*|referenceId/i);

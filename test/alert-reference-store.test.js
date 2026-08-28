@@ -57,4 +57,77 @@ describe('AlertReferenceStore', () => {
     expect(raw).toContain('https://***:***@example.test');
     expect(raw).not.toContain('secret');
   });
+
+  test('preserves shared candidate IP arrays when cloning a reference', () => {
+    const store = new AlertReferenceStore({ baseDir, now: () => 1000 });
+    const ips = ['101.254.114.235', '39.34.186.250'];
+    store.put({
+      referenceId: 'GJ-SHARED2',
+      alert: { eventId: '802358' },
+      packet: {
+        candidates: [{
+          candidateId: 'GJ-SHARED2-P1',
+          ips,
+          packetQuery: { criteria: { ips } }
+        }]
+      }
+    });
+
+    expect(store.get('GJ-SHARED2').packet.candidates[0].packetQuery.criteria.ips)
+      .toEqual(ips);
+  });
+
+  test('repairs legacy circular candidate fields when reading a reference', () => {
+    const store = new AlertReferenceStore({ baseDir, now: () => 1000 });
+    const legacy = {
+      referenceId: 'GJ-LEGACY2',
+      alert: { eventId: '802358' },
+      triggerMetrics: [{ label: '用户体验时间（服务器）', value: 2216, unit: '毫秒' }],
+      analysis: {
+        profileId: 'server_user_experience_time',
+        profileVersion: 1,
+        evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt']
+      },
+      packet: {
+        candidates: [{
+          candidateId: 'GJ-LEGACY2-P1',
+          ips: ['101.254.114.235', '39.34.186.250'],
+          packetQuery: {
+            criteria: { ips: '[Circular]', start: 1787880000, end: 1787880240 },
+            analysis: {
+              hasTriggerMetrics: true,
+              metrics: '[Circular]',
+              metricLabels: '[Circular]',
+              values: '[Circular]',
+              units: '[Circular]',
+              evidenceChecks: '[Circular]'
+            }
+          }
+        }]
+      },
+      expiresAt: 2000
+    };
+    fs.writeFileSync(path.join(baseDir, 'GJ-LEGACY2.json'), JSON.stringify(legacy));
+
+    const restored = store.get('GJ-LEGACY2');
+
+    expect(restored).toMatchObject({
+      ok: true,
+      packet: {
+        candidates: [{
+          packetQuery: {
+            criteria: { ips: ['101.254.114.235', '39.34.186.250'] },
+            analysis: {
+              metrics: ['用户体验时间（服务器）'],
+              metricLabels: ['用户体验时间（服务器）'],
+              values: [2216],
+              units: ['毫秒'],
+              evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt']
+            }
+          }
+        }]
+      }
+    });
+    expect(fs.readFileSync(path.join(baseDir, 'GJ-LEGACY2.json'), 'utf8')).not.toContain('[Circular]');
+  });
 });

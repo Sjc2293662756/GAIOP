@@ -264,9 +264,10 @@ function buildFocusedPacketAnalysisLines(result = {}) {
 
     const evidence = extractAlertEvidence(item);
     const profile = resolveAlertProfile(result, evidence);
+    const evidenceChecks = resolveEvidenceChecks(result, evidence, profile.id);
     lines.push(`  - 分析画像：${profile.label}`);
-    lines.push(`  - 专项证据总状态：${formatEvidenceStatus(evidence?.status)}`);
-    for (const check of resolveEvidenceChecks(result, evidence, profile.id)) {
+    lines.push(`  - 专项证据总状态：${formatEvidenceStatus(resolveRenderedEvidenceStatus(evidence, evidenceChecks))}`);
+    for (const check of evidenceChecks) {
       lines.push(`  - ${formatEvidenceCheck(check, evidence, item, result)}`);
     }
     const observations = collectSafeHighlights(item).filter(isAlertEvidenceObservation);
@@ -274,6 +275,10 @@ function buildFocusedPacketAnalysisLines(result = {}) {
       lines.push(`  - 专项观察：${observations.slice(0, 3).join('；')}`);
     }
     lines.push(`  - 专项结论：${buildCandidateFocusedConclusion(evidence, item, result)}`);
+  }
+  const comparisonLines = buildAlertMetricComparisonLines(result);
+  if (comparisonLines.length > 0) {
+    lines.push('', ...comparisonLines);
   }
   return lines;
 }
@@ -348,6 +353,43 @@ function formatEvidenceStatus(status) {
   return labels[normalized] || '证据不足';
 }
 
+function resolveRenderedEvidenceStatus(evidence = {}, checks = []) {
+  const normalized = String(evidence?.status || '').trim().toUpperCase();
+  if (normalized === 'UNSUPPORTED_PROFILE' || normalized === 'NOT_CAPTURED') return normalized;
+
+  const missing = checks.some((check) => {
+    const rows = rowsForStatusCheck(check, evidence);
+    return rows !== null && rows.length === 0;
+  });
+  if (missing) return 'PARTIAL';
+  return normalized || 'PARTIAL';
+}
+
+function rowsForStatusCheck(check, evidence = {}) {
+  if (check === 'server_response_wait' || check === 'http_response_time') {
+    return asRows(evidence?.httpTimingRows);
+  }
+  if (check === 'tcp_rtt') return asRows(evidence?.rttRows);
+  if (check === 'tcp_retransmission') return asRows(evidence?.retransmissionRows);
+  if (check === 'alert_time_correlation') {
+    return [
+      ...asRows(evidence?.retransmissionRows),
+      ...asRows(evidence?.rttRows),
+      ...asRows(evidence?.httpTimingRows)
+    ];
+  }
+  if (check === 'http_status_code' || check === 'http_request_uri' || check === 'server_response') {
+    return asRows(evidence?.httpTimingRows);
+  }
+  if (check === 'tcp_stream') {
+    return [...asRows(evidence?.rttRows), ...asRows(evidence?.retransmissionRows)];
+  }
+  // The packet executor does not currently expose DNS/TCP-connect/TLS rows;
+  // leave those checks to its explicit status instead of guessing from []
+  // and falsely downgrading an otherwise valid page-load result.
+  return null;
+}
+
 function isAlertEvidenceObservation(text) {
   return /服务端响应|响应等待|HTTP|RTT|时延|延迟|重传|丢包|错误|失败|超时|连接/i.test(String(text || ''));
 }
@@ -359,15 +401,43 @@ function formatEvidenceCheck(check, evidence = {}, item = {}, result = {}) {
     return `${label}：${formatTimeCorrelation(rows, item, result)}`;
   }
   if (rows.length > 0) {
-    const detail = check === 'server_response_wait'
-      ? `已捕获（HTTP 时序 ${rows.length} 条，可核对）`
-      : `已捕获（${rows.length} 条）`;
+    let detail;
+    if (check === 'server_response_wait') {
+      detail = formatTimingEvidenceDetail(evidence, 'httpTimingRows', 'HTTP 时序');
+    } else if (check === 'http_response_time') {
+      detail = formatTimingEvidenceDetail(evidence, 'httpTimingRows');
+    } else if (check === 'tcp_rtt') {
+      detail = formatTimingEvidenceDetail(evidence, 'rttRows');
+    } else if (check === 'tcp_retransmission') {
+      detail = formatRowCountDetail(rows.length, evidence?.retransmissionTruncated);
+    } else {
+      detail = `已捕获（${rows.length} 条）`;
+    }
     return `${label}：${detail}`;
   }
   if (check === 'server_response_wait' || check === 'http_response_time') {
     return `${label}：未捕获（无可核对的 HTTP 时序）`;
   }
   return `${label}：未捕获`;
+}
+
+function formatTimingEvidenceDetail(evidence = {}, field, prefix = '') {
+  const rows = asRows(evidence?.[field]);
+  const stats = summarizeTimingRows(rows, field === 'rttRows' ? 'rtt' : 'http');
+  const countText = formatRowCount(stats.rowCount, evidence?.[`${field}Truncated`]);
+  const prefixText = prefix ? `${prefix} ` : '';
+  if (stats.valueCount === 0) {
+    return `已捕获（${prefixText}${countText}；耗时字段不可解析）`;
+  }
+  return `已捕获（${prefixText}${countText}；平均 ${formatNumber(stats.averageMs)} 毫秒，最大 ${formatNumber(stats.maxMs)} 毫秒）`;
+}
+
+function formatRowCountDetail(count, truncated = false) {
+  return `已捕获（${formatRowCount(count, truncated)}）`;
+}
+
+function formatRowCount(count, truncated = false) {
+  return truncated ? `至少 ${count} 条，已达到展示上限` : `${count} 条`;
 }
 
 function rowsForEvidenceCheck(check, evidence = {}) {
@@ -429,7 +499,104 @@ function buildCandidateFocusedConclusion(evidence = {}, item = {}, result = {}) 
   if (findings.length === 0) {
     return '未捕获可用于解释该告警指标的专项证据，无法据此判断触发原因。';
   }
-  return `已捕获 ${findings.join('、')}；告警时间相关性为${correlation}，仅凭当前证据不能把未关联项认定为根因。`;
+  const quantitative = buildCandidateQuantitativeConclusion(evidence, result);
+  const findingText = quantitative ? `${quantitative}；` : `已捕获 ${findings.join('、')}；`;
+  return `${findingText}告警时间相关性为${correlation}。该结果用于确定重点排查对象，不能仅凭单一抓包字段直接认定根因。`;
+}
+
+function buildCandidateQuantitativeConclusion(evidence = {}, result = {}) {
+  const trigger = getPrimaryDurationTrigger(result);
+  if (!trigger) return '';
+  const parts = [];
+  const http = summarizeTimingRows(asRows(evidence?.httpTimingRows), 'http');
+  const rtt = summarizeTimingRows(asRows(evidence?.rttRows), 'rtt');
+  if (http.valueCount > 0) {
+    const relation = http.maxMs >= trigger.value
+      ? `高于告警触发值 ${formatNumber(trigger.value)} 毫秒，支持该候选作为重点排查对象`
+      : `低于告警触发值 ${formatNumber(trigger.value)} 毫秒，当前 HTTP 证据不足以单独解释`;
+    parts.push(`HTTP 响应耗时平均 ${formatNumber(http.averageMs)} 毫秒、最大 ${formatNumber(http.maxMs)} 毫秒（${relation}）`);
+  }
+  if (rtt.valueCount > 0) {
+    parts.push(`TCP RTT 平均 ${formatNumber(rtt.averageMs)} 毫秒、最大 ${formatNumber(rtt.maxMs)} 毫秒`);
+  }
+  if (asRows(evidence?.retransmissionRows).length > 0) {
+    parts.push(`TCP 重传 ${formatRowCount(asRows(evidence.retransmissionRows).length, evidence?.retransmissionTruncated)}`);
+  }
+  return parts.join('；');
+}
+
+function buildAlertMetricComparisonLines(result = {}) {
+  const trigger = getPrimaryDurationTrigger(result);
+  if (!trigger) return [];
+  const items = Array.isArray(result?.packetAnalyses) ? result.packetAnalyses : [];
+  const lines = [`告警指标对照：告警触发值 ${formatNumber(trigger.value)} ${trigger.unit}`];
+  for (const [index, item] of items.slice(0, 10).entries()) {
+    const rank = Number(item?.rank) || index + 1;
+    const evidence = extractAlertEvidence(item);
+    const http = summarizeTimingRows(asRows(evidence?.httpTimingRows), 'http');
+    const rtt = summarizeTimingRows(asRows(evidence?.rttRows), 'rtt');
+    const parts = [];
+    if (http.valueCount > 0) {
+      const relation = http.maxMs >= trigger.value
+        ? '高于触发值，支持该候选作为重点排查对象'
+        : '低于触发值，当前 HTTP 证据不足以单独解释';
+      parts.push(`HTTP 响应耗时平均 ${formatNumber(http.averageMs)} 毫秒，最大 ${formatNumber(http.maxMs)} 毫秒，${relation}`);
+    } else {
+      parts.push('HTTP 响应耗时无可解析数值');
+    }
+    if (rtt.valueCount > 0) {
+      parts.push(`TCP RTT 平均 ${formatNumber(rtt.averageMs)} 毫秒，最大 ${formatNumber(rtt.maxMs)} 毫秒`);
+    }
+    if (asRows(evidence?.retransmissionRows).length > 0) {
+      parts.push(`TCP 重传 ${formatRowCount(asRows(evidence.retransmissionRows).length, evidence?.retransmissionTruncated)}`);
+    }
+    lines.push(`- 候选 ${rank}：${parts.join('；')}。`);
+  }
+  return lines;
+}
+
+function getPrimaryDurationTrigger(result = {}) {
+  const profile = resolveAlertProfile(result, {});
+  if (profile.id !== 'server_user_experience_time') return null;
+  const values = toArray(result?.triggerMetrics?.values).map(Number).filter(Number.isFinite);
+  if (values.length === 0) return null;
+  const units = toStringArray(result?.triggerMetrics?.units);
+  return { value: values[0], unit: units[0] || '毫秒' };
+}
+
+function summarizeTimingRows(rows = [], kind = 'http') {
+  const source = asRows(rows);
+  const valueIndex = kind === 'rtt' ? 4 : 7;
+  const values = source
+    .map((row) => extractEvidenceNumericValue(row, valueIndex, kind))
+    .map(normalizeTimingMilliseconds)
+    .filter(Number.isFinite);
+  return {
+    rowCount: source.length,
+    valueCount: values.length,
+    averageMs: values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+    maxMs: values.length > 0 ? Math.max(...values) : null,
+    minMs: values.length > 0 ? Math.min(...values) : null,
+  };
+}
+
+function extractEvidenceNumericValue(row, index, kind) {
+  if (row && typeof row === 'object') {
+    const keys = kind === 'rtt'
+      ? ['tcp.analysis.ack_rtt', 'ackRtt', 'rtt', 'value']
+      : ['http.time', 'httpTime', 'responseTime', 'value'];
+    for (const key of keys) {
+      if (row[key] != null && row[key] !== '') return Number(row[key]);
+    }
+    return NaN;
+  }
+  const fields = String(row || '').split('|');
+  return Number(fields[index]);
+}
+
+function normalizeTimingMilliseconds(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric * 1000 : NaN;
 }
 
 function collectSafeHighlights(item = {}) {
