@@ -1401,14 +1401,22 @@ async function analyzeAlertEvidence(tsharkBin, filePath, alertContext, timeoutMs
     '-T', 'fields', '-E', 'separator=|',
     '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst', '-e', 'tcp.stream',
   ], { timeoutMs });
-  if (retransmission.ok) evidence.retransmissionRows = boundedRows(retransmission.stdout);
+  if (retransmission.ok) {
+    const rows = boundedRowsWithMeta(retransmission.stdout);
+    evidence.retransmissionRows = rows.rows;
+    evidence.retransmissionTruncated = rows.truncated;
+  }
 
   const rtt = await runCommand(tsharkBin, [
     '-r', filePath, '-Y', 'tcp.analysis.ack_rtt',
     '-T', 'fields', '-E', 'separator=|',
     '-e', 'frame.time_epoch', '-e', 'ip.src', '-e', 'ip.dst', '-e', 'tcp.stream', '-e', 'tcp.analysis.ack_rtt',
   ], { timeoutMs });
-  if (rtt.ok) evidence.rttRows = boundedRows(rtt.stdout);
+  if (rtt.ok) {
+    const rows = boundedRowsWithMeta(rtt.stdout);
+    evidence.rttRows = rows.rows;
+    evidence.rttTruncated = rows.truncated;
+  }
 
   if (profileId === 'server_user_experience_time' || profileId === 'page_load_time' || profileId === 'http_error_rate') {
     const httpTiming = await runCommand(tsharkBin, [
@@ -1418,19 +1426,42 @@ async function analyzeAlertEvidence(tsharkBin, filePath, alertContext, timeoutMs
       '-e', 'tcp.stream', '-e', 'http.host', '-e', 'http.request.uri',
       '-e', 'http.response.code', '-e', 'http.time',
     ], { timeoutMs });
-    if (httpTiming.ok) evidence.httpTimingRows = boundedRows(httpTiming.stdout);
+    if (httpTiming.ok) {
+      const rows = boundedRowsWithMeta(httpTiming.stdout);
+      evidence.httpTimingRows = rows.rows;
+      evidence.httpTimingTruncated = rows.truncated;
+    }
   }
 
   const evidenceCount = evidence.retransmissionRows.length + evidence.rttRows.length + evidence.httpTimingRows.length;
+  const requiredChecks = Array.isArray(alertContext.evidenceChecks) ? alertContext.evidenceChecks : [];
+  const checkRows = {
+    server_response_wait: evidence.httpTimingRows,
+    http_response_time: evidence.httpTimingRows,
+    tcp_rtt: evidence.rttRows,
+    tcp_retransmission: evidence.retransmissionRows,
+    alert_time_correlation: evidenceCount > 0 ? [true] : [],
+  };
+  evidence.missingEvidenceChecks = requiredChecks.filter((check) => (
+    Array.isArray(checkRows[check]) && checkRows[check].length === 0
+  ));
   if (alertContext.supported === false) evidence.status = 'UNSUPPORTED_PROFILE';
   else if (evidenceCount === 0) evidence.status = 'NOT_CAPTURED';
-  else if ((alertContext.evidenceChecks || []).length > 0 && evidenceCount < 2) evidence.status = 'PARTIAL';
+  else if (evidence.missingEvidenceChecks.length > 0) evidence.status = 'PARTIAL';
   else evidence.status = 'SUPPORTED';
   return evidence;
 }
 
 function boundedRows(text, limit = 100) {
   return String(text || '').split(/\r?\n/).map((row) => row.trim()).filter(Boolean).slice(0, limit);
+}
+
+function boundedRowsWithMeta(text, limit = 100) {
+  const rows = String(text || '').split(/\r?\n/).map((row) => row.trim()).filter(Boolean);
+  return {
+    rows: rows.slice(0, limit),
+    truncated: rows.length > limit,
+  };
 }
 
 function analysisFailure(code, message, partial) {

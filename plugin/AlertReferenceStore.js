@@ -28,13 +28,19 @@ function cloneSafe(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => cloneSafe(item, seen));
+  try {
+    if (Array.isArray(value)) return value.map((item) => cloneSafe(item, seen));
 
-  const output = {};
-  for (const [key, item] of Object.entries(value)) {
-    output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : cloneSafe(item, seen);
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '***' : cloneSafe(item, seen);
+    }
+    return output;
+  } finally {
+    // Track only the current recursion path. Reused arrays/objects are shared
+    // values, not circular references, and must survive persistence intact.
+    seen.delete(value);
   }
-  return output;
 }
 
 function hashEventId(eventId) {

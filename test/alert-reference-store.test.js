@@ -57,4 +57,23 @@ describe('AlertReferenceStore', () => {
     expect(raw).toContain('https://***:***@example.test');
     expect(raw).not.toContain('secret');
   });
+
+  test('preserves shared candidate IP arrays when cloning a reference', () => {
+    const store = new AlertReferenceStore({ baseDir, now: () => 1000 });
+    const ips = ['101.254.114.235', '39.34.186.250'];
+    store.put({
+      referenceId: 'GJ-SHARED2',
+      alert: { eventId: '802358' },
+      packet: {
+        candidates: [{
+          candidateId: 'GJ-SHARED2-P1',
+          ips,
+          packetQuery: { criteria: { ips } }
+        }]
+      }
+    });
+
+    expect(store.get('GJ-SHARED2').packet.candidates[0].packetQuery.criteria.ips)
+      .toEqual(ips);
+  });
 });
