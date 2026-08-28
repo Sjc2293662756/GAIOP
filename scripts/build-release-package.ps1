@@ -186,6 +186,7 @@ try {
     'scripts/rollback-release.sh',
     'scripts/verify-staged-release.sh',
     'scripts/verify-napm-skill-runtime-contract.js',
+    'scripts/release-manifest-policy.js',
     'scripts/stage-openclaw-extension.sh',
     'scripts/verify-openclaw-extension-runtime.js',
     'skills/openclaw-napm-query/scripts/run_napm_query.js',

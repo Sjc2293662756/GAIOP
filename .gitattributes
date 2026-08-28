@@ -25,6 +25,7 @@
 /scripts/rollback-release.sh -export-ignore
 /scripts/verify-staged-release.sh -export-ignore
 /scripts/verify-napm-skill-runtime-contract.js -export-ignore
+/scripts/release-manifest-policy.js -export-ignore
 /scripts/stage-openclaw-extension.sh -export-ignore
 /scripts/verify-openclaw-extension-runtime.js -export-ignore
 /skills/**/.env export-ignore

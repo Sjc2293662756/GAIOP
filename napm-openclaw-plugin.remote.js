@@ -2064,6 +2064,47 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 }
 
 function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
+  const validationReason = String(validation?.reason || '').trim();
+  const validationDetails = isPlainObject(validation.details) ? validation.details : {};
+  const clarificationQuestion = buildQueryScopeClarificationQuestion(
+    validationReason,
+    validationDetails
+  );
+  if (clarificationQuestion) {
+    const prompt = normalizePrompt(args)
+      || String(args?.resolvedQuery?.userRequirement || '').trim();
+    return {
+      ok: false,
+      source: 'napm_openclaw_plugin_boundary',
+      responseType: 'clarification_required',
+      prompt,
+      displayText: clarificationQuestion,
+      summary: {
+        mode: 'ASK_CLARIFYING_QUESTION',
+        title: '需要补充查询范围',
+        highlights: [clarificationQuestion],
+        rowCount: 0,
+        empty: true,
+        displayText: clarificationQuestion
+      },
+      decision: {
+        next_action: 'ASK_CLARIFYING_QUESTION',
+        reason: validationReason || 'query_scope_incomplete',
+        clarifying_question: clarificationQuestion,
+        message: clarificationQuestion
+      },
+      error: {
+        code: validation?.code || 'QUERY_SCOPE_INCOMPLETE',
+        reason: validationReason || 'query_scope_incomplete',
+        message: clarificationQuestion,
+        retryable: false
+      },
+      validationDetails,
+      resolvedQuery: normalizeObject(args?.resolvedQuery) || null,
+      resolvedQuerySummary: summarizeResolvedQueryForAudit(args?.resolvedQuery)
+    };
+  }
+
   const allowedServices = getResolutionSpecServiceNames();
   const serviceName = String(validation?.expectedService || args?.resolvedQuery?.service || '').trim();
   const resolutionSpecService = getResolutionSpecService();
@@ -2096,6 +2137,26 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
     resolvedQuery: normalizeObject(args?.resolvedQuery) || null,
     resolvedQuerySummary: summarizeResolvedQueryForAudit(args?.resolvedQuery)
   };
+}
+
+function buildQueryScopeClarificationQuestion(reason = '', details = {}) {
+  const normalizedReason = String(reason || '').trim();
+  const groupType = String(details?.groupType || '').trim();
+  const objectLabel = groupType === 'DefinedApp'
+    ? '应用'
+    : groupType === 'WebApplication'
+      ? '业务/Web 应用'
+      : groupType || '对象';
+
+  if (normalizedReason === 'application_scope_mismatch') {
+    return '应用流量趋势需要指定具体应用名称。请告诉我要查询哪个应用；如果您想看全局流量，请改问“总流量趋势”。';
+  }
+
+  if (normalizedReason === 'group_argument_required') {
+    return `查询${objectLabel}的趋势或平均值需要指定具体${objectLabel}名称，请补充对象名称。`;
+  }
+
+  return '';
 }
 
 function buildNapmSkillExecutionFailureReply() {
@@ -2698,6 +2759,12 @@ function rememberSkillExecutionFailureForTurn(
 
 function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
   const message = validation.message || 'resolvedQuery failed plugin validation.';
+  if (String(validation?.reason || '').trim() === 'application_scope_mismatch') {
+    return `${message} 请停止重试工具，直接向用户追问具体应用名称；如果用户要看全局流量，应重新明确询问“总流量趋势”。`;
+  }
+  if (String(validation?.reason || '').trim() === 'group_argument_required') {
+    return `${message} 请停止重试工具，直接向用户追问具体对象名称。`;
+  }
   if (failureRecord?.terminal) {
     return `${message} Query repair budget exhausted; stop reconstructing and report this failure.`;
   }

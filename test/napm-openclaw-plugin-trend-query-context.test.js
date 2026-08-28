@@ -188,8 +188,14 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       expect(executeGatewayRequest).not.toHaveBeenCalled();
       expect(result.details).toMatchObject({
         ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
         error: { reason: 'application_scope_mismatch' }
       });
+      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.content[0].text).toContain('总流量趋势');
     } finally {
       executeGatewayRequest.mockRestore();
     }
@@ -211,8 +217,39 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       expect(executeGatewayRequest).not.toHaveBeenCalled();
       expect(result.details).toMatchObject({
         ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
         error: { reason: 'application_scope_mismatch' }
       });
+      expect(result.content[0].text).toContain('具体应用名称');
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('returns a user-facing clarification when DefinedApp has no argument', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-missing-application-argument', {
+        prompt: '最近 7 天应用流量趋势如何？',
+        resolvedQuery: buildDefinedAppTrendQuery()
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
+        error: { reason: 'group_argument_required' }
+      });
+      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.content[0].text).toContain('具体应用名称');
     } finally {
       executeGatewayRequest.mockRestore();
     }
