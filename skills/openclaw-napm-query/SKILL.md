@@ -155,6 +155,15 @@ Use `averageValues` for interval average/value queries:
 }
 ```
 
+Object argument policy:
+
+- A single-object `DefinedApp` or `WebApplication` `timeValues`/`averageValues` query must include the concrete object name in `groups[0].argument`.
+- If that argument is missing, stop before metadata or metric execution and return a clarification asking for the application or Web application name. Do not interpret the resulting empty set as `no_data`.
+- Plain application traffic trend/average means `DefinedApp`; never map it to `TotalTraffic`. `TotalTraffic` is reserved for an explicitly global/overall traffic request.
+- `TotalTraffic` is the global traffic scope and must not carry a group argument. Use it for overall traffic trends.
+- `topValues` discovery and `groups` inventory queries may omit the argument because they discover or enumerate objects.
+- An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
+
 Use `drilldownCatalog` for drilldown path questions:
 
 ```json

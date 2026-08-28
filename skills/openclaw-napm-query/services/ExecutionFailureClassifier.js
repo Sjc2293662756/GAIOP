@@ -90,6 +90,12 @@ function classifyCode(error = {}, context = {}) {
   if (rawCode === 'METADATA_ARGUMENT_TYPE_UNRESOLVED') {
     return 'METADATA_ARGUMENT_TYPE_UNRESOLVED';
   }
+  if (rawCode === 'GROUP_ARGUMENT_REQUIRED') {
+    return 'QUERY_SCOPE_INCOMPLETE';
+  }
+  if (rawCode === 'GROUP_ARGUMENT_FORBIDDEN' || rawCode === 'INVALID_GROUP_ARGUMENT') {
+    return 'QUERY_SCOPE_INVALID';
+  }
   if (rawCode === 'INVALID_METADATA_INVENTORY_ARGUMENT') {
     return 'QUERY_SHAPE_INVALID';
   }
@@ -123,6 +129,10 @@ function buildUserMessage(category = '', context = {}) {
       return '对象类型与元数据 provider 绑定不合法，查询没有进入南向执行。';
     case 'METADATA_ARGUMENT_TYPE_UNRESOLVED':
       return '元数据对象的 argumentType 未能可靠解析，已阻止调用南向接口。';
+    case 'QUERY_SCOPE_INCOMPLETE':
+      return '单对象查询缺少具体对象名称，未调用南向接口；请补充应用或业务名称。';
+    case 'QUERY_SCOPE_INVALID':
+      return '查询对象参数不合法，未调用南向接口；请检查对象名称或全局范围参数。';
     case 'METADATA_EMPTY':
       return '元数据查询执行成功，但当前对象池没有返回可用实例。';
     case 'METADATA_UPSTREAM_400':

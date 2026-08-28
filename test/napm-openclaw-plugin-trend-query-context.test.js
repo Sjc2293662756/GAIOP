@@ -73,6 +73,15 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     return query;
   }
 
+  function buildDefinedAppTrendQuery(options = {}) {
+    const query = buildTrendQuery('last7days', 86400);
+    query.groups = [{ type: 'DefinedApp' }];
+    if (options.argument !== undefined) {
+      query.groups[0].argument = options.argument;
+    }
+    return query;
+  }
+
   async function startTurn(ctx, prompt) {
     hooks.get('message_received')({ content: prompt }, ctx);
     return hooks.get('before_prompt_build')({ prompt }, ctx);
@@ -118,6 +127,179 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       reason: 'incomplete_resolved_query'
     });
     expect(validation.message).toContain('groups');
+  });
+
+  test('requires a concrete DefinedApp argument for a single-object trend query', () => {
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec(
+      buildDefinedAppTrendQuery(),
+      { phase: 'construction' }
+    );
+
+    expect(validation).toMatchObject({
+      ok: false,
+      reason: 'group_argument_required'
+    });
+    expect(validation.message).toContain('DefinedApp');
+    expect(validation.message).toContain('argument');
+  });
+
+  test('rejects an argument on the TotalTraffic scope', () => {
+    const query = buildTrendQuery();
+    query.groups = [{ type: 'TotalTraffic', argument: 'HTTP' }];
+
+    const validation = plugin.__test__.validateResolvedQueryAgainstSpec(
+      query,
+      { phase: 'construction' }
+    );
+
+    expect(validation).toMatchObject({
+      ok: false,
+      reason: 'group_argument_forbidden'
+    });
+  });
+
+  test('rejects TotalTraffic when the prompt asks for an application traffic trend', async () => {
+    const ctx = createCtx('application-total-traffic-mismatch');
+    const prompt = '最近 7 天应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result).toMatchObject({ block: true });
+    expect(attemptedQuery.result.blockReason).toContain('DefinedApp');
+    expect(attemptedQuery.result.blockReason).toContain('TotalTraffic');
+  });
+
+  test('rejects the same application scope mismatch at direct tool execution', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [],
+        error: null
+      });
+    try {
+      const prompt = '最近 7 天应用流量趋势如何？';
+      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch', {
+        prompt,
+        resolvedQuery: buildTrendQuery('last7days', 3600)
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
+        error: { reason: 'application_scope_mismatch' }
+      });
+      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.content[0].text).toContain('总流量趋势');
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('uses resolvedQuery.userRequirement when direct execution omits the trace prompt', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, service: 'timeValues', data: [], error: null });
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch-without-prompt', {
+        resolvedQuery: {
+          ...buildTrendQuery('last7days', 3600),
+          userRequirement: '最近 7 天应用流量趋势如何？'
+        }
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
+        error: { reason: 'application_scope_mismatch' }
+      });
+      expect(result.content[0].text).toContain('具体应用名称');
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('returns a user-facing clarification when DefinedApp has no argument', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-missing-application-argument', {
+        prompt: '最近 7 天应用流量趋势如何？',
+        resolvedQuery: buildDefinedAppTrendQuery()
+      });
+
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.details).toMatchObject({
+        ok: false,
+        responseType: 'clarification_required',
+        decision: {
+          next_action: 'ASK_CLARIFYING_QUESTION'
+        },
+        error: { reason: 'group_argument_required' }
+      });
+      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.content[0].text).toContain('具体应用名称');
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('keeps an explicit global traffic trend executable at direct tool execution', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [],
+        error: null
+      });
+
+    try {
+      const result = await tools.get('napm-skill-query').execute('direct-global-trend', {
+        prompt: '最近 7 天总流量趋势如何？',
+        resolvedQuery: buildTrendQuery('last7days', 3600)
+      });
+
+      expect(executeGatewayRequest).toHaveBeenCalledTimes(1);
+      expect(result.details).toMatchObject({ ok: true, service: 'timeValues' });
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('keeps an explicit global traffic trend on TotalTraffic', async () => {
+    const ctx = createCtx('explicit-global-traffic');
+    const prompt = '最近 7 天总流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(attemptedQuery.result?.block).not.toBe(true);
+    expect(attemptedQuery.params.resolvedQuery.groups).toEqual([{ type: 'TotalTraffic' }]);
+  });
+
+  test('keeps a named application trend on DefinedApp', async () => {
+    const ctx = createCtx('named-application-traffic');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const query = buildTrendQuery('last7days', 86400);
+    query.groups = [{ type: 'DefinedApp', argument: 'HTTP' }];
+    const attemptedQuery = callQueryTool(ctx, prompt, query);
+
+    expect(attemptedQuery.result?.block).not.toBe(true);
+    expect(attemptedQuery.params.resolvedQuery.groups).toEqual([
+      { type: 'DefinedApp', argument: 'HTTP' }
+    ]);
   });
 
   test('documents TotalTraffic in the query tool contract', () => {

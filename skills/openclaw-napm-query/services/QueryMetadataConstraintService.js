@@ -260,10 +260,6 @@ class QueryMetadataConstraintService {
         }
       }
 
-      if (normalized.type === 'TotalTraffic') {
-        delete normalized.argument;
-      }
-
       if (normalized.type === 'IPConversation' && normalized.argument && !normalized.argument.includes('|')) {
         const matches = String(originalText).match(/((?:\d{1,3}\.){3}\d{1,3})/g);
         if (matches && matches.length >= 2) {

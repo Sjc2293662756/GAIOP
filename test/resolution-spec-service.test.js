@@ -14,6 +14,7 @@ describe('ResolutionSpecService extended getters', () => {
     const templateSpec = ResolutionSpecService.getTemplateSpec();
     const timeSpec = ResolutionSpecService.getTimeSpec();
     const runtimeContracts = ResolutionSpecService.getRuntimeMetadataContracts();
+    const argumentPolicies = ResolutionSpecService.getQueryArgumentPolicies();
     const queryPolicy = ResolutionSpecService.getQueryConstructionPolicy();
 
     expect(serviceProfiles.topValues.requiredExecutionFields).toContain('start');
@@ -38,7 +39,66 @@ describe('ResolutionSpecService extended getters', () => {
     expect(templateSpec.stableQueryTemplates.length).toBeGreaterThan(0);
     expect(timeSpec.supportedGranularities).toContain(3600);
     expect(runtimeContracts.mustValidateBeforeExecution.metricsForGroup).toBe(true);
+    expect(argumentPolicies.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'defined-app-single-value-argument-required',
+        argumentPolicy: 'required'
+      })
+    ]));
     expect(queryPolicy.constructionOrder).toContain('template_binding');
+  });
+});
+
+describe('ResolutionSpecService query argument policy', () => {
+  test.each([
+    [
+      'requires DefinedApp argument for a single trend',
+      {
+        service: 'timeValues',
+        queryModeKey: 'timeseries',
+        groups: [{ type: 'DefinedApp' }]
+      },
+      { ok: false, code: 'GROUP_ARGUMENT_REQUIRED' }
+    ],
+    [
+      'requires WebApplication argument for a single average',
+      {
+        service: 'averageValues',
+        queryModeKey: 'average',
+        groups: [{ type: 'WebApplication' }]
+      },
+      { ok: false, code: 'GROUP_ARGUMENT_REQUIRED' }
+    ],
+    [
+      'allows DefinedApp argument for a ranking',
+      {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'DefinedApp' }]
+      },
+      { ok: true, status: 'not_applicable' }
+    ],
+    [
+      'forbids arguments on TotalTraffic',
+      {
+        service: 'timeValues',
+        queryModeKey: 'timeseries',
+        groups: [{ type: 'TotalTraffic', argument: 'HTTP' }]
+      },
+      { ok: false, code: 'GROUP_ARGUMENT_FORBIDDEN' }
+    ],
+    [
+      'does not require an argument for a multi-object trend path',
+      {
+        service: 'timeValues',
+        queryModeKey: 'timeseries',
+        groups: [{ type: 'IPAddress' }, { type: 'DefinedApp' }]
+      },
+      { ok: true, status: 'not_applicable' }
+    ]
+  ])('%s', (_name, query, expected) => {
+    const result = ResolutionSpecService.evaluateQueryArgumentPolicy(query);
+    expect(result).toMatchObject(expected);
   });
 });
 

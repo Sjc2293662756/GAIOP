@@ -21086,6 +21086,36 @@
       "runtimeMetricsForGroupIsFinalExecutabilitySignal": true
     }
   },
+  "queryArgumentPolicies": {
+    "version": "1.0",
+    "defaultPolicy": "optional",
+    "rules": [
+      {
+        "id": "global-scope-argument-forbidden",
+        "services": ["*"],
+        "queryModes": ["*"],
+        "groupTypes": ["TotalTraffic"],
+        "operations": ["*"],
+        "argumentPolicy": "forbidden"
+      },
+      {
+        "id": "defined-app-single-value-argument-required",
+        "services": ["timeValues", "averageValues"],
+        "queryModes": ["timeseries", "average"],
+        "groupTypes": ["DefinedApp"],
+        "operations": ["single_object_value"],
+        "argumentPolicy": "required"
+      },
+      {
+        "id": "web-app-single-value-argument-required",
+        "services": ["timeValues", "averageValues"],
+        "queryModes": ["timeseries", "average"],
+        "groupTypes": ["WebApplication"],
+        "operations": ["single_object_value"],
+        "argumentPolicy": "required"
+      }
+    ]
+  },
   "queryConstructionPolicy": {
     "constructionOrder": [
       "service",

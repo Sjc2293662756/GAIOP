@@ -349,6 +349,54 @@ class ClarificationGateService {
   }
 
   /**
+   * 当查询对象参数策略要求补充或拒绝参数时，构造执行前澄清 gate。
+   */
+  buildArgumentPolicyGate(argumentPolicy, resolvedQuery = null) {
+    if (!argumentPolicy || argumentPolicy.ok !== false) {
+      return null;
+    }
+
+    const details = argumentPolicy.details || {};
+    const groupType = String(details.groupType || '').trim();
+    const argument = String(details.argument || '').trim();
+    const label = this.mapObjectTypeLabel(groupType);
+    let question = argumentPolicy.message || null;
+    if (argumentPolicy.code === 'GROUP_ARGUMENT_REQUIRED') {
+      question = `查询${label}的趋势或平均值需要指定具体${label}名称，请补充对象名称。`;
+    } else if (argumentPolicy.code === 'GROUP_ARGUMENT_FORBIDDEN') {
+      question = '总流量是全局范围，不需要携带具体对象参数；请删除该参数，或改为查询具体对象。';
+    } else if (argumentPolicy.code === 'INVALID_GROUP_ARGUMENT') {
+      question = argument
+        ? `未在 NAPM 目录中找到${label}“${argument}”，请确认名称或从候选对象中选择。`
+        : `未能确认要查询的${label}，请补充具体对象名称。`;
+    }
+
+    const baseQuery = String(resolvedQuery?.userRequirement || '').trim();
+    const candidates = Array.isArray(details.candidates) ? details.candidates : [];
+    return {
+      required: true,
+      blocking: true,
+      source: 'query_argument_policy',
+      reason: argumentPolicy.reason || 'query_argument_policy_failed',
+      code: argumentPolicy.code || null,
+      question,
+      options: candidates.slice(0, 5).map((item, index) => {
+        const value = String(item?.value || item?.label || '').trim();
+        return value
+          ? {
+              key: `group_argument_option_${index + 1}`,
+              label: String(item?.label || value).trim(),
+              value,
+              replyText: this.buildReplyText(baseQuery, value),
+              confidence: item?.confidence ?? null
+            }
+          : null;
+      }).filter(Boolean),
+      evidence: this.clone(argumentPolicy)
+    };
+  }
+
+  /**
    * 当时间范围缺失时，给出非阻断型时间建议。
    */
   buildTimeGate(timeResolve, resolvedQuery = null) {
@@ -394,12 +442,14 @@ class ClarificationGateService {
     const pathResolve = input.pathResolve || null;
     const metricResolve = input.metricResolve || null;
     const timeResolve = input.timeResolve || null;
+    const argumentPolicy = input.argumentPolicy || null;
 
     const gate = this.buildExecutionGuardGate(resolvedQuery)
       || this.buildEntityGate(entityResolve, resolvedQuery)
       || this.buildObjectGate(resolvedQuery)
       || this.buildPathGate(pathResolve, resolvedQuery)
       || this.buildMetricGate(metricResolve, resolvedQuery)
+      || this.buildArgumentPolicyGate(argumentPolicy, resolvedQuery)
       || this.buildTimeGate(timeResolve, resolvedQuery);
 
     return gate || this.buildDefaultGate();

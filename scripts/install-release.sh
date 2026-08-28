@@ -4,17 +4,19 @@ set -Eeuo pipefail
 DRY_RUN=0
 SKIP_RESTART=0
 NO_SERVICE_CONTROL=0
+ALLOW_VERSION_DOWNGRADE=0
 MUTATION_STARTED=0
 BACKUP_DIR=""
 EXTENSION_STAGE=""
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/install-release.sh [--dry-run] [--skip-restart] [--no-service-control]
+Usage: bash scripts/install-release.sh [--dry-run] [--skip-restart] [--no-service-control] [--allow-version-downgrade]
 
   --dry-run       Validate the package and print deployment targets only.
   --skip-restart  Allowed only when managed services are already inactive.
   --no-service-control  Only for isolated homes outside the active .openclaw.
+  --allow-version-downgrade  Explicitly permit installing an older release candidate.
 EOF
 }
 
@@ -23,13 +25,14 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1 ;;
     --skip-restart) SKIP_RESTART=1 ;;
     --no-service-control) NO_SERVICE_CONTROL=1 ;;
+    --allow-version-downgrade) ALLOW_VERSION_DOWNGRADE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
-for command_name in id install mktemp node npm ps realpath rsync sha256sum tar xargs; do
+for command_name in flock id install mktemp node npm ps realpath rsync sha256sum tar xargs; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -41,6 +44,7 @@ MANIFEST_PATH="$RELEASE_ROOT/RELEASE-MANIFEST.json"
 ROLLBACK_SCRIPT="$RELEASE_ROOT/scripts/rollback-release.sh"
 STAGE_EXTENSION_SCRIPT="$RELEASE_ROOT/scripts/stage-openclaw-extension.sh"
 VERIFY_EXTENSION_RUNTIME_SCRIPT="$RELEASE_ROOT/scripts/verify-openclaw-extension-runtime.js"
+RELEASE_POLICY_SCRIPT="$RELEASE_ROOT/scripts/release-manifest-policy.js"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 OPENCLAW_HOME="$(realpath -m "$OPENCLAW_HOME")"
 ACTIVE_OPENCLAW_HOME="$(realpath -m "$HOME/.openclaw")"
@@ -71,6 +75,14 @@ if [[ "$NO_SERVICE_CONTROL" -eq 0 ]]; then
   }
 fi
 
+read -r DEPLOY_LOCK_HASH _ < <(printf '%s' "$OPENCLAW_HOME" | sha256sum)
+DEPLOY_LOCK_PATH="/tmp/napm-release-install-${DEPLOY_LOCK_HASH:0:16}.lock"
+exec 9>"$DEPLOY_LOCK_PATH"
+flock -n 9 || {
+  echo "Another NAPM release deployment is already in progress: $DEPLOY_LOCK_PATH" >&2
+  exit 1
+}
+
 for required_path in \
   "$MANIFEST_PATH" \
   "$RELEASE_ROOT/package.json" \
@@ -90,6 +102,7 @@ for required_path in \
 done
 [[ -f "$STAGE_EXTENSION_SCRIPT" ]] || { echo "Missing extension staging script: $STAGE_EXTENSION_SCRIPT" >&2; exit 1; }
 [[ -f "$VERIFY_EXTENSION_RUNTIME_SCRIPT" ]] || { echo "Missing extension runtime verifier: $VERIFY_EXTENSION_RUNTIME_SCRIPT" >&2; exit 1; }
+[[ -f "$RELEASE_POLICY_SCRIPT" ]] || { echo "Missing release manifest policy helper: $RELEASE_POLICY_SCRIPT" >&2; exit 1; }
 
 read_manifest_field() {
   node -e '
@@ -105,6 +118,21 @@ VERSION="$(read_manifest_field version)"
 COMMIT="$(read_manifest_field commit)"
 SHORT_COMMIT="${COMMIT:0:8}"
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release commit: $COMMIT" >&2; exit 1; }
+
+ACTIVE_MANIFEST_ARGS=()
+for active_manifest in \
+  "$EXTENSION_DIR/RELEASE-MANIFEST.json" \
+  "$WORKSPACE_DIR/RELEASE-MANIFEST.json"; do
+  if [[ -e "$active_manifest" ]]; then
+    [[ -f "$active_manifest" ]] || { echo "Active manifest is not a regular file: $active_manifest" >&2; exit 1; }
+    ACTIVE_MANIFEST_ARGS+=(--active "$active_manifest")
+  fi
+done
+RELEASE_POLICY_ARGS=(check --incoming "$MANIFEST_PATH" "${ACTIVE_MANIFEST_ARGS[@]}")
+if [[ "$ALLOW_VERSION_DOWNGRADE" -eq 1 ]]; then
+  RELEASE_POLICY_ARGS+=(--allow-downgrade)
+fi
+node "$RELEASE_POLICY_SCRIPT" "${RELEASE_POLICY_ARGS[@]}"
 
 is_running_state() {
   case "$1" in
@@ -400,6 +428,10 @@ OPENCLAW_SKILLS_ROOT="$WORKSPACE_DIR/skills" \
 node "$VERIFY_EXTENSION_RUNTIME_SCRIPT" \
   --extensionRoot "$EXTENSION_DIR" \
   --skillsRoot "$WORKSPACE_DIR/skills"
+node "$RELEASE_POLICY_SCRIPT" verify-active \
+  --incoming "$MANIFEST_PATH" \
+  --active "$EXTENSION_DIR/RELEASE-MANIFEST.json" \
+  --active "$WORKSPACE_DIR/RELEASE-MANIFEST.json"
 
 if [[ "$SKIP_RESTART" -eq 0 && "$NO_SERVICE_CONTROL" -eq 0 ]]; then
   if [[ "$gateway_state" == "active" ]]; then

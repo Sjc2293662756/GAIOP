@@ -57,7 +57,8 @@ for required_path in \
   "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" \
   "$RELEASE_ROOT/plugin" \
   "$RELEASE_ROOT/skills" \
-  "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"; do
+  "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js" \
+  "$RELEASE_ROOT/scripts/release-manifest-policy.js"; do
   [[ -e "$required_path" ]] || {
     echo "Release package is incomplete: $required_path" >&2
     exit 1
