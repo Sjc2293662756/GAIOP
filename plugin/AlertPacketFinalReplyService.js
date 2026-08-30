@@ -654,7 +654,7 @@ function buildTriggerFocusedCompletionConclusion(result = {}) {
     .sort((left, right) => right.http.maxMs - left.http.maxMs);
 
   if (candidates.length === 0) {
-    return `结论：成功候选中没有捕获到告警窗口内可量化的 HTTP 响应耗时，当前数据包证据无法解释 ${formatNumber(trigger.value)} ${trigger.unit} 的告警触发值。`;
+    return `结论：成功候选中没有捕获到告警窗口内可量化的 HTTP 响应耗时，当前数据包证据无法解释 ${formatNumber(trigger.value)} ${trigger.unit}的告警触发值。`;
   }
 
   const strongest = candidates[0];

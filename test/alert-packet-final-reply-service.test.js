@@ -185,6 +185,73 @@ describe('AlertPacketFinalReplyService', () => {
     expect(reply).not.toContain('仅将标记为“已捕获”且与告警窗口关联的证据作为依据');
   });
 
+  test('keeps the completion conclusion conservative when HTTP timing is below the trigger', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-BELOW38',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [3048.78],
+        units: ['毫秒']
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { ipPair: '10.0.0.1|10.0.0.2' },
+        query: { criteria: { start: 1787888400, end: 1787888640 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              httpTimingRows: ['1787888500|10.0.0.1|10.0.0.2|1|example.test|/normal|200|2.500'],
+              rttRows: [],
+              retransmissionRows: [],
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('HTTP 响应耗时最大 2500 毫秒');
+    expect(reply).toContain('低于告警触发值 3048.78 毫秒，当前抓包证据未复现该告警指标');
+    expect(reply).toContain('需要继续核对未捕获会话、服务端处理指标或告警聚合口径');
+    expect(reply).not.toContain('是本轮优先排查对象');
+  });
+
+  test('does not use HTTP timing outside the analysis window in the completion conclusion', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-OUTSIDE38',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [3048.78],
+        units: ['毫秒']
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { ipPair: '10.0.0.1|10.0.0.2' },
+        query: { criteria: { start: 1787888400, end: 1787888640 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              httpTimingRows: ['1787888300|10.0.0.1|10.0.0.2|1|example.test|/outside|200|4.500'],
+              rttRows: [],
+              retransmissionRows: [],
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('成功候选中没有捕获到告警窗口内可量化的 HTTP 响应耗时');
+    expect(reply).toContain('当前数据包证据无法解释 3048.78 毫秒的告警触发值');
+    expect(reply).not.toContain('HTTP 响应耗时最大 4500 毫秒');
+  });
+
   test('downgrades a stale supported status when a required evidence class is empty', () => {
     const reply = buildDeterministicFinalReply({
       ...result,
