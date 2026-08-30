@@ -143,6 +143,48 @@ describe('AlertPacketFinalReplyService', () => {
     expect(reply).toContain('TCP 重传：已捕获（至少 2 条，已达到展示上限）');
   });
 
+  test('ends a completed server-experience analysis with the strongest trigger-related candidate', () => {
+    const reply = buildDeterministicFinalReply({
+      ...result,
+      referenceId: 'GJ-VCXZ8Z63',
+      triggerMetrics: {
+        names: ['用户体验时间（服务器）'],
+        values: [3048.78],
+        units: ['毫秒'],
+        severity: '紧急',
+        condition: '如果 用户体验时间（服务器） > 3000.0 则为 Critical 否则 None'
+      },
+      packetAnalyses: [{
+        rank: 1,
+        ok: true,
+        candidate: { ipPair: '101.254.114.237|101.254.114.238' },
+        query: { criteria: { start: 1787888400, end: 1787888640 } },
+        result: {
+          analysis: {
+            alertEvidence: {
+              profileId: 'server_user_experience_time',
+              evidenceChecks: ['server_response_wait', 'http_response_time', 'tcp_rtt', 'tcp_retransmission', 'alert_time_correlation'],
+              httpTimingRows: [
+                '1787888500|101.254.114.237|101.254.114.238|1|example.test|/slow|200|3.200',
+                '1787888501|101.254.114.237|101.254.114.238|1|example.test|/normal|200|0.400'
+              ],
+              rttRows: ['1787888500|101.254.114.237|101.254.114.238|1|0.120'],
+              retransmissionRows: ['1787888502|101.254.114.237|101.254.114.238|1'],
+              status: 'SUPPORTED'
+            }
+          }
+        }
+      }]
+    });
+
+    expect(reply).toContain('结论：候选 1（101.254.114.237|101.254.114.238）的 HTTP 响应耗时最大 3200 毫秒');
+    expect(reply).toContain('高于告警触发值 3048.78 毫秒，是本轮优先排查对象');
+    expect(reply).toContain('TCP RTT 最大 120 毫秒');
+    expect(reply).toContain('发现 TCP 重传 1 条，但缺少总包数或重传率，不能单独认定为根因');
+    expect(reply).not.toContain('仅凭当前证据不能把未关联项认定为根因');
+    expect(reply).not.toContain('仅将标记为“已捕获”且与告警窗口关联的证据作为依据');
+  });
+
   test('downgrades a stale supported status when a required evidence class is empty', () => {
     const reply = buildDeterministicFinalReply({
       ...result,
