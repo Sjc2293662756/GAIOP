@@ -192,17 +192,23 @@ describe('NAPM plugin report handoff integration', () => {
     });
 
     const beforeToolCall = hooks.get('before_tool_call');
+    const prompt = 'export the current report to Word';
+    const ctx = {
+      sessionKey: 'session-report-guard',
+      runId: 'run-report-guard'
+    };
+    hooks.get('message_received')({ content: prompt }, ctx);
     const blocked = beforeToolCall({
       toolName: 'exec',
-      params: { prompt: 'export the current report to Word' }
-    }, { sessionKey: 'session-report-guard' });
+      params: { prompt }
+    }, ctx);
     expect(blocked).toMatchObject({ block: true });
     expect(blocked.blockReason).toContain('napm-report-export');
 
     const allowed = beforeToolCall({
       toolName: 'napm-report-export',
-      params: { prompt: 'export the current report to Word' }
-    }, { sessionKey: 'session-report-guard' });
+      params: { prompt }
+    }, ctx);
     expect(allowed?.params?.traceId).toMatch(/^napm-/);
   });
 

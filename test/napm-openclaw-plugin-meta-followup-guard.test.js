@@ -245,7 +245,7 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
 
     messageReceived({ content: prompt }, ctx);
     await beforePromptBuild({ prompt }, ctx);
-    testApi.rememberSkillResult(prompt, {
+    const seededResult = {
       ok: true,
       service: 'groups',
       resolvedQuery: {
@@ -255,7 +255,28 @@ describe('napm-openclaw-plugin meta follow-up guard', () => {
       summary: {
         displayText
       }
-    }, testApi.getConversationKey(ctx));
+    };
+    const scope = testApi.getConversationKey(ctx);
+    const turnId = testApi.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    testApi.rememberSkillResult(prompt, seededResult, scope, 'napm-skill-query', turnId);
+    testApi.queryTurnCoordinator.recordDecision({
+      scope,
+      turnId,
+      queryDraft: seededResult.resolvedQuery,
+      decision: { action: 'EXECUTE_QUERY', southboundAllowed: true }
+    });
+    testApi.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: 'business-inventory-result',
+      queryDraft: seededResult.resolvedQuery
+    });
+    testApi.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result: seededResult,
+      finalContent: displayText
+    });
 
     const result = await messageSending({
       content: '现在系统中有 9 个业务系统，通过 type=applications 接口查询，返回近期有活跃流量的业务应用。'

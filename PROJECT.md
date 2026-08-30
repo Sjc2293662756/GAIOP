@@ -7,11 +7,12 @@
 ## 生产链路
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
-2. OpenClaw Gateway 接收消息并维护会话上下文。
-3. 上游语义层识别意图、对象、指标、时间范围和下钻路径，构造结构化 Query Draft。
-4. `napm-skill-query` 的 Query Decision Policy 决定追问、执行或拒绝；只有完整 Resolved Query 才进入 Query Skill 和南向接口。
-5. Query Turn Coordinator 记录本轮终态，输出 Hook 从同一终态完成一次最终交付。
-6. 观枢AI基于结果、摘要和叙述结构回复用户或输出报告文件。
+2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定。`conversationKey` 只表示 scope，不表示当前或最新轮次；缺少生命周期身份或绑定时有状态 Hook fail-closed。
+3. 上游语义层识别意图、对象、指标、时间范围和下钻路径，构造结构化 Query Draft；澄清续答则只传 `clarificationAnswer`。
+4. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和对象清单的单 group 约束。
+5. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
+6. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
+7. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。
 
@@ -51,7 +52,11 @@
 - `napm-resolve-query` — 只构造并检查 `resolvedQuery`
 - `napm-mainflow-query` — 本地解析自然语言并执行完整查询链
 
-`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口。Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存会话状态。
+`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP` 等对象名时，插件创建新 Query Turn、恢复 pending Draft、补入 `DefinedApp.argument` 后重新执行完整策略。
+
+普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次；终态后的 Tool 重放返回已有权威结果，不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
+
+Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Turn 或 pending clarification。
 
 ## 报告类型
 

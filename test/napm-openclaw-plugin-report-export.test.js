@@ -299,15 +299,19 @@ describe('napm-openclaw-plugin report export', () => {
       }
     });
 
+    const prompt = '将以上以 Word 形式导出';
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'default',
+      conversationId: 'report-direct',
+      runId: 'run-report-direct'
+    };
+    hooks.get('message_received')({ content: prompt }, ctx);
     const messageSending = hooks.get('message_sending');
     const result = await messageSending({
       content: '报告已生成，现在发送给您。',
       mediaUrls: ['/home/netinside/.openclaw/media/outbound/manual-report.docx']
-    }, {
-      channelId: 'wecom',
-      accountId: 'default',
-      conversationId: 'report-direct'
-    });
+    }, ctx);
 
     expect(result.content).toContain('napm-report-export');
   });

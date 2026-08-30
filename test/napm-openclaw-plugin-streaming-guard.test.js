@@ -99,6 +99,38 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     };
   }
 
+  function buildQueryDraftForPrompt(prompt) {
+    if (prompt.includes('\u7cfb\u7edf') && prompt.includes('\u4e1a\u52a1')) {
+      return {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }]
+      };
+    }
+    if (prompt.includes('\u4e22\u5305')) {
+      return {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'IPAddress' }],
+        metrics: ['PLI'],
+        metric: 'PLI',
+        topMetric: 'PLI',
+        topCount: 10,
+        timeRange: { key: 'last24hours' }
+      };
+    }
+    return {
+      service: 'topValues',
+      queryModeKey: 'topn',
+      groups: [{ type: 'DefinedApp' }],
+      metrics: ['BYTIO'],
+      metric: 'BYTIO',
+      topMetric: 'BYTIO',
+      topCount: 10,
+      timeRange: { key: 'last24hours' }
+    };
+  }
+
   async function primeNapmTurn(hooks, ctx, prompt) {
     const messageReceived = hooks.get('message_received');
     const beforePromptBuild = hooks.get('before_prompt_build');
@@ -108,9 +140,11 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     await beforePromptBuild({ prompt }, ctx);
     await beforeToolCall({
       toolName: 'napm-skill-query',
+      toolCallId: `query-${ctx.runId}`,
       params: {
         prompt,
-        userQuery: prompt
+        userQuery: prompt,
+        queryDraft: buildQueryDraftForPrompt(prompt)
       }
     }, ctx);
   }

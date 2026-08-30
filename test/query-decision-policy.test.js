@@ -39,9 +39,10 @@ describe('QueryDecisionPolicy', () => {
   });
 
   test('turns an application prompt mapped to TotalTraffic into clarification', () => {
+    const queryDraft = buildQuery({ groups: [{ type: 'TotalTraffic' }] });
     const decision = evaluateQueryDecision({
       prompt: '最近 7 天应用流量趋势如何？',
-      queryDraft: buildQuery({ groups: [{ type: 'TotalTraffic' }] })
+      queryDraft
     });
 
     expect(decision).toMatchObject({
@@ -49,8 +50,13 @@ describe('QueryDecisionPolicy', () => {
       action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
       outcome: QUERY_OUTCOMES.CLARIFICATION,
       reasonCode: 'APPLICATION_SCOPE_MISMATCH',
-      southboundAllowed: false
+      southboundAllowed: false,
+      queryDraft: {
+        groups: [{ type: 'DefinedApp' }],
+        semanticConstraints: { targetObjectType: 'DefinedApp' }
+      }
     });
+    expect(queryDraft.groups).toEqual([{ type: 'TotalTraffic' }]);
   });
 
   test.each([
@@ -138,6 +144,108 @@ describe('QueryDecisionPolicy', () => {
       action: QUERY_ACTIONS.REJECT_QUERY,
       outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
       reasonCode: 'INCOMPLETE_RESOLVED_QUERY',
+      southboundAllowed: false
+    });
+  });
+
+  test.each([
+    [
+      'CompositeApplication inventory mapped to overview',
+      '系统中有哪些自动识别的应用？',
+      {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'auto_apps',
+        timeRange: { key: 'last7days' }
+      },
+      'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH'
+    ],
+    [
+      'DefinedApp inventory mapped to WebApplication',
+      '系统中有哪些应用？',
+      {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'WebApplication' }]
+      },
+      'OBJECT_INVENTORY_CONTRACT_MISMATCH'
+    ],
+    [
+      'WebApplication inventory mapped to a ranking',
+      '系统中有哪些业务？',
+      {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'DefinedApp' }],
+        metrics: ['TPIO'],
+        metric: 'TPIO',
+        topMetric: 'TPIO',
+        topCount: 10,
+        timeRange: { key: 'last24hours' }
+      },
+      'OBJECT_INVENTORY_CONTRACT_MISMATCH'
+    ]
+  ])('blocks high-risk semantic mismatch: %s', (_label, prompt, queryDraft, reasonCode) => {
+    expect(evaluateQueryDecision({ prompt, queryDraft })).toMatchObject({
+      ok: false,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode,
+      southboundAllowed: false
+    });
+  });
+
+  test('rejects an inventory query with more than one group', () => {
+    expect(evaluateQueryDecision({
+      prompt: '系统中有哪些自动识别的应用？',
+      queryDraft: {
+        service: 'groups',
+        queryModeKey: 'metadata',
+        groups: [{ type: 'CompositeApplication' }, { type: 'IPAddress' }]
+      }
+    })).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH',
+      southboundAllowed: false,
+      validation: {
+        details: { actualGroupCount: 2 }
+      }
+    });
+  });
+
+  test('enforces a promptless object inventory contract from semanticConstraints', () => {
+    expect(evaluateQueryDecision({
+      queryDraft: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'auto_apps',
+        timeRange: { key: 'last7days' },
+        semanticConstraints: {
+          workflowType: 'object_inventory',
+          operation: 'metadata_list',
+          targetObjectType: 'CompositeApplication'
+        }
+      }
+    })).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
+  test('enforces a promptless DefinedApp semantic target against TotalTraffic', () => {
+    expect(evaluateQueryDecision({
+      queryDraft: buildQuery({
+        groups: [{ type: 'TotalTraffic' }],
+        semanticConstraints: { targetObjectType: 'Application' }
+      })
+    })).toMatchObject({
+      ok: true,
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      reasonCode: 'APPLICATION_SCOPE_MISMATCH',
       southboundAllowed: false
     });
   });

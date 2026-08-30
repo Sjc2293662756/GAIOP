@@ -118,7 +118,7 @@ describe('NAPM plugin structured query authority', () => {
     });
   });
 
-  test('returns the same decision for the same structured query regardless of trace prompt wording', async () => {
+  test('blocks a structured ranking query when the user asked for an object inventory', async () => {
     const ranking = await callBeforeTool(
       '最近一周有哪些业务出现较多 HTTP 500 错误？',
       buildHttp500TopQuery(),
@@ -131,8 +131,8 @@ describe('NAPM plugin structured query authority', () => {
     );
 
     expect(ranking.result?.block).not.toBe(true);
-    expect(inventory.result?.block).not.toBe(true);
-    expect(inventory.forwarded.resolvedQuery).toEqual(ranking.forwarded.resolvedQuery);
+    expect(inventory.result).toMatchObject({ block: true });
+    expect(inventory.result.blockReason).toContain('对象清单');
   });
 
   test('continues to block a structurally invalid query', async () => {
@@ -151,8 +151,9 @@ describe('NAPM plugin structured query authority', () => {
     const ctx = createContext('repair-budget');
     hooks.get('message_received')({ content: prompt }, ctx);
     await hooks.get('before_prompt_build')({ prompt }, ctx);
-    const event = {
+    const buildEvent = (toolCallId) => ({
       toolName: 'napm-skill-query',
+      toolCallId,
       params: {
         prompt,
         userQuery: prompt,
@@ -162,12 +163,22 @@ describe('NAPM plugin structured query authority', () => {
           groups: [{ type: 'WebApplication' }]
         }
       }
-    };
+    });
 
-    const first = await hooks.get('before_tool_call')(event, ctx);
-    const second = await hooks.get('before_tool_call')(event, ctx);
+    const first = await hooks.get('before_tool_call')(buildEvent('attempt-1'), ctx);
+    const second = await hooks.get('before_tool_call')(buildEvent('attempt-2'), ctx);
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
 
     expect(first.blockReason).toContain('may reconstruct resolvedQuery once');
     expect(second.blockReason).toContain('repair budget exhausted');
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'VALIDATION_FAILURE',
+      attempts: [
+        { attemptId: 'attempt-1', status: 'FAILED' },
+        { attemptId: 'attempt-2', status: 'FAILED' }
+      ]
+    });
   });
 });

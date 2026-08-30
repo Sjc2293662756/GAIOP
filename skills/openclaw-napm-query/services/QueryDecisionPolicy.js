@@ -1,6 +1,7 @@
 'use strict';
 
 const ResolutionSpecService = require('./ResolutionSpecService');
+const WorkflowClassifierService = require('./WorkflowClassifierService');
 
 const QUERY_ACTIONS = Object.freeze({
   ASK_CLARIFYING_QUESTION: 'ASK_CLARIFYING_QUESTION',
@@ -34,6 +35,123 @@ function isApplicationTrafficTrendPrompt(prompt = '') {
     && /(?:应用|application|app)/i.test(text)
     && /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text)
     && /(?:趋势|走势|变化|曲线|按时间|平均|均值|trend|timeseries|time\s*series|average|mean)/i.test(text);
+}
+
+function normalizeObjectType(value = '') {
+  const normalized = String(value || '').trim();
+  return normalized === 'Application' ? 'DefinedApp' : normalized;
+}
+
+function buildApplicationClarificationDraft(queryDraft = {}) {
+  if (!isPlainObject(queryDraft)) return queryDraft;
+  const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
+  const sourceGroup = groups.find((group) => String(group?.type || '').trim() === 'TotalTraffic') || {};
+  const applicationGroup = { ...sourceGroup, type: 'DefinedApp' };
+  delete applicationGroup.argument;
+  return {
+    ...queryDraft,
+    groups: [applicationGroup],
+    semanticConstraints: {
+      ...(isPlainObject(queryDraft.semanticConstraints) ? queryDraft.semanticConstraints : {}),
+      targetObjectType: 'DefinedApp'
+    }
+  };
+}
+
+function validateObjectInventorySemanticContract(prompt = '', queryDraft = {}) {
+  const classifiedWorkflow = WorkflowClassifierService.classifyWorkflow(prompt);
+  const semanticConstraints = isPlainObject(queryDraft?.semanticConstraints)
+    ? queryDraft.semanticConstraints
+    : {};
+  const declaredWorkflowType = String(semanticConstraints.workflowType || '').trim();
+  const declaredTargetType = normalizeObjectType(semanticConstraints.targetObjectType);
+  const workflowType = classifiedWorkflow.workflowType === 'object_inventory'
+    ? classifiedWorkflow.workflowType
+    : declaredWorkflowType;
+  const expectedType = normalizeObjectType(
+    classifiedWorkflow.workflowType === 'object_inventory'
+      ? classifiedWorkflow.targetObjectType
+      : declaredTargetType
+  );
+  if (workflowType !== 'object_inventory' || !expectedType) {
+    return { ok: true };
+  }
+
+  const service = String(queryDraft?.service || '').trim();
+  const queryModeKey = String(queryDraft?.queryModeKey || '').trim();
+  const operation = String(queryDraft?.semanticConstraints?.operation || '').trim();
+  const groups = Array.isArray(queryDraft?.groups) ? queryDraft.groups : [];
+  const groupType = String(groups[0]?.type || '').trim();
+  const groupArgument = String(groups[0]?.argument || '').trim();
+  const ok = service === 'groups'
+    && (!queryModeKey || queryModeKey === 'metadata')
+    && (!operation || operation === 'metadata_list')
+    && (!declaredWorkflowType || declaredWorkflowType === 'object_inventory')
+    && (!declaredTargetType || declaredTargetType === expectedType)
+    && groups.length === 1
+    && groupType === expectedType
+    && !groupArgument;
+  if (ok) return { ok: true };
+
+  const composite = expectedType === 'CompositeApplication';
+  return {
+    ok: false,
+    reason: composite
+      ? 'composite_application_inventory_contract_mismatch'
+      : 'object_inventory_contract_mismatch',
+    code: composite
+      ? 'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH'
+      : 'OBJECT_INVENTORY_CONTRACT_MISMATCH',
+    expectedService: 'groups',
+    expectedQueryModeKey: 'metadata',
+    details: {
+      workflowType,
+      expectedGroupType: expectedType,
+      declaredTargetType: declaredTargetType || null,
+      actualService: service || null,
+      actualQueryModeKey: queryModeKey || null,
+      actualGroupCount: groups.length,
+      actualGroupType: groupType || null,
+      actualGroupArgument: groupArgument || null
+    },
+    message: composite
+      ? 'CompositeApplication object_inventory 清单必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}] 且只能有一个 group；overview/auto_apps 不是清单查询，argument:"all" 等对象参数也不允许。'
+      : `object_inventory 对象清单必须使用 service=groups、queryModeKey=metadata、groups=[{type:"${expectedType}"}] 且只能有一个 group，不能携带对象参数。`
+  };
+}
+
+function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
+  if (!isPlainObject(queryDraft)) return { ok: true };
+
+  const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
+  const service = String(queryDraft.service || '').trim();
+  const semanticTargetType = normalizeObjectType(queryDraft?.semanticConstraints?.targetObjectType);
+  const hasTotalTraffic = groups.some((group) => String(group?.type || '').trim() === 'TotalTraffic');
+  if (
+    ['timeValues', 'averageValues'].includes(service)
+    && hasTotalTraffic
+    && (
+      isApplicationTrafficTrendPrompt(prompt || queryDraft.userRequirement)
+      || semanticTargetType === 'DefinedApp'
+    )
+  ) {
+    return {
+      ok: false,
+      reason: 'application_scope_mismatch',
+      code: 'APPLICATION_SCOPE_MISMATCH',
+      expectedGroupType: 'DefinedApp',
+      actualGroupType: 'TotalTraffic',
+      details: {
+        groupType: 'DefinedApp',
+        service,
+        expectedGroupType: 'DefinedApp',
+        actualGroupType: 'TotalTraffic'
+      },
+      message: '应用流量趋势或平均值不能使用 TotalTraffic 范围；缺少应用名称时必须先澄清。'
+    };
+  }
+
+  return validateObjectInventorySemanticContract(prompt || queryDraft.userRequirement, queryDraft);
 }
 
 function buildClarifyingQuestion(reasonCode = '', details = {}) {
@@ -138,6 +256,18 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
   const basicValidation = validation === undefined
     ? buildBasicValidation(queryDraft)
     : validation;
+  const semanticValidation = evaluateHighRiskSemanticConsistency(prompt, queryDraft);
+  if (!semanticValidation.ok) {
+    if (semanticValidation.code === 'APPLICATION_SCOPE_MISMATCH') {
+      return clarificationDecision({
+        reasonCode: semanticValidation.code,
+        details: semanticValidation.details,
+        queryDraft: buildApplicationClarificationDraft(queryDraft)
+      });
+    }
+    return validationFailureDecision(semanticValidation, queryDraft);
+  }
+
   const validationReason = String(basicValidation?.reason || '').trim();
   const argumentPolicyFailure = [
     'group_argument_required',
@@ -149,21 +279,6 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
   }
 
   if (isPlainObject(queryDraft)) {
-    const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
-    const service = String(queryDraft.service || '').trim();
-    const hasTotalTraffic = groups.some((group) => String(group?.type || '').trim() === 'TotalTraffic');
-    if (
-      ['timeValues', 'averageValues'].includes(service)
-      && hasTotalTraffic
-      && isApplicationTrafficTrendPrompt(prompt || queryDraft.userRequirement)
-    ) {
-      return clarificationDecision({
-        reasonCode: 'APPLICATION_SCOPE_MISMATCH',
-        details: { groupType: 'DefinedApp' },
-        queryDraft
-      });
-    }
-
     const argumentPolicy = ResolutionSpecService.evaluateQueryArgumentPolicy(queryDraft);
     if (!argumentPolicy.ok && argumentPolicy.code === 'GROUP_ARGUMENT_REQUIRED') {
       return clarificationDecision({
@@ -204,6 +319,7 @@ module.exports = {
   QUERY_ACTIONS,
   QUERY_OUTCOMES,
   buildClarifyingQuestion,
+  evaluateHighRiskSemanticConsistency,
   evaluateQueryDecision,
   isApplicationTrafficTrendPrompt
 };

@@ -178,9 +178,10 @@ describe('NAPM plugin OpenClaw native-command isolation', () => {
   });
 
   test('does not use shared agentId as a cross-conversation guard key', async () => {
-    const firstCtx = { agentId: 'main', runId: 'run-first' };
-    const secondCtx = { agentId: 'main', runId: 'run-second' };
+    const firstCtx = createCtx('first');
+    const secondCtx = createCtx('second');
     receive(firstCtx, '今天天气怎么样？');
+    receive(secondCtx, '你好');
 
     const outgoing = await hooks.get('message_sending')({ content: 'unrelated OpenClaw output' }, secondCtx);
 

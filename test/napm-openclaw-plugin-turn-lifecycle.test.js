@@ -137,6 +137,12 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
   test('finds a successful current-turn result even when prompt-build text has metadata prefixes', async () => {
     const ctx = createCtx('metadata-result');
     const prompt = '现在系统情况怎么样？';
+    const resolvedQuery = {
+      service: 'overview',
+      queryModeKey: 'overview',
+      overviewScene: 'system',
+      timeRange: { key: 'last1hour' }
+    };
     const prefixedPrompt = [
       'Conversation info (untrusted metadata):',
       '{"message_id":"wx-123","sender":"user"}',
@@ -145,20 +151,21 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     ].join('\n');
 
     await startTurn(ctx, prompt, prefixedPrompt);
-    const bound = bindToolCall(ctx, 'napm-summary', {
+    const bound = bindToolCall(ctx, 'napm-skill-query', {
       prompt,
-      scope: { type: 'global' },
-      timeRange: { key: 'last1hour' }
+      resolvedQuery
     });
     const scope = plugin.__test__.getTrustedConversationKey(bound.params);
     const turnId = plugin.__test__.getTrustedTurnId(bound.params);
     plugin.__test__.rememberSkillResult(prompt, {
       ok: true,
+      service: 'overview',
+      resolvedQuery,
       summary: {
         overallStatus: 'critical',
         displayText: '系统当前处于严重状态，有 55 条告警。'
       }
-    }, scope, 'napm-summary', turnId);
+    }, scope, 'napm-skill-query', turnId);
 
     const outgoing = await hooks.get('message_sending')({
       content: '系统当前处于严重状态，有 55 条告警。',
@@ -305,7 +312,8 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     const deliveryCtx = {
       channelId: inboundCtx.channelId,
       accountId: inboundCtx.accountId,
-      conversationId: inboundCtx.conversationId
+      conversationId: inboundCtx.conversationId,
+      runId: inboundCtx.runId
     };
     const progressText = 'I will query the current alert summary now.';
 
