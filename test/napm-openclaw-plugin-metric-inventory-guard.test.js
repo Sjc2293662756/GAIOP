@@ -536,7 +536,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
   }, 30000);
 
-  test('should advertise resolvedQuery-first contract in skill tool description', () => {
+  test('should advertise queryDraft-first contract with a resolvedQuery compatibility alias', () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -563,8 +563,13 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     const skillTool = tools.get('napm-skill-query');
 
     expect(skillTool).toBeTruthy();
-    expect(skillTool.description).toContain('structured resolvedQuery');
-    expect(skillTool.parameters.properties.resolvedQuery.description).toContain('Required');
+    expect(skillTool.description).toContain('structured queryDraft');
+    expect(skillTool.description).toContain('legacy alias: resolvedQuery');
+    expect(skillTool.parameters.properties.queryDraft.description).toContain('QueryDecisionPolicy');
+    expect(skillTool.parameters.anyOf).toEqual(expect.arrayContaining([
+      { required: ['queryDraft'] },
+      { required: ['resolvedQuery'] }
+    ]));
   });
 
   test('should block exec when raw session prompt is a business metric inventory ask', async () => {

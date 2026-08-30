@@ -8,9 +8,10 @@
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
 2. OpenClaw Gateway 接收消息并维护会话上下文。
-3. 上游语义层识别意图、对象、指标、时间范围和下钻路径，构造结构化 `resolvedQuery`。
-4. 对应 NAPM skill 执行结构化查询或操作。
-5. 观枢AI基于结果、摘要和叙述结构回复用户或输出报告文件。
+3. 上游语义层识别意图、对象、指标、时间范围和下钻路径，构造结构化 Query Draft。
+4. `napm-skill-query` 的 Query Decision Policy 决定追问、执行或拒绝；只有完整 Resolved Query 才进入 Query Skill 和南向接口。
+5. Query Turn Coordinator 记录本轮终态，输出 Hook 从同一终态完成一次最终交付。
+6. 观枢AI基于结果、摘要和叙述结构回复用户或输出报告文件。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。
 
@@ -49,6 +50,8 @@
 
 - `napm-resolve-query` — 只构造并检查 `resolvedQuery`
 - `napm-mainflow-query` — 本地解析自然语言并执行完整查询链
+
+`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口。Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存会话状态。
 
 ## 报告类型
 

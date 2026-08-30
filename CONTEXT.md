@@ -12,6 +12,18 @@ _Avoid_: prompt intent after query construction
 The structured, executable NAPM query containing the selected operation, object type, metrics, and time range. Once accepted by the query contract, it is the authoritative description of what the query adapter executes.
 _Avoid_: repaired prompt, inferred query at plugin hooks
 
+**Query Draft**:
+The structured but not-yet-executable interpretation of a Monitoring Question. It may omit a value that must be supplied by the user, and it must pass Query Decision evaluation before it can become a Resolved Query.
+_Avoid_: incomplete Resolved Query, executable query
+
+**Query Decision**:
+The authoritative evaluation of a Query Draft. It selects exactly one action: ask a clarifying question, execute a validated Resolved Query, or reject an unsupported query. A clarification is a normal terminal outcome and does not imply Skill or southbound failure.
+_Avoid_: model prose, hook-local guess, validation error for missing user input
+
+**Query Turn**:
+The lifecycle record for one Monitoring Question, identified by conversation scope and turn id. It preserves route, phase, Query Decision, Query Attempt, terminal outcome, and delivery claim without making the Skill stateful.
+_Avoid_: latest result in a conversation, Skill session
+
 **Query Attempt**:
 One construction or execution try for a Resolved Query within a turn. Failed attempts are recorded separately from a successful Query Result.
 _Avoid_: skill result for a failed construction

@@ -158,15 +158,14 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     });
   });
 
-  test('rejects TotalTraffic when the prompt asks for an application traffic trend', async () => {
+  test('allows the query tool to return clarification when an application prompt maps to TotalTraffic', async () => {
     const ctx = createCtx('application-total-traffic-mismatch');
     const prompt = '最近 7 天应用流量趋势如何？';
     await startTurn(ctx, prompt);
     const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
 
-    expect(attemptedQuery.result).toMatchObject({ block: true });
-    expect(attemptedQuery.result.blockReason).toContain('DefinedApp');
-    expect(attemptedQuery.result.blockReason).toContain('TotalTraffic');
+    expect(attemptedQuery.result?.block).not.toBe(true);
+    expect(attemptedQuery.params.resolvedQuery.groups).toEqual([{ type: 'TotalTraffic' }]);
   });
 
   test('rejects the same application scope mismatch at direct tool execution', async () => {
@@ -186,15 +185,18 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       });
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.isError).toBe(false);
       expect(result.details).toMatchObject({
-        ok: false,
+        ok: true,
         responseType: 'clarification_required',
         decision: {
-          next_action: 'ASK_CLARIFYING_QUESTION'
-        },
-        error: { reason: 'application_scope_mismatch' }
+          action: 'ASK_CLARIFYING_QUESTION',
+          reasonCode: 'APPLICATION_SCOPE_MISMATCH',
+          southboundAllowed: false
+        }
       });
-      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.details).not.toHaveProperty('error');
+      expect(result.details.decision.clarifyingQuestion).toContain('具体应用名称');
       expect(result.content[0].text).toContain('总流量趋势');
     } finally {
       executeGatewayRequest.mockRestore();
@@ -215,13 +217,14 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       });
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.isError).toBe(false);
       expect(result.details).toMatchObject({
-        ok: false,
+        ok: true,
         responseType: 'clarification_required',
         decision: {
-          next_action: 'ASK_CLARIFYING_QUESTION'
-        },
-        error: { reason: 'application_scope_mismatch' }
+          action: 'ASK_CLARIFYING_QUESTION',
+          reasonCode: 'APPLICATION_SCOPE_MISMATCH'
+        }
       });
       expect(result.content[0].text).toContain('具体应用名称');
     } finally {
@@ -240,16 +243,104 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       });
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(result.isError).toBe(false);
       expect(result.details).toMatchObject({
-        ok: false,
+        ok: true,
         responseType: 'clarification_required',
         decision: {
-          next_action: 'ASK_CLARIFYING_QUESTION'
-        },
-        error: { reason: 'group_argument_required' }
+          action: 'ASK_CLARIFYING_QUESTION',
+          reasonCode: 'GROUP_ARGUMENT_REQUIRED',
+          southboundAllowed: false
+        }
       });
-      expect(result.details.decision.clarifying_question).toContain('具体应用名称');
+      expect(result.details).not.toHaveProperty('error');
+      expect(result.details.decision.clarifyingQuestion).toContain('具体应用名称');
       expect(result.content[0].text).toContain('具体应用名称');
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('keeps the clarification authoritative through both output hooks', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('application-clarification-turn');
+    const prompt = '最近 7 天应用流量趋势如何？';
+
+    try {
+      await startTurn(ctx, prompt);
+      const bound = callQueryTool(ctx, prompt, buildDefinedAppTrendQuery());
+      expect(bound.result?.block).not.toBe(true);
+
+      const toolResult = await tools.get('napm-skill-query').execute('application-clarification', bound.params);
+      const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+      const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+      const turn = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+      expect(toolResult.isError).toBe(false);
+      expect(turn).toMatchObject({
+        phase: 'TERMINAL',
+        outcome: 'CLARIFICATION'
+      });
+
+      const written = hooks.get('before_message_write')({
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '当前问题必须经 NAPM skill 执行后才能回答。' }]
+        }
+      }, ctx);
+      expect(written.message.content[0].text).toContain('具体应用名称');
+      expect(written.message.content[0].text).not.toContain('未拿到有效 skill 结果');
+
+      const first = await hooks.get('message_sending')({
+        content: written.message.content,
+        metadata: { isFinal: true }
+      }, ctx);
+      const duplicate = await hooks.get('message_sending')({
+        content: written.message.content,
+        metadata: { isFinal: true }
+      }, ctx);
+      expect(first.content).toContain('具体应用名称');
+      expect(duplicate).toEqual({ cancel: true });
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
+  });
+
+  test('executes a new named-application turn after the user supplies the requested name', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [{ timestamp: 1787742000, value: 10 }],
+        error: null
+      });
+    const ctx = createCtx('application-name-followup');
+    const initialPrompt = '最近 7 天应用流量趋势如何？';
+
+    try {
+      await startTurn(ctx, initialPrompt);
+      const clarificationCall = callQueryTool(ctx, initialPrompt, buildDefinedAppTrendQuery());
+      const clarification = await tools.get('napm-skill-query').execute(
+        'application-name-clarification',
+        clarificationCall.params
+      );
+      const firstTurnId = plugin.__test__.getTrustedTurnId(clarificationCall.params);
+      expect(clarification.details.responseType).toBe('clarification_required');
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+
+      ctx.runId = 'run-application-name-followup-2';
+      const followUpPrompt = 'HTTP';
+      await startTurn(ctx, followUpPrompt);
+      const namedCall = callQueryTool(ctx, followUpPrompt, buildDefinedAppTrendQuery({ argument: 'HTTP' }));
+      const secondTurnId = plugin.__test__.getTrustedTurnId(namedCall.params);
+      expect(namedCall.result?.block).not.toBe(true);
+      expect(secondTurnId).not.toBe(firstTurnId);
+
+      const result = await tools.get('napm-skill-query').execute('application-name-query', namedCall.params);
+      expect(executeGatewayRequest).toHaveBeenCalledTimes(1);
+      expect(result.details.ok).toBe(true);
     } finally {
       executeGatewayRequest.mockRestore();
     }
@@ -306,8 +397,36 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const definition = tools.get('napm-skill-query');
 
     expect(definition.description).toContain('TotalTraffic');
+    expect(definition.parameters.properties.queryDraft).toEqual(expect.any(Object));
+    expect(definition.parameters.anyOf).toEqual(expect.arrayContaining([
+      { required: ['queryDraft'] },
+      { required: ['resolvedQuery'] }
+    ]));
     expect(definition.parameters.properties.resolvedQuery.properties.groups.description)
       .toContain('timeValues');
+  });
+
+  test('accepts queryDraft as the primary clarification input', async () => {
+    const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
+    const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    try {
+      const result = await tools.get('napm-skill-query').execute('query-draft-clarification', {
+        prompt: '最近 7 天应用流量趋势如何？',
+        queryDraft: buildDefinedAppTrendQuery()
+      });
+
+      expect(result).toMatchObject({
+        isError: false,
+        details: {
+          ok: true,
+          responseType: 'clarification_required',
+          decision: { action: 'ASK_CLARIFYING_QUESTION' }
+        }
+      });
+      expect(executeGatewayRequest).not.toHaveBeenCalled();
+    } finally {
+      executeGatewayRequest.mockRestore();
+    }
   });
 
   test('allows a seven-minute-later time-range follow-up from an empty successful trend result', async () => {

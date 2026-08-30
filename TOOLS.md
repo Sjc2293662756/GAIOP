@@ -15,7 +15,7 @@
 
 | 工具名 | 用途 | 边界 |
 |---|---|---|
-| `napm-skill-query` | NAPM 自然语言查询 | 只接受结构化 `resolvedQuery`，不做 NL 理解 |
+| `napm-skill-query` | NAPM 自然语言查询 | 接受结构化 `queryDraft`（迁移期兼容 `resolvedQuery`），统一决定追问/执行/拒绝；只有完整查询进入 Skill |
 | `napm-report-export` | 报告生成与导出 | 消费 reportData → Word → PDF，不发文件前必须走过此工具 |
 | `napm-packet-analysis` | 数据包分析 | 下载、预览、业务页面定位 |
 | `napm-alert-query` | 告警查询 | 告警摘要/时间线/详情/通知字段说明 |
@@ -27,8 +27,9 @@
 - `openclaw-napm-syslog-watcher`：Syslog 告警守护进程，独立部署
 - `echarts-chart-skill`：图表渲染，由 report skill 内部调用
 
-- 自然语言理解、对象识别、指标识别和 `resolvedQuery` 构造由 OpenClaw 上游负责。
-- NAPM skill 只执行结构化查询并返回结构化结果、摘要和叙述输入。
+- 自然语言理解、对象识别、指标识别和 Query Draft 构造由 OpenClaw 上游负责。
+- `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。
+- NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。
 - 普通用户问题不要使用 shell、curl 或直接 NetInside WebService 调用。
 
 ## 本机关键路径

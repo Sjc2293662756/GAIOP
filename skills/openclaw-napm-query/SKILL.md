@@ -5,7 +5,7 @@ description: Standalone OpenClaw skill for NetInside / NAPM structured queries. 
 
 # OpenClaw NAPM Query Skill
 
-Use this skill as the direct runtime for NetInside / NAPM questions. OpenClaw should construct an executable `resolvedQuery`, then run the skill-local executor:
+Use this skill as the direct runtime for NetInside / NAPM questions. In the OpenClaw production path, the `napm-skill-query` adapter first evaluates a structured `queryDraft`; only an `EXECUTE_QUERY` decision sends a complete `resolvedQuery` to this skill. Standalone callers must construct the executable `resolvedQuery` themselves, then run the skill-local executor:
 
 ```bash
 node scripts/run_napm_query.js --resolvedQueryFile ./query.json
@@ -19,6 +19,10 @@ Runtime path:
 
 ```text
 OpenClaw user request
+  -> napm-skill-query adapter
+  -> QueryDecisionPolicy
+       -> clarification/rejection: return locally
+       -> execution: complete resolvedQuery
   -> openclaw-napm-query skill
   -> scripts/run_napm_query.js
   -> skill-local services/config/src
@@ -43,9 +47,16 @@ OpenClaw owns:
 
 - Natural-language understanding and domain boundary judgment.
 - Multi-turn follow-up understanding.
-- Clarification policy.
-- `resolvedQuery` construction.
+- `queryDraft` construction.
+- Restoring user-supplied follow-up values into a new Query Draft.
 - Final Chinese user-facing narration.
+
+The `napm-skill-query` adapter owns:
+
+- Applying the static `QueryDecisionPolicy` to a Query Draft.
+- Returning missing user parameters as a normal clarification (`ok=true`, no `error`).
+- Promoting only `EXECUTE_QUERY` drafts to complete Resolved Queries.
+- Recording the current Query Turn and preventing duplicate final delivery.
 
 This skill owns:
 
@@ -56,7 +67,7 @@ This skill owns:
 - Top, trend, average, overview, drilldown, metadata, and metric inventory execution.
 - Machine-readable narration contract output.
 
-If `resolvedQuery` is missing, return the built-in Chinese fallback asking OpenClaw to finish intent resolution or scope clarification first. Do not invent a live query from raw prompt text in standalone mode.
+The skill remains stateless. It does not read Query Turn records or restore pending clarification state. If `resolvedQuery` is missing or incomplete in standalone mode, return the built-in boundary failure. Do not invent a live query from raw prompt text.
 
 ## Setup
 
@@ -90,6 +101,7 @@ Useful defaults:
 
 Accepted inputs:
 
+- OpenClaw Tool adapter only: `queryDraft`, with legacy `resolvedQuery` accepted during migration. A draft may omit a user-supplied object argument.
 - `--resolvedQuery '<json>'`: primary interface.
 - `--resolvedQueryFile <path>`: primary interface when the caller wants to avoid shell JSON quoting issues.
 - `--queryJson '<json>'`: alias for an executable query object.
@@ -158,7 +170,8 @@ Use `averageValues` for interval average/value queries:
 Object argument policy:
 
 - A single-object `DefinedApp` or `WebApplication` `timeValues`/`averageValues` query must include the concrete object name in `groups[0].argument`.
-- If that argument is missing, stop before metadata or metric execution and return a clarification asking for the application or Web application name. Do not interpret the resulting empty set as `no_data`.
+- In the OpenClaw Tool path, a missing user-supplied argument is classified before Skill execution and returned as a normal clarification. The Query Skill and southbound API are not called. Do not interpret the resulting empty set as `no_data`.
+- In standalone Skill execution, an incomplete `resolvedQuery` remains a boundary failure because Query Draft decisions belong to the Tool adapter.
 - Plain application traffic trend/average means `DefinedApp`; never map it to `TotalTraffic`. `TotalTraffic` is reserved for an explicitly global/overall traffic request.
 - `TotalTraffic` is the global traffic scope and must not carry a group argument. Use it for overall traffic trends.
 - `topValues` discovery and `groups` inventory queries may omit the argument because they discover or enumerate objects.
