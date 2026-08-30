@@ -629,11 +629,73 @@ function formatCandidate(item = {}) {
   return [...new Set(values)].join(' -> ');
 }
 
+function buildTriggerFocusedCompletionConclusion(result = {}) {
+  const trigger = getPrimaryDurationTrigger(result);
+  if (!trigger) return '';
+
+  const items = Array.isArray(result?.packetAnalyses) ? result.packetAnalyses : [];
+  const candidates = items
+    .map((item, index) => {
+      if (!item?.ok) return null;
+      const evidence = extractAlertEvidence(item);
+      const httpRows = rowsWithinAnalysisWindow(evidence?.httpTimingRows, item, result);
+      const http = summarizeTimingRows(httpRows, 'http');
+      if (http.valueCount === 0) return null;
+      return {
+        rank: Number(item?.rank) || index + 1,
+        endpoint: formatCandidate(item),
+        http,
+        rtt: summarizeTimingRows(rowsWithinAnalysisWindow(evidence?.rttRows, item, result), 'rtt'),
+        retransmissionCount: rowsWithinAnalysisWindow(evidence?.retransmissionRows, item, result).length,
+        retransmissionTruncated: Boolean(evidence?.retransmissionTruncated)
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.http.maxMs - left.http.maxMs);
+
+  if (candidates.length === 0) {
+    return `结论：成功候选中没有捕获到告警窗口内可量化的 HTTP 响应耗时，当前数据包证据无法解释 ${formatNumber(trigger.value)} ${trigger.unit} 的告警触发值。`;
+  }
+
+  const strongest = candidates[0];
+  const candidateLabel = `候选 ${strongest.rank}${strongest.endpoint ? `（${strongest.endpoint}）` : ''}`;
+  const relation = strongest.http.maxMs >= trigger.value
+    ? `高于告警触发值 ${formatNumber(trigger.value)} ${trigger.unit}，是本轮优先排查对象`
+    : `低于告警触发值 ${formatNumber(trigger.value)} ${trigger.unit}，当前抓包证据未复现该告警指标`;
+  const findings = [
+    `结论：${candidateLabel}的 HTTP 响应耗时最大 ${formatNumber(strongest.http.maxMs)} 毫秒，${relation}`
+  ];
+  if (strongest.rtt.valueCount > 0) {
+    findings.push(`TCP RTT 最大 ${formatNumber(strongest.rtt.maxMs)} 毫秒`);
+  }
+  if (strongest.retransmissionCount > 0) {
+    findings.push(`发现 TCP 重传 ${formatRowCount(strongest.retransmissionCount, strongest.retransmissionTruncated)}，但缺少总包数或重传率，不能单独认定为根因`);
+  }
+  if (strongest.http.maxMs < trigger.value) {
+    findings.push('需要继续核对未捕获会话、服务端处理指标或告警聚合口径');
+  }
+  return `${findings.join('；')}。`;
+}
+
+function rowsWithinAnalysisWindow(rows, item = {}, result = {}) {
+  const source = asRows(rows);
+  const range = item?.query?.criteria || result?.timeRange || {};
+  const start = normalizeUnixSeconds(range.start);
+  const end = normalizeUnixSeconds(range.end);
+  if (!start || !end) return [];
+  return source.filter((row) => {
+    const timestamp = extractRowTimestamp(row);
+    return Number.isFinite(timestamp) && timestamp >= start && timestamp <= end;
+  });
+}
+
 function buildConclusion(workflowState, packetAnalyses = [], result = {}) {
   const items = Array.isArray(packetAnalyses) ? packetAnalyses : [];
   const successCount = items.filter((item) => item?.ok).length;
   if (workflowState === 'COMPLETED') {
     if (hasAlertTriggerMetrics(result)) {
+      const focusedConclusion = buildTriggerFocusedCompletionConclusion(result);
+      if (focusedConclusion) return focusedConclusion;
       const metricName = toStringArray(result?.triggerMetrics?.names)[0] || '告警触发指标';
       return `结论：已完成 ${successCount} 个候选会话的${metricName}专项证据核对；仅将标记为“已捕获”且与告警窗口关联的证据作为依据，未捕获或证据不足项不能认定为告警根因。`;
     }
@@ -684,11 +746,24 @@ function formatShanghaiTime(unixSeconds) {
 }
 
 function sanitizeText(value) {
-  return String(value ?? '')
+  const sanitized = String(value ?? '')
     .replace(/:\/\/[^\s/@:]+:[^\s/@]+@/g, '://***:***@')
-    .replace(/([?&](?:UserName|Password|password|passwd|token|access_token|api_key)=)[^&#\s)\]]+/gi, '$1***')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-    .trim();
+    .replace(/([?&](?:UserName|Password|password|passwd|token|access_token|api_key)=)[^&#\s)\]]+/gi, '$1***');
+  return stripUnsafeControlCharacters(sanitized).trim();
+}
+
+function stripUnsafeControlCharacters(value) {
+  let output = '';
+  for (const character of String(value || '')) {
+    const code = character.charCodeAt(0);
+    const unsafe = (code >= 0 && code <= 8)
+      || code === 11
+      || code === 12
+      || (code >= 14 && code <= 31)
+      || code === 127;
+    if (!unsafe) output += character;
+  }
+  return output;
 }
 
 function normalizeUnixSeconds(value) {
