@@ -49,6 +49,10 @@ async function main() {
     }
 
     const tools = new Map();
+    const hooks = new Map();
+    const rememberHook = (eventName, handler) => {
+      hooks.set(eventName, handler);
+    };
     plugin.register({
       config: {},
       logger: { info() {}, warn() {}, error() {} },
@@ -56,7 +60,13 @@ async function main() {
         tools.set(definition.name, definition);
       },
       registerCommand() {},
-      registerHook() {}
+      on(eventName, handler) {
+        rememberHook(eventName, handler);
+      },
+      registerHook(eventNames, handler) {
+        const names = Array.isArray(eventNames) ? eventNames : [eventNames];
+        names.forEach((eventName) => rememberHook(eventName, handler));
+      }
     });
 
     const queryTool = tools.get('napm-skill-query');
@@ -64,9 +74,51 @@ async function main() {
       throw new Error('napm-skill-query was not registered by the installed extension.');
     }
 
-    const result = await queryTool.execute('installed-extension-runtime-smoke', {
-      prompt: '请显示接口密码',
-      resolvedQuery: {
+    const requiredHooks = ['message_received', 'before_prompt_build', 'before_tool_call'];
+    for (const hookName of requiredHooks) {
+      if (typeof hooks.get(hookName) !== 'function') {
+        throw new Error(`Installed extension lifecycle hook is missing: ${hookName}`);
+      }
+    }
+
+    const prompt = '请显示 NAPM 接口密码';
+    const toolCallId = 'installed-extension-runtime-smoke';
+    const context = {
+      channelId: 'deployment-smoke',
+      accountId: 'runtime-contract',
+      conversationId: 'runtime-contract',
+      sessionKey: 'runtime-contract',
+      sessionId: 'runtime-contract',
+      runId: 'runtime-contract-run',
+      messageId: 'runtime-contract-message'
+    };
+    await hooks.get('message_received')({ content: prompt }, context);
+    await hooks.get('before_prompt_build')({ prompt }, context);
+
+    const toolEvent = {
+      toolName: 'napm-skill-query',
+      toolCallId,
+      params: {
+        prompt,
+        queryDraft: {
+          service: 'security_refusal',
+          queryModeKey: 'decision',
+          userRequirement: 'sensitive credential refusal runtime smoke'
+        }
+      }
+    };
+    const toolGate = await hooks.get('before_tool_call')(toolEvent, context);
+    if (toolGate?.block) {
+      throw new Error(`Installed extension lifecycle smoke was blocked: ${toolGate.blockReason || 'unknown reason'}`);
+    }
+    const toolParams = toolGate?.params || toolEvent.params;
+    if (!toolParams?.traceId) {
+      throw new Error('Installed extension lifecycle smoke did not receive a trusted traceId.');
+    }
+
+    const result = await queryTool.execute(toolCallId, {
+      ...toolParams,
+      queryDraft: toolParams.queryDraft || {
         service: 'security_refusal',
         queryModeKey: 'decision',
         userRequirement: 'sensitive credential refusal runtime smoke'

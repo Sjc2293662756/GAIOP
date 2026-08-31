@@ -14,8 +14,11 @@
 - 完成态结论只使用告警窗口内可量化的 HTTP、RTT 和重传证据，优先指出最值得排查的候选，并在证据不足时保守降级。
 - 整合审查补充“HTTP 低于告警触发值”和“HTTP 记录位于告警窗口外”的回归测试，并修正保守结论中的中文空格。
 - 纳入多会话统一部署要求、告警修复记录，以及尚未实施的 NAPM 意图与轮次决策阶段一设计方案。
+- 建立普通查询的统一 Query Decision Policy 和 Query Turn Coordinator，按 run/message 绑定查询轮次，集中管理澄清、拒绝、执行、失败和 exactly-once 最终交付。
+- 加固可信 `traceId`、Tool 身份、轮次 route、单次修复预算、并发重放和终态 write-once 边界；错误或缺失绑定在 Query Skill 与南向请求前 fail-closed。
+- 统一应用趋势、平均值、排行和 `TotalTraffic` 的结构化意图语义；普通多 group 查询只有通过静态路径规划证明后才允许执行。
+- 更新远端 staged extension smoke，使部署验证通过真实 Query Turn 生命周期签发可信绑定，同时继续使用无南向访问的敏感凭证拒绝路径。
 - 统一 `package.json` 与 `package-lock.json` 版本为 `1.1.0-rc.38`。
-- 当前只完成本地整合与验证，尚未构建发布包、上传或部署远端服务。
 
 ## [1.1.0-rc.37] - 2026-08-28
 

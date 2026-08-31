@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const {
   isExpectedSecurityRefusal
 } = require('../scripts/verify-openclaw-extension-runtime');
@@ -39,6 +40,42 @@ describe('installed extension smoke contract', () => {
       responseType: 'decision_result',
       error: { code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED' }
     })).toBe(false);
+  });
+
+  test('runs the installed extension smoke through a trusted Query Turn lifecycle', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-installed-smoke-'));
+    const extensionRoot = path.join(fixtureRoot, 'extensions', 'napm-openclaw-plugin');
+    fs.mkdirSync(extensionRoot, { recursive: true });
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
+      path.join(extensionRoot, 'index.js')
+    );
+    copyDirectorySync(
+      path.resolve(__dirname, '..', 'plugin'),
+      path.join(extensionRoot, 'plugin')
+    );
+
+    try {
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, '..', 'scripts', 'verify-openclaw-extension-runtime.js'),
+        '--extensionRoot',
+        extensionRoot,
+        '--skillsRoot',
+        path.resolve(__dirname, '..', 'skills')
+      ], {
+        encoding: 'utf8',
+        env: { ...process.env, NODE_ENV: 'test' }
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: true,
+        tool: 'napm-skill-query',
+        responseType: 'decision_result'
+      });
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
 
