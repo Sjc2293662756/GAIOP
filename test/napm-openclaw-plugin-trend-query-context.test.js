@@ -97,6 +97,19 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     return { event, result, params: result?.params || event.params };
   }
 
+  async function executeTrustedDirect(toolCallId, args, suffix) {
+    const prompt = args.prompt || args.queryDraft?.userRequirement
+      || args.resolvedQuery?.userRequirement || 'NAPM 查询';
+    const ctx = createCtx(`trusted-direct-${suffix}`);
+    await startTurn(ctx, prompt);
+    const event = {
+      toolName: 'napm-skill-query',
+      params: { ...args }
+    };
+    plugin.__test__.bindTrustedToolContext(event, ctx);
+    return tools.get('napm-skill-query').execute(toolCallId, event.params);
+  }
+
   async function rememberEmptyInitialTrend(ctx) {
     const prompt = '最近一天的总流量的趋势怎么样？';
     await startTurn(ctx, prompt);
@@ -179,10 +192,10 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       });
     try {
       const prompt = '最近 7 天应用流量趋势如何？';
-      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch', {
+      const result = await executeTrustedDirect('direct-application-mismatch', {
         prompt,
         resolvedQuery: buildTrendQuery('last7days', 3600)
-      });
+      }, 'application-mismatch');
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
       expect(result.isError).toBe(false);
@@ -209,12 +222,12 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       .mockResolvedValue({ ok: true, service: 'timeValues', data: [], error: null });
 
     try {
-      const result = await tools.get('napm-skill-query').execute('direct-application-mismatch-without-prompt', {
+      const result = await executeTrustedDirect('direct-application-mismatch-without-prompt', {
         resolvedQuery: {
           ...buildTrendQuery('last7days', 3600),
           userRequirement: '最近 7 天应用流量趋势如何？'
         }
-      });
+      }, 'application-mismatch-without-prompt');
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
       expect(result.isError).toBe(false);
@@ -237,10 +250,10 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
 
     try {
-      const result = await tools.get('napm-skill-query').execute('direct-missing-application-argument', {
+      const result = await executeTrustedDirect('direct-missing-application-argument', {
         prompt: '最近 7 天应用流量趋势如何？',
         resolvedQuery: buildDefinedAppTrendQuery()
-      });
+      }, 'missing-application-argument');
 
       expect(executeGatewayRequest).not.toHaveBeenCalled();
       expect(result.isError).toBe(false);
@@ -357,10 +370,10 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       });
 
     try {
-      const result = await tools.get('napm-skill-query').execute('direct-global-trend', {
+      const result = await executeTrustedDirect('direct-global-trend', {
         prompt: '最近 7 天总流量趋势如何？',
         resolvedQuery: buildTrendQuery('last7days', 3600)
-      });
+      }, 'global-trend');
 
       expect(executeGatewayRequest).toHaveBeenCalledTimes(1);
       expect(result.details).toMatchObject({ ok: true, service: 'timeValues' });
@@ -410,10 +423,10 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const RequirementParserService = require('../skills/openclaw-napm-query/services/RequirementParserService');
     const executeGatewayRequest = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     try {
-      const result = await tools.get('napm-skill-query').execute('query-draft-clarification', {
+      const result = await executeTrustedDirect('query-draft-clarification', {
         prompt: '最近 7 天应用流量趋势如何？',
         queryDraft: buildDefinedAppTrendQuery()
-      });
+      }, 'query-draft-clarification');
 
       expect(result).toMatchObject({
         isError: false,

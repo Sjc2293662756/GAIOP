@@ -70,6 +70,46 @@ describe('QueryTurnCoordinator', () => {
     expect(afterFailure).toEqual(success);
   });
 
+  test('does not move an executing turn back to decided or start another execution attempt', () => {
+    coordinator.begin({ scope: 'conversation-a', turnId: 'turn-1', route: QUERY_ROUTES.NAPM_QUERY });
+    coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    const executing = coordinator.beginExecution({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      attemptId: 'execution-1'
+    });
+
+    const replayedDecision = coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    const replayedValidationFailure = coordinator.recordValidationFailure({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      attemptId: 'late-construction-failure',
+      queryDraft: { service: 'timeValues' },
+      validation: { reason: 'incomplete_query_draft' }
+    });
+    const replayedExecution = coordinator.beginExecution({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      attemptId: 'execution-2'
+    });
+
+    expect(executing).toMatchObject({
+      phase: QUERY_PHASES.EXECUTING,
+      attempts: [{ attemptId: 'execution-1', status: 'STARTED' }]
+    });
+    expect(replayedDecision).toEqual(executing);
+    expect(replayedValidationFailure).toEqual(executing);
+    expect(replayedExecution).toEqual(executing);
+  });
+
   test.each([
     QUERY_OUTCOMES.CLARIFICATION,
     QUERY_OUTCOMES.RESULT,

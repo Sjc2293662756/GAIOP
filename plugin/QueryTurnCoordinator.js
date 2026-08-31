@@ -192,7 +192,9 @@ class QueryTurnCoordinator {
     const key = this._key(scope, turnId);
     if (!key) return null;
     const current = this._freshTurn(key) || this.begin({ scope, turnId, route, question, queryDraft });
-    if (current.phase === QUERY_PHASES.TERMINAL) return clone(current);
+    if ([QUERY_PHASES.EXECUTING, QUERY_PHASES.TERMINAL].includes(current.phase)) {
+      return clone(current);
+    }
 
     if (decision.outcome === QUERY_OUTCOMES.VALIDATION_FAILURE) {
       return this.recordValidationFailure({
@@ -246,7 +248,9 @@ class QueryTurnCoordinator {
     const key = this._key(scope, turnId);
     const current = key ? this._freshTurn(key) : null;
     if (!current) return null;
-    if (current.phase === QUERY_PHASES.TERMINAL) return clone(current);
+    if ([QUERY_PHASES.EXECUTING, QUERY_PHASES.TERMINAL].includes(current.phase)) {
+      return clone(current);
+    }
 
     const normalizedAttemptId = normalizeText(attemptId) || `construction-${current.attempts.length + 1}`;
     if (current.attempts.some((attempt) => attempt.attemptId === normalizedAttemptId)) return clone(current);
@@ -298,7 +302,12 @@ class QueryTurnCoordinator {
     const key = this._key(scope, turnId);
     const current = key ? this._freshTurn(key) : null;
     if (!current || current.phase === QUERY_PHASES.TERMINAL) return clone(current);
-    if (current.action !== QUERY_ACTIONS.EXECUTE_QUERY) return clone(current);
+    if (
+      current.phase !== QUERY_PHASES.DECIDED
+      || current.action !== QUERY_ACTIONS.EXECUTE_QUERY
+    ) {
+      return clone(current);
+    }
 
     const normalizedAttemptId = normalizeText(attemptId) || `execution-${current.attempts.length + 1}`;
     if (current.attempts.some((attempt) => attempt.attemptId === normalizedAttemptId)) return clone(current);
@@ -409,18 +418,40 @@ class QueryTurnCoordinator {
       argument: normalizedAnswer
     };
 
-    const record = this.begin({
-      scope: normalizedScope,
-      turnId,
-      runId,
-      route: QUERY_ROUTES.NAPM_QUERY,
-      question: normalizedAnswer,
-      semanticQuestion: pending.semanticQuestion || pending.question,
-      queryDraft,
-      parentTurnId: pending.turnId,
-      resumedFromClarification: true,
-      clarificationAnswer: normalizedAnswer
-    });
+    const key = this._key(normalizedScope, turnId);
+    const existing = key ? this._freshTurn(key) : null;
+    if (existing && existing.phase !== QUERY_PHASES.RECEIVED) return null;
+
+    let record;
+    if (existing) {
+      record = {
+        ...existing,
+        parentTurnId: pending.turnId,
+        resumedFromClarification: true,
+        clarificationAnswer: normalizedAnswer,
+        route: existing.route,
+        question: normalizedAnswer,
+        semanticQuestion: normalizeText(pending.semanticQuestion || pending.question) || null,
+        queryDraft,
+        updatedAt: this.now()
+      };
+      this._setTurn(key, record);
+      this.bindRun({ scope: normalizedScope, runId, turnId });
+      record = clone(record);
+    } else {
+      record = this.begin({
+        scope: normalizedScope,
+        turnId,
+        runId,
+        route: QUERY_ROUTES.NAPM_QUERY,
+        question: normalizedAnswer,
+        semanticQuestion: pending.semanticQuestion || pending.question,
+        queryDraft,
+        parentTurnId: pending.turnId,
+        resumedFromClarification: true,
+        clarificationAnswer: normalizedAnswer
+      });
+    }
     if (!record) return null;
     this.pendingByScope.delete(normalizedScope);
     return record;

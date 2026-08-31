@@ -30,10 +30,10 @@
 - 自然语言理解、对象识别、指标识别和 Query Draft 构造由 OpenClaw 上游负责。
 - `conversationKey` 只作 scope。`message_received` 将当前 run/message 绑定到不可变 `turnId`，Tool 和输出 Hook 必须使用该绑定，不得读取会话最新轮次；缺少身份或绑定时 fail-closed。
 - Query Turn route 在创建后不可变。普通 `NAPM_QUERY` 只接受 `napm-skill-query`；错误的其他生产 NAPM Tool 会被阻断，不会执行南向调用或把轮次改成 `OTHER_SKILL`。开发诊断 resolver Tool 仍仅受显式开关控制。
-- `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 也会执行应用/`TotalTraffic`、`CompositeApplication`/一般对象清单和对象清单单 group 等高风险检查。
+- `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 必须携带插件签发的可信 `traceId` 并解析出 scope/turn，否则在时间物化和校验前 fail-closed；它同样执行应用趋势/平均值/排行与 `TotalTraffic`、`CompositeApplication`/一般对象清单、无 prompt 的 `overview/auto_apps` 和对象清单单 group 等高风险检查。
 - 缺对象名的澄清会保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。用户下一轮只回复名称时，模型传 `clarificationAnswer`，插件恢复 pending Draft 并补入声明的 `groups[n].argument`，然后重新执行完整策略。
 - Query Turn Coordinator 是普通查询 Draft、Attempts、一次修复预算、pending、终态 `finalContent` 和 delivery claim 的唯一权威源。旧 `ConversationOperationState` 不再提供普通查询修复或结果交付。
-- 首次技术校验失败进入 `REPAIR_PENDING`；同 attempt 幂等，只允许一次修复，第二个失败终止；执行失败立即终止。所有 terminal write-once，流式 partial 不终结轮次；终态 Tool 重放仅返回已有结果，不再调用 Skill 或南向接口。
+- 首次技术校验失败进入 `REPAIR_PENDING`；同 attempt 幂等，只允许一次修复，第二个失败终止；执行失败立即终止。所有 terminal write-once，流式 partial 不终结轮次；`EXECUTING` 重放在处理 Draft 前返回执行中结果，终态 Tool 重放仅返回已有结果，均不再调用 Skill 或南向接口。
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Coordinator 生成最终内容并 exactly-once 交付。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会记录契约违规，`REPAIR_PENDING` 会记录校验失败，`EXECUTING` 无结果会记录执行失败；后到结果不得覆盖终态。其他 Skill 的轮次不由普通查询 Coordinator 抢交付。
 - NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。
 - 普通用户问题不要使用 shell、curl 或直接 NetInside WebService 调用。

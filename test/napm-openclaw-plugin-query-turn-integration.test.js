@@ -74,6 +74,30 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     return tools.get('napm-skill-query').execute(toolCallId, bound.params);
   }
 
+  function bindTrustedDirect(ctx, params, options = {}) {
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = options.turnId || `direct-turn-${ctx.runId}`;
+    if (options.createTurn !== false) {
+      plugin.__test__.queryTurnCoordinator.begin({
+        scope,
+        turnId,
+        runId: ctx.runId,
+        route: 'NAPM_QUERY',
+        question: params.prompt || '',
+        semanticQuestion: params.prompt || '',
+        queryDraft: params.queryDraft || params.resolvedQuery || null
+      });
+    } else {
+      plugin.__test__.queryTurnCoordinator.bindRun({ scope, runId: ctx.runId, turnId });
+    }
+    const event = {
+      toolName: 'napm-skill-query',
+      params: { ...params }
+    };
+    const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    return { scope, turnId, params: { ...event.params, traceId } };
+  }
+
   function buildTrendDraft(groupType, argument) {
     const group = { type: groupType };
     if (argument !== undefined) group.argument = argument;
@@ -405,6 +429,83 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toEqual(terminal);
   });
 
+  test('suppresses an overlapping Tool replay while the first execution is still running', async () => {
+    const southboundResolvers = [];
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(() => new Promise((resolve) => {
+        southboundResolvers.push(resolve);
+      }));
+    const ctx = createCtx('run-overlapping-tool-replay');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const bound = callBeforeTool(ctx, 'overlap-initial-call', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    });
+
+    const firstExecution = executeBound('overlap-initial-call', bound);
+    await new Promise((resolve) => setImmediate(resolve));
+    const replayExecution = executeBound('overlap-replay-call', {
+      params: {
+        ...bound.params,
+        queryDraft: { service: 'timeValues' },
+        resolvedQuery: { service: 'timeValues' }
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    const southboundCallCount = southbound.mock.calls.length;
+    const executing = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
+    for (const resolve of southboundResolvers) {
+      resolve({
+        ok: true,
+        service: 'timeValues',
+        data: [{ timestamp: 1787742000, value: 10 }],
+        error: null
+      });
+    }
+    const [first, replay] = await Promise.all([firstExecution, replayExecution]);
+
+    expect(first.details.ok).toBe(true);
+    expect(southboundCallCount).toBe(1);
+    expect(replay).toMatchObject({
+      isError: false,
+      details: {
+        ok: true,
+        responseType: 'QUERY_EXECUTION_IN_PROGRESS'
+      }
+    });
+    expect(executing).toMatchObject({
+      phase: 'EXECUTING',
+      attempts: [{ attemptId: 'overlap-initial-call', status: 'STARTED' }]
+    });
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'RESULT'
+    });
+  });
+
+  test('fails closed before validation when direct Tool execution has no trusted turn identity', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, service: 'timeValues', data: [], error: null });
+
+    const result = await tools.get('napm-skill-query').execute('identityless-direct-call', {
+      prompt: '最近 7 天总流量趋势如何？',
+      queryDraft: buildTrendDraft('TotalTraffic')
+    });
+
+    expect(southbound).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        responseType: 'LIFECYCLE_BINDING_REQUIRED',
+        error: { code: 'LIFECYCLE_TURN_BINDING_REQUIRED' }
+      }
+    });
+  });
+
   test('terminates a decided query when the Tool adapter never executes', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-decided-without-execute');
@@ -684,8 +785,8 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
     const terminal = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
 
-    expect(first.hookResult.blockReason).toContain('may reconstruct resolvedQuery once');
-    expect(replay.hookResult.blockReason).toContain('may reconstruct resolvedQuery once');
+    expect(first.hookResult.blockReason).toContain('may repair queryDraft once');
+    expect(replay.hookResult.blockReason).toContain('may repair queryDraft once');
     expect(repeated.hookResult.blockReason).toContain('repair budget exhausted');
     expect(terminal).toMatchObject({
       phase: 'TERMINAL',
@@ -779,14 +880,26 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         }
       },
       'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH'
+    ],
+    [
+      'promptless auto_apps overview without semantic constraints',
+      undefined,
+      {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'auto_apps',
+        timeRange: { key: 'last7days' }
+      },
+      'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH'
     ]
   ])('blocks %s at direct Tool execution without southbound calls', async (_label, prompt, queryDraft, reasonCode) => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
       .mockResolvedValue({ ok: true, data: [] });
-    const result = await tools.get('napm-skill-query').execute(`direct-${reasonCode}`, {
+    const direct = bindTrustedDirect(createCtx(`run-${reasonCode}-${_label}`), {
       prompt,
       queryDraft
     });
+    const result = await tools.get('napm-skill-query').execute(`direct-${reasonCode}`, direct.params);
 
     expect(southbound).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -806,10 +919,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
       .mockResolvedValue({ ok: true, data: [] });
     const prompt = '最近 7 天应用流量趋势如何？';
-    const result = await tools.get('napm-skill-query').execute('direct-application-scope', {
+    const direct = bindTrustedDirect(createCtx('run-direct-application-scope'), {
       prompt,
       queryDraft: buildTrendDraft('TotalTraffic')
     });
+    const result = await tools.get('napm-skill-query').execute('direct-application-scope', direct.params);
 
     expect(southbound).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -825,6 +939,31 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
+  test('guides an application ranking scope mismatch toward DefinedApp without asking for one application', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, data: [] });
+    const ctx = createCtx('run-application-ranking-scope-repair');
+    const prompt = '应用流量最高的是哪些？';
+    await startTurn(ctx, prompt);
+    const blocked = callBeforeTool(ctx, 'application-ranking-scope-repair', {
+      prompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'TotalTraffic' }],
+        metrics: ['TPIO'],
+        topMetric: 'TPIO',
+        topCount: 10,
+        timeRange: { key: 'last7days' }
+      }
+    });
+
+    expect(blocked.hookResult).toMatchObject({ block: true });
+    expect(blocked.hookResult.blockReason).toContain('topValues with DefinedApp');
+    expect(blocked.hookResult.blockReason).not.toContain('追问具体应用名称');
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
   test('clarifies a promptless DefinedApp semantic target mapped to TotalTraffic without southbound calls', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
       .mockResolvedValue({ ok: true, data: [] });
@@ -832,9 +971,13 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       ...buildTrendDraft('TotalTraffic'),
       semanticConstraints: { targetObjectType: 'DefinedApp' }
     };
-    const result = await tools.get('napm-skill-query').execute('direct-semantic-application-scope', {
+    const direct = bindTrustedDirect(createCtx('run-direct-semantic-application-scope'), {
       queryDraft
     });
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-semantic-application-scope',
+      direct.params
+    );
 
     expect(southbound).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -848,5 +991,63 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         }
       }
     });
+  });
+
+  test('resumes a real pending clarification from clarificationAnswer at direct Tool execution', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [{ timestamp: 1787742000, value: 10 }],
+        error: null
+      });
+    const initialCtx = createCtx('run-direct-resume-initial');
+    const prompt = '最近 7 天应用流量趋势如何？';
+    await startTurn(initialCtx, prompt);
+    const clarificationCall = callBeforeTool(initialCtx, 'direct-resume-clarification', {
+      prompt,
+      queryDraft: buildTrendDraft('TotalTraffic')
+    });
+    await executeBound('direct-resume-clarification', clarificationCall);
+
+    const scope = plugin.__test__.getConversationKey(initialCtx);
+    const parentTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, initialCtx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeTruthy();
+    expect(southbound).not.toHaveBeenCalled();
+
+    const answerCtx = createCtx('run-direct-resume-answer');
+    const direct = bindTrustedDirect(answerCtx, { clarificationAnswer: 'HTTP' }, {
+      createTurn: false,
+      turnId: 'direct-resumed-turn'
+    });
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, direct.turnId)).toBeNull();
+
+    const result = await tools.get('napm-skill-query').execute('direct-resume-answer', direct.params);
+
+    expect(result.details.ok).toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(southbound.mock.calls[0][0]).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp', argument: 'HTTP' }],
+      metrics: ['TPIO'],
+      granularity: 3600,
+      timeRange: { key: 'last7days' }
+    });
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, direct.turnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'RESULT',
+      parentTurnId,
+      resumedFromClarification: true,
+      clarificationAnswer: 'HTTP'
+    });
+    expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeNull();
+  });
+
+  test('never treats the latest conversation turn as the active turn without a run guard', () => {
+    expect(plugin.__test__.getActiveTurnId({ turnId: 'latest-conversation-turn' }, null)).toBe('');
+    expect(plugin.__test__.getActiveTurnId(
+      { turnId: 'latest-conversation-turn' },
+      { turnId: 'bound-run-turn' }
+    )).toBe('bound-run-turn');
   });
 });

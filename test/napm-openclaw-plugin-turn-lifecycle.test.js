@@ -408,13 +408,21 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     expect(tool.description).toContain('groups=[{type:"WebApplication"}]');
     expect(resolvedQuerySchema.properties.groups.description).toContain('DefinedApp');
 
-    const result = await tool.execute('invalid-service-call', {
-      prompt: '过去 24 小时的吞吐量趋势如何？',
-      resolvedQuery: {
-        service: 'timeseries',
-        queryModeKey: 'timeseries'
+    const ctx = createCtx('invalid-service-execute');
+    const prompt = '过去 24 小时的吞吐量趋势如何？';
+    await startTurn(ctx, prompt);
+    const event = {
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        queryDraft: {
+          service: 'timeseries',
+          queryModeKey: 'timeseries'
+        }
       }
-    });
+    };
+    plugin.__test__.bindTrustedToolContext(event, ctx);
+    const result = await tool.execute('invalid-service-call', event.params);
 
     expect(result.isError).toBe(true);
     expect(result.details).toMatchObject({

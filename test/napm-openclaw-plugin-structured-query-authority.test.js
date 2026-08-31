@@ -170,7 +170,7 @@ describe('NAPM plugin structured query authority', () => {
     const scope = plugin.__test__.getConversationKey(ctx);
     const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
 
-    expect(first.blockReason).toContain('may reconstruct resolvedQuery once');
+    expect(first.blockReason).toContain('may repair queryDraft once');
     expect(second.blockReason).toContain('repair budget exhausted');
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
       phase: 'TERMINAL',

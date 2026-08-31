@@ -134,8 +134,8 @@ describe('napm-openclaw-plugin business inventory guard', () => {
 
     expect(result).toBeTruthy();
     expect(result.block).toBe(true);
-    expect(result.blockReason).toContain('resolvedQuery');
-    expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
+    expect(result.blockReason).toContain('queryDraft');
+    expect(result.blockReason).toContain('OpenClaw may repair queryDraft once');
   }, 30000);
 
   test('should allow business-group inventory skill call with upstream resolvedQuery', async () => {

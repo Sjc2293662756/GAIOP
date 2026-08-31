@@ -59,6 +59,46 @@ describe('QueryDecisionPolicy', () => {
     expect(queryDraft.groups).toEqual([{ type: 'TotalTraffic' }]);
   });
 
+  test('blocks an application traffic ranking mapped to TotalTraffic', () => {
+    const decision = evaluateQueryDecision({
+      prompt: '应用流量最高的是哪些？',
+      queryDraft: buildQuery({
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'TotalTraffic' }],
+        topMetric: 'TPIO',
+        topCount: 10
+      })
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'APPLICATION_SCOPE_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
+  test('blocks promptless overview auto_apps as an ambiguous CompositeApplication inventory request', () => {
+    const decision = evaluateQueryDecision({
+      queryDraft: {
+        service: 'overview',
+        queryModeKey: 'overview',
+        overviewScene: 'auto_apps',
+        timeRange: { key: 'last7days' }
+      }
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'COMPOSITE_APPLICATION_INVENTORY_CONTRACT_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
   test.each([
     ['named application trend', buildQuery({ groups: [{ type: 'DefinedApp', argument: 'HTTP' }] })],
     ['global traffic trend', buildQuery({ groups: [{ type: 'TotalTraffic' }] })],

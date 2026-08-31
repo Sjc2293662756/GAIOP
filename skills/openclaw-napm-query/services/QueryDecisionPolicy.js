@@ -37,6 +37,16 @@ function isApplicationTrafficTrendPrompt(prompt = '') {
     && /(?:趋势|走势|变化|曲线|按时间|平均|均值|trend|timeseries|time\s*series|average|mean)/i.test(text);
 }
 
+function isApplicationTrafficQueryPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text || /(?:总流量|全局流量|整体流量|total\s*traffic|global\s*traffic|overall\s*traffic)/i.test(text)) {
+    return false;
+  }
+  return /(?:应用|application|app)/i.test(text)
+    && /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text)
+    && /(?:趋势|走势|变化|曲线|按时间|平均|均值|哪个|哪些|谁|最多|最少|最高|最低|排行|排名|top\s*\d*|trend|timeseries|time\s*series|average|mean|ranking)/i.test(text);
+}
+
 function normalizeObjectType(value = '') {
   const normalized = String(value || '').trim();
   return normalized === 'Application' ? 'DefinedApp' : normalized;
@@ -59,25 +69,28 @@ function buildApplicationClarificationDraft(queryDraft = {}) {
 }
 
 function validateObjectInventorySemanticContract(prompt = '', queryDraft = {}) {
+  const text = String(prompt || queryDraft?.userRequirement || '').trim();
   const classifiedWorkflow = WorkflowClassifierService.classifyWorkflow(prompt);
   const semanticConstraints = isPlainObject(queryDraft?.semanticConstraints)
     ? queryDraft.semanticConstraints
     : {};
   const declaredWorkflowType = String(semanticConstraints.workflowType || '').trim();
   const declaredTargetType = normalizeObjectType(semanticConstraints.targetObjectType);
+  const service = String(queryDraft?.service || '').trim();
+  const overviewScene = String(queryDraft?.overviewScene || '').trim();
+  const promptlessAutoApps = !text && service === 'overview' && overviewScene === 'auto_apps';
   const workflowType = classifiedWorkflow.workflowType === 'object_inventory'
     ? classifiedWorkflow.workflowType
-    : declaredWorkflowType;
+    : (promptlessAutoApps ? 'object_inventory' : declaredWorkflowType);
   const expectedType = normalizeObjectType(
     classifiedWorkflow.workflowType === 'object_inventory'
       ? classifiedWorkflow.targetObjectType
-      : declaredTargetType
+      : (promptlessAutoApps ? 'CompositeApplication' : declaredTargetType)
   );
   if (workflowType !== 'object_inventory' || !expectedType) {
     return { ok: true };
   }
 
-  const service = String(queryDraft?.service || '').trim();
   const queryModeKey = String(queryDraft?.queryModeKey || '').trim();
   const operation = String(queryDraft?.semanticConstraints?.operation || '').trim();
   const groups = Array.isArray(queryDraft?.groups) ? queryDraft.groups : [];
@@ -128,10 +141,10 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
   const semanticTargetType = normalizeObjectType(queryDraft?.semanticConstraints?.targetObjectType);
   const hasTotalTraffic = groups.some((group) => String(group?.type || '').trim() === 'TotalTraffic');
   if (
-    ['timeValues', 'averageValues'].includes(service)
+    ['timeValues', 'averageValues', 'topValues'].includes(service)
     && hasTotalTraffic
     && (
-      isApplicationTrafficTrendPrompt(prompt || queryDraft.userRequirement)
+      isApplicationTrafficQueryPrompt(prompt || queryDraft.userRequirement)
       || semanticTargetType === 'DefinedApp'
     )
   ) {
@@ -147,7 +160,9 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
         expectedGroupType: 'DefinedApp',
         actualGroupType: 'TotalTraffic'
       },
-      message: '应用流量趋势或平均值不能使用 TotalTraffic 范围；缺少应用名称时必须先澄清。'
+      message: service === 'topValues'
+        ? '应用流量排行不能使用 TotalTraffic 范围；必须改用 DefinedApp 对象排行。'
+        : '应用流量趋势或平均值不能使用 TotalTraffic 范围；缺少应用名称时必须先澄清。'
     };
   }
 
@@ -259,6 +274,9 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
   const semanticValidation = evaluateHighRiskSemanticConsistency(prompt, queryDraft);
   if (!semanticValidation.ok) {
     if (semanticValidation.code === 'APPLICATION_SCOPE_MISMATCH') {
+      if (String(queryDraft?.service || '').trim() === 'topValues') {
+        return validationFailureDecision(semanticValidation, queryDraft);
+      }
       return clarificationDecision({
         reasonCode: semanticValidation.code,
         details: semanticValidation.details,
@@ -321,5 +339,6 @@ module.exports = {
   buildClarifyingQuestion,
   evaluateHighRiskSemanticConsistency,
   evaluateQueryDecision,
+  isApplicationTrafficQueryPrompt,
   isApplicationTrafficTrendPrompt
 };
