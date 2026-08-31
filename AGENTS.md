@@ -13,7 +13,7 @@
 ## 工作原则
 
 - 普通 NAPM 用户查询必须调用 `napm-skill-query`。上游传入结构化 `queryDraft`；只有 Query Decision 为 `EXECUTE_QUERY` 时才能形成完整 `resolvedQuery` 并进入 Query Skill 和南向接口。
-- `conversationKey` 只表示会话 scope。`message_received` 为每个 run/message 创建并绑定不可变 `turnId`；Tool 和输出 Hook 必须使用当前 run/message 的可信绑定，禁止读取会话中的最新 `turnId`。直接 Tool execute 必须携带插件签发的可信 `traceId`，并解析出 scope、turn 和与当前适配器一致的可信 `toolName`；Query Turn route 还必须是 `NAPM_QUERY`。任一条件不满足都必须在 pending Draft 恢复、时间物化、校验和 Query Skill 之前 fail-closed。
+- `conversationKey` 只表示会话 scope。`message_received` 先为入站 `messageId` 创建不可变 `turnId`；Agent Hook 只提供 `runId` 时，由 `QueryTurnCoordinator` 按同 scope 与 source prompt 领取该 `RECEIVED` 轮次，将 message/run 绑定到同一 turn。Tool 和输出 Hook 必须使用当前 run/message 的可信绑定，禁止读取会话中的最新 `turnId`；类型契约不提供 run/message 身份的 `before_message_write` 不得终结或改写 Query Turn。直接 Tool execute 必须携带插件签发的可信 `traceId`，并解析出 scope、turn 和与当前适配器一致的可信 `toolName`；Query Turn route 还必须是 `NAPM_QUERY`。任一条件不满足都必须在 pending Draft 恢复、时间物化、校验和 Query Skill 之前 fail-closed。
 - Query Turn 的 route 在创建后不可变。普通 `NAPM_QUERY` 只允许 `napm-skill-query` 满足查询契约，错误的其他 NAPM Tool 不得把轮次改成 `OTHER_SKILL`。
 - 普通查询的 Query Draft、Query Attempt、一次修复预算、pending clarification、终态 `finalContent` 和交付声明统一归 `QueryTurnCoordinator` 管理。旧 `ConversationOperationState` 不再是普通查询修复、查询结果或最终交付的权威源。
 - 首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放保持幂等；只允许一次结构修复，第二个失败终止。`recordResult` 和 `recordFailure` 只允许从 `EXECUTING` 迁移；放弃修复和执行期 Skill 澄清分别使用专用迁移。执行失败立即终止，所有 `TERMINAL` 记录 write-once，流式 partial 不得终结 Query Turn；`EXECUTING` 中的重叠 Tool 调用必须在时间物化和校验前返回执行中结果，终态后的 Tool 重放只返回已有权威结果，两者都不得再次调用 Query Skill 或南向接口。
