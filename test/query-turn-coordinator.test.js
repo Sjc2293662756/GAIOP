@@ -436,6 +436,90 @@ describe('QueryTurnCoordinator', () => {
     });
   });
 
+  test('adopts an unclaimed message turn when the agent run has a different identity', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'turn-message',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      question: '最近 7 天应用流量趋势如何？',
+      sourcePrompt: '最近 7 天应用流量趋势如何？'
+    });
+    coordinator.bindRun({
+      scope: 'conversation-a',
+      runId: 'message-id',
+      turnId: 'turn-message'
+    });
+
+    const adopted = coordinator.adoptReceivedTurn({
+      scope: 'conversation-a',
+      runId: 'agent-run-id',
+      prompt: [
+        'Conversation info (untrusted metadata):',
+        '{"message_id":"message-id"}',
+        '',
+        '最近 7 天应用流量趋势如何？'
+      ].join('\n')
+    });
+
+    expect(adopted).toMatchObject({
+      turnId: 'turn-message',
+      runId: 'agent-run-id',
+      phase: QUERY_PHASES.RECEIVED
+    });
+    expect(coordinator.resolveTurnId('conversation-a', 'message-id')).toBe('turn-message');
+    expect(coordinator.resolveTurnId('conversation-a', 'agent-run-id')).toBe('turn-message');
+  });
+
+  test('does not adopt a received turn whose source prompt does not match', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'turn-a',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      question: '应用 A 流量趋势',
+      sourcePrompt: '应用 A 流量趋势'
+    });
+
+    expect(coordinator.adoptReceivedTurn({
+      scope: 'conversation-a',
+      runId: 'run-b',
+      prompt: '应用 B 流量趋势'
+    })).toBeNull();
+    expect(coordinator.resolveTurnId('conversation-a', 'run-b')).toBe('');
+    expect(coordinator.get('conversation-a', 'turn-a')).toMatchObject({
+      runId: null,
+      phase: QUERY_PHASES.RECEIVED
+    });
+  });
+
+  test('adopts overlapping received turns only when their source prompts match', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'turn-application',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      question: '应用流量趋势',
+      sourcePrompt: '应用流量趋势'
+    });
+    now += 1;
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'turn-business',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      question: '业务流量趋势',
+      sourcePrompt: '业务流量趋势'
+    });
+
+    expect(coordinator.adoptReceivedTurn({
+      scope: 'conversation-a',
+      runId: 'run-business',
+      prompt: '业务流量趋势'
+    })).toMatchObject({ turnId: 'turn-business', runId: 'run-business' });
+    expect(coordinator.adoptReceivedTurn({
+      scope: 'conversation-a',
+      runId: 'run-application',
+      prompt: '应用流量趋势'
+    })).toMatchObject({ turnId: 'turn-application', runId: 'run-application' });
+  });
+
   test('allows one final delivery claim per turn and isolates turns', () => {
     for (const turnId of ['turn-1', 'turn-2']) {
       coordinator.begin({ scope: 'conversation-a', turnId, route: QUERY_ROUTES.NAPM_QUERY });

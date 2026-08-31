@@ -188,7 +188,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       .resolves.toEqual({ content: recordB.finalContent });
   });
 
-  test('fails closed when overlapping output hooks have no run or message identity', async () => {
+  test('leaves identityless transcript writes unchanged and fails outbound delivery closed', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctxA = createCtx('run-identity-a');
     const ctxB = createCtx('run-identity-b');
@@ -229,11 +229,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     }, identitylessCtx);
     const sent = await hooks.get('message_sending')({ content: 'run A model final' }, identitylessCtx);
 
-    const writtenText = written?.message?.content?.[0]?.text || '';
-    expect(writtenText).toContain('无法确认所属的 NAPM 查询轮次');
-    expect(writtenText).not.toBe('run A model final');
-    expect(writtenText).not.toBe(terminalA.finalContent);
-    expect(writtenText).not.toBe(terminalB.finalContent);
+    expect(written).toBeUndefined();
     expect(sent).toEqual({ cancel: true });
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnB).deliveryClaimed).toBe(false);
   });
@@ -786,6 +782,78 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
       phase: 'TERMINAL',
       outcome: 'RESULT'
+    });
+  });
+
+  test('keeps one authoritative turn when production hooks split messageId and runId', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const prompt = '最近 7 天应用流量趋势如何？';
+    const messageId = 'production-message-id';
+    const runId = 'production-run-id';
+    const sessionKey = 'production-session-key';
+    const promptBuildText = [
+      'Conversation info (untrusted metadata):',
+      '```json',
+      JSON.stringify({ message_id: messageId, sender_id: 'shijc' }),
+      '```',
+      '',
+      prompt
+    ].join('\n');
+    const receivedCtx = {
+      channelId: 'wecom',
+      sessionKey,
+      messageId
+    };
+    const agentCtx = {
+      agentId: 'main',
+      sessionKey,
+      sessionId: 'production-session-id',
+      runId
+    };
+    const transcriptCtx = { agentId: 'main', sessionKey };
+    const sendingCtx = {
+      channelId: 'wecom',
+      sessionKey,
+      messageId
+    };
+
+    hooks.get('message_received')({ content: prompt, messageId }, receivedCtx);
+    await hooks.get('before_prompt_build')({ prompt: promptBuildText, messages: [] }, agentCtx);
+    await hooks.get('before_agent_start')({ prompt: promptBuildText, messages: [] }, agentCtx);
+
+    const scope = plugin.__test__.getConversationKey(agentCtx);
+    const messageTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, messageId);
+    const runTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, runId);
+    const bound = callBeforeTool(agentCtx, 'production-clarification-call', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp')
+    });
+    await executeBound('production-clarification-call', bound);
+
+    const runTerminal = plugin.__test__.queryTurnCoordinator.get(scope, runTurnId);
+    const transcriptResult = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: runTerminal.finalContent }]
+      }
+    }, transcriptCtx);
+    const sent = await hooks.get('message_sending')({
+      content: runTerminal.finalContent
+    }, sendingCtx);
+
+    expect(southbound).not.toHaveBeenCalled();
+    expect(runTerminal).toMatchObject({
+      phase: 'TERMINAL',
+      action: 'ASK_CLARIFYING_QUESTION',
+      outcome: 'CLARIFICATION'
+    });
+    expect(sent).toEqual({ content: runTerminal.finalContent });
+    expect(messageTurnId).toBe(runTurnId);
+    expect(transcriptResult).toBeUndefined();
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, messageTurnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'CLARIFICATION',
+      deliveryClaimed: true
     });
   });
 

@@ -8037,6 +8037,7 @@ const plugin = {
               : resolveQueryCoordinatorRoute(effectivePrompt, nextState),
             question: effectivePrompt,
             semanticQuestion: resumedTurn?.semanticQuestion || effectivePrompt,
+            sourcePrompt: content,
             queryDraft: resumedTurn?.queryDraft || null,
             parentTurnId: resumedTurn?.parentTurnId || '',
             resumedFromClarification: Boolean(resumedTurn),
@@ -8072,15 +8073,30 @@ const plugin = {
         const previousConversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const runGuardState = getGuardState(ctx);
         const contextTurnKey = getContextTurnKey(ctx);
-        const boundTurnId = getRunBoundTurnId(
+        let boundTurnId = getRunBoundTurnId(
           ctx,
           conversationKey,
           runGuardState,
           previousConversationState
         );
-        const boundTurn = boundTurnId
+        let boundTurn = boundTurnId
           ? queryTurnCoordinator.get(conversationKey, boundTurnId)
           : null;
+        if (!boundTurn && conversationKey && ctx?.runId && receivedPrompt) {
+          boundTurn = queryTurnCoordinator.adoptReceivedTurn({
+            scope: conversationKey,
+            runId: normalizeTraceId(ctx.runId),
+            prompt: receivedPrompt
+          });
+          boundTurnId = normalizeTurnId(boundTurn?.turnId);
+          if (boundTurnId) {
+            appendPluginAuditEvent('napm_query_inbound_turn_adopted', {
+              conversationKey,
+              turnId: boundTurnId,
+              runId: normalizeTraceId(ctx.runId)
+            });
+          }
+        }
         const prompt = String(
           runGuardState?.canonicalPrompt
           || runGuardState?.prompt
@@ -8110,7 +8126,8 @@ const plugin = {
             turnId,
             runId: normalizeTraceId(ctx?.runId),
             route: resolveQueryCoordinatorRoute(prompt, conversationState),
-            question: prompt
+            question: prompt,
+            sourcePrompt: receivedPrompt || prompt
           });
           if (ctx?.messageId) {
             queryTurnCoordinator.bindRun({
@@ -9381,9 +9398,7 @@ const plugin = {
             hook: 'before_message_write',
             conversationKey: getConversationKey(ctx) || null
           });
-          return {
-            message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
-          };
+          return undefined;
         }
         const lifecycleConversationKey = getConversationKey(ctx);
         const lifecycleGuardState = getGuardState(ctx);

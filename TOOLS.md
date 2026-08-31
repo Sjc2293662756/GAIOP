@@ -28,7 +28,7 @@
 - `echarts-chart-skill`：图表渲染，由 report skill 内部调用
 
 - 自然语言理解、对象识别、指标识别和 Query Draft 构造由 OpenClaw 上游负责。
-- `conversationKey` 只作 scope。`message_received` 将当前 run/message 绑定到不可变 `turnId`，Tool 和输出 Hook 必须使用该绑定，不得读取会话最新轮次；缺少身份或绑定时 fail-closed。
+- `conversationKey` 只作 scope。`message_received` 先绑定入站 `messageId`，Agent Hook 再按同 scope 和 source prompt 把 `runId` 绑定到同一不可变 `turnId`。Tool 和有生命周期身份的输出 Hook 必须使用该绑定，不得读取会话最新轮次；缺少身份或绑定时 fail-closed。`before_message_write` 缺少 run/message 身份时不改写 Assistant 消息，以免删除 `toolCall` 或写入错误通用文案。
 - Query Turn route 在创建后不可变。普通 `NAPM_QUERY` 只接受 `napm-skill-query`；错误的其他生产 NAPM Tool 会被阻断，不会执行南向调用或把轮次改成 `OTHER_SKILL`。开发诊断 resolver Tool 仍仅受显式开关控制。
 - `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 必须携带插件签发的可信 `traceId`，解析出 scope/turn，并确认可信 `toolName=napm-skill-query` 和 Query Turn `route=NAPM_QUERY`，否则在 pending 恢复、时间物化和校验前 fail-closed；它同样执行应用/`TotalTraffic` 范围、对象清单和普通查询多 group 等高风险检查。多 group 只有在 planner proof、plannedGroups、selectedPath、anchor 与静态 groups tree 一致时可执行，否则 Query Skill、NapmClient 和南向调用均为 0。
 - 应用流量检查使用 `WorkflowClassifierService` 的结构化 workflow/object/metric 意图；对象范围由 Object Ontology 统一识别，指标语义由 Metric Semantic Normalizer 统一识别，插件与 Policy 不维护平行正则。

@@ -116,10 +116,10 @@ async function main() {
   const sharedAgentFirstCtx = { agentId: 'main', runId: 'native-shared-agent-first' };
   const sharedAgentSecondCtx = { agentId: 'main', runId: 'native-shared-agent-second' };
   hooks.get('message_received')({ content: '今天天气怎么样？' }, sharedAgentFirstCtx);
-  assert.equal(
+  assert.deepEqual(
     await hooks.get('message_sending')({ content: 'unrelated OpenClaw output' }, sharedAgentSecondCtx),
-    undefined,
-    'shared agentId must not leak guard state across conversations'
+    { cancel: true },
+    'identity without a conversation scope must fail outbound delivery closed'
   );
 
   const validationCtx = createContext('blocked-validation');
@@ -289,7 +289,8 @@ async function main() {
   const alertPacketDeliveryCtx = {
     channelId: alertPacketCtx.channelId,
     accountId: alertPacketCtx.accountId,
-    conversationId: alertPacketCtx.conversationId
+    conversationId: alertPacketCtx.conversationId,
+    runId: alertPacketCtx.runId
   };
   const alertPacketPrompt = '分析告警数据包 eventId=745506 start=1786341600 end=1786341840';
   await startTurn(alertPacketCtx, alertPacketPrompt);
@@ -345,12 +346,14 @@ async function main() {
     '用户体验时间（服务器）达到 12289 毫秒。',
     '数据包证据显示，服务器响应等待是本次用户体验时间升高的主要原因。'
   ].join('\n');
-  assert.equal(
-    hooks.get('before_message_write')({
+  const alertPacketWritten = hooks.get('before_message_write')({
       message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: alertPacketFinal }] }
-    }, alertPacketWriteCtx),
-    undefined,
-    'the model final must be persisted without transcript rewriting'
+    }, alertPacketWriteCtx);
+  const alertPacketCanonicalFinal = alertPacketWritten?.message?.content?.[0]?.text || '';
+  assert.match(
+    alertPacketCanonicalFinal,
+    /告警事件 745506 数据包分析结果/,
+    'the transcript must persist the deterministic alert packet final'
   );
   assert.deepEqual(
     await hooks.get('message_sending')({ content: alertPacketPreamble, metadata: { isFinal: true } }, alertPacketDeliveryCtx),
@@ -359,13 +362,116 @@ async function main() {
   );
   assert.deepEqual(
     await hooks.get('message_sending')({ content: alertPacketFinal, metadata: { isFinal: true } }, alertPacketDeliveryCtx),
-    { content: alertPacketFinal },
+    { content: alertPacketCanonicalFinal },
     'the terminal payload must deliver the prepared model final'
   );
   assert.deepEqual(
     await hooks.get('message_sending')({ content: alertPacketFinal, metadata: { isFinal: true } }, alertPacketDeliveryCtx),
     { cancel: true },
     'duplicate alert packet finals must be cancelled'
+  );
+
+  const splitIdentityPrompt = '最近 7 天应用流量趋势如何？';
+  const splitIdentityMessageId = 'remote-smoke-split-message';
+  const splitIdentityRunId = 'remote-smoke-split-run';
+  const splitIdentitySessionKey = 'remote-smoke-split-session';
+  const splitIdentityReceivedCtx = {
+    channelId: 'wecom',
+    sessionKey: splitIdentitySessionKey,
+    messageId: splitIdentityMessageId
+  };
+  const splitIdentityAgentCtx = {
+    agentId: 'main',
+    sessionKey: splitIdentitySessionKey,
+    sessionId: 'remote-smoke-split-session-id',
+    runId: splitIdentityRunId
+  };
+  const splitIdentityTranscriptCtx = {
+    agentId: 'main',
+    sessionKey: splitIdentitySessionKey
+  };
+  const splitIdentitySendingCtx = {
+    channelId: 'wecom',
+    sessionKey: splitIdentitySessionKey,
+    messageId: splitIdentityMessageId
+  };
+  const splitIdentityPromptBuildText = [
+    'Conversation info (untrusted metadata):',
+    '```json',
+    JSON.stringify({ message_id: splitIdentityMessageId, sender_id: 'remote-smoke' }),
+    '```',
+    '',
+    splitIdentityPrompt
+  ].join('\n');
+  hooks.get('message_received')(
+    { content: splitIdentityPrompt, messageId: splitIdentityMessageId },
+    splitIdentityReceivedCtx
+  );
+  await hooks.get('before_prompt_build')(
+    { prompt: splitIdentityPromptBuildText, messages: [] },
+    splitIdentityAgentCtx
+  );
+  await hooks.get('before_agent_start')(
+    { prompt: splitIdentityPromptBuildText, messages: [] },
+    splitIdentityAgentCtx
+  );
+  const splitIdentityScope = plugin.__test__.getConversationKey(splitIdentityAgentCtx);
+  const splitIdentityMessageTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+    splitIdentityScope,
+    splitIdentityMessageId
+  );
+  const splitIdentityRunTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+    splitIdentityScope,
+    splitIdentityRunId
+  );
+  assert.equal(
+    splitIdentityRunTurnId,
+    splitIdentityMessageTurnId,
+    'messageId and runId must resolve to one authoritative Query Turn'
+  );
+  const splitIdentityToolEvent = {
+    toolName: 'napm-skill-query',
+    toolCallId: 'remote-smoke-split-call',
+    params: {
+      prompt: splitIdentityPrompt,
+      queryDraft: {
+        service: 'timeValues',
+        queryModeKey: 'timeseries',
+        groups: [{ type: 'DefinedApp' }],
+        metrics: ['TPIO'],
+        metric: 'TPIO',
+        granularity: 3600,
+        timeRange: { key: 'last7days' }
+      }
+    }
+  };
+  const splitIdentityBound = hooks.get('before_tool_call')(
+    splitIdentityToolEvent,
+    splitIdentityAgentCtx
+  );
+  const splitIdentityToolResult = await registeredTools.get('napm-skill-query').execute(
+    splitIdentityToolEvent.toolCallId,
+    splitIdentityBound?.params || splitIdentityToolEvent.params
+  );
+  const splitIdentityFinal = splitIdentityToolResult?.details?.displayText || '';
+  assert.match(splitIdentityFinal, /请告诉我要查询哪个应用/);
+  assert.equal(
+    hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: splitIdentityFinal }]
+      }
+    }, splitIdentityTranscriptCtx),
+    undefined,
+    'identityless transcript hook must not replace the authoritative clarification'
+  );
+  assert.deepEqual(
+    await hooks.get('message_sending')(
+      { content: splitIdentityFinal },
+      splitIdentitySendingCtx
+    ),
+    { content: splitIdentityFinal },
+    'message-bound delivery must use the run-bound clarification'
   );
 
   const queryTool = registeredTools.get('napm-skill-query');
@@ -402,6 +508,7 @@ async function main() {
       'streaming_preview_cancelled',
       'fallback_deduplicated',
       'split_hook_scope_progress_suppressed_terminal_delivered_once',
+      'split_message_and_run_identity_delivers_clarification',
       'spec_derived_schema_complete'
     ]
   }, null, 2)}\n`);

@@ -7,11 +7,11 @@
 ## 生产链路
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
-2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId`。缺少生命周期身份或绑定时在时间物化、校验和 Skill 调用之前 fail-closed。
+2. OpenClaw Gateway 接收消息；`message_received` 先为入站 `messageId` 创建不可变 `turnId`，Agent Hook 到达后再把其 `runId` 绑定到同 scope、source prompt 匹配的同一 `RECEIVED` 轮次。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId`。缺少生命周期身份或绑定时在时间物化、校验和 Skill 调用之前 fail-closed。
 3. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围与可选下钻路径的 Query Draft，澄清续答则只传 `clarificationAnswer`。
 4. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
 5. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
-6. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
+6. Tool 和具有 run/message 身份的输出 Hook 按可信绑定读取同一 Query Turn；`before_message_write` 的 OpenClaw 契约不提供该身份，因此不在身份缺失时终结或改写 Query Turn。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
 7. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。

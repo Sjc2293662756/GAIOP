@@ -55,6 +55,17 @@ function normalizeText(value) {
   return String(value || '').trim();
 }
 
+function normalizePromptForLifecycleMatch(value) {
+  return normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
+}
+
+function promptEndsWithSource(prompt, sourcePrompt) {
+  const normalizedPrompt = normalizePromptForLifecycleMatch(prompt);
+  const normalizedSource = normalizePromptForLifecycleMatch(sourcePrompt);
+  return Boolean(normalizedPrompt && normalizedSource)
+    && (normalizedPrompt === normalizedSource || normalizedPrompt.endsWith(normalizedSource));
+}
+
 function isEmptyResult(result = null) {
   return Boolean(result?.summary?.empty)
     || (Array.isArray(result?.rows) && result.rows.length === 0)
@@ -101,6 +112,7 @@ class QueryTurnCoordinator {
     route = QUERY_ROUTES.NAPM_QUERY,
     question = '',
     semanticQuestion = '',
+    sourcePrompt = '',
     queryDraft = null,
     parentTurnId = '',
     resumedFromClarification = false,
@@ -127,6 +139,7 @@ class QueryTurnCoordinator {
       outcome: null,
       question: normalizeText(question) || null,
       semanticQuestion: normalizeText(semanticQuestion || question) || null,
+      sourcePrompt: normalizeText(sourcePrompt || question) || null,
       queryDraft: clone(queryDraft),
       decision: null,
       attempts: [],
@@ -170,6 +183,41 @@ class QueryTurnCoordinator {
   getByRun(scope, runId) {
     const turnId = this.resolveTurnId(scope, runId);
     return turnId ? this.get(scope, turnId) : null;
+  }
+
+  adoptReceivedTurn({ scope, runId, prompt = '' } = {}) {
+    const normalizedScope = normalizeText(scope);
+    const normalizedRunId = normalizeText(runId);
+    if (!normalizedScope || !normalizedRunId) return null;
+
+    const existing = this.getByRun(normalizedScope, normalizedRunId);
+    if (existing) return existing;
+
+    for (const [key] of this.turns.entries()) {
+      const candidate = this._freshTurn(key);
+      if (
+        !candidate
+        || candidate.conversationKey !== normalizedScope
+        || candidate.phase !== QUERY_PHASES.RECEIVED
+        || candidate.runId
+        || !promptEndsWithSource(prompt, candidate.sourcePrompt || candidate.question)
+      ) {
+        continue;
+      }
+
+      if (!this.bindRun({ scope: normalizedScope, runId: normalizedRunId, turnId: candidate.turnId })) {
+        return this.getByRun(normalizedScope, normalizedRunId);
+      }
+      const adopted = {
+        ...candidate,
+        runId: normalizedRunId,
+        updatedAt: this.now()
+      };
+      this._setTurn(key, adopted);
+      return clone(adopted);
+    }
+
+    return null;
   }
 
   setRoute({ scope, turnId, route } = {}) {
@@ -509,6 +557,7 @@ class QueryTurnCoordinator {
         parentTurnId: pending.turnId,
         resumedFromClarification: true,
         clarificationAnswer: normalizedAnswer,
+        sourcePrompt: normalizedAnswer,
         route: existing.route,
         question: normalizedAnswer,
         semanticQuestion: normalizeText(pending.semanticQuestion || pending.question) || null,
@@ -526,6 +575,7 @@ class QueryTurnCoordinator {
         route: QUERY_ROUTES.NAPM_QUERY,
         question: normalizedAnswer,
         semanticQuestion: pending.semanticQuestion || pending.question,
+        sourcePrompt: normalizedAnswer,
         queryDraft,
         parentTurnId: pending.turnId,
         resumedFromClarification: true,
