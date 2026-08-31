@@ -54,7 +54,7 @@
 
 `napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP` 等对象名时，插件创建新 Query Turn、恢复 pending Draft、补入 `DefinedApp.argument` 后重新执行完整策略。
 
-普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次；终态后的 Tool 重放返回已有权威结果，不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
+普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会终结为契约违规，`REPAIR_PENDING` 会终结为校验失败，`EXECUTING` 无结果会终结为执行失败；迟到结果不能覆盖终态。终态后的 Tool 重放返回已有权威结果，不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
 
 Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Turn 或 pending clarification。
 

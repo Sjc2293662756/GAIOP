@@ -169,7 +169,7 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
     expect(result).toEqual({ cancel: true });
   });
 
-  test('should cancel leaked english reasoning preview without streaming metadata on wecom', async () => {
+  test('should replace unlabeled reasoning final with a Query Turn contract violation', async () => {
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
     const ctx = createChannelCtx('wecom', 'english-reasoning-preview');
@@ -187,10 +187,19 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
       content: leakedPreview
     }, ctx);
 
-    expect(result).toEqual({ cancel: true });
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(result?.content).toContain('必须经 NAPM skill 执行后才能回答');
+    expect(result?.content).not.toContain(leakedPreview);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'CONTRACT_VIOLATION',
+      contractViolation: { reasonCode: 'QUERY_TOOL_EXECUTION_NOT_STARTED' },
+      deliveryClaimed: true
+    });
   });
 
-  test('should cancel leaked english reasoning when a current result already exists', async () => {
+  test('should replace leaked reasoning with the authoritative current Query Turn result', async () => {
     const { hooks } = createApiHarness();
     const messageSending = hooks.get('message_sending');
     const testApi = plugin.__test__;
@@ -199,16 +208,28 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
 
     await primeNapmTurn(hooks, ctx, prompt);
 
+    const queryDraft = buildQueryDraftForPrompt(prompt);
     const rememberedResult = {
+      ok: true,
       displayText: '\u6700\u8fd1\u4e00\u5929\u6d41\u91cf\u6700\u5927\u7684\u4e1a\u52a1\u5e94\u7528\u662f\u56de\u51fd238web\uff0c\u5176\u6b21\u662f\u53ef\u89c2\u6d4b239web\u3002',
-      resolvedQuery: {
-        service: 'topValues',
-        metric: 'PGBYTO',
-        groups: [{ type: 'WebApplication' }]
-      }
+      resolvedQuery: queryDraft
     };
 
-    testApi.rememberSkillResult(prompt, rememberedResult, testApi.getConversationKey(ctx));
+    const scope = testApi.getConversationKey(ctx);
+    const turnId = testApi.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    testApi.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: `query-${ctx.runId}`,
+      queryDraft
+    });
+    testApi.rememberSkillResult(prompt, rememberedResult, scope, 'napm-skill-query', turnId);
+    testApi.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result: rememberedResult,
+      finalContent: rememberedResult.displayText
+    });
 
     const leakedPreview = [
       'Previously I checked WebApplication traffic.',
@@ -219,7 +240,8 @@ describe('napm-openclaw-plugin streaming preview guard', () => {
       content: leakedPreview
     }, ctx);
 
-    expect(result).toEqual({ cancel: true });
+    expect(result).toEqual({ content: rememberedResult.displayText });
+    expect(result.content).not.toContain(leakedPreview);
   });
 
   test('should allow leaked reasoning preview when temporary preview flag is enabled on non-wecom channels', async () => {

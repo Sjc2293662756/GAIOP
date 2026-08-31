@@ -405,6 +405,99 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toEqual(terminal);
   });
 
+  test('terminates a decided query when the Tool adapter never executes', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-decided-without-execute');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    callBeforeTool(ctx, 'decided-without-execute-call', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    });
+
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'DECIDED',
+      action: 'EXECUTE_QUERY',
+      outcome: null
+    });
+
+    const written = hooks.get('before_message_write')({
+      message: { role: 'assistant', content: [{ type: 'text', text: '模型误称查询已完成。' }] }
+    }, ctx);
+    const terminal = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
+
+    expect(terminal).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'CONTRACT_VIOLATION',
+      contractViolation: { reasonCode: 'QUERY_TOOL_EXECUTION_NOT_STARTED' }
+    });
+    expect(written.message.content[0].text).toBe(terminal.finalContent);
+    await expect(hooks.get('message_sending')({ content: '模型误称查询已完成。' }, ctx))
+      .resolves.toEqual({ content: terminal.finalContent });
+    await expect(hooks.get('message_sending')({ content: '重复发送' }, ctx))
+      .resolves.toEqual({ cancel: true });
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('terminates an executing query when final output arrives without a result', async () => {
+    let resolveSouthbound;
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(() => new Promise((resolve) => {
+        resolveSouthbound = resolve;
+      }));
+    const ctx = createCtx('run-executing-without-result');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const bound = callBeforeTool(ctx, 'executing-without-result-call', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    });
+    const execution = executeBound('executing-without-result-call', bound);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'EXECUTING',
+      action: 'EXECUTE_QUERY',
+      outcome: null
+    });
+    expect(resolveSouthbound).toEqual(expect.any(Function));
+
+    const written = hooks.get('before_message_write')({
+      message: { role: 'assistant', content: [{ type: 'text', text: '模型误称查询已完成。' }] }
+    }, ctx);
+    const terminal = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
+    const sent = await hooks.get('message_sending')({ content: '模型误称查询已完成。' }, ctx);
+    const duplicate = await hooks.get('message_sending')({ content: '重复发送' }, ctx);
+
+    resolveSouthbound({
+      ok: true,
+      service: 'timeValues',
+      data: [{ timestamp: 1787742000, value: 10 }],
+      error: null
+    });
+    await execution;
+
+    expect(terminal).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'EXECUTION_FAILURE',
+      attempts: [{ status: 'FAILED', reasonCode: 'QUERY_EXECUTION_RESULT_MISSING' }]
+    });
+    expect(written.message.content[0].text).toBe(terminal.finalContent);
+    expect(sent).toEqual({ content: terminal.finalContent });
+    expect(duplicate).toEqual({ cancel: true });
+    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'EXECUTION_FAILURE',
+      finalContent: terminal.finalContent,
+      deliveryClaimed: true
+    });
+  });
+
   test('records a deterministic contract violation when a required query Tool is omitted', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-tool-omitted');

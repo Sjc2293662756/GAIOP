@@ -18,7 +18,7 @@
 - 普通查询的 Query Draft、Query Attempt、一次修复预算、pending clarification、终态 `finalContent` 和交付声明统一归 `QueryTurnCoordinator` 管理。旧 `ConversationOperationState` 不再是普通查询修复、查询结果或最终交付的权威源。
 - 首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放保持幂等；只允许一次结构修复，第二个失败终止。执行失败立即终止，所有 `TERMINAL` 记录 write-once，流式 partial 不得终结 Query Turn；终态后的 Tool 重放只返回已有权威结果，不得再次调用 Query Skill 或南向接口。
 - 澄清后用户只回复对象名时，模型必须用 `clarificationAnswer` 再次调用 `napm-skill-query`；插件恢复 Query Decision Policy 规范化后的 pending Query Draft 并补入对象参数，不由模型重建完整查询。
-- `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Query Turn 生成权威 `finalContent` 并 exactly-once 交付。普通查询轮次最终未调用 Tool 时必须记录契约违规，不得由模型猜测数据。
+- `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Query Turn 生成权威 `finalContent` 并 exactly-once 交付。普通查询到达非流式最终输出时不得停留在非终态：`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行，终结为契约违规；`REPAIR_PENDING` 终结为校验失败；`EXECUTING` 无结果终结为执行失败。不得由模型猜测数据。
 - 直接调用 Tool execute 也必须经过统一高风险语义策略，包括应用与 `TotalTraffic` 范围、`CompositeApplication`/一般对象清单以及对象清单的单 group 约束；未获 `EXECUTE_QUERY` 不得调用南向接口。
 - 报告类请求走 `napm-report-export`（巡检/故障诊断/综述/Word/PDF）。
 - 告警查询走 `napm-alert-query`（摘要/时间线/详情/通知字段）。

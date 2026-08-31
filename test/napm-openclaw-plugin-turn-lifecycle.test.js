@@ -119,6 +119,32 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     };
   }
 
+  function completeBoundQueryResult(prompt, bound, result) {
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: bound.event.toolCallId,
+      queryDraft: bound.params.resolvedQuery
+    });
+    const rememberedRecord = plugin.__test__.rememberSkillResult(
+      prompt,
+      result,
+      scope,
+      'napm-skill-query',
+      turnId
+    );
+    const finalContent = plugin.__test__.buildRememberedSkillReplyText(rememberedRecord);
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result,
+      finalContent
+    });
+    return { scope, turnId, finalContent };
+  }
+
   function rememberCurrentTurnResult(ctx, prompt, result = buildDefinedAppResult()) {
     const bound = bindToolCall(ctx, 'napm-skill-query', {
       prompt,
@@ -128,10 +154,7 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
         groups: [{ type: 'Application' }]
       }
     });
-    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
-    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, result, scope, 'napm-skill-query', turnId);
-    return { scope, turnId };
+    return completeBoundQueryResult(prompt, bound, result);
   }
 
   test('finds a successful current-turn result even when prompt-build text has metadata prefixes', async () => {
@@ -155,9 +178,7 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
       prompt,
       resolvedQuery
     });
-    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
-    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, {
+    const completed = completeBoundQueryResult(prompt, bound, {
       ok: true,
       service: 'overview',
       resolvedQuery,
@@ -165,15 +186,15 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
         overallStatus: 'critical',
         displayText: '系统当前处于严重状态，有 55 条告警。'
       }
-    }, scope, 'napm-skill-query', turnId);
+    });
 
     const outgoing = await hooks.get('message_sending')({
       content: '系统当前处于严重状态，有 55 条告警。',
       metadata: { isFinal: true }
     }, ctx);
 
-    expect(turnId).toBeTruthy();
-    expect(outgoing).toBeUndefined();
+    expect(completed.turnId).toBeTruthy();
+    expect(outgoing).toEqual({ content: completed.finalContent });
   });
 
   test('rewrites a title-only DefinedApp answer from the current skill rows', async () => {

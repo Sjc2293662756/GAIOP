@@ -58,6 +58,7 @@ Skills are not spawned as subprocesses; they run in the Gateway process. Runtime
 - After clarification, a name-only reply such as `HTTP` is sent as `clarificationAnswer`; the plugin restores the policy-normalized pending Query Draft and fills `DefinedApp.argument` before reevaluating the full policy. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
 - Hook and direct execute paths enforce the same high-risk checks: application versus `TotalTraffic`, `CompositeApplication` and general object-inventory shape, including the single-group requirement for object inventories.
 - `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, and `CONTRACT_VIOLATION` all have write-once authoritative `finalContent`. Streaming partial output does not terminate a turn; a Tool replay after terminal returns the existing authoritative result without another Skill or southbound call.
+- A non-streaming final cannot leave an ordinary query nonterminal. `RECEIVED` without a Decision/Attempt and `DECIDED` without adapter execution terminate as contract violations; `REPAIR_PENDING` terminates as a validation failure; `EXECUTING` without a result terminates as an execution failure. A late adapter result cannot overwrite that outcome.
 - Other Skills retain their own delivery workflows; the ordinary-query Coordinator only owns `NAPM_QUERY` turns.
 
 ### Skills (9 total, each self-contained under `skills/<name>/`)

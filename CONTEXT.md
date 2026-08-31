@@ -33,7 +33,7 @@ The lifecycle record for one Monitoring Question, identified by `conversationKey
 _Avoid_: latest result in a conversation, Skill session, ConversationOperationState query delivery
 
 **Query Attempt**:
-One identified construction or execution try within a Query Turn. Replaying the same `attemptId` is idempotent. The first technical construction failure enters `REPAIR_PENDING` and consumes the single repair budget; a second construction failure, whether duplicate or different, terminates with `VALIDATION_FAILURE`. An execution failure terminates immediately with `EXECUTION_FAILURE`.
+One identified construction or execution try within a Query Turn. Replaying the same `attemptId` is idempotent. The first technical construction failure enters `REPAIR_PENDING` and consumes the single repair budget; a second construction failure, or non-streaming final output before repair, terminates with `VALIDATION_FAILURE`. An execution failure terminates immediately with `EXECUTION_FAILURE`.
 _Avoid_: untracked retry, cleared failure history, retry after terminal
 
 **Pending Clarification**:
@@ -41,7 +41,7 @@ The incomplete Query Draft retained at conversation scope after `CLARIFICATION`.
 _Avoid_: model reconstruction of the whole query, reuse of the old turn as mutable state
 
 **Terminal Outcome**:
-One of `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, or `CONTRACT_VIOLATION`. Terminal state and `finalContent` are write-once; only the delivery claim may advance monotonically. All terminal types are delivered by the Coordinator exactly once. Streaming partial output is never terminal, and a late or replayed Tool execution returns the existing authoritative outcome without another Skill or southbound call.
+One of `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, or `CONTRACT_VIOLATION`. Terminal state and `finalContent` are write-once; only the delivery claim may advance monotonically. All terminal types are delivered by the Coordinator exactly once. Streaming partial output is never terminal. At non-streaming final output, unfinished `RECEIVED`/`DECIDED` turns become `CONTRACT_VIOLATION`, `REPAIR_PENDING` becomes `VALIDATION_FAILURE`, and `EXECUTING` becomes `EXECUTION_FAILURE`; a late or replayed Tool execution cannot replace the outcome or start another Skill or southbound call.
 _Avoid_: terminal rollback, late failure overwrite, model-authored query final
 
 **Query Result**:
@@ -49,7 +49,7 @@ The successful data returned by the NAPM execution adapter for a turn. `RESULT` 
 _Avoid_: latest attempt, cached failure, ConversationOperationState as query reply source
 
 **Contract Violation**:
-The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call. It produces a safe final response and never fabricates data or invokes the southbound API.
+The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call, or after the Tool call was accepted but before its adapter started execution. It produces a safe final response and never fabricates data or starts a southbound request. If adapter execution already started but no result exists at final output, the distinct terminal outcome is `EXECUTION_FAILURE`.
 _Avoid_: heuristic-only guard, direct model answer for a required query
 
 **Business**:

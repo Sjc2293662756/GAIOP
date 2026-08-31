@@ -6270,6 +6270,47 @@ function ensureAuthoritativeQueryTurnForFinalOutput({
     return { turnId: context.turnId, turn };
   }
 
+  if (current.phase === 'DECIDED') {
+    const turn = queryTurnCoordinator.recordContractViolation({
+      scope: conversationKey,
+      turnId: context.turnId,
+      reasonCode: 'QUERY_TOOL_EXECUTION_NOT_STARTED',
+      finalContent: buildSkillRequiredReplyForPrompt(current.semanticQuestion || activePrompt)
+    });
+    appendPluginAuditEvent('napm_query_execution_not_started', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      action: current.action || null
+    });
+    return { turnId: context.turnId, turn };
+  }
+
+  if (current.phase === 'EXECUTING') {
+    const failureResult = {
+      ok: false,
+      source: 'napm_openclaw_plugin_query_turn',
+      responseType: 'QUERY_EXECUTION_RESULT_MISSING',
+      error: {
+        code: 'QUERY_EXECUTION_RESULT_MISSING',
+        message: 'Query execution reached final output without a result.'
+      },
+      resolvedQuery: normalizeObject(current.queryDraft) || null
+    };
+    const turn = queryTurnCoordinator.recordFailure({
+      scope: conversationKey,
+      turnId: context.turnId,
+      outcome: QUERY_OUTCOMES.EXECUTION_FAILURE,
+      result: failureResult,
+      finalContent: buildNapmSkillExecutionFailureReply()
+    });
+    appendPluginAuditEvent('napm_query_execution_result_missing', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      attemptCount: current.attempts.length
+    });
+    return { turnId: context.turnId, turn };
+  }
+
   return context;
 }
 
