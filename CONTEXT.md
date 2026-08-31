@@ -13,7 +13,7 @@ The stable `conversationKey` used to group turns and retain a pending clarificat
 _Avoid_: current turn, latest turn id, delivery source
 
 **Run Binding**:
-The immutable association created at `message_received` between the current OpenClaw run/message and one `turnId`. Tool and output hooks resolve the Query Turn only through this binding. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn. Missing identity or binding fails closed before time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn.
+The immutable association created at `message_received` between the current OpenClaw run/message and one `turnId`. Tool and output hooks resolve the Query Turn only through this binding. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match and a `NAPM_QUERY` route. Missing or mismatched identity/route fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn.
 _Avoid_: mutable conversation turn id, latest-turn lookup
 
 **Query Draft**:
@@ -29,7 +29,7 @@ The structured, executable NAPM query containing the selected operation, object 
 _Avoid_: repaired prompt, inferred query at output hooks
 
 **Query Turn**:
-The lifecycle record for one Monitoring Question, identified by `conversationKey + turnId` and reached through its Run Binding. `QueryTurnCoordinator` owns its immutable route, Query Draft, Query Decision, Query Attempts, repair budget, pending clarification, terminal outcome, authoritative `finalContent`, and delivery claim. A Tool or Tool result cannot reclassify the route after the turn begins.
+The lifecycle record for one Monitoring Question, identified by `conversationKey + turnId` and reached through its Run Binding. `QueryTurnCoordinator` owns its immutable route, Query Draft, Query Decision, Query Attempts, repair budget, pending clarification, terminal outcome, authoritative `finalContent`, and delivery claim. A Tool or Tool result cannot reclassify the route after the turn begins. Results and execution failures can only be recorded from `EXECUTING`; abandoned repair and execution-time Skill clarification have separate transitions.
 _Avoid_: latest result in a conversation, Skill session, ConversationOperationState query delivery
 
 **Query Attempt**:
@@ -41,7 +41,7 @@ The incomplete Query Draft retained at conversation scope after `CLARIFICATION`.
 _Avoid_: model reconstruction of the whole query, reuse of the old turn as mutable state
 
 **Terminal Outcome**:
-One of `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, or `CONTRACT_VIOLATION`. Terminal state and `finalContent` are write-once; only the delivery claim may advance monotonically. All terminal types are delivered by the Coordinator exactly once. Streaming partial output is never terminal. At non-streaming final output, unfinished `RECEIVED`/`DECIDED` turns become `CONTRACT_VIOLATION`, `REPAIR_PENDING` becomes `VALIDATION_FAILURE`, and `EXECUTING` becomes `EXECUTION_FAILURE`; a late or replayed Tool execution cannot replace the outcome or start another Skill or southbound call.
+One of `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, or `CONTRACT_VIOLATION`. Terminal state and `finalContent` are write-once; only the delivery claim may advance monotonically. All terminal types are delivered by the Coordinator exactly once. A clarification returned by the Skill after execution starts completes the attempt successfully as `CLARIFICATION`, not as a failure. Streaming partial output is never terminal. At non-streaming final output, unfinished `RECEIVED`/`DECIDED` turns become `CONTRACT_VIOLATION`, `REPAIR_PENDING` becomes `VALIDATION_FAILURE`, and `EXECUTING` becomes `EXECUTION_FAILURE`; a late or replayed Tool execution cannot replace the outcome or start another Skill or southbound call.
 _Avoid_: terminal rollback, late failure overwrite, model-authored query final
 
 **Execution Claim**:

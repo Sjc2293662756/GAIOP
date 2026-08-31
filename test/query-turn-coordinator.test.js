@@ -45,6 +45,83 @@ describe('QueryTurnCoordinator', () => {
     expect(record.decision).not.toHaveProperty('error');
   });
 
+  test('records an execution-time Skill clarification as a successful terminal attempt', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      queryDraft: { service: 'timeValues', groups: [{ type: 'DefinedApp', argument: 'HTTP' }] }
+    });
+    coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    coordinator.beginExecution({ scope: 'conversation-a', turnId: 'turn-1', attemptId: 'execution-1' });
+
+    const record = coordinator.recordExecutionClarification({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      decision: {
+        action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+        outcome: QUERY_OUTCOMES.CLARIFICATION,
+        clarifyingQuestion: '请补充查询范围。',
+        southboundAllowed: false
+      },
+      result: {
+        ok: true,
+        responseType: 'clarification_required',
+        displayText: '请补充查询范围。'
+      }
+    });
+
+    expect(record).toMatchObject({
+      phase: QUERY_PHASES.TERMINAL,
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      attempts: [{ attemptId: 'execution-1', status: 'SUCCEEDED' }],
+      finalContent: '请补充查询范围。'
+    });
+  });
+
+  test.each([
+    QUERY_PHASES.RECEIVED,
+    QUERY_PHASES.REPAIR_PENDING,
+    QUERY_PHASES.DECIDED
+  ])('rejects result and failure transitions from %s', (phase) => {
+    coordinator.begin({ scope: 'conversation-a', turnId: 'turn-1', route: QUERY_ROUTES.NAPM_QUERY });
+    if (phase === QUERY_PHASES.REPAIR_PENDING) {
+      coordinator.recordValidationFailure({
+        scope: 'conversation-a',
+        turnId: 'turn-1',
+        attemptId: 'construction-1',
+        queryDraft: { service: 'timeValues' },
+        validation: { reason: 'missing_groups' }
+      });
+    } else if (phase === QUERY_PHASES.DECIDED) {
+      coordinator.recordDecision({
+        scope: 'conversation-a',
+        turnId: 'turn-1',
+        decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+      });
+    }
+    const before = coordinator.get('conversation-a', 'turn-1');
+
+    expect(coordinator.recordResult({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      result: { ok: true, rows: [{ value: 1 }] },
+      finalContent: '不应写入。'
+    })).toEqual(before);
+    expect(coordinator.recordFailure({
+      scope: 'conversation-a',
+      turnId: 'turn-1',
+      result: { ok: false, error: { code: 'INVALID_TRANSITION' } },
+      finalContent: '不应写入。'
+    })).toEqual(before);
+    expect(coordinator.get('conversation-a', 'turn-1')).toEqual(before);
+  });
+
   test('protects a successful result from a later failure in the same turn', () => {
     coordinator.begin({ scope: 'conversation-a', turnId: 'turn-1', route: QUERY_ROUTES.NAPM_QUERY });
     coordinator.recordDecision({
@@ -164,7 +241,28 @@ describe('QueryTurnCoordinator', () => {
         reasonCode: 'MODEL_OMITTED_REQUIRED_TOOL',
         finalContent: '本轮未调用查询工具。'
       });
+    } else if (outcome === QUERY_OUTCOMES.VALIDATION_FAILURE) {
+      coordinator.recordValidationFailure({
+        scope: 'conversation-a',
+        turnId,
+        attemptId: `${turnId}-construction-1`,
+        validation: { reasonCode: 'INVALID_QUERY_DRAFT' },
+        finalContent: '查询失败。'
+      });
+      coordinator.recordValidationFailure({
+        scope: 'conversation-a',
+        turnId,
+        attemptId: `${turnId}-construction-2`,
+        validation: { reasonCode: 'INVALID_QUERY_DRAFT' },
+        finalContent: '查询失败。'
+      });
     } else {
+      coordinator.recordDecision({
+        scope: 'conversation-a',
+        turnId,
+        decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+      });
+      coordinator.beginExecution({ scope: 'conversation-a', turnId, attemptId: `${turnId}-execute` });
       coordinator.recordFailure({
         scope: 'conversation-a',
         turnId,

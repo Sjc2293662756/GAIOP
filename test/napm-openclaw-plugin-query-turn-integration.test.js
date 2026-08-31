@@ -82,7 +82,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         scope,
         turnId,
         runId: ctx.runId,
-        route: 'NAPM_QUERY',
+        route: options.route || 'NAPM_QUERY',
         question: params.prompt || '',
         semanticQuestion: params.prompt || '',
         queryDraft: params.queryDraft || params.resolvedQuery || null
@@ -91,7 +91,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       plugin.__test__.queryTurnCoordinator.bindRun({ scope, runId: ctx.runId, turnId });
     }
     const event = {
-      toolName: 'napm-skill-query',
+      toolName: options.toolName || 'napm-skill-query',
       params: { ...params }
     };
     const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
@@ -355,6 +355,57 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       phase: 'TERMINAL',
       outcome: 'CLARIFICATION'
     });
+  });
+
+  test('delivers a real Skill clarification as a normal clarification without southbound calls', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-skill-clarification');
+    const prompt = '查询 HTTP 应用流量趋势，执行前请补充范围。';
+    await startTurn(ctx, prompt);
+    const bound = callBeforeTool(ctx, 'skill-clarification-call', {
+      prompt,
+      queryDraft: {
+        ...buildTrendDraft('DefinedApp', 'HTTP'),
+        clarificationGate: {
+          required: true,
+          question: '请补充查询范围。'
+        }
+      }
+    });
+
+    const result = await executeBound('skill-clarification-call', bound);
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    const terminal = plugin.__test__.queryTurnCoordinator.get(scope, turnId);
+
+    expect(southbound).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: false,
+      details: {
+        ok: true,
+        responseType: 'clarification_required',
+        decision: {
+          action: 'ASK_CLARIFYING_QUESTION',
+          outcome: 'CLARIFICATION',
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(result.details.error).toBeNull();
+    expect(terminal).toMatchObject({
+      phase: 'TERMINAL',
+      action: 'ASK_CLARIFYING_QUESTION',
+      outcome: 'CLARIFICATION',
+      attempts: [{ status: 'SUCCEEDED' }]
+    });
+    expect(terminal.finalContent).toContain('请补充查询范围');
+
+    const written = hooks.get('before_message_write')({
+      message: { role: 'assistant', content: [{ type: 'text', text: '错误的执行失败提示' }] }
+    }, ctx);
+    expect(written.message.content[0].text).toBe(terminal.finalContent);
+    await expect(hooks.get('message_sending')({ content: '错误的执行失败提示' }, ctx))
+      .resolves.toEqual({ content: terminal.finalContent });
   });
 
   test.each([
@@ -1041,6 +1092,58 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       clarificationAnswer: 'HTTP'
     });
     expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeNull();
+  });
+
+  test('blocks direct query execution when the trusted turn route is not NAPM_QUERY', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, data: [{ timestamp: 1787742000, value: 10 }] });
+    const direct = bindTrustedDirect(createCtx('run-direct-wrong-route'), {
+      prompt: '最近 7 天 HTTP 应用流量趋势如何？',
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    }, {
+      route: 'OTHER_SKILL'
+    });
+
+    const result = await tools.get('napm-skill-query').execute('direct-wrong-route', direct.params);
+
+    expect(southbound).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'QUERY_TURN_ROUTE_MISMATCH' }
+      }
+    });
+    expect(plugin.__test__.queryTurnCoordinator.get(direct.scope, direct.turnId)).toMatchObject({
+      route: 'OTHER_SKILL',
+      phase: 'RECEIVED'
+    });
+  });
+
+  test('blocks direct query execution when the trusted tool name is not napm-skill-query', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({ ok: true, data: [{ timestamp: 1787742000, value: 10 }] });
+    const direct = bindTrustedDirect(createCtx('run-direct-wrong-tool-name'), {
+      prompt: '最近 7 天 HTTP 应用流量趋势如何？',
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    }, {
+      toolName: 'napm-summary'
+    });
+
+    const result = await tools.get('napm-skill-query').execute('direct-wrong-tool-name', direct.params);
+
+    expect(southbound).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'QUERY_TOOL_IDENTITY_MISMATCH' }
+      }
+    });
+    expect(plugin.__test__.queryTurnCoordinator.get(direct.scope, direct.turnId)).toMatchObject({
+      route: 'NAPM_QUERY',
+      phase: 'RECEIVED'
+    });
   });
 
   test('never treats the latest conversation turn as the active turn without a run guard', () => {

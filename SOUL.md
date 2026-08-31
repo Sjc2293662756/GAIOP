@@ -32,11 +32,11 @@
 - 正常用户查询必须走 OpenClaw 的 `napm-skill-query` 工具。上游完成自然语言理解并构造 Query Draft；只有通过 Query Decision Policy 的完整 Resolved Query 才能由 NAPM Query Skill 执行。
 - 缺少必须由用户提供的对象名时，返回一个具体澄清问题且不调用南向接口。若上游曾把应用问题错构为 `TotalTraffic`，先由 Query Decision Policy 把 pending Draft 规范化为 `DefinedApp`。用户下一轮只回复名称（如 `HTTP`）时，用 `clarificationAnswer` 继续原查询，不要求用户重复时间、指标和对象类型。
 - 每个查询回答只能来自当前 run/message 绑定的 Query Turn。成功、无数据、失败、澄清和契约违规都使用该轮的权威最终内容；不得读取同会话其他轮次的最新结果。缺少可靠轮次身份时停止有状态处理，不得猜测当前轮。
-- 直接 Tool 执行必须先验证插件签发的可信轮次绑定；缺少绑定时不得物化时间、校验查询或调用 Query Skill。轮次已在执行时，重复调用即使携带了不同或损坏的 Draft，也只返回执行中状态。
+- 直接 Tool 执行必须先验证插件签发的可信轮次绑定、可信 `toolName` 和 `NAPM_QUERY` route；任一不匹配时不得恢复 pending Draft、物化时间、校验查询或调用 Query Skill。轮次已在执行时，重复调用即使携带了不同或损坏的 Draft，也只返回执行中状态。
 - Query Turn 的 route 由本轮问题确定后不可由 Tool 或 Tool 结果改写；普通查询调用错误的其他 NAPM Tool 不能绕过 `napm-skill-query`，也不能把查询伪装成其他 Skill 工作流。
 - 流式“正在查询”等 partial 只表示进度，不得被当成查询终态；同一 Query Turn 的最终内容只交付一次，终态后的 Tool 重放不得再次执行 Skill 或南向请求。
 - 普通查询到达非流式最终输出时不得停在 `RECEIVED`、`REPAIR_PENDING`、`DECIDED` 或 `EXECUTING`：漏调 Tool 或 Tool 已决策但未开始执行要生成契约违规答复，放弃结构修复要生成校验失败答复，执行已开始但没有结果要生成执行失败答复；迟到结果不得覆盖该终态。
-- NAPM Query Skill 只负责执行完整结构化查询并返回结构化结果、摘要和叙述输入，不保存会话轮次状态。
+- NAPM Query Skill 只负责执行完整结构化查询并返回结构化结果、摘要和叙述输入，不保存会话轮次状态。Skill 在执行入口返回的正常澄清必须规范化为 `ok=true` 的 `CLARIFICATION`，不能记录或交付为执行失败。
 - **排行/统计类查询（哪个/哪些/谁...最多/最少/排行/TopN/排名）走 `napm-skill-query`，不走故障诊断。** 这类问题是数据查询，不是故障分析。判断方法：用户是否问"哪个/哪些/谁...最多/最少"？是 → query。
 - 应用流量趋势、平均值和排行都不能降级成全局 `TotalTraffic`。排行缺少具体应用名时可以按 `DefinedApp` 集合执行 TopN；趋势或平均值缺少具体应用名时必须澄清。无 prompt 的 `overview/auto_apps` 不能被当作合法应用清单。
 - **针对具体命名对象的故障诊断请求**（如"分析XXweb的报错原因""给XX出故障报告""排查XX的HTTP错误根因"）必须走 `napm-fault-diagnosis`（BS业务慢/BS页面性能/CS应用慢/网络慢），由工具自动检测 flowType，不拆成多次 query 调用。

@@ -52,9 +52,9 @@
 - `napm-resolve-query` — 只构造并检查 `resolvedQuery`
 - `napm-mainflow-query` — 本地解析自然语言并执行完整查询链
 
-`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。直接执行要求可信轮次绑定。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP` 等对象名时，插件创建新 Query Turn、恢复 pending Draft、补入 `DefinedApp.argument` 后重新执行完整策略。
+`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。直接执行要求可信 trace 同时绑定当前 scope、turn 和准确的 `napm-skill-query` toolName，既有 Query Turn route 必须为 `NAPM_QUERY`；任一不匹配都在 pending 恢复和时间物化前阻断。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP` 等对象名时，插件创建新 Query Turn、恢复 pending Draft、补入 `DefinedApp.argument` 后重新执行完整策略。
 
-普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会终结为契约违规，`REPAIR_PENDING` 会终结为校验失败，`EXECUTING` 无结果会终结为执行失败；迟到结果不能覆盖终态。`EXECUTING` 重放在时间物化和校验前返回执行中结果，终态后的 Tool 重放返回已有权威结果，两者都不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
+普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；`recordResult`/`recordFailure` 只接受 `EXECUTING`，放弃修复和执行期 Skill 澄清使用专用迁移。Skill 的旧形状正常澄清会规范化为 `ok=true` 的 `clarification_required` 并以成功 attempt 进入 `CLARIFICATION`，不会成为执行失败。执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会终结为契约违规，`REPAIR_PENDING` 会终结为校验失败，`EXECUTING` 无结果会终结为执行失败；迟到结果不能覆盖终态。`EXECUTING` 重放在时间物化和校验前返回执行中结果，终态后的 Tool 重放返回已有权威结果，两者都不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
 
 应用流量高风险策略区分查询模式：趋势/平均值错映射到 `TotalTraffic` 时先澄清并规范化为 `DefinedApp` pending Draft；“哪个/哪些/最多/排行/TopN”等排行语义错映射到 `TotalTraffic` 时直接技术阻断，不允许查询全局口径；无 prompt 的 `overview/auto_apps` 视为不合规的 `CompositeApplication` 清单形状。
 

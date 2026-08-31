@@ -2288,6 +2288,24 @@ function buildLifecycleBindingFailureResult() {
   };
 }
 
+function buildQueryToolAuthorizationFailureResult(code = '') {
+  const normalizedCode = String(code || '').trim() || 'QUERY_TOOL_AUTHORIZATION_FAILED';
+  const displayText = normalizedCode === 'QUERY_TURN_ROUTE_MISMATCH'
+    ? '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。'
+    : '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。';
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin_query_turn',
+    responseType: normalizedCode,
+    displayText,
+    error: {
+      code: normalizedCode,
+      message: displayText,
+      retryable: false
+    }
+  };
+}
+
 function buildClarificationContextMissingResult() {
   const displayText = '未找到可继续的查询澄清上下文，请重新发起完整查询。';
   return {
@@ -3390,6 +3408,22 @@ function getTrustedTurnId(args = {}) {
 
   const persistentRecord = napmTrustedToolContextStore.get(traceId);
   return persistentRecord.ok ? normalizeTurnId(persistentRecord.turnId) : '';
+}
+
+function getTrustedToolName(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) {
+    return '';
+  }
+  pruneTrustedToolContexts();
+  const record = napmTrustedToolContextByTraceId.get(traceId) || null;
+  const memoryToolName = String(record?.toolName || '').trim();
+  if (memoryToolName) {
+    return memoryToolName;
+  }
+
+  const persistentRecord = napmTrustedToolContextStore.get(traceId);
+  return persistentRecord.ok ? String(persistentRecord.toolName || '').trim() : '';
 }
 
 function getMediaUrlsFromOutgoingEvent(event = {}) {
@@ -6295,10 +6329,9 @@ function ensureAuthoritativeQueryTurnForFinalOutput({
   }
 
   if (current.phase === 'REPAIR_PENDING') {
-    const turn = queryTurnCoordinator.recordFailure({
+    const turn = queryTurnCoordinator.recordRepairAbandoned({
       scope: conversationKey,
       turnId: context.turnId,
-      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
       result: current.result,
       finalContent: buildResolvedQueryValidationFailureReply()
     });
@@ -6522,6 +6555,74 @@ function makeToolResult(result, reportSourceId = '') {
   };
 }
 
+function isSkillClarificationResult(result = null) {
+  const responseType = String(result?.responseType || '').trim();
+  const summaryMode = String(result?.summary?.mode || '').trim();
+  const decisionAction = String(
+    result?.decision?.action
+    || result?.decision?.next_action
+    || result?.assistantDecision?.action
+    || result?.assistantDecision?.next_action
+    || ''
+  ).trim();
+  return responseType === 'clarification_required'
+    || summaryMode === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION
+    || decisionAction === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION;
+}
+
+function normalizeSkillClarificationResult(result = {}) {
+  const assistantDecision = isPlainObject(result?.assistantDecision)
+    ? result.assistantDecision
+    : {};
+  const narrationDecision = isPlainObject(result?.narrationInput?.decision)
+    ? result.narrationInput.decision
+    : {};
+  const originalDecision = isPlainObject(result?.decision) ? result.decision : {};
+  const clarifyingQuestion = String(
+    originalDecision.clarifyingQuestion
+    || originalDecision.clarifying_question
+    || assistantDecision.clarifyingQuestion
+    || assistantDecision.clarifying_question
+    || assistantDecision.question
+    || narrationDecision.clarifyingQuestion
+    || narrationDecision.clarifying_question
+    || narrationDecision.question
+    || result?.displayText
+    || result?.summary?.displayText
+    || '请补充查询范围。'
+  ).trim();
+  const missingFields = [
+    originalDecision.missingFields,
+    assistantDecision.missingFields,
+    narrationDecision.missingFields
+  ].find(Array.isArray) || [];
+  const reasonCode = String(
+    originalDecision.reasonCode
+    || assistantDecision.reasonCode
+    || narrationDecision.reasonCode
+    || 'SKILL_CLARIFICATION_REQUIRED'
+  ).trim();
+
+  return {
+    ...result,
+    ok: true,
+    error: null,
+    responseType: 'clarification_required',
+    displayText: String(result?.displayText || clarifyingQuestion).trim(),
+    decision: {
+      ...originalDecision,
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      next_action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      reasonCode,
+      missingFields,
+      clarifyingQuestion,
+      clarifying_question: clarifyingQuestion,
+      southboundAllowed: false
+    }
+  };
+}
+
 function buildQueryExecutionInProgressResult(turn = null) {
   return {
     ok: true,
@@ -6684,6 +6785,7 @@ function createSkillToolDefinition() {
       const trustedTraceId = normalizeTraceId(preparedArgs?.traceId);
       const conversationKey = getTrustedConversationKey(preparedArgs);
       const turnId = getTrustedTurnId(preparedArgs);
+      const trustedToolName = getTrustedToolName(preparedArgs);
       const traceId = trustedTraceId || buildNapmTraceId({}, preparedArgs);
       let currentQueryTurn = conversationKey && turnId
         ? queryTurnCoordinator.get(conversationKey, turnId)
@@ -6697,6 +6799,33 @@ function createSkillToolDefinition() {
           toolCallId: String(toolCallId || '').trim() || null
         });
         return makeToolResult(buildLifecycleBindingFailureResult());
+      }
+
+      if (trustedToolName !== 'napm-skill-query') {
+        appendPluginAuditEvent('napm_query_tool_execute_identity_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          trustedToolName: trustedToolName || null,
+          expectedToolName: 'napm-skill-query',
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TOOL_IDENTITY_MISMATCH'
+        ));
+      }
+
+      if (currentQueryTurn && currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
+        appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          route: currentQueryTurn.route || null,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TURN_ROUTE_MISMATCH'
+        ));
       }
 
       const clarificationAnswer = String(preparedArgs?.clarificationAnswer || '').trim();
@@ -6730,6 +6859,19 @@ function createSkillToolDefinition() {
           toolCallId: String(toolCallId || '').trim() || null
         });
         return makeToolResult(buildLifecycleBindingFailureResult());
+      }
+
+      if (currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
+        appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          route: currentQueryTurn.route || null,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TURN_ROUTE_MISMATCH'
+        ));
       }
 
       try {
@@ -6911,7 +7053,10 @@ function createSkillToolDefinition() {
           });
           return makeToolResult(buildQueryExecutionInProgressResult(executionTurn));
         }
-        const result = await napmQuerySkill().handleSkillCall(preparedArgs);
+        const skillResult = await napmQuerySkill().handleSkillCall(preparedArgs);
+        const result = isSkillClarificationResult(skillResult)
+          ? normalizeSkillClarificationResult(skillResult)
+          : skillResult;
         const debugRecord = rememberDebugApi(
           normalizePrompt(preparedArgs),
           result,
@@ -6925,19 +7070,21 @@ function createSkillToolDefinition() {
             || result?.displayText
             || ''
           ).trim();
-          queryTurnCoordinator.recordDecision({
+          queryTurnCoordinator.recordExecutionClarification({
             scope: conversationKey,
             turnId,
-            route: QUERY_ROUTES.NAPM_QUERY,
-            question: semanticPrompt,
-            queryDraft: preparedArgs?.resolvedQuery,
             decision: {
               action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
               outcome: QUERY_OUTCOMES.CLARIFICATION,
               reasonCode: String(result?.decision?.reasonCode || 'SKILL_CLARIFICATION_REQUIRED'),
+              missingFields: Array.isArray(result?.decision?.missingFields)
+                ? result.decision.missingFields
+                : [],
               clarifyingQuestion,
               southboundAllowed: false
-            }
+            },
+            result,
+            finalContent: String(result?.displayText || clarifyingQuestion).trim()
           });
         } else if (result?.ok === false || result?.error) {
           queryTurnCoordinator.recordFailure({
@@ -9669,6 +9816,7 @@ module.exports.__test__ = {
   bindTrustedToolContext,
   getTrustedConversationKey,
   getTrustedTurnId,
+  getTrustedToolName,
   getLatestRememberedSkillRecord,
   getRememberedQueryFailureForTurn,
   getReportDataFromRecord,

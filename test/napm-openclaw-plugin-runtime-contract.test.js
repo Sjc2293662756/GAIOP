@@ -107,8 +107,11 @@ describe('NAPM plugin in-process Skill execution contract', () => {
       toolCallId,
       params: { prompt, queryDraft }
     };
-    pluginInstance.__test__.bindTrustedToolContext(event, ctx);
-    return harness.tools.get('napm-skill-query').execute(toolCallId, event.params);
+    const hookResult = harness.hooks.get('before_tool_call')(event, ctx);
+    return harness.tools.get('napm-skill-query').execute(
+      toolCallId,
+      hookResult?.params || event.params
+    );
   }
 
   test('executes a valid NAPM query through the registered plugin tool', async () => {
@@ -131,7 +134,7 @@ describe('NAPM plugin in-process Skill execution contract', () => {
         plugin,
         harness,
         'runtime-contract-call',
-        'recent packet-loss ranking',
+        '最近一小时丢包最多的 IP 是哪些？',
         {
           service: 'topValues',
           queryModeKey: 'topn',
@@ -143,7 +146,7 @@ describe('NAPM plugin in-process Skill execution contract', () => {
           start: 1777982400,
           end: 1777986000,
           format: 'json',
-          userRequirement: 'recent packet-loss ranking'
+          userRequirement: '最近一小时丢包最多的 IP 是哪些？'
         },
         'top-values'
       );

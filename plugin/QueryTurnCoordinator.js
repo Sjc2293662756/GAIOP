@@ -333,11 +333,63 @@ class QueryTurnCoordinator {
     return clone(next);
   }
 
+  recordExecutionClarification({
+    scope,
+    turnId,
+    decision = null,
+    result = null,
+    finalContent = ''
+  } = {}) {
+    const key = this._key(scope, turnId);
+    const current = key ? this._freshTurn(key) : null;
+    if (
+      !current
+      || current.route !== QUERY_ROUTES.NAPM_QUERY
+      || current.phase !== QUERY_PHASES.EXECUTING
+    ) {
+      return clone(current);
+    }
+
+    const clarifyingQuestion = normalizeText(
+      decision?.clarifyingQuestion
+      || decision?.clarifying_question
+      || result?.displayText
+      || result?.summary?.displayText
+    );
+    const normalizedDecision = {
+      ...(clone(decision) || {}),
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      clarifyingQuestion,
+      southboundAllowed: false
+    };
+    const next = {
+      ...current,
+      phase: QUERY_PHASES.TERMINAL,
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      decision: normalizedDecision,
+      queryDraft: clone(normalizedDecision.queryDraft || current.queryDraft),
+      attempts: this._completeExecutionAttempt(current.attempts, QUERY_ATTEMPT_STATUSES.SUCCEEDED),
+      result: clone(result),
+      finalContent: normalizeText(finalContent) || clarifyingQuestion || '请补充查询范围后重试。',
+      updatedAt: this.now()
+    };
+    this._setTurn(key, next);
+    this._rememberPending(next);
+    return clone(next);
+  }
+
   recordResult({ scope, turnId, result, finalContent = '' } = {}) {
     const key = this._key(scope, turnId);
     const current = key ? this._freshTurn(key) : null;
-    if (!current) return null;
-    if (current.phase === QUERY_PHASES.TERMINAL) return clone(current);
+    if (
+      !current
+      || current.route !== QUERY_ROUTES.NAPM_QUERY
+      || current.phase !== QUERY_PHASES.EXECUTING
+    ) {
+      return clone(current);
+    }
     const empty = isEmptyResult(result);
     const next = {
       ...current,
@@ -355,8 +407,13 @@ class QueryTurnCoordinator {
   recordFailure({ scope, turnId, outcome = QUERY_OUTCOMES.EXECUTION_FAILURE, result, finalContent = '' } = {}) {
     const key = this._key(scope, turnId);
     const current = key ? this._freshTurn(key) : null;
-    if (!current) return null;
-    if (current.phase === QUERY_PHASES.TERMINAL) return clone(current);
+    if (
+      !current
+      || current.route !== QUERY_ROUTES.NAPM_QUERY
+      || current.phase !== QUERY_PHASES.EXECUTING
+    ) {
+      return clone(current);
+    }
     const next = {
       ...current,
       phase: QUERY_PHASES.TERMINAL,
@@ -366,6 +423,29 @@ class QueryTurnCoordinator {
         : current.attempts,
       result: clone(result),
       finalContent: normalizeText(finalContent) || 'NAPM 查询执行失败，请稍后重试。',
+      updatedAt: this.now()
+    };
+    this._setTurn(key, next);
+    return clone(next);
+  }
+
+  recordRepairAbandoned({ scope, turnId, result = null, finalContent = '' } = {}) {
+    const key = this._key(scope, turnId);
+    const current = key ? this._freshTurn(key) : null;
+    if (
+      !current
+      || current.route !== QUERY_ROUTES.NAPM_QUERY
+      || current.phase !== QUERY_PHASES.REPAIR_PENDING
+    ) {
+      return clone(current);
+    }
+    const next = {
+      ...current,
+      phase: QUERY_PHASES.TERMINAL,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      result: clone(result || current.result),
+      finalContent: normalizeText(finalContent) || '查询参数未构造完整，本轮已停止重试。',
       updatedAt: this.now()
     };
     this._setTurn(key, next);
