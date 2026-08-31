@@ -26,7 +26,7 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     expect(testApi.normalizeHierarchyQuestionTarget('IP地址支持哪些下钻路径？')).toBe('IPAddress');
   });
 
-  test('should leave before_message_write as a synchronous non-refresh hook for hierarchy prompts', async () => {
+  test('should synchronously use the authoritative hierarchy result without refresh', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -91,20 +91,34 @@ describe('napm-openclaw-plugin hierarchy fallback guard', () => {
     }, ctx);
     const scope = plugin.__test__.getTrustedConversationKey(bound.params);
     const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, {
+    const queryResult = {
       ok: true,
       displayText: '业务组下钻路径已返回。',
       resolvedQuery: bound.params.resolvedQuery
-    }, scope, 'napm-skill-query', turnId);
+    };
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: 'hierarchy-query',
+      queryDraft: bound.params.resolvedQuery
+    });
+    plugin.__test__.rememberSkillResult(prompt, queryResult, scope, 'napm-skill-query', turnId);
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result: queryResult,
+      finalContent: queryResult.displayText
+    });
 
-    const result = await beforeMessageWrite({
+    const result = beforeMessageWrite({
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: '模型自由回答的泛化话术' }]
       }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(result?.message?.content?.[0]?.text).toBe(queryResult.displayText);
   }, 30000);
 
   test('should require upstream resolvedQuery for hierarchy prompt when model skipped tool', async () => {

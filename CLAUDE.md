@@ -28,21 +28,40 @@ npx eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query
 
 ```
 WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
-  → loadSkill() in-process require() → skill/scripts/run_*.js
+  → message_received binds run/message to an immutable Query Turn
+  → napm-skill-query(queryDraft | clarificationAnswer)
+  → QueryDecisionPolicy → QueryTurnCoordinator
+  → EXECUTE_QUERY only → loadSkill() in-process require() → skill/scripts/run_*.js
   → skill services → NapmClient (axios) → NetInside NAPM WebService
-  → narration contract → OpenClaw → Chinese reply / report back to WeChat
+  → authoritative finalContent → exactly-once Chinese reply back to WeChat
 ```
+
+`conversationKey` is only a scope. Tool and output hooks resolve the immutable `turnId` bound to the current run/message and must not read the conversation's latest turn; missing lifecycle identity or binding fails closed. A Query Turn's route is immutable after creation, so another Tool or Tool result cannot reclassify a `NAPM_QUERY` as `OTHER_SKILL`. `QueryTurnCoordinator` owns ordinary-query drafts, attempts, the one-repair budget, pending clarifications, terminal content, and delivery claims. `ConversationOperationState` is not the authority for ordinary-query repair, result, or final delivery.
 
 ### Plugin: `napm-openclaw-plugin.remote.js`
 
 A monolithic plugin loaded by OpenClaw Gateway. It:
 
 1. Declares 7 production tool contracts plus 2 opt-in diagnostic tool contracts in `openclaw.plugin.json`
-2. Loads each skill's `scripts/run_*.js` **in-process** via `require()` with cache-busting (`delete require.cache`) to support hot-reload on push
-3. Maintains in-memory conversation state (`napmConversationState`), result cache (90s), and guard state
-4. Applies time overrides via `before_tool_call` hook using `skills/openclaw-napm-query/src/shared/timeResolver.js`
+2. Binds every incoming run/message to one immutable Query Turn and routes Tool/output hooks through that binding
+3. Evaluates Query Drafts at both Hook and direct Tool-execute boundaries, then records attempts, pending clarification, terminal content, and exactly-once delivery in `QueryTurnCoordinator`
+4. Loads each skill's `scripts/run_*.js` in-process via `require()`; this implementation detail is not a deployment or hot-reload contract
+5. Maintains compatibility state for non-query workflows and applies time overrides before complete Resolved Queries execute
 
-Skills are NOT spawned as subprocesses — they run synchronously in the Gateway process. This means skill code changes take effect immediately on push (cache-busted reload), no restart needed.
+Skills are not spawned as subprocesses; they run in the Gateway process. Runtime changes are installed only through the approved complete release package. Do not infer that copying one file makes all plugin and Coordinator changes live, and do not perform an ad hoc restart outside the approved deployment workflow.
+
+### Query Turn contract
+
+- `message_received` creates a `turnId` and immutable run/message binding. Overlapping runs in one conversation remain isolated.
+- Direct Tool execution requires a plugin-issued trusted `traceId` that resolves to the same scope, turn, and exact `napm-skill-query` tool identity; the existing turn route must be `NAPM_QUERY`. Missing or mismatched identity/route fails before pending-draft restoration, time materialization, validation, Skill loading, or any southbound request.
+- The route chosen when the turn is created is immutable. A production `NAPM_QUERY` accepts only `napm-skill-query`; a wrong NAPM Tool is blocked without southbound execution or route mutation. Opt-in resolver tools remain development diagnostics.
+- A first technical validation failure enters `REPAIR_PENDING` and consumes the one-repair budget. Replaying the same attempt id is idempotent; a second failed construction terminates. `recordResult` and `recordFailure` accept only `EXECUTING`; abandoned repair and execution-time Skill clarification use dedicated transitions. Execution failure terminates immediately.
+- A Tool replay while the turn is already `EXECUTING` returns `QUERY_EXECUTION_IN_PROGRESS` before processing the replayed Draft. It cannot revalidate, change state, start a second attempt, or call southbound again.
+- After clarification, a name-only reply such as `HTTP` is sent as `clarificationAnswer`; the plugin restores the policy-normalized pending Query Draft and fills `DefinedApp.argument` before reevaluating the full policy. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
+- Hook and direct execute paths enforce the same high-risk checks: application trend/average/ranking versus `TotalTraffic`, `CompositeApplication` and general object-inventory shape, promptless `overview/auto_apps`, and the single-group requirement for object inventories.
+- `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, and `CONTRACT_VIOLATION` all have write-once authoritative `finalContent`. A legacy-shaped Skill clarification is normalized to a successful `clarification_required` Tool result and completes the execution attempt as `CLARIFICATION`, never `EXECUTION_FAILURE`. Streaming partial output does not terminate a turn; a Tool replay after terminal returns the existing authoritative result without another Skill or southbound call.
+- A non-streaming final cannot leave an ordinary query nonterminal. `RECEIVED` without a Decision/Attempt and `DECIDED` without adapter execution terminate as contract violations; `REPAIR_PENDING` terminates as a validation failure; `EXECUTING` without a result terminates as an execution failure. A late adapter result cannot overwrite that outcome.
+- Other Skills retain their own delivery workflows; the ordinary-query Coordinator only owns `NAPM_QUERY` turns.
 
 ### Skills (9 total, each self-contained under `skills/<name>/`)
 
@@ -77,37 +96,17 @@ Static configuration consumed at runtime — no database, no dynamic config serv
 - `metrics-config.yml` — metric code definitions
 - `napm-resolution-spec.v1.json` — query service/mode/field contracts
 
-### Two remote paths (critical for deploy)
-
-The Gateway loads the plugin from TWO locations, and both must be kept in sync on push:
-
-| Path | Purpose |
-|---|---|
-| `/home/netinside/.openclaw/workspace/` | Skill source files, mirrors local repo structure |
-| `/home/netinside/.openclaw/extensions/napm-openclaw-plugin/` | Plugin runtime — Gateway loads `napm-openclaw-plugin.remote.js` and `openclaw.plugin.json` from here |
-
-When pushing `timeResolver.js`, it must go to both `workspace/skills/openclaw-napm-query/src/shared/` (for workspace resolution) and `extensions/napm-openclaw-plugin/skills/openclaw-napm-query/src/shared/` (for `__dirname`-based resolution inside the plugin).
-
 ### Deploy
 
-Push to remote server `101.254.114.237` via `pscp` (not git push — remote has no git):
+The only supported deployment path is the versioned complete release package described in `docs/版本管理与统一部署-新手指南.md`. Build only from an approved clean commit, stage and verify the whole package, run the installer in dry-run mode, and perform installation or service restart only after explicit approval. Do not copy individual repository files into active runtime directories and do not use direct `pscp`/`plink` as a release mechanism.
 
-```bash
-# Skill files → workspace
-/d/PUTTY/pscp "<local-file>" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/<remote-path>/"
-
-# Plugin → both workspace and extensions
-/d/PUTTY/pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/workspace/"
-/d/PUTTY/pscp "napm-openclaw-plugin.remote.js" "netinside@101.254.114.237:/home/netinside/.openclaw/extensions/napm-openclaw-plugin/"
-```
-
-Create remote directories first with plink if needed: `/d/PUTTY/plink -ssh netinside@101.254.114.237 "mkdir -p <path>"`. Obtain authentication from the controlled environment and verify the host key manually on first connection. Full details in `memory/deploy-push-config.md`.
+The current query-turn change is local development only: no version change, package build, server connection, deployment, or service restart is part of this task.
 
 ### Key constraints
 
 - Never expose credentials, internal IPs, or debug URLs in user-facing replies or committed code
 - Skill boundary rules in each `SKILL.md` are authoritative — respect them (e.g., packet analysis questions go to `openclaw-napm-packet-analysis`, NOT query)
 - Fault diagnosis requests MUST use `napm-fault-diagnosis` as a single tool call; never decompose into multiple query calls
-- `resolvedQuery` must be fully structured before execution; local prompt parsing is disabled in production
+- `napm-skill-query` accepts a structured Query Draft or `clarificationAnswer`; the Query Skill receives only a fully validated Resolved Query, and local prompt parsing is disabled in production
 - All answers must include data time range and distinguish: query results vs system facts vs inference
 - Project persona and behavior boundaries are in `SOUL.md` — read it before making changes that affect user-facing behavior

@@ -20,6 +20,7 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
 
   function createHarness() {
     const hooks = new Map();
+    const tools = new Map();
     const api = {
       config: {},
       logger: {
@@ -27,7 +28,9 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
         warn() {},
         error() {}
       },
-      registerTool() {},
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
       registerCommand() {},
       registerHook(name, handler) {
         if (Array.isArray(name)) {
@@ -39,7 +42,7 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     };
 
     plugin.register(api);
-    return { hooks };
+    return { hooks, tools };
   }
 
   test('should reject executable timestamps carried only by timeRange at plugin boundary', async () => {
@@ -131,26 +134,25 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
   });
 
   test('tool execute should return boundary error before calling skill for malformed time contract', async () => {
-    const tools = new Map();
-    const api = {
-      config: {},
-      logger: {
-        info() {},
-        warn() {},
-        error() {}
-      },
-      registerTool(definition) {
-        tools.set(definition.name, definition);
-      },
-      registerCommand() {},
-      registerHook() {}
+    const { hooks, tools } = createHarness();
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'acct-time-contract-execute',
+      conversationId: 'conv-time-contract-execute',
+      sessionKey: 'session-time-contract-execute',
+      sessionId: 'session-time-contract-execute',
+      runId: 'run-time-contract-execute',
+      messageId: 'message-time-contract-execute'
     };
-    plugin.register(api);
-
-    const result = await tools.get('napm-skill-query').execute('tool-time-contract', {
-      prompt: '丢包率最高的IP是谁？',
-      userQuery: '丢包率最高的IP是谁？',
-      resolvedQuery: {
+    const prompt = '丢包率最高的IP是谁？';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const event = {
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        userQuery: prompt,
+        queryDraft: {
         service: 'topValues',
         queryModeKey: 'topn',
         groups: [{ type: 'IPAddress' }],
@@ -163,10 +165,13 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
         },
         format: 'json'
       }
-    });
+      }
+    };
+    plugin.__test__.bindTrustedToolContext(event, ctx);
+    const result = await tools.get('napm-skill-query').execute('tool-time-contract', event.params);
 
     expect(result.details.ok).toBe(false);
-    expect(result.details.error.code).toBe('UPSTREAM_RESOLVED_QUERY_INVALID');
+    expect(result.details.error.code).toBe('UPSTREAM_QUERY_DRAFT_INVALID');
     expect(result.details.error.reason).toBe('invalid_time_field_location');
     expect(result.details.resolvedQuerySummary.hasNestedTimeRangeStart).toBe(true);
     expect(result.details.resolvedQuerySummary.start).toBeNull();

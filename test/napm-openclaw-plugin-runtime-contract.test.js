@@ -65,6 +65,55 @@ describe('NAPM plugin in-process Skill execution contract', () => {
     fs.rmSync(baseDir, { recursive: true, force: true });
   });
 
+  function registerHarness(pluginInstance) {
+    const tools = new Map();
+    const hooks = new Map();
+    pluginInstance.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool(definition) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand() {},
+      registerHook(name, handler) {
+        const names = Array.isArray(name) ? name : [name];
+        names.forEach((eventName) => hooks.set(eventName, handler));
+      }
+    });
+    return { tools, hooks };
+  }
+
+  async function executeThroughLifecycle(
+    pluginInstance,
+    harness,
+    toolCallId,
+    prompt,
+    queryDraft,
+    suffix
+  ) {
+    const ctx = {
+      channelId: 'wecom',
+      accountId: `runtime-account-${suffix}`,
+      conversationId: `runtime-conversation-${suffix}`,
+      sessionKey: `runtime-session-${suffix}`,
+      sessionId: `runtime-session-${suffix}`,
+      runId: `runtime-run-${suffix}`,
+      messageId: `runtime-message-${suffix}`
+    };
+    harness.hooks.get('message_received')({ content: prompt }, ctx);
+    await harness.hooks.get('before_prompt_build')({ prompt }, ctx);
+    const event = {
+      toolName: 'napm-skill-query',
+      toolCallId,
+      params: { prompt, queryDraft }
+    };
+    const hookResult = harness.hooks.get('before_tool_call')(event, ctx);
+    return harness.tools.get('napm-skill-query').execute(
+      toolCallId,
+      hookResult?.params || event.params
+    );
+  }
+
   test('executes a valid NAPM query through the registered plugin tool', async () => {
     const originalExecuteGatewayRequest = RequirementParserService.executeGatewayRequest;
     RequirementParserService.executeGatewayRequest = jest.fn(async (resolvedQuery) => ({
@@ -78,21 +127,15 @@ describe('NAPM plugin in-process Skill execution contract', () => {
       error: null
     }));
 
-    const tools = new Map();
-    plugin.register({
-      config: {},
-      logger: { info() {}, warn() {}, error() {} },
-      registerTool(definition) {
-        tools.set(definition.name, definition);
-      },
-      registerCommand() {},
-      registerHook() {}
-    });
+    const harness = registerHarness(plugin);
 
     try {
-      const result = await tools.get('napm-skill-query').execute('runtime-contract-call', {
-        prompt: 'recent packet-loss ranking',
-        resolvedQuery: {
+      const result = await executeThroughLifecycle(
+        plugin,
+        harness,
+        'runtime-contract-call',
+        '最近一小时丢包最多的 IP 是哪些？',
+        {
           service: 'topValues',
           queryModeKey: 'topn',
           metric: 'PLI',
@@ -103,9 +146,10 @@ describe('NAPM plugin in-process Skill execution contract', () => {
           start: 1777982400,
           end: 1777986000,
           format: 'json',
-          userRequirement: 'recent packet-loss ranking'
-        }
-      });
+          userRequirement: '最近一小时丢包最多的 IP 是哪些？'
+        },
+        'top-values'
+      );
 
       expect(result.details).toMatchObject({
         ok: true,
@@ -183,29 +227,21 @@ describe('NAPM plugin in-process Skill execution contract', () => {
     }));
 
     const installedPlugin = require(path.join(extensionDir, 'index.js'));
-    const installedTools = new Map();
-    installedPlugin.register({
-      config: {},
-      logger: { info() {}, warn() {}, error() {} },
-      registerTool(definition) {
-        installedTools.set(definition.name, definition);
-      },
-      registerCommand() {},
-      registerHook() {}
-    });
+    const installedHarness = registerHarness(installedPlugin);
 
     try {
-      const result = await installedTools.get('napm-skill-query').execute(
+      const result = await executeThroughLifecycle(
+        installedPlugin,
+        installedHarness,
         `minimal-extension-${objectType}`,
+        `列出${objectName}`,
         {
-          prompt: `列出${objectName}`,
-          resolvedQuery: {
-            service: 'groups',
-            queryModeKey: 'metadata',
-            groups: [{ type: objectType }],
-            format: 'json'
-          }
-        }
+          service: 'groups',
+          queryModeKey: 'metadata',
+          groups: [{ type: objectType }],
+          format: 'json'
+        },
+        objectType
       );
 
       expect(result.details).toMatchObject({

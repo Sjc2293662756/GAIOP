@@ -18,6 +18,28 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
+  function completeBoundQueryResult(prompt, bound, result) {
+    const testApi = plugin.__test__;
+    const scope = testApi.getTrustedConversationKey(bound.params);
+    const turnId = testApi.getTrustedTurnId(bound.params);
+    testApi.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: 'metric-inventory-query',
+      queryDraft: bound.params.resolvedQuery
+    });
+    const rememberedRecord = testApi.rememberSkillResult(
+      prompt,
+      result,
+      scope,
+      'napm-skill-query',
+      turnId
+    );
+    const finalContent = testApi.buildRememberedSkillReplyText(rememberedRecord);
+    testApi.queryTurnCoordinator.recordResult({ scope, turnId, result, finalContent });
+    return { scope, turnId, finalContent };
+  }
+
   test('should recognize plain business metric inventory prompt', () => {
     const testApi = plugin.__test__;
 
@@ -35,7 +57,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     expect(testApi.isMetricInventoryDetailPrompt('业务都可以查哪些指标？')).toBe(false);
   });
 
-  test('should leave before_message_write as a synchronous non-refresh hook', async () => {
+  test('should synchronously rewrite from the authoritative Query Turn result without refresh', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -101,22 +123,21 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
         }
       }
     }, ctx);
-    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
-    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, {
+    const completed = completeBoundQueryResult(prompt, bound, {
       ok: true,
       displayText: '业务可查指标已返回。',
       resolvedQuery: bound.params.resolvedQuery
-    }, scope, 'napm-skill-query', turnId);
+    });
 
-    const result = await beforeMessageWrite({
+    const result = beforeMessageWrite({
       message: {
         role: 'assistant',
         content: [{ type: 'text', text: '旧的泛化错误回答' }]
       }
     }, ctx);
 
-    expect(result).toBeUndefined();
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(result?.message?.content?.[0]?.text).toBe(completed.finalContent);
   }, 30000);
 
   test('should not rewrite a metric inventory answer that mentions another object type', async () => {
@@ -172,7 +193,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
         }
       }
     }, ctx);
-    plugin.__test__.rememberSkillResult(prompt, {
+    completeBoundQueryResult(prompt, bound, {
       ok: true,
       service: 'metrics',
       resolvedQuery: bound.params.resolvedQuery,
@@ -182,7 +203,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
         { id: 'PGTME', label: '页面延时', unit: 'sec' }
       ],
       narrationStructure: { responseType: 'metric_list', displayText: null }
-    }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
+    });
 
     const result = await beforeMessageWrite({
       message: {
@@ -271,7 +292,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
         }
       }
     }, ctx);
-    plugin.__test__.rememberSkillResult(prompt, {
+    completeBoundQueryResult(prompt, bound, {
       ok: true,
       service: 'metrics',
       summary: { title: '指标列表', rowCount: 2, empty: false },
@@ -281,7 +302,7 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
       ],
       narrationStructure: { responseType: 'metric_list', displayText: null },
       resolvedQuery: bound.params.resolvedQuery
-    }, plugin.__test__.getTrustedConversationKey(bound.params), 'napm-skill-query', plugin.__test__.getTrustedTurnId(bound.params));
+    });
 
     const result = await messageSending({
       content: 'NAPM中业务维度可查的指标：流量类：总吞吐、入向吞吐、出向吞吐'
@@ -532,11 +553,11 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
 
     expect(result).toBeTruthy();
     expect(result.block).toBe(true);
-    expect(result.blockReason).toContain('resolvedQuery');
-    expect(result.blockReason).toContain('OpenClaw may reconstruct resolvedQuery once');
+    expect(result.blockReason).toContain('queryDraft');
+    expect(result.blockReason).toContain('OpenClaw may repair queryDraft once');
   }, 30000);
 
-  test('should advertise resolvedQuery-first contract in skill tool description', () => {
+  test('should advertise queryDraft-first contract with a resolvedQuery compatibility alias', () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -563,8 +584,13 @@ describe('napm-openclaw-plugin metric inventory guard', () => {
     const skillTool = tools.get('napm-skill-query');
 
     expect(skillTool).toBeTruthy();
-    expect(skillTool.description).toContain('structured resolvedQuery');
-    expect(skillTool.parameters.properties.resolvedQuery.description).toContain('Required');
+    expect(skillTool.description).toContain('structured queryDraft');
+    expect(skillTool.description).toContain('legacy alias: resolvedQuery');
+    expect(skillTool.parameters.properties.queryDraft.description).toContain('QueryDecisionPolicy');
+    expect(skillTool.parameters.anyOf).toEqual(expect.arrayContaining([
+      { required: ['queryDraft'] },
+      { required: ['resolvedQuery'] }
+    ]));
   });
 
   test('should block exec when raw session prompt is a business metric inventory ask', async () => {

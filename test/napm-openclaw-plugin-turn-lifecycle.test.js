@@ -119,6 +119,32 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     };
   }
 
+  function completeBoundQueryResult(prompt, bound, result) {
+    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
+    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: bound.event.toolCallId,
+      queryDraft: bound.params.resolvedQuery
+    });
+    const rememberedRecord = plugin.__test__.rememberSkillResult(
+      prompt,
+      result,
+      scope,
+      'napm-skill-query',
+      turnId
+    );
+    const finalContent = plugin.__test__.buildRememberedSkillReplyText(rememberedRecord);
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result,
+      finalContent
+    });
+    return { scope, turnId, finalContent };
+  }
+
   function rememberCurrentTurnResult(ctx, prompt, result = buildDefinedAppResult()) {
     const bound = bindToolCall(ctx, 'napm-skill-query', {
       prompt,
@@ -128,15 +154,18 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
         groups: [{ type: 'Application' }]
       }
     });
-    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
-    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, result, scope, 'napm-skill-query', turnId);
-    return { scope, turnId };
+    return completeBoundQueryResult(prompt, bound, result);
   }
 
   test('finds a successful current-turn result even when prompt-build text has metadata prefixes', async () => {
     const ctx = createCtx('metadata-result');
     const prompt = '现在系统情况怎么样？';
+    const resolvedQuery = {
+      service: 'overview',
+      queryModeKey: 'overview',
+      overviewScene: 'system',
+      timeRange: { key: 'last1hour' }
+    };
     const prefixedPrompt = [
       'Conversation info (untrusted metadata):',
       '{"message_id":"wx-123","sender":"user"}',
@@ -145,28 +174,27 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     ].join('\n');
 
     await startTurn(ctx, prompt, prefixedPrompt);
-    const bound = bindToolCall(ctx, 'napm-summary', {
+    const bound = bindToolCall(ctx, 'napm-skill-query', {
       prompt,
-      scope: { type: 'global' },
-      timeRange: { key: 'last1hour' }
+      resolvedQuery
     });
-    const scope = plugin.__test__.getTrustedConversationKey(bound.params);
-    const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, {
+    const completed = completeBoundQueryResult(prompt, bound, {
       ok: true,
+      service: 'overview',
+      resolvedQuery,
       summary: {
         overallStatus: 'critical',
         displayText: '系统当前处于严重状态，有 55 条告警。'
       }
-    }, scope, 'napm-summary', turnId);
+    });
 
     const outgoing = await hooks.get('message_sending')({
       content: '系统当前处于严重状态，有 55 条告警。',
       metadata: { isFinal: true }
     }, ctx);
 
-    expect(turnId).toBeTruthy();
-    expect(outgoing).toBeUndefined();
+    expect(completed.turnId).toBeTruthy();
+    expect(outgoing).toEqual({ content: completed.finalContent });
   });
 
   test('rewrites a title-only DefinedApp answer from the current skill rows', async () => {
@@ -305,7 +333,8 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     const deliveryCtx = {
       channelId: inboundCtx.channelId,
       accountId: inboundCtx.accountId,
-      conversationId: inboundCtx.conversationId
+      conversationId: inboundCtx.conversationId,
+      runId: inboundCtx.runId
     };
     const progressText = 'I will query the current alert summary now.';
 
@@ -379,13 +408,21 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     expect(tool.description).toContain('groups=[{type:"WebApplication"}]');
     expect(resolvedQuerySchema.properties.groups.description).toContain('DefinedApp');
 
-    const result = await tool.execute('invalid-service-call', {
-      prompt: '过去 24 小时的吞吐量趋势如何？',
-      resolvedQuery: {
-        service: 'timeseries',
-        queryModeKey: 'timeseries'
+    const ctx = createCtx('invalid-service-execute');
+    const prompt = '过去 24 小时的吞吐量趋势如何？';
+    await startTurn(ctx, prompt);
+    const event = {
+      toolName: 'napm-skill-query',
+      params: {
+        prompt,
+        queryDraft: {
+          service: 'timeseries',
+          queryModeKey: 'timeseries'
+        }
       }
-    });
+    };
+    plugin.__test__.bindTrustedToolContext(event, ctx);
+    const result = await tool.execute('invalid-service-call', event.params);
 
     expect(result.isError).toBe(true);
     expect(result.details).toMatchObject({

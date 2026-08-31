@@ -4,7 +4,14 @@ const path = require('node:path');
 const AssistantOutputLedger = require('./plugin/AssistantOutputLedger');
 const ConversationOperationState = require('./plugin/ConversationOperationState');
 const {
-  buildDeterministicFinalReply: buildAlertPacketFinalReply
+  QUERY_ACTIONS,
+  QUERY_OUTCOMES,
+  QUERY_ROUTES,
+  QueryTurnCoordinator
+} = require('./plugin/QueryTurnCoordinator');
+const {
+  buildDeterministicFinalReply: buildAlertPacketFinalReply,
+  prepareModelFinalContent: prepareAlertPacketModelFinalContent
 } = require('./plugin/AlertPacketFinalReplyService');
 const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
 const {
@@ -23,6 +30,7 @@ const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.
 const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-query/scripts/run_napm_query.js',
   'openclaw-napm-query/services/PromptRoutingService.js',
+  'openclaw-napm-query/services/QueryDecisionPolicy.js',
   'openclaw-napm-query/services/ResolutionSpecService.js',
   'openclaw-napm-query/services/ResolvedQueryTimeRangeService.js',
   'openclaw-napm-query/src/shared/timeResolver.js',
@@ -88,6 +96,10 @@ function loadSkill(skillDir, scriptName) {
 }
 
 const napmQuerySkill = () => loadSkill('openclaw-napm-query', 'run_napm_query.js');
+const napmQueryDecisionPolicy = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/QueryDecisionPolicy.js'
+));
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
 const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
@@ -139,6 +151,9 @@ const napmOperationState = new ConversationOperationState({
   resultMaxAgeMs: RESULT_CACHE_MAX_AGE_MS,
   reportMaxAgeMs: REPORT_EXPORT_CACHE_MAX_AGE_MS,
   queryContextMaxAgeMs: QUERY_CONTEXT_MAX_AGE_MS
+});
+const queryTurnCoordinator = new QueryTurnCoordinator({
+  maxAgeMs: RESULT_CACHE_MAX_AGE_MS
 });
 const assistantOutputLedger = new AssistantOutputLedger({
   maxAgeMs: RESULT_CACHE_MAX_AGE_MS
@@ -505,7 +520,7 @@ function isAlertEventPrompt(prompt = '') {
     return false;
   }
 
-  return /(?:有哪些|有什么|有没有|是否有|查(?:询)?|列(?:出)?|列表|清单|摘要|明细|详情|事件|event\s*id|id|时间线|趋势|数量|统计|汇总|紧急|重大|轻微|严重|触发|原因|为什么|关联|数据包|napm-alert-query|告警查询\s*skill|告警\s*skill)/i.test(text);
+  return /(?:有哪些|有什么|有没有|是否有|情况|查(?:询)?|列(?:出)?|列表|清单|摘要|明细|详情|事件|event\s*id|id|时间线|趋势|数量|统计|汇总|紧急|重大|轻微|严重|触发|原因|为什么|关联|数据包|napm-alert-query|告警查询\s*skill|告警\s*skill)/i.test(text);
 }
 
 function isAlertPacketAnalysisPrompt(prompt = '') {
@@ -1043,6 +1058,33 @@ function getTurnPolicyRoute(state = null) {
     return TURN_POLICY_ROUTES.NAPM_CANDIDATE;
   }
   return TURN_POLICY_ROUTES.MODEL_OWNED;
+}
+
+function resolveQueryCoordinatorRoute(prompt = '', state = null) {
+  if (getTurnPolicyRoute(state) !== TURN_POLICY_ROUTES.NAPM_CANDIDATE) {
+    return QUERY_ROUTES.MODEL_OWNED;
+  }
+  if (state?.pendingQueryDraft) {
+    return QUERY_ROUTES.NAPM_QUERY;
+  }
+
+  const text = String(prompt || '').trim();
+  const otherSkillTurn = Boolean(
+    state?.alertEventPrompt
+    || state?.alertMetaFollowUpPrompt
+    || state?.metaFollowUpPrompt
+    || state?.resultDeliveryFollowUpPrompt
+    || isContinuationPrompt(text)
+    || isAlertEventPrompt(text)
+    || isAlertPacketAnalysisPrompt(text)
+    || isReportWorkflowPrompt(text)
+    || isReportExportPrompt(text)
+    || isPacketCapturePrompt(text)
+    || isFaultDiagnosisPrompt(text, {
+      hasExplicitTarget: hasSpecificFaultDiagnosisTarget(text)
+    })
+  );
+  return otherSkillTurn ? QUERY_ROUTES.OTHER_SKILL : QUERY_ROUTES.NAPM_QUERY;
 }
 
 function normalizePromptKey(prompt) {
@@ -1848,7 +1890,7 @@ function validateRelativeTimeRangeFreshness(resolvedQuery = {}, options = {}) {
     return {
       ok: false,
       reason: 'unsupported_time_range_key',
-      message: `Unsupported resolvedQuery timeRange.key=${timeRangeKey}; provide a concrete key such as last60minutes.`,
+      message: `Unsupported queryDraft timeRange.key=${timeRangeKey}; provide a concrete key such as last60minutes.`,
       details: { timeRangeKey }
     };
   }
@@ -1883,7 +1925,7 @@ function validateRelativeTimeRangeFreshness(resolvedQuery = {}, options = {}) {
   return {
     ok: false,
     reason: 'relative_time_range_stale_or_miscalculated',
-    message: `resolvedQuery uses relative timeRange=${timeRangeKey}, but root-level start/end do not match the current server time. Rebuild timestamps with napm-resolve-time-range before calling napm-skill-query.`,
+    message: `queryDraft uses relative timeRange=${timeRangeKey}, but root-level start/end do not match the current server time. Rebuild the Query Draft timestamps before calling napm-skill-query.`,
     details: {
       timeRangeKey,
       expectedStart: Number(expected.start),
@@ -1900,7 +1942,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'missing_resolved_query',
-      message: 'NAPM natural-language requests must include a structured resolvedQuery before calling napm-skill-query.'
+      message: 'NAPM natural-language requests must include a structured queryDraft before calling napm-skill-query.'
     };
   }
 
@@ -1910,7 +1952,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'missing_service',
-      message: 'resolvedQuery.service is required before calling napm-skill-query.'
+      message: 'queryDraft.service is required before calling napm-skill-query.'
     };
   }
 
@@ -1922,7 +1964,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'unknown_service',
-      message: `resolvedQuery.service=${serviceName} is not declared in napm-resolution-spec.v1.json.`
+      message: `queryDraft.service=${serviceName} is not declared in napm-resolution-spec.v1.json.`
     };
   }
 
@@ -1949,7 +1991,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'unsupported_time_range_key',
-      message: `Unsupported resolvedQuery timeRange.key=${declaredTimeKey}; provide a concrete key such as last60minutes.`,
+      message: `Unsupported queryDraft timeRange.key=${declaredTimeKey}; provide a concrete key such as last60minutes.`,
       details: { timeRangeKey: declaredTimeKey }
     };
   }
@@ -1958,7 +2000,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'invalid_time_field_location',
-      message: `resolvedQuery.service=${serviceName} must put executable timestamps at root-level start/end. timeRange.start/timeRange.end are declarative only and cannot be used for execution.`
+      message: `queryDraft.service=${serviceName} must put executable timestamps at root-level start/end. timeRange.start/timeRange.end are declarative only and cannot be used for execution.`
     };
   }
 
@@ -1966,7 +2008,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'invalid_time_boundary_alignment',
-      message: `resolvedQuery.service=${serviceName} root-level start/end must be aligned to 60-second minute boundaries before calling napm-skill-query.`
+      message: `queryDraft.service=${serviceName} root-level start/end must be aligned to 60-second minute boundaries before calling napm-skill-query.`
     };
   }
 
@@ -2016,7 +2058,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'incomplete_resolved_query',
-      message: `resolvedQuery is missing required fields for service=${serviceName}: ${missingFields.join(', ')}.`
+      message: `queryDraft is missing required fields for service=${serviceName}: ${missingFields.join(', ')}.`
     };
   }
 
@@ -2026,7 +2068,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
       return {
         ok: false,
         reason: 'invalid_top_count',
-        message: `resolvedQuery.topCount must be a positive integer; received ${topCount}.`
+        message: `queryDraft.topCount must be a positive integer; received ${topCount}.`
       };
     }
     const metrics = Array.isArray(normalizedResolvedQuery.metrics)
@@ -2037,7 +2079,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
       return {
         ok: false,
         reason: 'top_metric_not_in_metrics',
-        message: `resolvedQuery.topMetric=${topMetric} must also be present in resolvedQuery.metrics.`,
+        message: `queryDraft.topMetric=${topMetric} must also be present in queryDraft.metrics.`,
         details: { topMetric, metrics }
       };
     }
@@ -2058,7 +2100,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'target_group_mismatch',
-      message: `resolvedQuery semantic target=${targetObjectType} does not match terminal group=${terminalGroupType}.`,
+      message: `queryDraft semantic target=${targetObjectType} does not match terminal group=${terminalGroupType}.`,
       details: { targetObjectType, terminalGroupType }
     };
   }
@@ -2069,7 +2111,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: 'invalid_query_mode',
-      message: `resolvedQuery.service=${serviceName} only accepts queryModeKey=${allowedQueryModes.join('|')}; received ${queryModeKey}.`,
+      message: `queryDraft.service=${serviceName} only accepts queryModeKey=${allowedQueryModes.join('|')}; received ${queryModeKey}.`,
       details: {
         service: serviceName,
         queryModeKey,
@@ -2085,7 +2127,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     return {
       ok: false,
       reason: argumentPolicyValidation.reason || 'invalid_group_argument_policy',
-      message: argumentPolicyValidation.message || 'resolvedQuery group argument policy validation failed.',
+      message: argumentPolicyValidation.message || 'queryDraft group argument policy validation failed.',
       details: argumentPolicyValidation.details || null,
       resolvedQuery: normalizedResolvedQuery
     };
@@ -2159,14 +2201,14 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
     responseType: 'BOUNDARY_VALIDATION_ERROR',
     prompt: normalizePrompt(args),
     decision: {
-      next_action: 'RECONSTRUCT_RESOLVED_QUERY',
+      next_action: 'REPAIR_QUERY_DRAFT',
       reason: validation.reason || 'invalid_resolved_query',
-      message: validation.message || 'resolvedQuery failed plugin boundary validation.'
+      message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     error: {
-      code: 'UPSTREAM_RESOLVED_QUERY_INVALID',
+      code: 'UPSTREAM_QUERY_DRAFT_INVALID',
       reason: validation.reason || 'invalid_resolved_query',
-      message: validation.message || 'resolvedQuery failed plugin boundary validation.'
+      message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     allowedServices,
     expectedQueryModeKey: String(validation?.expectedQueryModeKey || '').trim()
@@ -2199,6 +2241,58 @@ function buildQueryScopeClarificationQuestion(reason = '', details = {}) {
   return '';
 }
 
+function evaluatePluginQueryDecision(prompt = '', queryDraft = null, validation = undefined) {
+  return napmQueryDecisionPolicy().evaluateQueryDecision({
+    prompt,
+    queryDraft,
+    validation
+  });
+}
+
+function buildQueryDecisionToolResult(decision = {}, args = {}) {
+  const prompt = normalizePrompt(args)
+    || String(args?.resolvedQuery?.userRequirement || '').trim();
+  const displayText = String(
+    decision.clarifyingQuestion
+    || decision.rejectionMessage
+    || '当前查询无法执行，请补充查询条件后重试。'
+  ).trim();
+  const responseType = decision.action === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION
+    ? 'clarification_required'
+    : 'query_rejected';
+  return {
+    ok: true,
+    source: 'napm_openclaw_plugin_query_decision',
+    responseType,
+    responseMode: 'verbatim_display_text',
+    prompt,
+    displayText,
+    summary: {
+      mode: decision.action,
+      title: decision.action === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION
+        ? '需要补充查询范围'
+        : '当前查询不受支持',
+      highlights: [displayText],
+      rowCount: 0,
+      empty: true,
+      displayText
+    },
+    decision: {
+      action: decision.action,
+      next_action: decision.action,
+      outcome: decision.outcome,
+      reasonCode: decision.reasonCode,
+      reason: decision.reason,
+      missingFields: Array.isArray(decision.missingFields) ? decision.missingFields : [],
+      clarifyingQuestion: decision.clarifyingQuestion || null,
+      clarifying_question: decision.clarifyingQuestion || null,
+      rejectionMessage: decision.rejectionMessage || null,
+      southboundAllowed: false
+    },
+    queryDraft: normalizeObject(decision?.queryDraft || args?.resolvedQuery) || null
+  };
+}
+
 function buildNapmSkillExecutionFailureReply() {
   return [
     'NAPM 查询工具执行失败，本次没有取得有效数据。',
@@ -2211,6 +2305,61 @@ function buildResolvedQueryValidationFailureReply() {
     '当前查询参数未构造完整，本次没有执行 NAPM 查询。',
     '请重新发起查询；如持续失败，请联系维护人员检查查询参数构造链路。'
   ].join('\n');
+}
+
+function buildLifecycleBindingFailureReply() {
+  return [
+    '当前回复无法确认所属的 NAPM 查询轮次，已阻止未经验证的查询内容。',
+    '请重新发起查询。'
+  ].join('\n');
+}
+
+function buildLifecycleBindingFailureResult() {
+  const displayText = buildLifecycleBindingFailureReply();
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin_query_turn',
+    responseType: 'LIFECYCLE_BINDING_REQUIRED',
+    displayText,
+    error: {
+      code: 'LIFECYCLE_TURN_BINDING_REQUIRED',
+      message: displayText,
+      retryable: false
+    }
+  };
+}
+
+function buildQueryToolAuthorizationFailureResult(code = '') {
+  const normalizedCode = String(code || '').trim() || 'QUERY_TOOL_AUTHORIZATION_FAILED';
+  const displayText = normalizedCode === 'QUERY_TURN_ROUTE_MISMATCH'
+    ? '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。'
+    : '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。';
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin_query_turn',
+    responseType: normalizedCode,
+    displayText,
+    error: {
+      code: normalizedCode,
+      message: displayText,
+      retryable: false
+    }
+  };
+}
+
+function buildClarificationContextMissingResult() {
+  const displayText = '未找到可继续的查询澄清上下文，请重新发起完整查询。';
+  return {
+    ok: false,
+    source: 'napm_openclaw_plugin_query_turn',
+    responseType: 'CLARIFICATION_CONTEXT_MISSING',
+    displayText,
+    error: {
+      code: 'CLARIFICATION_CONTEXT_MISSING',
+      message: displayText,
+      retryable: false
+    }
+  };
 }
 
 function buildNapmSkillExecutionFailureResult(args = {}) {
@@ -2520,7 +2669,7 @@ function validateCompositeApplicationInventoryResolvedQuery(prompt = '', resolve
     reason: 'composite_application_inventory_contract_mismatch',
     expectedService: 'groups',
     expectedQueryModeKey: 'metadata',
-    message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，resolvedQuery 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps，也不能携带 argument:"all"。'
+    message: '“系统中有哪些自动识别的应用”是 CompositeApplication 元数据清单查询，queryDraft 必须使用 service=groups、queryModeKey=metadata、groups=[{type:"CompositeApplication"}]，不能使用 overview/auto_apps，也不能携带 argument:"all"。'
   };
 }
 
@@ -2557,7 +2706,7 @@ function validateObjectInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
     reason: 'object_inventory_contract_mismatch',
     expectedService: 'groups',
     expectedQueryModeKey: 'metadata',
-    message: `This is an NAPM object_inventory query for ${expectedType}. resolvedQuery must use service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"${expectedType}"}], and must not use overview/topValues or argument:"all".`
+    message: `This is an NAPM object_inventory query for ${expectedType}. queryDraft must use service=groups, queryModeKey=metadata, semanticConstraints.operation=metadata_list, groups=[{type:"${expectedType}"}], and must not use overview/topValues or argument:"all".`
   };
 }
 
@@ -2610,15 +2759,7 @@ function validateApplicationTrafficScopeResolvedQuery(prompt = '', resolvedQuery
 }
 
 function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
-  if (getQuerySemanticGuardMode() === 'off') {
-    return { ok: true };
-  }
-
-  return [
-    validateApplicationTrafficScopeResolvedQuery(prompt, resolvedQuery),
-    validateCompositeApplicationInventoryResolvedQuery(prompt, resolvedQuery),
-    validateObjectInventoryResolvedQuery(prompt, resolvedQuery)
-  ].find((validation) => validation && validation.ok === false) || { ok: true };
+  return napmQueryDecisionPolicy().evaluateHighRiskSemanticConsistency(prompt, resolvedQuery);
 }
 
 function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
@@ -2798,17 +2939,23 @@ function rememberSkillExecutionFailureForTurn(
 }
 
 function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
-  const message = validation.message || 'resolvedQuery failed plugin validation.';
+  const message = validation.message || 'queryDraft failed plugin validation.';
   if (String(validation?.reason || '').trim() === 'application_scope_mismatch') {
+    if (String(validation?.details?.service || '').trim() === 'topValues') {
+      if (failureRecord?.terminal || failureRecord?.phase === 'TERMINAL') {
+        return `${message} Query repair budget exhausted; stop retrying and report this validation failure.`;
+      }
+      return `${message} OpenClaw may repair queryDraft once by using topValues with DefinedApp. Do not ask for a specific application name and do not use TotalTraffic.`;
+    }
     return `${message} 请停止重试工具，直接向用户追问具体应用名称；如果用户要看全局流量，应重新明确询问“总流量趋势”。`;
   }
   if (String(validation?.reason || '').trim() === 'group_argument_required') {
     return `${message} 请停止重试工具，直接向用户追问具体对象名称。`;
   }
-  if (failureRecord?.terminal) {
+  if (failureRecord?.terminal || failureRecord?.phase === 'TERMINAL') {
     return `${message} Query repair budget exhausted; stop reconstructing and report this failure.`;
   }
-  return `${message} OpenClaw may reconstruct resolvedQuery once.`;
+  return `${message} OpenClaw may repair queryDraft once.`;
 }
 
 function prepareSkillExecutionArgs(args = {}) {
@@ -2818,8 +2965,13 @@ function prepareSkillExecutionArgs(args = {}) {
     prepared.userQuery = prompt;
   }
 
+  if (!isPlainObject(prepared.resolvedQuery) && isPlainObject(prepared.queryDraft)) {
+    prepared.resolvedQuery = prepared.queryDraft;
+  }
+
   if (isPlainObject(prepared.resolvedQuery)) {
     prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
+    prepared.queryDraft = prepared.resolvedQuery;
   }
 
   return applyPathPreflightToSkillArgs(prepared);
@@ -2857,21 +3009,31 @@ function getGuardKeys(ctx = {}) {
     ? `conversation:${conversationParts.join(':')}`
     : '';
   const keys = [
+    buildGuardKey('run-id', ctx.runId),
+    buildGuardKey('message-id', ctx.messageId),
     buildGuardKey('session-key', ctx.sessionKey),
     buildGuardKey('session-id', ctx.sessionId),
-    conversationKey,
-    buildGuardKey('run-id', ctx.runId),
-    buildGuardKey('message-id', ctx.messageId)
+    conversationKey
   ].filter(Boolean);
   return keys.filter((value, index) => keys.indexOf(value) === index);
 }
 
 function getGuardState(ctx = {}) {
-  for (const key of getGuardKeys(ctx)) {
+  const lifecycleKeys = [
+    buildGuardKey('run-id', ctx.runId),
+    buildGuardKey('message-id', ctx.messageId)
+  ].filter(Boolean);
+  for (const key of lifecycleKeys) {
     const state = napmGuardState.get(key);
     if (state) {
       return state;
     }
+  }
+  if (lifecycleKeys.length > 0) return null;
+
+  for (const key of getGuardKeys(ctx)) {
+    const state = napmGuardState.get(key);
+    if (state) return state;
   }
   return null;
 }
@@ -2972,8 +3134,58 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
   };
 }
 
-function getActiveTurnId(conversationState = null, guardState = null) {
-  return normalizeTurnId(conversationState?.turnId || guardState?.turnId || '');
+function getActiveTurnId(_conversationState = null, guardState = null) {
+  return normalizeTurnId(guardState?.turnId || '');
+}
+
+function hasLifecycleIdentity(ctx = {}) {
+  return Boolean(normalizeTraceId(ctx?.runId) || normalizeTraceId(ctx?.messageId));
+}
+
+function getRunBoundTurnId(ctx = {}, conversationKey = '', guardState = null, _conversationState = null) {
+  const scope = String(conversationKey || '').trim();
+  const runId = normalizeTraceId(ctx?.runId);
+  const messageId = normalizeTraceId(ctx?.messageId);
+  const guardTurnId = normalizeTurnId(guardState?.turnId);
+  if (
+    guardTurnId
+    && (
+      (runId && normalizeTraceId(guardState?.runId) === runId)
+      || (messageId && normalizeTraceId(guardState?.messageId) === messageId)
+    )
+  ) {
+    return guardTurnId;
+  }
+
+  if (scope && runId) {
+    const runTurnId = queryTurnCoordinator.resolveTurnId(scope, runId);
+    if (runTurnId) return runTurnId;
+  }
+
+  if (scope && messageId) {
+    const messageTurnId = queryTurnCoordinator.resolveTurnId(scope, messageId);
+    if (messageTurnId) return messageTurnId;
+  }
+
+  return '';
+}
+
+function getQueryTurnForContext(ctx = {}, conversationKey = '', guardState = null, conversationState = null) {
+  const turnId = getRunBoundTurnId(ctx, conversationKey, guardState, conversationState);
+  return {
+    turnId,
+    turn: turnId ? queryTurnCoordinator.get(conversationKey, turnId) : null
+  };
+}
+
+function isPendingClarificationAnswer(content = '', pending = null) {
+  const text = String(content || '').trim();
+  if (!text || !pending || text.length > 128 || /[\r\n]/.test(text)) return false;
+  if (!Array.isArray(pending.missingFields) || !pending.missingFields.includes('groups[0].argument')) {
+    return false;
+  }
+  if (parseOpenClawControlCommand(text) || /[？?]$/.test(text)) return false;
+  return !/(?:最近|过去|趋势|走势|平均|排行|排名|有哪些|有什么|多少|如何|怎么样|查询|查看|总流量|全局流量|告警|报告|导出)/i.test(text);
 }
 
 function derivePromptGuardState(activePrompt = '', conversationState = null, guardState = null) {
@@ -3080,6 +3292,7 @@ function clearNapmConversationScope(ctx = {}) {
     scope,
     conversationState: napmConversationState.delete(scope),
     operationRecords: napmOperationState.clearScope(scope),
+    queryTurns: queryTurnCoordinator.clearScope(scope),
     assistantOutputs: assistantOutputLedger.clearScope(scope),
     reportSources: napmReportSourceStore.clearScope(scope),
     trustedContexts: napmTrustedToolContextStore.clearScope(scope),
@@ -3173,7 +3386,7 @@ function bindTrustedToolContext(event = {}, ctx = {}) {
   const toolName = String(event.toolName || '').trim() || 'napm-tool';
   const conversationState = napmConversationState.get(conversationKey) || null;
   const guardState = getGuardState(ctx);
-  const turnId = getActiveTurnId(conversationState, guardState);
+  const turnId = getRunBoundTurnId(ctx, conversationKey, guardState, conversationState);
   const traceId = `napm-${crypto.randomUUID()}`;
   if (!traceId) {
     return '';
@@ -3236,6 +3449,22 @@ function getTrustedTurnId(args = {}) {
 
   const persistentRecord = napmTrustedToolContextStore.get(traceId);
   return persistentRecord.ok ? normalizeTurnId(persistentRecord.turnId) : '';
+}
+
+function getTrustedToolName(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) {
+    return '';
+  }
+  pruneTrustedToolContexts();
+  const record = napmTrustedToolContextByTraceId.get(traceId) || null;
+  const memoryToolName = String(record?.toolName || '').trim();
+  if (memoryToolName) {
+    return memoryToolName;
+  }
+
+  const persistentRecord = napmTrustedToolContextStore.get(traceId);
+  return persistentRecord.ok ? String(persistentRecord.toolName || '').trim() : '';
 }
 
 function getMediaUrlsFromOutgoingEvent(event = {}) {
@@ -3337,9 +3566,13 @@ function dedupeOutgoingMediaForConversation(event = {}, ctx = {}) {
   if (!conversationKey) {
     return null;
   }
-  const turnId = getActiveTurnId(
-    napmConversationState.get(conversationKey) || null,
-    getGuardState(ctx)
+  const conversationState = napmConversationState.get(conversationKey) || null;
+  const guardState = getGuardState(ctx);
+  const turnId = getRunBoundTurnId(
+    ctx,
+    conversationKey,
+    guardState,
+    conversationState
   );
   const now = Date.now();
   const existing = napmSentMediaByConversation.get(conversationKey) || new Map();
@@ -5741,7 +5974,7 @@ function buildRemovedDirectToolReply(toolName = '') {
   const normalized = String(toolName || '').trim() || 'legacy NAPM direct tool';
   return {
     ok: false,
-    error: `${normalized} has been removed from this deployment. Use napm-skill-query and let OpenClaw construct structured resolvedQuery instead.`,
+    error: `${normalized} has been removed from this deployment. Use napm-skill-query and let OpenClaw construct a structured queryDraft instead.`,
     nextAction: 'USE_NAPM_SKILL_QUERY'
   };
 }
@@ -5854,7 +6087,7 @@ function buildAlertPacketSkillRequiredReply() {
 function buildHierarchySkillRequiredReply() {
   return [
     '当前问题属于 NAPM 下钻/层级目录查询，不能手动读取 groups-tree.static.json、不能只看某个 children=[] 节点，也不能用组合路径推测回答。',
-    '必须先由 OpenClaw 构造 resolvedQuery：service=drilldownCatalog，groups=[{type:"目标对象"}]，再调用 napm-skill-query。',
+    '必须先由 OpenClaw 构造 queryDraft：service=drilldownCatalog，groups=[{type:"目标对象"}]，再调用 napm-skill-query。',
     '本轮没有拿到有效的 drilldownCatalog skill 结果，因此不输出推测性下钻路径。'
   ].join('\n');
 }
@@ -6057,10 +6290,10 @@ function buildAlertExecutionTraceReplyFromRememberedRecord(record = null) {
 
 function selectActivePromptText(conversationState = null, guardState = null, fallbackPrompt = '') {
   const authoritativeCandidates = [
-    conversationState?.canonicalPrompt,
     guardState?.canonicalPrompt,
-    conversationState?.prompt,
-    guardState?.prompt
+    guardState?.prompt,
+    conversationState?.canonicalPrompt,
+    conversationState?.prompt
   ]
     .map((item) => String(item || '').trim())
     .filter(isMeaningfulText);
@@ -6106,6 +6339,93 @@ function buildFallbackSendingResult(content, conversationKey = '', conversationS
     return { cancel: true };
   }
   return { content };
+}
+
+function ensureAuthoritativeQueryTurnForFinalOutput({
+  ctx = {},
+  conversationKey = '',
+  conversationState = null,
+  guardState = null,
+  activePrompt = ''
+} = {}) {
+  const context = getQueryTurnForContext(ctx, conversationKey, guardState, conversationState);
+  const current = context.turn;
+  if (!current || current.route !== QUERY_ROUTES.NAPM_QUERY || current.phase === 'TERMINAL') {
+    return context;
+  }
+
+  if (current.phase === 'RECEIVED' && !current.decision && current.attempts.length === 0) {
+    const turn = queryTurnCoordinator.recordContractViolation({
+      scope: conversationKey,
+      turnId: context.turnId,
+      reasonCode: 'MODEL_OMITTED_REQUIRED_TOOL',
+      finalContent: buildSkillRequiredReplyForPrompt(current.semanticQuestion || activePrompt)
+    });
+    appendPluginAuditEvent('napm_query_contract_violation_recorded', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      reasonCode: 'MODEL_OMITTED_REQUIRED_TOOL'
+    });
+    return { turnId: context.turnId, turn };
+  }
+
+  if (current.phase === 'REPAIR_PENDING') {
+    const turn = queryTurnCoordinator.recordRepairAbandoned({
+      scope: conversationKey,
+      turnId: context.turnId,
+      result: current.result,
+      finalContent: buildResolvedQueryValidationFailureReply()
+    });
+    appendPluginAuditEvent('napm_query_repair_abandoned', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      attemptCount: current.attempts.length
+    });
+    return { turnId: context.turnId, turn };
+  }
+
+  if (current.phase === 'DECIDED') {
+    const turn = queryTurnCoordinator.recordContractViolation({
+      scope: conversationKey,
+      turnId: context.turnId,
+      reasonCode: 'QUERY_TOOL_EXECUTION_NOT_STARTED',
+      finalContent: buildSkillRequiredReplyForPrompt(current.semanticQuestion || activePrompt)
+    });
+    appendPluginAuditEvent('napm_query_execution_not_started', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      action: current.action || null
+    });
+    return { turnId: context.turnId, turn };
+  }
+
+  if (current.phase === 'EXECUTING') {
+    const failureResult = {
+      ok: false,
+      source: 'napm_openclaw_plugin_query_turn',
+      responseType: 'QUERY_EXECUTION_RESULT_MISSING',
+      error: {
+        code: 'QUERY_EXECUTION_RESULT_MISSING',
+        message: 'Query execution reached final output without a result.'
+      },
+      resolvedQuery: normalizeObject(current.queryDraft) || null
+    };
+    const turn = queryTurnCoordinator.recordFailure({
+      scope: conversationKey,
+      turnId: context.turnId,
+      outcome: QUERY_OUTCOMES.EXECUTION_FAILURE,
+      result: failureResult,
+      finalContent: buildNapmSkillExecutionFailureReply()
+    });
+    appendPluginAuditEvent('napm_query_execution_result_missing', {
+      conversationKey: conversationKey || null,
+      turnId: context.turnId || null,
+      attemptCount: current.attempts.length
+    });
+    return { turnId: context.turnId, turn };
+  }
+
+  return context;
 }
 
 function shouldCancelNapmPreviewMessage(event, ctx, activePrompt = '', guardState = null, rememberedRecord = null) {
@@ -6276,6 +6596,90 @@ function makeToolResult(result, reportSourceId = '') {
   };
 }
 
+function isSkillClarificationResult(result = null) {
+  const responseType = String(result?.responseType || '').trim();
+  const summaryMode = String(result?.summary?.mode || '').trim();
+  const decisionAction = String(
+    result?.decision?.action
+    || result?.decision?.next_action
+    || result?.assistantDecision?.action
+    || result?.assistantDecision?.next_action
+    || ''
+  ).trim();
+  return responseType === 'clarification_required'
+    || summaryMode === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION
+    || decisionAction === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION;
+}
+
+function normalizeSkillClarificationResult(result = {}) {
+  const assistantDecision = isPlainObject(result?.assistantDecision)
+    ? result.assistantDecision
+    : {};
+  const narrationDecision = isPlainObject(result?.narrationInput?.decision)
+    ? result.narrationInput.decision
+    : {};
+  const originalDecision = isPlainObject(result?.decision) ? result.decision : {};
+  const clarifyingQuestion = String(
+    originalDecision.clarifyingQuestion
+    || originalDecision.clarifying_question
+    || assistantDecision.clarifyingQuestion
+    || assistantDecision.clarifying_question
+    || assistantDecision.question
+    || narrationDecision.clarifyingQuestion
+    || narrationDecision.clarifying_question
+    || narrationDecision.question
+    || result?.displayText
+    || result?.summary?.displayText
+    || '请补充查询范围。'
+  ).trim();
+  const missingFields = [
+    originalDecision.missingFields,
+    assistantDecision.missingFields,
+    narrationDecision.missingFields
+  ].find(Array.isArray) || [];
+  const reasonCode = String(
+    originalDecision.reasonCode
+    || assistantDecision.reasonCode
+    || narrationDecision.reasonCode
+    || 'SKILL_CLARIFICATION_REQUIRED'
+  ).trim();
+
+  return {
+    ...result,
+    ok: true,
+    error: null,
+    responseType: 'clarification_required',
+    displayText: String(result?.displayText || clarifyingQuestion).trim(),
+    decision: {
+      ...originalDecision,
+      action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      next_action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+      outcome: QUERY_OUTCOMES.CLARIFICATION,
+      reasonCode,
+      missingFields,
+      clarifyingQuestion,
+      clarifying_question: clarifyingQuestion,
+      southboundAllowed: false
+    }
+  };
+}
+
+function buildQueryExecutionInProgressResult(turn = null) {
+  return {
+    ok: true,
+    source: 'napm_openclaw_plugin_query_turn',
+    responseType: 'QUERY_EXECUTION_IN_PROGRESS',
+    displayText: '本轮 NAPM 查询正在执行，已忽略重复 Tool 调用。',
+    decision: {
+      action: QUERY_ACTIONS.EXECUTE_QUERY,
+      next_action: 'WAIT_FOR_QUERY_RESULT',
+      outcome: null,
+      southboundAllowed: false
+    },
+    queryDraft: normalizeObject(turn?.queryDraft) || null
+  };
+}
+
 function createSkillToolDefinition() {
   const queryContract = getResolutionSpecQueryContract() || {};
   const allowedServices = getResolutionSpecServiceNames();
@@ -6292,26 +6696,30 @@ function createSkillToolDefinition() {
     .filter(Boolean)
     .join('; ');
   const overviewScenes = getResolutionSpecRoutingRules()?.overviewScenes || [];
-  const acceptedInputs = Array.isArray(queryContract.acceptedInputs)
-    ? queryContract.acceptedInputs.join(', ')
-    : 'payload.resolvedQuery';
+  const acceptedInputs = 'queryDraft, clarificationAnswer, resolvedQuery (legacy alias only)';
   const timeConstructionRules = Array.isArray(queryContract.constructionRules)
     ? queryContract.constructionRules.join(' ')
     : 'Executable timestamps must be root-level start/end.';
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
-    description: `Run the NAPM skill executor with a structured resolvedQuery. PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. A single-object DefinedApp/WebApplication trend or average query requires groups[0].argument with the concrete object name; missing names must be clarified. Plain 应用流量趋势/平均值 means DefinedApp, never TotalTraffic; without a concrete application name, ask the user to clarify instead of querying. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}] without an argument. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
+    description: `Run the NAPM query decision and execution adapter with a structured queryDraft (legacy alias: resolvedQuery). PRIMARY tool for: ranking/discovery (哪个XX最多/排行/TopN/排名), single-metric lookups (XX的400数量/延时/吞吐值), average/trend queries, inventory (有哪些业务/对象), and drilldown. For fault diagnosis of a SPECIFIC named object, use napm-fault-diagnosis instead. Accepted structured input channel: ${acceptedInputs}; a clarification continuation may instead provide clarificationAnswer, and the plugin restores the pending Query Draft for the bound Query Turn. prompt is trace-only and never constructs or repairs a query. Service contracts: ${requiredFieldsByService}. Inventory example: service=groups, queryModeKey=metadata, groups=[{type:"WebApplication"}] for 业务/业务系统 or groups=[{type:"DefinedApp"}] for 应用/已定义应用. Every NAPM data query must call this tool, including a queryDraft that is missing a user-supplied object name. The tool returns a normal clarification result without calling the Query Skill or southbound API. Plain 应用流量趋势/平均值 means DefinedApp, never TotalTraffic. Global/overall traffic trends require service=timeValues and groups=[{type:"TotalTraffic"}] without an argument. TPIO is throughput rate; BYTIO is accumulated byte traffic. Time contract: ${timeConstructionRules}`,
     parameters: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'Original user prompt retained for traceability after resolvedQuery has been constructed.' },
-        userQuery: { type: 'string', description: 'Alias of prompt for traceability only; do not rely on this instead of resolvedQuery for structured NAPM queries.' },
-        decision: { type: 'object', description: 'Optional structured decision object.', additionalProperties: true },
+        prompt: { type: 'string', description: 'Original user prompt retained for traceability after queryDraft has been constructed.' },
+        userQuery: { type: 'string', description: 'Alias of prompt for traceability only; do not rely on this instead of queryDraft for structured NAPM queries.' },
+        clarificationAnswer: { type: 'string', minLength: 1, description: 'Current user answer to a pending Query Turn clarification. Valid only for the bound continuation turn; the plugin restores and completes the pending Query Draft.' },
+        decision: { type: 'object', description: 'Legacy trace field. QueryDecisionPolicy ignores caller-supplied actions and computes the authoritative decision locally.', additionalProperties: true },
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
+        queryDraft: {
+          type: 'object',
+          description: 'Structured query interpretation evaluated by QueryDecisionPolicy. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to a Resolved Query.',
+          additionalProperties: true
+        },
         resolvedQuery: {
           type: 'object',
-          description: 'Required fully resolved semantic query. For relative time, provide a concrete timeRange.key and let plugin execute materialize root-level start/end from the server clock. For fixed time, provide minute-aligned Unix-second root-level start/end and executionOptions.timeMode=fixed. prompt is never used to fill missing query fields.',
+          description: 'Legacy alias of queryDraft during migration. For relative time, provide a concrete timeRange.key and let plugin execute materialize root-level start/end from the server clock. For fixed time, provide minute-aligned Unix-second root-level start/end and executionOptions.timeMode=fixed. prompt is never used to fill missing query fields.',
           properties: {
             service: {
               type: 'string',
@@ -6404,18 +6812,161 @@ function createSkillToolDefinition() {
         },
         sessionState: { type: 'object', description: 'Optional multi-turn session state.', additionalProperties: true },
         clarificationContext: { type: 'object', description: 'Optional clarification state.', additionalProperties: true },
-        policyAction: { type: 'string', description: 'Optional upstream policy action override.' }
+        policyAction: { type: 'string', description: 'Ignored legacy field. Callers cannot override QueryDecisionPolicy.' }
       },
-      required: ['resolvedQuery'],
+      anyOf: [
+        { required: ['queryDraft'] },
+        { required: ['resolvedQuery'] },
+        { required: ['clarificationAnswer'] }
+      ],
       additionalProperties: false
     },
-    execute: async (_toolCallId, args) => {
+    execute: async (toolCallId, args) => {
       const preparedArgs = prepareSkillExecutionArgs(args || {});
+      const trustedTraceId = normalizeTraceId(preparedArgs?.traceId);
       const conversationKey = getTrustedConversationKey(preparedArgs);
       const turnId = getTrustedTurnId(preparedArgs);
-      const traceId = normalizeTraceId(preparedArgs?.traceId) || buildNapmTraceId({}, preparedArgs);
+      const trustedToolName = getTrustedToolName(preparedArgs);
+      const traceId = trustedTraceId || buildNapmTraceId({}, preparedArgs);
+      let currentQueryTurn = conversationKey && turnId
+        ? queryTurnCoordinator.get(conversationKey, turnId)
+        : null;
+
+      if (!trustedTraceId || !conversationKey || !turnId) {
+        appendPluginAuditEvent('napm_query_tool_execute_binding_missing', {
+          traceId: trustedTraceId || null,
+          conversationKey: conversationKey || null,
+          turnId: turnId || null,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildLifecycleBindingFailureResult());
+      }
+
+      if (trustedToolName !== 'napm-skill-query') {
+        appendPluginAuditEvent('napm_query_tool_execute_identity_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          trustedToolName: trustedToolName || null,
+          expectedToolName: 'napm-skill-query',
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TOOL_IDENTITY_MISMATCH'
+        ));
+      }
+
+      if (currentQueryTurn && currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
+        appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          route: currentQueryTurn.route || null,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TURN_ROUTE_MISMATCH'
+        ));
+      }
+
+      const clarificationAnswer = String(preparedArgs?.clarificationAnswer || '').trim();
+      if (clarificationAnswer && !currentQueryTurn?.resumedFromClarification) {
+        const resumedTurn = queryTurnCoordinator.resumePending({
+          scope: conversationKey,
+          turnId,
+          answer: clarificationAnswer
+        });
+        if (!resumedTurn) {
+          appendPluginAuditEvent('napm_query_clarification_context_missing', {
+            traceId,
+            conversationKey,
+            turnId,
+            toolCallId: String(toolCallId || '').trim() || null
+          });
+          return makeToolResult(buildClarificationContextMissingResult());
+        }
+        currentQueryTurn = resumedTurn;
+        preparedArgs.prompt = resumedTurn.semanticQuestion || resumedTurn.question || clarificationAnswer;
+        preparedArgs.userQuery = preparedArgs.prompt;
+        preparedArgs.queryDraft = resumedTurn.queryDraft;
+        preparedArgs.resolvedQuery = resumedTurn.queryDraft;
+      }
+
+      if (!currentQueryTurn) {
+        appendPluginAuditEvent('napm_query_tool_execute_turn_missing', {
+          traceId,
+          conversationKey,
+          turnId,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildLifecycleBindingFailureResult());
+      }
+
+      if (currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
+        appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
+          traceId,
+          conversationKey,
+          turnId,
+          route: currentQueryTurn.route || null,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          'QUERY_TURN_ROUTE_MISMATCH'
+        ));
+      }
 
       try {
+        if (currentQueryTurn?.phase === 'TERMINAL') {
+          const failedOutcomes = new Set([
+            QUERY_OUTCOMES.VALIDATION_FAILURE,
+            QUERY_OUTCOMES.EXECUTION_FAILURE,
+            QUERY_OUTCOMES.CONTRACT_VIOLATION
+          ]);
+          const terminalDecisionResult = (
+            currentQueryTurn.decision
+            && [QUERY_OUTCOMES.CLARIFICATION, QUERY_OUTCOMES.REJECTION].includes(currentQueryTurn.outcome)
+          )
+            ? buildQueryDecisionToolResult(currentQueryTurn.decision, {
+                ...preparedArgs,
+                queryDraft: currentQueryTurn.queryDraft,
+                resolvedQuery: currentQueryTurn.queryDraft
+              })
+            : null;
+          const replayResult = terminalDecisionResult
+            || (isPlainObject(currentQueryTurn.result)
+              ? currentQueryTurn.result
+              : {
+                ok: !failedOutcomes.has(currentQueryTurn.outcome),
+                source: 'napm_openclaw_plugin_query_turn',
+                responseType: `QUERY_TURN_${currentQueryTurn.outcome || 'TERMINAL'}`,
+                displayText: currentQueryTurn.finalContent,
+                decision: {
+                  next_action: currentQueryTurn.action,
+                  outcome: currentQueryTurn.outcome,
+                  southboundAllowed: false
+                },
+                resolvedQuery: normalizeObject(currentQueryTurn.queryDraft) || null
+              });
+          appendPluginAuditEvent('napm_query_terminal_tool_replay_suppressed', {
+            traceId,
+            conversationKey,
+            turnId,
+            toolCallId: String(toolCallId || '').trim() || null,
+            outcome: currentQueryTurn.outcome || null
+          });
+          return makeToolResult(replayResult);
+        }
+
+        if (currentQueryTurn?.phase === 'EXECUTING') {
+          appendPluginAuditEvent('napm_query_overlapping_tool_replay_suppressed', {
+            traceId,
+            conversationKey,
+            turnId,
+            toolCallId: String(toolCallId || '').trim() || null
+          });
+          return makeToolResult(buildQueryExecutionInProgressResult(currentQueryTurn));
+        }
+
         const timeResolverPath = path.join(
           OPENCLAW_SKILLS_ROOT,
           'openclaw-napm-query/src/shared/timeResolver'
@@ -6428,91 +6979,173 @@ function createSkillToolDefinition() {
         );
         if (isPlainObject(validation.resolvedQuery)) {
           preparedArgs.resolvedQuery = validation.resolvedQuery;
+          preparedArgs.queryDraft = validation.resolvedQuery;
         }
-        if (!validation.ok) {
+        const semanticPrompt = String(
+          currentQueryTurn?.semanticQuestion
+          || normalizePrompt(preparedArgs)
+          || preparedArgs?.resolvedQuery?.userRequirement
+          || ''
+        ).trim();
+        const queryDecision = evaluatePluginQueryDecision(
+          semanticPrompt,
+          preparedArgs?.resolvedQuery,
+          validation
+        );
+        appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
+          traceId,
+          prompt: semanticPrompt,
+          phase: 'execution',
+          action: queryDecision.action,
+          outcome: queryDecision.outcome,
+          reasonCode: queryDecision.reasonCode,
+          southboundAllowed: queryDecision.southboundAllowed,
+          resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
+        });
+        if (queryDecision.outcome === QUERY_OUTCOMES.VALIDATION_FAILURE) {
+          const decisionValidation = queryDecision.validation || validation;
+          const failureResult = buildResolvedQueryBoundaryFailureResult(
+            decisionValidation,
+            preparedArgs
+          );
+          failureResult.decision = {
+            action: queryDecision.action,
+            next_action: queryDecision.action,
+            outcome: queryDecision.outcome,
+            reasonCode: queryDecision.reasonCode,
+            southboundAllowed: false
+          };
+          queryTurnCoordinator.recordValidationFailure({
+            scope: conversationKey,
+            turnId,
+            attemptId: String(toolCallId || '').trim() || `execution-validation-${crypto.randomUUID()}`,
+            queryDraft: preparedArgs?.resolvedQuery,
+            validation: decisionValidation,
+            result: failureResult,
+            finalContent: buildResolvedQueryValidationFailureReply()
+          });
           appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
             traceId,
-            prompt: normalizePrompt(preparedArgs),
-            reason: validation.reason || null,
-            message: validation.message || null,
+            prompt: semanticPrompt,
+            reason: decisionValidation.reason || null,
+            message: decisionValidation.message || null,
             resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
             resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
           });
-          const failureResult = buildResolvedQueryBoundaryFailureResult(validation, preparedArgs);
-          const failureRecord = rememberResolvedQueryFailureForTurn(
-            normalizePrompt(preparedArgs),
-            validation,
-            preparedArgs,
-            conversationKey,
-            turnId
-          );
-          if (failureRecord?.result) {
-            return makeToolResult(failureRecord.result);
-          }
           return makeToolResult(failureResult);
         }
 
-        // before_tool_call is not guaranteed to run for every OpenClaw execution
-        // path. Keep prompt/query scope validation at the tool boundary as well,
-        // so a malformed application trend can never reach the southbound API.
-        const semanticPrompt = normalizePrompt(preparedArgs)
-          || String(preparedArgs?.resolvedQuery?.userRequirement || '').trim();
-        const promptSemanticObservation = observePromptQuerySemanticMismatch(
-          semanticPrompt,
-          preparedArgs?.resolvedQuery
-        );
+        const decisionTurn = queryTurnCoordinator.recordDecision({
+          scope: conversationKey,
+          turnId,
+          route: QUERY_ROUTES.NAPM_QUERY,
+          question: semanticPrompt,
+          queryDraft: preparedArgs?.resolvedQuery,
+          decision: queryDecision,
+          attemptId: String(toolCallId || '').trim()
+        });
+        if (decisionTurn?.phase === 'EXECUTING') {
+          appendPluginAuditEvent('napm_query_overlapping_tool_replay_suppressed', {
+            traceId,
+            conversationKey,
+            turnId,
+            toolCallId: String(toolCallId || '').trim() || null
+          });
+          return makeToolResult(buildQueryExecutionInProgressResult(decisionTurn));
+        }
         if (
-          !promptSemanticObservation.ok
-          && (
-            getQuerySemanticGuardMode() === 'enforce'
-            || promptSemanticObservation.enforce === true
+          queryDecision.action === QUERY_ACTIONS.ASK_CLARIFYING_QUESTION
+          || (
+            queryDecision.action === QUERY_ACTIONS.REJECT_QUERY
+            && queryDecision.outcome === QUERY_OUTCOMES.REJECTION
           )
         ) {
-          appendPluginAuditEvent('napm_plugin_tool_execute_prompt_query_semantic_mismatch_observed', {
-            traceId,
-            prompt: semanticPrompt,
-            enforced: true,
-            reason: promptSemanticObservation.reason,
-            message: promptSemanticObservation.message,
-            resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
-            resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
-          });
-          const semanticArgs = semanticPrompt && !normalizePrompt(preparedArgs)
-            ? { ...preparedArgs, prompt: semanticPrompt }
-            : preparedArgs;
-          const failureRecord = rememberResolvedQueryFailureForTurn(
+          const decisionResult = buildQueryDecisionToolResult(queryDecision, preparedArgs);
+          rememberSkillResult(
             semanticPrompt,
-            promptSemanticObservation,
-            semanticArgs,
+            decisionResult,
             conversationKey,
+            'napm-skill-query',
             turnId
           );
-          appendPluginAuditEvent('napm_plugin_tool_execute_resolved_query_blocked', {
-            traceId,
-            prompt: semanticPrompt,
-            reason: promptSemanticObservation.reason || null,
-            message: promptSemanticObservation.message || null,
-            resolvedQuery: normalizeObject(preparedArgs?.resolvedQuery) || null,
-            resolvedQuerySummary: summarizeResolvedQueryForAudit(preparedArgs?.resolvedQuery)
-          });
-          if (failureRecord?.result) {
-            return makeToolResult(failureRecord.result);
-          }
-          return makeToolResult(buildResolvedQueryBoundaryFailureResult(
-            promptSemanticObservation,
-            semanticArgs
-          ));
+          return makeToolResult(decisionResult);
         }
-
-        napmOperationState.clearQueryFailureForTurn(conversationKey, turnId);
-        napmOperationState.clearSkillExecutionFailureForTurn(conversationKey, turnId);
-        const result = await napmQuerySkill().handleSkillCall(preparedArgs);
+        const executionAttemptId = String(toolCallId || '').trim()
+          || `execution-${crypto.randomUUID()}`;
+        const executionTurn = queryTurnCoordinator.beginExecution({
+          scope: conversationKey,
+          turnId,
+          attemptId: executionAttemptId,
+          queryDraft: preparedArgs?.resolvedQuery
+        });
+        const ownsExecution = executionTurn?.phase === 'EXECUTING'
+          && executionTurn.attempts.some((attempt) => (
+            attempt.attemptId === executionAttemptId
+            && attempt.kind === 'EXECUTION'
+            && attempt.status === 'STARTED'
+          ));
+        if (!ownsExecution) {
+          appendPluginAuditEvent('napm_query_execution_claim_rejected', {
+            traceId,
+            conversationKey,
+            turnId,
+            toolCallId: executionAttemptId,
+            phase: executionTurn?.phase || null
+          });
+          return makeToolResult(buildQueryExecutionInProgressResult(executionTurn));
+        }
+        const skillResult = await napmQuerySkill().handleSkillCall(preparedArgs);
+        const result = isSkillClarificationResult(skillResult)
+          ? normalizeSkillClarificationResult(skillResult)
+          : skillResult;
         const debugRecord = rememberDebugApi(
           normalizePrompt(preparedArgs),
           result,
           conversationKey,
           turnId
         );
+        if (result?.responseType === 'clarification_required' && result?.ok === true) {
+          const clarifyingQuestion = String(
+            result?.decision?.clarifyingQuestion
+            || result?.decision?.clarifying_question
+            || result?.displayText
+            || ''
+          ).trim();
+          queryTurnCoordinator.recordExecutionClarification({
+            scope: conversationKey,
+            turnId,
+            decision: {
+              action: QUERY_ACTIONS.ASK_CLARIFYING_QUESTION,
+              outcome: QUERY_OUTCOMES.CLARIFICATION,
+              reasonCode: String(result?.decision?.reasonCode || 'SKILL_CLARIFICATION_REQUIRED'),
+              missingFields: Array.isArray(result?.decision?.missingFields)
+                ? result.decision.missingFields
+                : [],
+              clarifyingQuestion,
+              southboundAllowed: false
+            },
+            result,
+            finalContent: String(result?.displayText || clarifyingQuestion).trim()
+          });
+        } else if (result?.ok === false || result?.error) {
+          queryTurnCoordinator.recordFailure({
+            scope: conversationKey,
+            turnId,
+            outcome: QUERY_OUTCOMES.EXECUTION_FAILURE,
+            result,
+            finalContent: buildNapmSkillExecutionFailureReply()
+          });
+        } else {
+          const authoritativeFinalContent = String(
+            makeTextReplyFromSkillResult(result)?.text || ''
+          ).trim();
+          queryTurnCoordinator.recordResult({
+            scope: conversationKey,
+            turnId,
+            result,
+            finalContent: authoritativeFinalContent
+          });
+        }
         return makeToolResult(result, debugRecord?.reportSourceId);
       } catch (error) {
         const failureResult = buildNapmSkillExecutionFailureResult(preparedArgs);
@@ -6530,6 +7163,13 @@ function createSkillToolDefinition() {
           conversationKey,
           turnId
         );
+        queryTurnCoordinator.recordFailure({
+          scope: conversationKey,
+          turnId,
+          outcome: QUERY_OUTCOMES.EXECUTION_FAILURE,
+          result: failureResult,
+          finalContent: buildNapmSkillExecutionFailureReply()
+        });
         return makeToolResult(failureResult);
       }
     }
@@ -7161,10 +7801,7 @@ function createMainflowQueryToolDefinition() {
 
 
 function buildNapmRoutingSystemContext(opts = {}) {
-  const queryContract = getResolutionSpecQueryContract() || {};
-  const acceptedInputs = Array.isArray(queryContract?.acceptedInputs)
-    ? queryContract.acceptedInputs.join(', ')
-    : 'payload.resolvedQuery';
+  const acceptedInputs = 'queryDraft, clarificationAnswer, resolvedQuery (legacy alias only)';
   const prompt = String(opts.prompt || '').trim();
 
   if (isPlatformIdentityPrompt(prompt)) {
@@ -7255,11 +7892,11 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── GENERAL BOUNDARY (always) ──
   rules.push(
     'You handle only system monitoring, NAPM query, anomaly diagnosis, and result interpretation. Non-monitoring (weather/chat/entertainment) → briefly redirect.',
-    'OpenClaw upstream owns resolvedQuery construction. Plugin forwards structured queries; skill executes them.',
-    'Accepted input: ' + acceptedInputs + '. Data queries require structured resolvedQuery, not raw prompt only.',
+    'OpenClaw upstream owns Query Draft construction. napm-skill-query evaluates the Query Decision; only EXECUTE_QUERY reaches the Query Skill and southbound API.',
+    'Accepted input: ' + acceptedInputs + ' (Tool adapter uses queryDraft with resolvedQuery as a legacy alias). Every NAPM data query must call napm-skill-query, including queries that need a user clarification. Raw prompt alone is not accepted.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
-    'Trend contract: service=timeValues requires a non-empty groups array. Plain 应用流量趋势/平均值 must use groups=[{type:"DefinedApp",argument:"具体应用名称"}]; if the name is missing, ask a clarification question and do not use TotalTraffic. Global/overall/total traffic trends use groups=[{type:"TotalTraffic"}]. A contextual time follow-up must submit a complete resolvedQuery; do not submit only changed time fields.',
+    'Trend contract: service=timeValues requires a non-empty groups array. Plain 应用流量趋势/平均值 must use groups=[{type:"DefinedApp"}]. When the name is missing, call napm-skill-query with that incomplete queryDraft; the tool returns the authoritative clarification and must not execute southbound. Never answer the clarification directly and never substitute TotalTraffic. Global/overall/total traffic trends use groups=[{type:"TotalTraffic"}]. A contextual time follow-up must submit a complete queryDraft; do not submit only changed time fields.',
     'Traffic semantics: 流量趋势/流量速率/吞吐/带宽 use TPIO (throughput rate). 流量/累计流量/流量大小/字节数 use BYTIO (accumulated byte traffic). TotalTraffic is the object scope, not a metric.',
     'Query construction rules → skills/openclaw-napm-query/references/query-construction.md; service and mode mapping → skills/openclaw-napm-query/references/service-modes.md.'
   );
@@ -7293,7 +7930,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
     'Prefer displayText/summary.displayText directly over paraphrasing.',
     'Never answer from stale memory. Base reply on fresh tool result from current turn.',
     'A valid empty query result is only evidence that the declared object, metric, and time range returned no data points. Do not speculate about collection failures, permissions, or data delay unless the result contains that failure classification.',
-    'Never claim data was queried by direct API/curl/exec/python. Say: use napm-skill-query with resolvedQuery.'
+    'Never claim data was queried by direct API/curl/exec/python. Say: use napm-skill-query with queryDraft.'
   );
 
   // ── REPORT EXPORT (always — small) ──
@@ -7386,8 +8023,36 @@ const plugin = {
         const analyzeAllCandidates = Boolean(batchContinuationPrompt);
         const effectivePrompt = continuationPrompt || content;
         const turnId = buildNapmTurnId();
+        const pendingClarification = conversationKey
+          ? queryTurnCoordinator.getPending(conversationKey)
+          : null;
+        const resumedTurn = isPendingClarificationAnswer(content, pendingClarification)
+          ? queryTurnCoordinator.resumePending({
+              scope: conversationKey,
+              turnId,
+              runId: normalizeTraceId(ctx?.runId),
+              answer: content
+            })
+          : null;
+        const baseState = buildConversationScopedGuardState(effectivePrompt, previousState);
+        const resumedTurnPolicy = resumedTurn
+          ? buildTurnPolicy({
+              prompt: resumedTurn.semanticQuestion || effectivePrompt,
+              napmRelated: true,
+              domainRelated: true
+            })
+          : null;
         const nextState = {
-          ...buildConversationScopedGuardState(effectivePrompt, previousState),
+          ...baseState,
+          ...(resumedTurn ? {
+            napmRelated: true,
+            domainRelated: true,
+            turnPolicy: resumedTurnPolicy,
+            turnRoute: resumedTurnPolicy.route,
+            pendingQueryDraft: resumedTurn.queryDraft,
+            pendingParentTurnId: resumedTurn.parentTurnId,
+            semanticPrompt: resumedTurn.semanticQuestion
+          } : {}),
           conversationKey: conversationKey || null,
           promptKey: normalizePromptKey(effectivePrompt),
           canonicalPrompt: effectivePrompt,
@@ -7404,11 +8069,34 @@ const plugin = {
             ? (extractAlertReference(continuationPrompt)?.candidateId || previousState?.alertPacketCandidateId || null)
             : (previousState?.alertPacketCandidateId || extractAlertReference(effectivePrompt)?.candidateId || null),
           turnId,
+          runId: normalizeTraceId(ctx?.runId) || null,
+          messageId: normalizeTraceId(ctx?.messageId) || null,
           contextTurnKey: getContextTurnKey(ctx) || null
         };
 
         if (conversationKey) {
           napmConversationState.set(conversationKey, nextState);
+          queryTurnCoordinator.begin({
+            scope: conversationKey,
+            turnId,
+            runId: normalizeTraceId(ctx?.runId),
+            route: resumedTurn
+              ? QUERY_ROUTES.NAPM_QUERY
+              : resolveQueryCoordinatorRoute(effectivePrompt, nextState),
+            question: effectivePrompt,
+            semanticQuestion: resumedTurn?.semanticQuestion || effectivePrompt,
+            queryDraft: resumedTurn?.queryDraft || null,
+            parentTurnId: resumedTurn?.parentTurnId || '',
+            resumedFromClarification: Boolean(resumedTurn),
+            clarificationAnswer: resumedTurn ? content : ''
+          });
+          if (ctx?.messageId) {
+            queryTurnCoordinator.bindRun({
+              scope: conversationKey,
+              runId: normalizeTraceId(ctx.messageId),
+              turnId
+            });
+          }
         }
 
         setGuardState(ctx, nextState);
@@ -7430,20 +8118,25 @@ const plugin = {
         const guardKeys = getGuardKeys(ctx);
         const conversationKey = getConversationKey(ctx);
         const previousConversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
+        const runGuardState = getGuardState(ctx);
         const contextTurnKey = getContextTurnKey(ctx);
-        // message_received is the authoritative turn boundary. Prompt-build hooks
-        // may expose different run/message ids and must never replace its identity.
-        const previousPrompt = String(
-          previousConversationState?.canonicalPrompt || previousConversationState?.prompt || ''
+        const boundTurnId = getRunBoundTurnId(
+          ctx,
+          conversationKey,
+          runGuardState,
+          previousConversationState
+        );
+        const boundTurn = boundTurnId
+          ? queryTurnCoordinator.get(conversationKey, boundTurnId)
+          : null;
+        const prompt = String(
+          runGuardState?.canonicalPrompt
+          || runGuardState?.prompt
+          || boundTurn?.question
+          || receivedPrompt
         ).trim();
-        const canReuseTurn = Boolean(previousConversationState?.turnId);
-        const prompt = canReuseTurn
-          ? (previousPrompt || receivedPrompt)
-          : receivedPrompt;
-        const turnId = canReuseTurn
-          ? normalizeTurnId(previousConversationState.turnId)
-          : buildNapmTurnId();
-        let conversationState = canReuseTurn ? previousConversationState : null;
+        const turnId = boundTurnId || normalizeTurnId(runGuardState?.turnId) || buildNapmTurnId();
+        let conversationState = runGuardState || null;
         if (!conversationState && isMeaningfulText(prompt)) {
           conversationState = {
             ...buildConversationScopedGuardState(prompt, previousConversationState),
@@ -7451,10 +8144,28 @@ const plugin = {
             promptKey: normalizePromptKey(prompt),
             canonicalPrompt: prompt,
             turnId,
+            runId: normalizeTraceId(ctx?.runId) || null,
+            messageId: normalizeTraceId(ctx?.messageId) || null,
             contextTurnKey: contextTurnKey || null
           };
-          if (conversationKey) {
+          if (conversationKey && !ctx?.runId && !ctx?.messageId) {
             napmConversationState.set(conversationKey, conversationState);
+          }
+        }
+        if (conversationKey) {
+          queryTurnCoordinator.begin({
+            scope: conversationKey,
+            turnId,
+            runId: normalizeTraceId(ctx?.runId),
+            route: resolveQueryCoordinatorRoute(prompt, conversationState),
+            question: prompt
+          });
+          if (ctx?.messageId) {
+            queryTurnCoordinator.bindRun({
+              scope: conversationKey,
+              runId: normalizeTraceId(ctx.messageId),
+              turnId
+            });
           }
         }
         if (guardKeys.length > 0) {
@@ -7465,6 +8176,8 @@ const plugin = {
             canonicalPrompt: prompt,
             conversationKey: conversationKey || null,
             turnId,
+            runId: normalizeTraceId(ctx?.runId) || null,
+            messageId: normalizeTraceId(ctx?.messageId) || null,
             turnNapmToolUsed: Boolean(
               previousGuardState?.turnId === turnId
               && previousGuardState?.turnNapmToolUsed
@@ -7477,12 +8190,20 @@ const plugin = {
         if (prompt) {
           api.logger.info(`[napm-openclaw-plugin] injecting NAPM routing policy for prompt: ${prompt.slice(0, 120)}`);
         }
+        const routingContext = buildNapmRoutingSystemContext({
+          prompt,
+          napmRelated: Boolean(conversationState?.napmRelated),
+          turnPolicy: conversationState?.turnPolicy
+        });
+        const clarificationContinuation = boundTurn?.resumedFromClarification
+          ? [
+              'QUERY CLARIFICATION CONTINUATION:',
+              '用户当前消息是上一轮查询所缺的对象名称。调用 napm-skill-query，并将本轮原始回复放入 clarificationAnswer；不要自行重建完整 queryDraft。',
+              '插件会从当前 Query Turn 恢复并注入待补全的 queryDraft。'
+            ].join('\n')
+          : '';
         return {
-          appendSystemContext: buildNapmRoutingSystemContext({
-            prompt,
-            napmRelated: Boolean(conversationState?.napmRelated),
-            turnPolicy: conversationState?.turnPolicy
-          })
+          appendSystemContext: [routingContext, clarificationContinuation].filter(Boolean).join('\n\n')
         };
       },
       {
@@ -7502,14 +8223,36 @@ const plugin = {
         if (isNativeCommandTurn(messageCtx)) {
           return undefined;
         }
+        if (!hasLifecycleIdentity(messageCtx)) {
+          appendPluginAuditEvent('lifecycle_identity_missing', {
+            hook: 'reply_dispatch',
+            conversationKey: getConversationKey(messageCtx) || null
+          });
+          return undefined;
+        }
         const conversationKey = getConversationKey(messageCtx);
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
-        const prompt = getReplyDispatchPrompt(event, conversationState);
+        const guardState = getGuardState(messageCtx);
+        const turnId = getRunBoundTurnId(
+          messageCtx,
+          conversationKey,
+          guardState,
+          conversationState
+        );
+        const boundTurn = turnId ? queryTurnCoordinator.get(conversationKey, turnId) : null;
+        if (!turnId || !boundTurn) {
+          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+            hook: 'reply_dispatch',
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(messageCtx)
+          });
+          return undefined;
+        }
+        const prompt = getReplyDispatchPrompt(event, guardState);
         if (!prompt) {
           return undefined;
         }
 
-        const turnId = getActiveTurnId(conversationState, null);
         const reportIntent = classifyReportPrompt(prompt);
         const alertRecord = getRememberedAlertRecordForPrompt(
           prompt,
@@ -7613,14 +8356,46 @@ const plugin = {
         }
 
         const guardKeys = getGuardKeys(ctx);
-        const guardState = getGuardState(ctx);
         const conversationKey = getConversationKey(ctx);
-        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const toolName = String(event?.toolName || '').trim();
+        if (isSafeNapmToolName(toolName) && !hasLifecycleIdentity(ctx)) {
+          appendPluginAuditEvent('napm_tool_lifecycle_identity_missing', {
+            toolName,
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'LIFECYCLE_IDENTITY_REQUIRED: NAPM tools require a current runId or messageId binding.'
+          };
+        }
+        const guardState = getGuardState(ctx);
+        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const originalToolParams = isPlainObject(event?.params) ? event.params : {};
+        const queryTurnContext = getQueryTurnForContext(
+          ctx,
+          conversationKey,
+          guardState,
+          conversationState
+        );
         const fallbackPrompt = normalizePrompt(originalToolParams);
         const activePrompt = selectActivePromptText(conversationState, guardState, fallbackPrompt);
+        const querySemanticPrompt = String(
+          queryTurnContext.turn?.semanticQuestion || activePrompt
+        ).trim();
         const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
+        if (isSafeNapmToolName(toolName) && (!queryTurnContext.turnId || !queryTurnContext.turn)) {
+          appendPluginAuditEvent('napm_tool_turn_binding_missing', {
+            toolName,
+            conversationKey: conversationKey || null,
+            prompt: activePrompt || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'LIFECYCLE_TURN_BINDING_REQUIRED: NAPM tools require the Query Turn bound to the current run/message.'
+          };
+        }
         if (isPlatformIdentityPrompt(activePrompt) || activePromptState?.platformIdentityPrompt) {
           api.logger.warn(`[napm-openclaw-plugin] blocked tool for platform identity prompt: tool=${toolName}`);
           appendPluginAuditEvent('napm_plugin_identity_tool_blocked', {
@@ -7640,6 +8415,27 @@ const plugin = {
           return {
             block: true,
             blockReason: `${toolName} has been removed from this deployment. Use napm-skill-query instead.`
+          };
+        }
+
+        if (
+          queryTurnContext.turn?.route === QUERY_ROUTES.NAPM_QUERY
+          && isSafeNapmToolName(toolName)
+          && !DEV_RESOLVER_TOOL_NAMES.has(toolName)
+          && toolName !== 'napm-skill-query'
+        ) {
+          api.logger.warn(`[napm-openclaw-plugin] blocked wrong tool for query turn: tool=${toolName}`);
+          appendPluginAuditEvent('napm_query_wrong_tool_blocked', {
+            toolName,
+            expectedTool: 'napm-skill-query',
+            conversationKey: conversationKey || null,
+            turnId: queryTurnContext.turnId || null,
+            prompt: querySemanticPrompt || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: 'NAPM_QUERY_TOOL_REQUIRED: This Query Turn must use napm-skill-query; another NAPM tool cannot satisfy or reroute it.'
           };
         }
 
@@ -7693,6 +8489,19 @@ const plugin = {
         let toolParams = trustedTraceId
           ? { ...originalToolParams, traceId: trustedTraceId }
           : originalToolParams;
+        if (
+          toolName === 'napm-skill-query'
+          && queryTurnContext.turn?.resumedFromClarification
+          && isPlainObject(queryTurnContext.turn.queryDraft)
+        ) {
+          toolParams = {
+            ...toolParams,
+            prompt: querySemanticPrompt,
+            userQuery: querySemanticPrompt,
+            queryDraft: queryTurnContext.turn.queryDraft,
+            resolvedQuery: queryTurnContext.turn.queryDraft
+          };
+        }
         api.logger.info(`[napm-openclaw-plugin] before_tool_call tool=${toolName} keys=${guardKeys.join(',') || 'none'} guard=${guardState ? 'hit' : 'miss'}`);
 
         if (toolName === 'napm-alert-query' && activePrompt) {
@@ -7952,7 +8761,7 @@ const plugin = {
             updatedAt: Date.now()
           });
           const traceId = buildNapmTraceId(ctx, toolParams);
-          const canonicalSkillParams = buildCanonicalSkillToolParams(activePrompt, {
+          const canonicalSkillParams = buildCanonicalSkillToolParams(querySemanticPrompt, {
             ...toolParams,
             traceId
           });
@@ -8002,15 +8811,31 @@ const plugin = {
             context: buildAuditContextSnapshot(ctx)
           });
           const promptSemanticObservation = observePromptQuerySemanticMismatch(
-            activePrompt,
+            querySemanticPrompt,
             canonicalSkillParams?.resolvedQuery
           );
+          const constructionQueryDecision = evaluatePluginQueryDecision(
+            querySemanticPrompt,
+            canonicalSkillParams?.resolvedQuery,
+            resolvedQueryValidation
+          );
+          appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
+            traceId,
+            toolName,
+            prompt: querySemanticPrompt,
+            phase: 'construction',
+            action: constructionQueryDecision.action,
+            outcome: constructionQueryDecision.outcome,
+            reasonCode: constructionQueryDecision.reasonCode,
+            southboundAllowed: constructionQueryDecision.southboundAllowed,
+            context: buildAuditContextSnapshot(ctx)
+          });
           if (!promptSemanticObservation.ok) {
-            api.logger.warn(`[napm-openclaw-plugin] observed prompt/query semantic mismatch: mode=${semanticGuardMode} reason=${promptSemanticObservation.reason} prompt=${activePrompt.slice(0, 120)}`);
+            api.logger.warn(`[napm-openclaw-plugin] observed prompt/query semantic mismatch: mode=${semanticGuardMode} reason=${promptSemanticObservation.reason} prompt=${querySemanticPrompt.slice(0, 120)}`);
             appendPluginAuditEvent('napm_plugin_prompt_query_semantic_mismatch_observed', {
               traceId,
               toolName,
-              prompt: activePrompt,
+              prompt: querySemanticPrompt,
               boundaryMode,
               semanticGuardMode,
               enforced: semanticGuardMode === 'enforce' || promptSemanticObservation.enforce === true,
@@ -8020,67 +8845,51 @@ const plugin = {
               resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
               context: buildAuditContextSnapshot(ctx)
             });
-            if (semanticGuardMode === 'enforce' || promptSemanticObservation.enforce === true) {
-              const failureRecord = rememberResolvedQueryBoundaryFailureForTurn(
-                activePrompt,
-                promptSemanticObservation,
-                canonicalSkillParams,
-                conversationKey,
-                conversationState,
-                guardState
-              );
-              return {
-                block: true,
-                blockReason: buildResolvedQueryFailureBlockReason(promptSemanticObservation, failureRecord)
-              };
-            }
           }
-          if (!resolvedQueryValidation.ok) {
-            api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid resolvedQuery: reason=${resolvedQueryValidation.reason} prompt=${activePrompt.slice(0, 120)}`);
+          if (
+            constructionQueryDecision.outcome === QUERY_OUTCOMES.VALIDATION_FAILURE
+          ) {
+            const decisionValidation = constructionQueryDecision.validation
+              || (promptSemanticObservation.ok ? resolvedQueryValidation : promptSemanticObservation);
+            api.logger.warn(`[napm-openclaw-plugin] blocked napm-skill-query without valid queryDraft: reason=${decisionValidation.reason} prompt=${querySemanticPrompt.slice(0, 120)}`);
             appendPluginAuditEvent('napm_plugin_resolved_query_blocked', {
               traceId,
               toolName,
-              prompt: activePrompt,
+              prompt: querySemanticPrompt,
               boundaryMode,
-              reason: resolvedQueryValidation.reason || null,
-              message: resolvedQueryValidation.message || null,
+              reason: decisionValidation.reason || null,
+              message: decisionValidation.message || null,
               resolvedQuery: normalizeObject(canonicalSkillParams.resolvedQuery) || null,
               resolvedQuerySummary: summarizeResolvedQueryForAudit(canonicalSkillParams.resolvedQuery),
               context: buildAuditContextSnapshot(ctx)
             });
-            const failureRecord = rememberResolvedQueryBoundaryFailureForTurn(
-              activePrompt,
-              resolvedQueryValidation,
-              canonicalSkillParams,
-              conversationKey,
-              conversationState,
-              guardState
+            const failureResult = buildResolvedQueryBoundaryFailureResult(
+              decisionValidation,
+              canonicalSkillParams
             );
+            const failureRecord = queryTurnCoordinator.recordValidationFailure({
+              scope: conversationKey,
+              turnId: queryTurnContext.turnId,
+              attemptId: String(event?.toolCallId || '').trim() || `construction-${crypto.randomUUID()}`,
+              queryDraft: canonicalSkillParams?.resolvedQuery,
+              validation: decisionValidation,
+              result: failureResult,
+              finalContent: buildResolvedQueryValidationFailureReply()
+            });
             return {
               block: true,
-              blockReason: buildResolvedQueryFailureBlockReason(resolvedQueryValidation, failureRecord)
+              blockReason: buildResolvedQueryFailureBlockReason(decisionValidation, failureRecord)
             };
           }
-          const clearedValidationFailure = clearResolvedQueryFailureForTurn(
-            conversationKey,
-            conversationState,
-            guardState
-          );
-          const activeTurnId = getActiveTurnId(conversationState, guardState);
-          const clearedExecutionFailure = napmOperationState.clearSkillExecutionFailureForTurn(
-            conversationKey,
-            activeTurnId
-          );
-          if (clearedValidationFailure || clearedExecutionFailure) {
-            appendPluginAuditEvent('napm_plugin_prior_query_failure_superseded', {
-              traceId,
-              toolName,
-              prompt: activePrompt,
-              turnId: activeTurnId || null,
-              clearedValidationFailure: Boolean(clearedValidationFailure),
-              clearedExecutionFailure: Boolean(clearedExecutionFailure)
-            });
-          }
+          queryTurnCoordinator.recordDecision({
+            scope: conversationKey,
+            turnId: queryTurnContext.turnId,
+            route: QUERY_ROUTES.NAPM_QUERY,
+            question: querySemanticPrompt,
+            queryDraft: canonicalSkillParams?.resolvedQuery,
+            decision: constructionQueryDecision,
+            attemptId: String(event?.toolCallId || '').trim()
+          });
           const shouldRewriteSkillParams = Boolean(
             canonicalPrompt
             && (
@@ -8151,7 +8960,7 @@ const plugin = {
           api.logger.warn(`[napm-openclaw-plugin] blocked non-skill tool for NAPM-scoped prompt: tool=${toolName}`);
           return {
             block: true,
-            blockReason: 'NAPM requests must use the single production entry napm-skill-query with an upstream-produced resolvedQuery. Resolver/mainflow diagnostic tools are not production query paths.'
+            blockReason: 'NAPM requests must use the single production entry napm-skill-query with an upstream-produced queryDraft (resolvedQuery is a legacy alias only). Resolver/mainflow diagnostic tools are not production query paths.'
           };
         }
 
@@ -8185,18 +8994,40 @@ const plugin = {
         if (isNativeCommandTurn(ctx)) {
           return undefined;
         }
+        if (!hasLifecycleIdentity(ctx)) {
+          appendPluginAuditEvent('lifecycle_identity_missing', {
+            hook: 'message_sending',
+            conversationKey: getConversationKey(ctx) || null
+          });
+          return { cancel: true };
+        }
 
         const conversationKey = getConversationKey(ctx);
         const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
         const guardState = getGuardState(ctx);
-        const turnId = getActiveTurnId(conversationState, guardState);
-        const activePromptForReport = selectActivePromptText(conversationState, guardState, extractTextContent(event?.content));
+        const initialQueryTurnContext = getQueryTurnForContext(
+          ctx,
+          conversationKey,
+          guardState,
+          conversationState
+        );
+        if (!initialQueryTurnContext.turnId || !initialQueryTurnContext.turn) {
+          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+            hook: 'message_sending',
+            conversationKey: conversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return { cancel: true };
+        }
+        const turnId = initialQueryTurnContext.turnId;
+        const outgoingText = extractTextContent(event?.content);
+        const activePromptForReport = selectActivePromptText(conversationState, guardState, outgoingText);
         const activeReportIntent = classifyReportPrompt(activePromptForReport);
         const resultDeliveryFollowUp = isResultDeliveryFollowUpPrompt(activePromptForReport, guardState || conversationState);
         const progressOutput = assistantOutputLedger.consumeProgressDelivery({
           scope: conversationKey,
           turnId,
-          text: extractTextContent(event?.content)
+          text: outgoingText
         });
         if (progressOutput) {
           appendPluginAuditEvent('tool_progress_delivery_suppressed', {
@@ -8210,6 +9041,37 @@ const plugin = {
             contentLength: progressOutput.textLength
           });
           return { cancel: true };
+        }
+
+        const queryTurnContext = isStreamingPreviewMessageEvent(event)
+          ? initialQueryTurnContext
+          : ensureAuthoritativeQueryTurnForFinalOutput({
+              ctx,
+              conversationKey,
+              conversationState,
+              guardState,
+              activePrompt: activePromptForReport
+            });
+        const queryTurn = queryTurnContext.turn;
+        if (queryTurn?.phase === 'TERMINAL' && queryTurn.finalContent) {
+          if (isStreamingPreviewMessageEvent(event)) {
+            return { cancel: true };
+          }
+          if (!queryTurnCoordinator.claimDelivery(conversationKey, turnId)) {
+            appendPluginAuditEvent('napm_query_duplicate_final_delivery_suppressed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              outcome: queryTurn.outcome
+            });
+            return { cancel: true };
+          }
+          appendPluginAuditEvent('napm_query_final_delivery_claimed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            action: queryTurn.action,
+            outcome: queryTurn.outcome
+          });
+          return { content: queryTurn.finalContent };
         }
 
         const mediaDedupe = dedupeOutgoingMediaForConversation(event, ctx);
@@ -8562,11 +9424,38 @@ const plugin = {
         if (role !== 'assistant') {
           return undefined;
         }
+        if (!hasLifecycleIdentity(ctx)) {
+          appendPluginAuditEvent('lifecycle_identity_missing', {
+            hook: 'before_message_write',
+            conversationKey: getConversationKey(ctx) || null
+          });
+          return {
+            message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
+          };
+        }
+        const lifecycleConversationKey = getConversationKey(ctx);
+        const lifecycleGuardState = getGuardState(ctx);
+        const lifecycleTurnContext = getQueryTurnForContext(
+          ctx,
+          lifecycleConversationKey,
+          lifecycleGuardState,
+          null
+        );
+        if (!lifecycleTurnContext.turnId || !lifecycleTurnContext.turn) {
+          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+            hook: 'before_message_write',
+            conversationKey: lifecycleConversationKey || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
+          };
+        }
         if (messageContainsToolCall(message)) {
           const conversationKey = getConversationKey(ctx);
           const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
           const guardState = getGuardState(ctx);
-          const turnId = getActiveTurnId(conversationState, guardState);
+          const turnId = getRunBoundTurnId(ctx, conversationKey, guardState, conversationState);
           const visibleText = extractMessageText(message);
           const outputRecord = visibleText
             ? assistantOutputLedger.recordToolProgress({
@@ -8629,7 +9518,29 @@ const plugin = {
           };
         }
 
-        const activePrompt = selectActivePromptText(conversationState, guardState, extractMessageText(message));
+        const existingText = extractMessageText(message);
+        const activePrompt = selectActivePromptText(conversationState, guardState, existingText);
+        const streamingPreview = isStreamingPreviewMessageEvent(event)
+          || isStreamingPreviewMessageEvent(message);
+        const queryTurnContext = streamingPreview
+          ? getQueryTurnForContext(ctx, conversationKey, guardState, conversationState)
+          : ensureAuthoritativeQueryTurnForFinalOutput({
+              ctx,
+              conversationKey,
+              conversationState,
+              guardState,
+              activePrompt
+            });
+        const turnId = queryTurnContext.turnId;
+        const queryTurn = queryTurnContext.turn;
+        if (streamingPreview) {
+          return undefined;
+        }
+        if (queryTurn?.phase === 'TERMINAL' && queryTurn.finalContent) {
+          return {
+            message: buildAssistantTextMessage(queryTurn.finalContent, message)
+          };
+        }
         const alertScopedPrompt = Boolean(
           isAlertEventPrompt(activePrompt)
           || isAlertSkillMetaFollowUpPrompt(activePrompt, guardState || conversationState)
@@ -8640,8 +9551,6 @@ const plugin = {
           ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
-        const existingText = extractMessageText(message);
-        const turnId = getActiveTurnId(conversationState, guardState);
         if (isCurrentAlertQueryResultRecord(rememberedRecord, turnId)) {
           const content = buildAlertQueryReply(rememberedRecord.result);
           appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
@@ -8853,6 +9762,9 @@ module.exports.__test__ = {
   isCompositeApplicationInventoryPrompt,
   validateCompositeApplicationInventoryResolvedQuery,
   observePromptQuerySemanticMismatch,
+  evaluatePluginQueryDecision,
+  buildQueryDecisionToolResult,
+  queryTurnCoordinator,
   classifyNapmWorkflow,
   validateObjectInventoryResolvedQuery,
   buildRememberedSkillReplyText,
@@ -8949,6 +9861,7 @@ module.exports.__test__ = {
   bindTrustedToolContext,
   getTrustedConversationKey,
   getTrustedTurnId,
+  getTrustedToolName,
   getLatestRememberedSkillRecord,
   getRememberedQueryFailureForTurn,
   getReportDataFromRecord,

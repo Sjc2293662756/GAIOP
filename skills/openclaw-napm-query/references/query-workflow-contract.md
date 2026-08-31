@@ -2,7 +2,7 @@
 
 This document contains query-specific workflow rules that belong to `openclaw-napm-query`.
 
-OpenClaw owns natural-language understanding and `resolvedQuery` construction. This skill owns query normalization, validation, execution, metadata resolution, and result narration input.
+OpenClaw owns natural-language understanding and Query Draft construction. The `napm-skill-query` adapter owns Query Decision evaluation and Query Turn state. This skill receives only complete Resolved Queries and owns normalization, validation, execution, metadata resolution, and result narration input.
 
 ## 1. Accepted Scope
 
@@ -25,13 +25,19 @@ Do not use this skill for:
 
 ## 2. Structured Input Contract
 
-Production execution requires a complete `resolvedQuery`.
+The production Tool accepts `queryDraft` (with `resolvedQuery` as a migration alias). A Query Draft may omit a value that must come from the user. The adapter evaluates exactly one action:
+
+- `ASK_CLARIFYING_QUESTION`: return `ok=true`, `isError=false`; do not call the Skill or southbound API.
+- `EXECUTE_QUERY`: promote the draft to a complete Resolved Query and call the Skill once.
+- `REJECT_QUERY`: return a local rejection; do not call the Skill or southbound API.
+
+The standalone Skill CLI still requires a complete `resolvedQuery`.
 
 Accepted input channel:
 
 ```json
 {
-  "resolvedQuery": {
+  "queryDraft": {
     "service": "topValues",
     "queryModeKey": "topn",
     "groups": [{ "type": "IPAddress" }],
@@ -48,13 +54,33 @@ Accepted input channel:
 
 Rules:
 
-- `resolvedQuery.service` is required.
+- `queryDraft.service` is required. The legacy Tool field `resolvedQuery` is interpreted as the same draft during migration.
 - `prompt` and `userQuery` are optional trace fields and must never supply missing query semantics.
+- Missing user parameters are not validation errors. For example, a single-object `DefinedApp` trend without `groups[0].argument` returns a clarification terminal outcome.
+- Structural corruption, unknown services, invalid time fields, and unsupported modes remain validation failures.
 - Relative-time queries provide one concrete supported `timeRange.key`; plugin `execute()` materializes root-level `start` and `end` from the server clock.
 - Fixed-time queries provide root-level Unix-second `start` and `end`, aligned to minute boundaries, with `executionOptions.timeMode="fixed"`.
 - Never place executable timestamps in `timeRange.start` / `timeRange.end`.
 - Placeholder keys such as `lastNminutes` are invalid.
 - Missing time in an executable data query is an error, not an implicit default.
+
+Application traffic example:
+
+```json
+{
+  "prompt": "最近 7 天应用流量趋势如何？",
+  "queryDraft": {
+    "service": "timeValues",
+    "queryModeKey": "timeseries",
+    "groups": [{ "type": "DefinedApp" }],
+    "metrics": ["TPIO"],
+    "granularity": 3600,
+    "timeRange": { "key": "last7days" }
+  }
+}
+```
+
+This returns a clarification asking for the concrete application name. It must never be rewritten to `TotalTraffic`.
 
 Bad:
 
@@ -361,6 +387,7 @@ Expected behavior:
 - `这个呢？` should inherit previous object if the referent is unambiguous.
 - `继续分析` after a discovery result should use the discovered object as focus.
 - If multiple materially different interpretations exist, ask a clarification question.
+- After the adapter asks for a concrete object name, a reply such as `HTTP` is merged by OpenClaw into a new Query Draft for the new turn. The stateless Skill does not mutate the previous turn.
 
 Do not answer from stale memory when a fresh query is required.
 

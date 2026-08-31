@@ -4,6 +4,7 @@
   "queryContract": {
     "resolvedQueryRequired": true,
     "acceptedInputs": [
+      "tool.queryDraft",
       "--queryJson",
       "--resolvedQuery",
       "payload.resolvedQuery"

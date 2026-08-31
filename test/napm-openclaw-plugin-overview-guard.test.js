@@ -18,7 +18,7 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     process.env.NAPM_SKILL_EXECUTOR = originalExecutor;
   });
 
-  test('should not rewrite overview reply when output layer is skill-display-only', async () => {
+  test('should rewrite overview reply from the authoritative Query Turn result', async () => {
     const hooks = new Map();
     const tools = new Map();
     const api = {
@@ -84,11 +84,24 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
     }, ctx);
     const scope = plugin.__test__.getTrustedConversationKey(bound.params);
     const turnId = plugin.__test__.getTrustedTurnId(bound.params);
-    plugin.__test__.rememberSkillResult(prompt, {
+    const queryResult = {
       ok: true,
       displayText: '应用整体状态正常。',
       resolvedQuery: bound.params.resolvedQuery
-    }, scope, 'napm-skill-query', turnId);
+    };
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId,
+      attemptId: 'overview-query',
+      queryDraft: bound.params.resolvedQuery
+    });
+    plugin.__test__.rememberSkillResult(prompt, queryResult, scope, 'napm-skill-query', turnId);
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId,
+      result: queryResult,
+      finalContent: queryResult.displayText
+    });
 
     const beforeWriteResult = await beforeMessageWrite({
       message: {
@@ -97,6 +110,6 @@ describe('napm-openclaw-plugin overview fallback guard', () => {
       }
     }, ctx);
 
-    expect(beforeWriteResult).toBeUndefined();
+    expect(beforeWriteResult?.message?.content?.[0]?.text).toBe(queryResult.displayText);
   }, 30000);
 });

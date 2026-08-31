@@ -64,16 +64,19 @@ describe('napm-openclaw-plugin conversation isolation', () => {
   });
 
   function bindScope(conversationId, toolCallId, traceId = '') {
+    const prompt = 'export the previous result';
+    const ctx = makeContext(conversationId);
     const event = {
       toolName: 'napm-report-export',
       toolCallId,
       params: {
-        prompt: 'export the previous result',
+        prompt,
         traceId
       }
     };
-    hooks.get('before_tool_call')(event, makeContext(conversationId));
-    return event.params;
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const bound = hooks.get('before_tool_call')(event, ctx);
+    return bound?.params || event.params;
   }
 
   test('injects a trusted trace and ignores a caller-provided trace', () => {
