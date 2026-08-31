@@ -2669,54 +2669,6 @@ function validateObjectInventoryResolvedQuery(prompt = '', resolvedQuery = {}) {
   };
 }
 
-function isApplicationTrafficTrendPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text) {
-    return false;
-  }
-
-  const hasApplication = /(?:应用|application|app)/i.test(text);
-  const hasTraffic = /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text);
-  const hasTrendOrAverage = /(?:趋势|走势|变化|曲线|按时间|平均|均值|trend|timeseries|time\s*series|average|mean)/i.test(text);
-  return hasApplication && hasTraffic && hasTrendOrAverage;
-}
-
-function validateApplicationTrafficScopeResolvedQuery(prompt = '', resolvedQuery = {}) {
-  if (!isApplicationTrafficTrendPrompt(prompt)) {
-    return { ok: true };
-  }
-
-  const service = String(resolvedQuery?.service || '').trim();
-  if (!['timeValues', 'averageValues'].includes(service)) {
-    return { ok: true };
-  }
-
-  const groups = Array.isArray(resolvedQuery?.groups) ? resolvedQuery.groups : [];
-  const totalTrafficGroup = groups.find((group) => (
-    String(group?.type || '').trim() === 'TotalTraffic'
-  ));
-  if (!totalTrafficGroup) {
-    return { ok: true };
-  }
-
-  return {
-    ok: false,
-    enforce: true,
-    reason: 'application_scope_mismatch',
-    code: 'APPLICATION_SCOPE_MISMATCH',
-    expectedGroupType: 'DefinedApp',
-    actualGroupType: 'TotalTraffic',
-    message: '应用流量趋势或平均值不能使用 TotalTraffic（总流量）范围。请在有具体应用名称时使用 DefinedApp 并提供 groups[0].argument；没有具体名称时先向用户追问。只有明确询问总流量或全局流量时才使用 TotalTraffic。',
-    details: {
-      service,
-      queryModeKey: String(resolvedQuery?.queryModeKey || '').trim() || null,
-      expectedGroupType: 'DefinedApp',
-      actualGroupType: 'TotalTraffic',
-      argument: String(totalTrafficGroup?.argument ?? '').trim() || null
-    }
-  };
-}
-
 function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
   return napmQueryDecisionPolicy().evaluateHighRiskSemanticConsistency(prompt, resolvedQuery);
 }

@@ -1,6 +1,7 @@
 const {
   classifyApplicationCatalogPrompt
 } = require('./ApplicationCatalogSemanticRules');
+const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 const ObjectOntologyService = require('./ObjectOntologyService');
 
 function normalizePromptText(prompt = '') {
@@ -63,13 +64,23 @@ function classifyWorkflow(prompt = '') {
     return {
       workflowType: null,
       confidence: 0,
+      targetObjectType: null,
+      metricSemantic: null,
       reason: 'empty_prompt'
     };
   }
 
+  const targetObjectType = inferInventoryObjectType(text);
+  const metricSemantic = MetricSemanticNormalizerService.resolveMetricSemantic(text);
+  const structuredIntent = {
+    targetObjectType,
+    metricSemantic
+  };
+
   const alertPacketIntent = matchAlertPacketIntent(text);
   if (alertPacketIntent) {
     return {
+      ...structuredIntent,
       workflowType: 'alert_packet_analysis',
       confidence: 1,
       eventId: alertPacketIntent.eventId,
@@ -79,53 +90,53 @@ function classifyWorkflow(prompt = '') {
 
   if (hasDrilldownIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'drilldown_catalog',
       confidence: 0.9,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'drilldown_catalog_intent'
     };
   }
 
   if (hasMetricInventoryIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'metric_inventory',
       confidence: 0.9,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'metric_inventory_intent'
     };
   }
 
   if (hasTrendIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'metric_timeseries',
       confidence: 0.85,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'trend_intent'
     };
   }
 
   if (hasAverageIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'metric_average',
       confidence: 0.85,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'average_intent'
     };
   }
 
   if (hasRankingIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'metric_topn',
       confidence: 0.85,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'ranking_intent'
     };
   }
 
   if (hasInventoryIntent(text)) {
-    const targetObjectType = inferInventoryObjectType(text);
     if (targetObjectType) {
       return {
+        ...structuredIntent,
         workflowType: 'object_inventory',
         confidence: 0.92,
         targetObjectType,
@@ -136,17 +147,17 @@ function classifyWorkflow(prompt = '') {
 
   if (hasOverviewIntent(text)) {
     return {
+      ...structuredIntent,
       workflowType: 'overview',
       confidence: 0.7,
-      targetObjectType: inferInventoryObjectType(text),
       reason: 'overview_intent'
     };
   }
 
   return {
+    ...structuredIntent,
     workflowType: null,
     confidence: 0.2,
-    targetObjectType: inferInventoryObjectType(text),
     reason: 'workflow_unresolved'
   };
 }

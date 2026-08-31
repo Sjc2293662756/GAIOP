@@ -1,6 +1,7 @@
 'use strict';
 
 const ResolutionSpecService = require('./ResolutionSpecService');
+const GroupPathPlannerService = require('./GroupPathPlannerService');
 const WorkflowClassifierService = require('./WorkflowClassifierService');
 
 const QUERY_ACTIONS = Object.freeze({
@@ -29,24 +30,6 @@ function toReasonCode(reason = '', fallback = 'QUERY_VALIDATION_FAILED') {
     : fallback;
 }
 
-function isApplicationTrafficTrendPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  return Boolean(text)
-    && /(?:应用|application|app)/i.test(text)
-    && /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text)
-    && /(?:趋势|走势|变化|曲线|按时间|平均|均值|trend|timeseries|time\s*series|average|mean)/i.test(text);
-}
-
-function isApplicationTrafficQueryPrompt(prompt = '') {
-  const text = String(prompt || '').trim();
-  if (!text || /(?:总流量|全局流量|整体流量|total\s*traffic|global\s*traffic|overall\s*traffic)/i.test(text)) {
-    return false;
-  }
-  return /(?:应用|application|app)/i.test(text)
-    && /(?:流量|吞吐|带宽|throughput|bandwidth|traffic)/i.test(text)
-    && /(?:趋势|走势|变化|曲线|按时间|平均|均值|哪个|哪些|谁|最多|最少|最高|最低|排行|排名|top\s*\d*|trend|timeseries|time\s*series|average|mean|ranking)/i.test(text);
-}
-
 function normalizeObjectType(value = '') {
   const normalized = String(value || '').trim();
   return normalized === 'Application' ? 'DefinedApp' : normalized;
@@ -68,9 +51,8 @@ function buildApplicationClarificationDraft(queryDraft = {}) {
   };
 }
 
-function validateObjectInventorySemanticContract(prompt = '', queryDraft = {}) {
+function validateObjectInventorySemanticContract(prompt = '', queryDraft = {}, classifiedWorkflow = {}) {
   const text = String(prompt || queryDraft?.userRequirement || '').trim();
-  const classifiedWorkflow = WorkflowClassifierService.classifyWorkflow(prompt);
   const semanticConstraints = isPlainObject(queryDraft?.semanticConstraints)
     ? queryDraft.semanticConstraints
     : {};
@@ -133,8 +115,53 @@ function validateObjectInventorySemanticContract(prompt = '', queryDraft = {}) {
   };
 }
 
+function isApplicationTrafficIntent(classifiedWorkflow = {}) {
+  const workflowType = String(classifiedWorkflow?.workflowType || '').trim();
+  const targetObjectType = normalizeObjectType(classifiedWorkflow?.targetObjectType);
+  const metricDomain = String(classifiedWorkflow?.metricSemantic?.domain || '').trim();
+  return targetObjectType === 'DefinedApp'
+    && ['metric_timeseries', 'metric_average', 'metric_topn'].includes(workflowType)
+    && ['traffic', 'throughput'].includes(metricDomain);
+}
+
+function validateMultiGroupQueryContract(queryDraft = {}) {
+  const groups = Array.isArray(queryDraft?.groups) ? queryDraft.groups.filter(Boolean) : [];
+  if (groups.length <= 1) return { ok: true };
+
+  const service = String(queryDraft?.service || '').trim();
+  const serviceSpec = ResolutionSpecService.getServiceSpec(service);
+  if (!serviceSpec || service === 'drilldownCatalog') return { ok: true };
+
+  const pathValidation = GroupPathPlannerService.validateExplicitPath(queryDraft);
+  if (pathValidation.ok && pathValidation.validated) return { ok: true };
+
+  return {
+    ok: false,
+    reason: 'multi_group_path_unverified',
+    code: 'MULTI_GROUP_PATH_UNVERIFIED',
+    message: '普通查询包含多个 groups 时，必须提供由静态 groups tree 验证通过的显式 pathPlanning 路径。',
+    details: {
+      service,
+      groupCount: groups.length,
+      pathReason: pathValidation.reason || 'missing_path_planning'
+    }
+  };
+}
+
 function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
   if (!isPlainObject(queryDraft)) return { ok: true };
+
+  const semanticPrompt = String(prompt || queryDraft.userRequirement || '').trim();
+  const classifiedWorkflow = WorkflowClassifierService.classifyWorkflow(semanticPrompt);
+  const inventoryValidation = validateObjectInventorySemanticContract(
+    semanticPrompt,
+    queryDraft,
+    classifiedWorkflow
+  );
+  if (!inventoryValidation.ok) return inventoryValidation;
+
+  const multiGroupValidation = validateMultiGroupQueryContract(queryDraft);
+  if (!multiGroupValidation.ok) return multiGroupValidation;
 
   const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
   const service = String(queryDraft.service || '').trim();
@@ -144,7 +171,7 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
     ['timeValues', 'averageValues', 'topValues'].includes(service)
     && hasTotalTraffic
     && (
-      isApplicationTrafficQueryPrompt(prompt || queryDraft.userRequirement)
+      isApplicationTrafficIntent(classifiedWorkflow)
       || semanticTargetType === 'DefinedApp'
     )
   ) {
@@ -166,7 +193,7 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
     };
   }
 
-  return validateObjectInventorySemanticContract(prompt || queryDraft.userRequirement, queryDraft);
+  return { ok: true };
 }
 
 function buildClarifyingQuestion(reasonCode = '', details = {}) {
@@ -338,7 +365,5 @@ module.exports = {
   QUERY_OUTCOMES,
   buildClarifyingQuestion,
   evaluateHighRiskSemanticConsistency,
-  evaluateQueryDecision,
-  isApplicationTrafficQueryPrompt,
-  isApplicationTrafficTrendPrompt
+  evaluateQueryDecision
 };
