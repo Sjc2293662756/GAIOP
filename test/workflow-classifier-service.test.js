@@ -91,4 +91,23 @@ describe('WorkflowClassifierService', () => {
       targetObjectType: 'BusinessGroup'
     });
   });
+
+  test.each([
+    ['最近 7 天应用流量趋势如何？', 'metric_timeseries', 'DefinedApp', 'traffic'],
+    ['应用吞吐最高的是哪些？', 'metric_topn', 'DefinedApp', 'throughput'],
+    ['最近 7 天总流量趋势如何？', 'metric_timeseries', 'TotalTraffic', 'traffic']
+  ])('returns structured object and metric intent for traffic queries: %s', (
+    prompt,
+    workflowType,
+    targetObjectType,
+    metricDomain
+  ) => {
+    expect(WorkflowClassifierService.classifyWorkflow(prompt)).toMatchObject({
+      workflowType,
+      targetObjectType,
+      metricSemantic: {
+        domain: metricDomain
+      }
+    });
+  });
 });

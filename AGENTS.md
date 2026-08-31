@@ -19,7 +19,8 @@
 - 首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放保持幂等；只允许一次结构修复，第二个失败终止。`recordResult` 和 `recordFailure` 只允许从 `EXECUTING` 迁移；放弃修复和执行期 Skill 澄清分别使用专用迁移。执行失败立即终止，所有 `TERMINAL` 记录 write-once，流式 partial 不得终结 Query Turn；`EXECUTING` 中的重叠 Tool 调用必须在时间物化和校验前返回执行中结果，终态后的 Tool 重放只返回已有权威结果，两者都不得再次调用 Query Skill 或南向接口。
 - 澄清后用户只回复对象名时，模型必须用 `clarificationAnswer` 再次调用 `napm-skill-query`；插件恢复 Query Decision Policy 规范化后的 pending Query Draft 并补入对象参数，不由模型重建完整查询。
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Query Turn 生成权威 `finalContent` 并 exactly-once 交付。普通查询到达非流式最终输出时不得停留在非终态：`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行，终结为契约违规；`REPAIR_PENDING` 终结为校验失败；`EXECUTING` 无结果终结为执行失败。不得由模型猜测数据。
-- 直接调用 Tool execute 也必须经过统一高风险语义策略，包括应用趋势/平均值/排行与 `TotalTraffic` 范围错配、`CompositeApplication`/一般对象清单以及对象清单的单 group 约束；无 prompt 的 `overview/auto_apps` 也不得绕过清单契约。未获 `EXECUTE_QUERY` 不得调用南向接口。
+- 直接调用 Tool execute 也必须经过统一高风险语义策略，包括应用趋势/平均值/排行与 `TotalTraffic` 范围错配、`CompositeApplication`/一般对象清单以及普通查询多 group 契约；无 prompt 的 `overview/auto_apps` 也不得绕过清单契约。普通查询包含多个 groups 时默认 `VALIDATION_FAILURE`，只有 `pathPlanning` 与静态 groups tree 验证一致的显式多级路径可执行。未获 `EXECUTE_QUERY` 不得调用 Query Skill 或南向接口。
+- 应用流量高风险判断必须消费 `WorkflowClassifierService` 输出的结构化操作、对象和指标语义；对象别名来自 Object Ontology，指标语义来自 Metric Semantic Normalizer。不得在 `PromptRoutingService`、插件或 `QueryDecisionPolicy` 中另建同义正则。
 - 报告类请求走 `napm-report-export`（巡检/故障诊断/综述/Word/PDF）。
 - 告警查询走 `napm-alert-query`（摘要/时间线/详情/通知字段）。
 - 数据包分析走 `napm-packet-analysis`（下载/预览/业务页面）。

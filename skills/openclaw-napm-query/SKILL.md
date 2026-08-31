@@ -176,6 +176,8 @@ Object argument policy:
 - `TotalTraffic` is the global traffic scope and must not carry a group argument. Use it for overall traffic trends.
 - `topValues` discovery and `groups` inventory queries may omit the argument because they discover or enumerate objects.
 - An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
+- Ordinary `topValues`, `averageValues`, `timeValues`, `groups`, and `metrics` queries with multiple groups fail Query Decision validation by default. They are executable only when `pathPlanning` contains planner proof and its anchor, `plannedGroups`, and `selectedPath` match a queryable path in `groups-tree.static.json`. The presence of multiple groups or an unverified `pathPlanning` object never authorizes execution.
+- Application-traffic scope checks consume the structured workflow/object/metric intent from `WorkflowClassifierService`; do not duplicate application-traffic prompt regexes in routing, plugin, or Query Decision code.
 
 Use `drilldownCatalog` for drilldown path questions:
 

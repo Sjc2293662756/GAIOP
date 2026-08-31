@@ -24,6 +24,14 @@ _Avoid_: incomplete Resolved Query, executable query
 The authoritative evaluation of a Query Draft. It selects exactly one action: ask a clarifying question, execute a validated Resolved Query, or reject an unsupported query. A clarification is a normal terminal outcome and does not imply Skill or southbound failure.
 _Avoid_: model prose, hook-local guess, validation error for missing user input
 
+**Structured Query Intent**:
+The shared classification of workflow operation, target object type, and metric semantic. `WorkflowClassifierService` composes object ontology and metric normalization into this structure, and Query Decision consumes it for application-traffic scope checks. Prompt routing, plugin hooks, and Query Decision must not maintain independent application-traffic regexes.
+_Avoid_: duplicated prompt regex, hook-local application scope guess
+
+**Validated Group Path**:
+An explicit multi-level `pathPlanning` record whose planner proof, `plannedGroups`, `selectedPath`, anchor, and terminal queryability all agree with the static groups tree. Ordinary queries with multiple groups default to `VALIDATION_FAILURE`; merely supplying two groups or an unverified `pathPlanning` object is not sufficient.
+_Avoid_: implicit multi-group execution, trusting `groups.length > 1`, unverified path metadata
+
 **Resolved Query**:
 The structured, executable NAPM query containing the selected operation, object type, metrics, and time range. Only an `EXECUTE_QUERY` decision may pass it to the Query Skill and southbound adapter.
 _Avoid_: repaired prompt, inferred query at output hooks

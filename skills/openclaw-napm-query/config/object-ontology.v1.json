@@ -2,6 +2,15 @@
   "version": "1.0",
   "objects": [
     {
+      "objectType": "TotalTraffic",
+      "inventoryProvider": null,
+      "apiType": null,
+      "executionGroupType": "TotalTraffic",
+      "cnAliases": ["总流量", "全局流量", "整体流量"],
+      "enAliases": ["TotalTraffic", "total traffic", "global traffic", "overall traffic"],
+      "description": "NAPM 全局总流量查询范围，不表示具体应用对象。"
+    },
+    {
       "objectType": "BusinessGroup",
       "inventoryProvider": "businessGroups",
       "apiType": "businessGroups",

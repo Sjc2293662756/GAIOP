@@ -1146,6 +1146,93 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
+  test('blocks an unverified multi-group query before Query Skill, NapmClient, or southbound execution', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const queryDraft = buildTrendDraft('DefinedApp', 'HTTP');
+    queryDraft.groups.push({ type: 'DefinedApp', argument: 'HTTPS' });
+    const direct = bindTrustedDirect(createCtx('run-direct-unverified-multi-group'), {
+      prompt: '最近 7 天 HTTP 和 HTTPS 应用流量趋势如何？',
+      queryDraft
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-unverified-multi-group',
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        decision: {
+          outcome: 'VALIDATION_FAILURE',
+          reasonCode: 'MULTI_GROUP_PATH_UNVERIFIED',
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('executes a direct multi-group query only with a validated static drilldown path', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'topValues',
+        data: [{ group: { key: 'DefinedApp', argument: 'HTTP' }, value: 10 }],
+        error: null
+      });
+    const groups = [
+      { type: 'BusinessGroup', argument: 'server-segment' },
+      { type: 'Applications', argument: null },
+      { type: 'DefinedApp', argument: null }
+    ];
+    const direct = bindTrustedDirect(createCtx('run-direct-validated-multi-group'), {
+      prompt: '继续下钻 server-segment 业务组中的应用流量排行',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metrics: ['TPIO'],
+        metric: 'TPIO',
+        topMetric: 'TPIO',
+        topCount: 10,
+        timeRange: { key: 'last7days' },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: 'drilldown',
+          anchorType: 'BusinessGroup',
+          plannedGroups: groups,
+          selectedPath: ['BusinessGroup', 'Applications', 'DefinedApp']
+        }
+      }
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-validated-multi-group',
+      direct.params
+    );
+
+    expect(result.details.ok).toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(southbound.mock.calls[0][0]).toMatchObject({
+      service: 'topValues',
+      groups
+    });
+  });
+
   test('never treats the latest conversation turn as the active turn without a run guard', () => {
     expect(plugin.__test__.getActiveTurnId({ turnId: 'latest-conversation-turn' }, null)).toBe('');
     expect(plugin.__test__.getActiveTurnId(

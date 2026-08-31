@@ -507,6 +507,64 @@ class GroupPathPlannerService {
     ));
   }
 
+  validateExplicitPath(query = {}) {
+    const groups = this.normalizeGroups(query?.groups);
+    if (groups.length <= 1) {
+      return { ok: true, validated: false, reason: 'single_group' };
+    }
+
+    const planning = query?.pathPlanning && typeof query.pathPlanning === 'object'
+      ? query.pathPlanning
+      : null;
+    const plannedGroups = this.normalizeGroups(planning?.plannedGroups);
+    const selectedPath = Array.isArray(planning?.selectedPath)
+      ? planning.selectedPath.map((item) => this.normalizeGroupType(item)).filter(Boolean)
+      : [];
+    const groupPath = groups.map((item) => item.type);
+    const hasPlannerProof = planning?.applied === true
+      && planning?.shouldApply === true
+      && String(planning?.strategy || '').trim() === 'static_groups_tree';
+    const pathMatchesGroups = selectedPath.length === groupPath.length
+      && selectedPath.every((item, index) => item === groupPath[index]);
+    const plannedGroupsMatch = this.comparePlannedGroups(plannedGroups, groups);
+    const anchorMatches = this.normalizeGroupType(planning?.anchorType) === groupPath[0];
+
+    if (!hasPlannerProof || !pathMatchesGroups || !plannedGroupsMatch || !anchorMatches) {
+      return {
+        ok: false,
+        validated: false,
+        reason: 'path_planning_contract_mismatch'
+      };
+    }
+
+    const candidates = this.collectCandidatePaths(groupPath[0], {
+      maxDepth: Math.max(groupPath.length, 4)
+    });
+    const staticPath = candidates.find((candidate) => {
+      const runtimePath = Array.isArray(candidate?.runtimePath)
+        ? candidate.runtimePath.map((item) => this.normalizeGroupType(item)).filter(Boolean)
+        : [];
+      return candidate?.terminalCanQuery === true
+        && runtimePath.length === groupPath.length
+        && runtimePath.every((item, index) => item === groupPath[index]);
+    });
+
+    if (!staticPath) {
+      return {
+        ok: false,
+        validated: false,
+        reason: 'path_not_in_static_groups_tree'
+      };
+    }
+
+    return {
+      ok: true,
+      validated: true,
+      reason: 'static_groups_tree_path_validated',
+      path: groupPath
+    };
+  }
+
   /**
    * 主入口：为当前 query 规划最佳 group path。
    * 如果最佳候选不明显、得分过低，或者规划后与原 groups 等价，则返回 null。

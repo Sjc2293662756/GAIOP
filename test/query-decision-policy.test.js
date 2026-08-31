@@ -289,4 +289,93 @@ describe('QueryDecisionPolicy', () => {
       southboundAllowed: false
     });
   });
+
+  test('rejects an ordinary timeValues query with multiple groups by default', () => {
+    const decision = evaluateQueryDecision({
+      queryDraft: buildQuery({
+        groups: [
+          { type: 'DefinedApp', argument: 'HTTP' },
+          { type: 'DefinedApp', argument: 'HTTPS' }
+        ]
+      })
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'MULTI_GROUP_PATH_UNVERIFIED',
+      southboundAllowed: false,
+      validation: {
+        details: {
+          service: 'timeValues',
+          groupCount: 2
+        }
+      }
+    });
+  });
+
+  test('allows an explicit multilevel drilldown path validated against the groups tree', () => {
+    const groups = [
+      { type: 'BusinessGroup', argument: 'server-segment' },
+      { type: 'Applications', argument: null },
+      { type: 'DefinedApp', argument: null }
+    ];
+    const queryDraft = buildQuery({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      groups,
+      topMetric: 'TPIO',
+      topCount: 10,
+      granularity: undefined,
+      pathPlanning: {
+        applied: true,
+        shouldApply: true,
+        strategy: 'static_groups_tree',
+        followUpAction: 'drilldown',
+        anchorType: 'BusinessGroup',
+        plannedGroups: groups,
+        selectedPath: ['BusinessGroup', 'Applications', 'DefinedApp']
+      }
+    });
+
+    expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
+      ok: true,
+      action: QUERY_ACTIONS.EXECUTE_QUERY,
+      southboundAllowed: true,
+      resolvedQuery: queryDraft
+    });
+  });
+
+  test('does not trust pathPlanning presence without planner proof and static path agreement', () => {
+    expect(evaluateQueryDecision({
+      queryDraft: buildQuery({
+        groups: [
+          { type: 'DefinedApp', argument: 'HTTP' },
+          { type: 'DefinedApp', argument: 'HTTPS' }
+        ],
+        pathPlanning: {
+          followUpAction: 'drilldown'
+        }
+      })
+    })).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'MULTI_GROUP_PATH_UNVERIFIED',
+      southboundAllowed: false
+    });
+  });
+
+  test('keeps an ordinary single-group query executable without path planning', () => {
+    const queryDraft = buildQuery({
+      groups: [{ type: 'DefinedApp', argument: 'HTTP' }]
+    });
+
+    expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
+      ok: true,
+      action: QUERY_ACTIONS.EXECUTE_QUERY,
+      southboundAllowed: true,
+      resolvedQuery: queryDraft
+    });
+  });
 });
