@@ -1,4 +1,9 @@
 const { GENERIC_QUERY_TEMPLATE_ID, normalizeRegistration } = require('./ReportTemplateRegistry');
+const {
+  LEGACY_FAULT_TEMPLATE_ID,
+  isLegacyFaultDiagnosisResult,
+  buildLegacyFaultDiagnosisReportData
+} = require('./FaultDiagnosisReportDataAdapter');
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -108,11 +113,14 @@ function isFaultDiagnosisSourceResult(result = {}) {
   }
   const narrationInput = isPlainObject(result.narrationInput) ? result.narrationInput : {};
   const templateId = String(result?.reportData?.templateId || '').trim();
-  return String(result?.reportData?.reportType || '').trim() === 'diagnostic_report'
-    && (templateId === 'napm_bs_fault_diagnosis_v2' || templateId === 'napm_cs_fault_diagnosis_v1')
+  return (String(result?.reportData?.reportType || '').trim() === 'diagnostic_report'
+    && (templateId === 'napm_bs_fault_diagnosis_v2'
+      || templateId === 'napm_cs_fault_diagnosis_v1'
+      || templateId === LEGACY_FAULT_TEMPLATE_ID))
     || String(result.schema || '').trim() === 'openclaw_napm_fault_diagnosis_result.v1'
     || String(narrationInput.schema || '').trim() === 'openclaw_napm_fault_diagnosis.v1'
-    || (isPlainObject(result.alertAnalysis) && isPlainObject(result.trafficAnalysis));
+    || (isPlainObject(result.alertAnalysis) && isPlainObject(result.trafficAnalysis))
+    || isLegacyFaultDiagnosisResult(result);
 }
 
 function isInspectionSourceResult(result = {}) {
@@ -129,6 +137,9 @@ function isInspectionSourceResult(result = {}) {
 function buildFaultDiagnosisReportData(result = {}, options = {}) {
   if (!isFaultDiagnosisSourceResult(result)) {
     return null;
+  }
+  if (isLegacyFaultDiagnosisResult(result)) {
+    return buildLegacyFaultDiagnosisReportData(result, options);
   }
   if (isPlainObject(result.reportData)) {
     return {
@@ -540,42 +551,32 @@ function normalizeReportInput(input = {}, options = {}) {
   const explicitReportData = isPlainObject(payload.reportData)
     ? payload.reportData
     : (payload.reportType && Array.isArray(payload.sections) ? payload : null);
-  const sourceReportData = explicitReportData
-    || (isPlainObject(sourceResult?.reportData) ? sourceResult.reportData : null)
+  const reportInputOptions = {
+    ...options,
+    prompt: payload.prompt || payload.exportPrompt,
+    format: payload.format || options.format,
+    title: payload.title || options.title,
+    sourceQuestion: payload.sourceQuestion || options.sourceQuestion
+  };
+  const explicitFaultReportData = explicitReportData
+    ? buildFaultDiagnosisReportData({ reportData: explicitReportData }, reportInputOptions)
+    : null;
+  const embeddedFaultReportData = isPlainObject(sourceResult?.reportData)
+    ? buildFaultDiagnosisReportData(sourceResult, reportInputOptions)
+    : null;
+  const sourceReportData = explicitFaultReportData
+    || embeddedFaultReportData
+    || explicitReportData
     || buildInspectionReportData(
       sourceResult || (isPlainObject(payload.inspection) ? payload : null),
-      {
-        ...options,
-        prompt: payload.prompt || payload.exportPrompt,
-        format: payload.format || options.format,
-        title: payload.title || options.title,
-        sourceQuestion: payload.sourceQuestion || options.sourceQuestion
-      }
+      reportInputOptions
     )
     || buildSummaryReportData(
       sourceResult || (isPlainObject(payload.summary) ? payload : null),
-      {
-        ...options,
-        prompt: payload.prompt || payload.exportPrompt,
-        format: payload.format || options.format,
-        title: payload.title || options.title,
-        sourceQuestion: payload.sourceQuestion || options.sourceQuestion
-      }
+      reportInputOptions
     )
-    || buildFaultDiagnosisReportData(sourceResult, {
-      ...options,
-      prompt: payload.prompt || payload.exportPrompt,
-      format: payload.format || options.format,
-      title: payload.title || options.title,
-      sourceQuestion: payload.sourceQuestion || options.sourceQuestion
-    })
-    || buildPacketReportData(sourceResult, {
-      ...options,
-      prompt: payload.prompt || payload.exportPrompt,
-      format: payload.format || options.format,
-      title: payload.title || options.title,
-      sourceQuestion: payload.sourceQuestion || options.sourceQuestion
-    });
+    || buildFaultDiagnosisReportData(sourceResult, reportInputOptions)
+    || buildPacketReportData(sourceResult, reportInputOptions);
 
   if (!sourceReportData) {
     return normalizeRegistration({
