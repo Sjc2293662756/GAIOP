@@ -1026,8 +1026,8 @@ function buildEChartsOption(chartSpec = {}, context = {}) {
     data: xData,
     axisLine: NAPM_STYLE.axisLine,
     axisLabel: chartType === 'bar'
-      ? { ...NAPM_STYLE.axisLabel, rotate: 30, overflow: 'truncate', width: 120, formatter: formatTimeLabel }
-      : { ...NAPM_STYLE.axisLabel, formatter: formatTimeLabel },
+      ? { ...NAPM_STYLE.axisLabel, rotate: 30, overflow: 'truncate', width: 120, hideOverlap: true, formatter: formatTimeLabel }
+      : { ...NAPM_STYLE.axisLabel, hideOverlap: true, formatter: formatTimeLabel },
     splitLine: { show: false }
   };
 

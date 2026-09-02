@@ -1,8 +1,9 @@
 'use strict';
 
-const SUPPORTED_GRANULARITIES = Object.freeze([60, 300, 3600, 86400]);
-const DEFAULT_MAX_POINTS = 120;
-const WEEK_SECONDS = 7 * 86400;
+const {
+  SUPPORTED_GRANULARITIES,
+  selectGranularityForDuration
+} = require('../../shared/TimeGranularityPolicy');
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -20,14 +21,8 @@ function normalizeGranularity(value) {
   return SUPPORTED_GRANULARITIES.includes(numeric) ? numeric : null;
 }
 
-function selectGranularity(durationSeconds, maxPoints = DEFAULT_MAX_POINTS) {
-  const duration = Number(durationSeconds);
-  const pointBudget = Number(maxPoints);
-  if (!Number.isFinite(duration) || duration <= 0) return SUPPORTED_GRANULARITIES[0];
-  const budget = Number.isFinite(pointBudget) && pointBudget > 0 ? pointBudget : DEFAULT_MAX_POINTS;
-  const requiredStep = Math.max(1, Math.ceil(duration / budget));
-  return SUPPORTED_GRANULARITIES.find((step) => step >= requiredStep)
-    || SUPPORTED_GRANULARITIES[SUPPORTED_GRANULARITIES.length - 1];
+function selectGranularity(durationSeconds) {
+  return selectGranularityForDuration(durationSeconds);
 }
 
 function alignToMinute(value) {
@@ -53,35 +48,6 @@ function formatTimestamp(seconds, timezone = 'Asia/Shanghai') {
     return acc;
   }, {});
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
-}
-
-function getLocalDateParts(seconds, timezone = 'Asia/Shanghai') {
-  const numeric = Number(seconds);
-  if (!Number.isFinite(numeric)) return null;
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(new Date(numeric * 1000)).reduce((acc, part) => {
-    if (part.type !== 'literal') acc[part.type] = Number(part.value);
-    return acc;
-  }, {});
-}
-
-function localWeekStartSeconds(seconds, timezone = 'Asia/Shanghai') {
-  const parts = getLocalDateParts(seconds, timezone);
-  if (!parts || !Number.isFinite(parts.year) || !Number.isFinite(parts.month) || !Number.isFinite(parts.day)) {
-    return null;
-  }
-  const dateUtc = Date.UTC(parts.year, parts.month - 1, parts.day);
-  const dayOfWeek = new Date(dateUtc).getUTCDay();
-  const daysFromMonday = (dayOfWeek + 6) % 7;
-  const mondayUtc = dateUtc - daysFromMonday * 86400000;
-  // Production reports use Asia/Shanghai (UTC+08:00), which has no DST.
-  // For other zones, UTC midnight remains a deterministic fallback label.
-  const offsetSeconds = timezone === 'Asia/Shanghai' ? 8 * 3600 : 0;
-  return Math.floor(mondayUtc / 1000) - offsetSeconds;
 }
 
 function extractRows(raw = {}) {
@@ -123,7 +89,7 @@ function normalizeTimeSeriesDataset(raw = {}, options = {}) {
   const metrics = (options.metrics || ['TPIO', 'TPI', 'TPO']).map((item) => String(item).toUpperCase());
   const requestedGranularity = normalizeGranularity(
     options.requestedGranularity ?? options.granularity
-  ) || selectGranularity(options.durationSeconds, options.maxPoints);
+  ) || selectGranularity(options.durationSeconds);
   const responseGranularityValue = toNumber(raw?.granularity);
   const actualGranularity = normalizeGranularity(responseGranularityValue) || requestedGranularity;
   const intervalStart = toPositiveNumber(raw?.interval?.start) ?? toPositiveNumber(options.interval?.start);
@@ -195,86 +161,6 @@ function normalizeTimeSeriesDataset(raw = {}, options = {}) {
     granularitySource: normalizeGranularity(responseGranularityValue) ? 'response' : 'request_fallback',
     granularityMismatch: normalizeGranularity(responseGranularityValue) !== null
       && responseGranularityValue !== requestedGranularity
-  };
-}
-
-function aggregateDatasetByLocalWeek(dataset = {}, options = {}) {
-  const points = Array.isArray(dataset.points) ? dataset.points : [];
-  const metrics = Array.isArray(dataset.metrics) ? dataset.metrics : ['TPIO', 'TPI', 'TPO'];
-  const timezone = options.timezone || dataset.timezone || 'Asia/Shanghai';
-  const buckets = new Map();
-
-  for (const point of points) {
-    const timestamp = toNumber(point?.timestamp);
-    const bucketStart = timestamp === null ? null : localWeekStartSeconds(timestamp, timezone);
-    if (bucketStart === null) continue;
-    const bucketKey = String(bucketStart);
-    if (!buckets.has(bucketKey)) {
-      buckets.set(bucketKey, {
-        timestamp: bucketStart,
-        values: Object.fromEntries(metrics.map((metric) => [metric, []]))
-      });
-    }
-    const bucket = buckets.get(bucketKey);
-    for (const metric of metrics) {
-      const value = toNumber(point?.[metric]);
-      if (value !== null) bucket.values[metric].push(value);
-    }
-  }
-
-  if (buckets.size === 0) {
-    return {
-      ...dataset,
-      effectiveGranularity: dataset.actualGranularity,
-      aggregation: {
-        method: 'calendar_week_average',
-        sourceGranularity: dataset.actualGranularity,
-        effectiveGranularity: dataset.actualGranularity,
-        timezone,
-        status: 'skipped_missing_timestamps'
-      }
-    };
-  }
-
-  const aggregatedPoints = Array.from(buckets.values())
-    .sort((left, right) => left.timestamp - right.timestamp)
-    .map((bucket, index) => {
-      const point = {
-        index: index + 1,
-        timestamp: bucket.timestamp,
-        time: formatTimestamp(bucket.timestamp, timezone)
-      };
-      for (const metric of metrics) {
-        const values = bucket.values[metric];
-        if (values.length > 0) {
-          point[metric] = Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(4));
-        }
-      }
-      return point;
-    });
-  const sourceStats = dataset.stats || {};
-  const stats = computeStats(aggregatedPoints, {
-    metric: metrics[0],
-    granularity: WEEK_SECONDS,
-    spikeRatio: options.spikeRatio
-  });
-  // Preserve anomalies detected at the source resolution. Weekly averaging
-  // must not hide a daily gap, zero segment, or spike from the report.
-  stats.missingPointCount = Number(sourceStats.missingPointCount) || 0;
-  stats.zeroSegmentCount = Number(sourceStats.zeroSegmentCount) || 0;
-  stats.spikeCount = Number(sourceStats.spikeCount) || 0;
-  return {
-    ...dataset,
-    points: aggregatedPoints,
-    stats,
-    effectiveGranularity: WEEK_SECONDS,
-    aggregation: {
-      method: 'calendar_week_average',
-      sourceGranularity: dataset.actualGranularity,
-      effectiveGranularity: WEEK_SECONDS,
-      timezone,
-      status: 'applied'
-    }
   };
 }
 
@@ -383,9 +269,6 @@ class InspectionTrafficAnalysisService {
     this.timezone = options.timezone || 'Asia/Shanghai';
     this.nowSeconds = options.nowSeconds || null;
     this.thresholds = options.thresholds || {};
-    this.maxPoints = Number.isFinite(Number(options.maxPoints)) && Number(options.maxPoints) > 0
-      ? Number(options.maxPoints)
-      : DEFAULT_MAX_POINTS;
   }
 
   getNowSeconds() {
@@ -400,7 +283,7 @@ class InspectionTrafficAnalysisService {
     const resolvedDuration = toPositiveNumber(durationSeconds) || 3600;
     const resolvedStart = alignToMinute(start) || (resolvedEnd - resolvedDuration);
     const requestedGranularity = normalizeGranularity(granularity)
-      || selectGranularity(resolvedDuration, this.maxPoints);
+      || selectGranularity(resolvedDuration);
     const params = {
       start: resolvedStart,
       end: resolvedEnd,
@@ -413,26 +296,17 @@ class InspectionTrafficAnalysisService {
     const normalizedDataset = normalizeTimeSeriesDataset(result?.data || {}, {
       timezone: this.timezone,
       durationSeconds: resolvedDuration,
-      maxPoints: this.maxPoints,
       requestedGranularity,
       interval: { start: resolvedStart, end: resolvedEnd },
       metrics: ['TPIO', 'TPI', 'TPO'],
       primaryMetric: 'TPIO',
       spikeRatio: this.thresholds.trafficSpikeRatio
     });
-    const sourceStep = normalizedDataset.actualGranularity || requestedGranularity;
-    const needsWeeklyAggregation = resolvedDuration > this.maxPoints * sourceStep
-      && sourceStep <= 86400;
-    const dataset = needsWeeklyAggregation
-      ? aggregateDatasetByLocalWeek(normalizedDataset, {
-          timezone: this.timezone,
-          spikeRatio: this.thresholds.trafficSpikeRatio
-        })
-      : {
-          ...normalizedDataset,
-          effectiveGranularity: normalizedDataset.actualGranularity,
-          aggregation: null
-        };
+    const dataset = {
+      ...normalizedDataset,
+      effectiveGranularity: normalizedDataset.actualGranularity,
+      aggregation: null
+    };
     return {
       id,
       title,
@@ -550,12 +424,9 @@ class InspectionTrafficAnalysisService {
 module.exports = InspectionTrafficAnalysisService;
 module.exports.__test__ = {
   SUPPORTED_GRANULARITIES,
-  WEEK_SECONDS,
-  DEFAULT_MAX_POINTS,
   normalizeGranularity,
   selectGranularity,
   normalizeTimeSeriesDataset,
-  aggregateDatasetByLocalWeek,
   computeStats,
   buildFindingForDataset,
   normalizeWindowInput,

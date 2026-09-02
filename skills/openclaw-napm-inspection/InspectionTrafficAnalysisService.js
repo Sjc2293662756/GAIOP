@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  SUPPORTED_GRANULARITIES,
+  selectGranularityForDuration
+} = require('../shared/TimeGranularityPolicy');
+
 function toNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
@@ -216,20 +221,23 @@ class InspectionTrafficAnalysisService {
     if (!this.client || typeof this.client.getTimeValues !== 'function') {
       return null;
     }
+    const requestedGranularity = SUPPORTED_GRANULARITIES.includes(Number(granularity))
+      ? Number(granularity)
+      : selectGranularityForDuration(durationSeconds);
     const end = this.getNowSeconds();
     const start = end - durationSeconds;
     const params = {
       start,
       end,
       metrics: 'TPIO,TPI,TPO',
-      granularity,
+      granularity: requestedGranularity,
       numGroups: 1,
       groupType1: 'TotalTraffic'
     };
     const result = await this.client.getTimeValues(params);
     const dataset = normalizeTimeSeriesDataset(result.data, {
       timezone: this.timezone,
-      granularity,
+      granularity: requestedGranularity,
       metrics: ['TPIO', 'TPI', 'TPO'],
       primaryMetric: 'TPIO',
       spikeRatio: this.thresholds.trafficSpikeRatio
@@ -241,7 +249,7 @@ class InspectionTrafficAnalysisService {
         service: 'timeValues',
         groups: [{ type: 'TotalTraffic' }],
         metrics: ['TPIO', 'TPI', 'TPO'],
-        granularity,
+        granularity: requestedGranularity,
         start,
         end,
         requestUrlRedacted: result.requestUrlRedacted || ''
@@ -274,14 +282,12 @@ class InspectionTrafficAnalysisService {
     const recentHour = await this.queryWindow({
       id: 'traffic-last-hour',
       title: '最近1小时流量分布状况',
-      durationSeconds: 3600,
-      granularity: 60
+      durationSeconds: 3600
     });
     const recentDay = await this.queryWindow({
       id: 'traffic-last-day',
       title: '最近1天流量分布状况',
-      durationSeconds: 86400,
-      granularity: 3600
+      durationSeconds: 86400
     });
     return this.buildFromWindows({ recentHour, recentDay });
   }
@@ -293,5 +299,6 @@ module.exports.__test__ = {
   computeStats,
   buildFindingForDataset,
   extractRows,
-  readMetric
+  readMetric,
+  selectGranularityForDuration
 };
