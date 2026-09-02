@@ -36,6 +36,7 @@ const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/Op
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const { logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
+const { selectGranularityForRange } = require(path.join(skillRoot, '..', 'shared', 'TimeGranularityPolicy'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -985,13 +986,15 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
 
   }
 
-  if (query.service === 'timeValues') {
-    query.granularity = Number.isFinite(Number(query.granularity)) && Number(query.granularity) > 0
-      ? Number(query.granularity)
-      : 3600;
+  const normalizedQuery = normalizeResolvedQueryTimeRange(query);
+  if (normalizedQuery.service === 'timeValues') {
+    normalizedQuery.granularity = Number.isFinite(Number(normalizedQuery.granularity))
+      && Number(normalizedQuery.granularity) > 0
+      ? Number(normalizedQuery.granularity)
+      : selectGranularityForRange(normalizedQuery.start, normalizedQuery.end);
   }
 
-  return normalizeResolvedQueryTimeRange(query);
+  return normalizedQuery;
 }
 
 function cloneGroups(groups = []) {

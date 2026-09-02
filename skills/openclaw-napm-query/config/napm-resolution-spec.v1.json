@@ -8032,13 +8032,14 @@
       "last7days",
       "last30days"
     ],
-    "recommendedGranularityByTimeRange": {
-      "last1hour": 60,
-      "last24hours": 3600,
-      "today": 3600,
-      "yesterday": 3600,
-      "last7days": 86400,
-      "last30days": 86400
+    "automaticGranularityPolicy": {
+      "defaultGranularity": 60,
+      "rules": [
+        { "maxDurationSeconds": 21600, "granularity": 60 },
+        { "maxDurationSeconds": 259200, "granularity": 300 },
+        { "maxDurationSeconds": 3599999, "granularity": 3600 },
+        { "minDurationSeconds": 3600000, "granularity": 86400 }
+      ]
     }
   },
   "templates": {

@@ -207,8 +207,8 @@ describe('InspectionFixedTemplateService', () => {
         },
         dataset: {
           timezone: 'Asia/Shanghai',
-          effectiveGranularity: 604800,
-          aggregation: { method: 'calendar_week_average' },
+          effectiveGranularity: 86400,
+          aggregation: null,
           points: [{ timestamp: 1750003200, TPIO: 1 }],
           stats: { max: 1, min: 1, avg: 1, missingPointCount: 0, zeroSegmentCount: 0, spikeCount: 0 }
         }
@@ -223,8 +223,8 @@ describe('InspectionFixedTemplateService', () => {
       'Asia/Shanghai',
       86400,
       86400,
-      604800,
-      'calendar_week_average',
+      86400,
+      '',
       '有数据'
     ]));
     expect(rows[0][2]).toContain('2025-06-16 00:00');
