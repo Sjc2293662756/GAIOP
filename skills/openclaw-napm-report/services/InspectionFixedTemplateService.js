@@ -273,14 +273,17 @@ function buildImageRun(image = {}, assetRoot = path.join(__dirname, '..')) {
   if (dims && dims.width > 0 && dims.height > 0) {
     height = Math.round(configWidth * dims.height / dims.width);
   }
+  const imageName = asText(image.alt || 'logo');
 
   return new ImageRun({
     type: image.type || imageTypeFromPath(filePath),
     data: imageBuffer,
     transformation: { width, height },
     altText: {
-      title: asText(image.alt || 'logo'),
-      description: asText(image.alt || 'logo')
+      // docx@9.7.1 maps this to the required wp:docPr name attribute.
+      name: imageName,
+      title: imageName,
+      description: imageName
     }
   });
 }
@@ -1395,6 +1398,8 @@ class InspectionFixedTemplateService {
             data: cached.buffer,
             transformation: { width: cached.width || NAPM_STYLE.chartWidth, height: cached.height || NAPM_STYLE.chartHeight },
             altText: {
+              // Word rejects ImageRun output when wp:docPr has no name.
+              name: sectionTitle || 'chart',
               title: sectionTitle || 'chart',
               description: sectionTitle || 'chart'
             }
