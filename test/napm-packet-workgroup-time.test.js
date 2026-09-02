@@ -107,27 +107,30 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
     expect(prepared.params.traceId).toMatch(/^napm-/);
   });
 
-  test('builds the BusinessGroup to MemberIPs to IPAddress discovery URL', () => {
-    const url = new URL(packet.buildBusinessGroupTopValuesUrl(
-      'http://netinside.example.test',
-      { start: 1788310680, end: 1788310980 },
-      '服务器网段'
-    ));
+  test('builds the businessGroups CSV discovery URL', () => {
+    const url = new URL(packet.buildBusinessGroupsUrl('http://netinside.example.test'));
 
-    expect(url.searchParams.get('type')).toBe('topValues');
-    expect(url.searchParams.get('numGroups')).toBe('3');
-    expect(url.searchParams.get('groupType1')).toBe('BusinessGroup');
-    expect(url.searchParams.get('groupArgument1')).toBe('服务器网段');
-    expect(url.searchParams.get('groupType2')).toBe('MemberIPs');
-    expect(url.searchParams.get('groupType3')).toBe('IPAddress');
+    expect(url.pathname).toBe('/webservice/NetInside');
+    expect(url.searchParams.get('type')).toBe('businessGroups');
+    expect(url.searchParams.get('csv')).toBe('true');
+    expect(url.searchParams.has('start')).toBe(false);
+    expect(url.searchParams.has('end')).toBe(false);
   });
 
-  test('extracts and deduplicates IP candidates from topValues rows', () => {
-    expect(packet.extractPacketCandidateIps([
-      { key: '10.0.0.1' },
-      { group: { argument: '10.0.0.2' } },
-      { groupPath: 'BusinessGroup/MemberIPs/IPAddress/10.0.0.1' }
-    ])).toEqual(['10.0.0.1', '10.0.0.2']);
+  test('parses quoted business-group CSV and splits member IPs and ranges', () => {
+    const rows = packet.parseBusinessGroupsCsv('\ufeffName,IpMembers,Description\r\n"服务器网段","10.0.0.1, 10.0.0.2, 10.0.0.0-10.0.0.255,not-an-ip","主机,生产"\r\n');
+    expect(rows).toEqual([
+      {
+        Name: '服务器网段',
+        IpMembers: '10.0.0.1, 10.0.0.2, 10.0.0.0-10.0.0.255,not-an-ip',
+        Description: '主机,生产'
+      }
+    ]);
+    expect(packet.parseBusinessGroupIpMembers(rows[0].IpMembers)).toEqual({
+      ips: ['10.0.0.1', '10.0.0.2'],
+      ipRanges: ['10.0.0.0-10.0.0.255'],
+      invalidMembers: ['not-an-ip']
+    });
   });
 
   test('discovers workgroup member IPs before preview and download', async () => {
@@ -135,16 +138,14 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
     const server = http.createServer((request, response) => {
       const url = new URL(request.url, 'http://127.0.0.1');
       calls.push(url.searchParams.get('type'));
-      response.setHeader('content-type', 'application/json');
-
-      if (url.searchParams.get('type') === 'topValues') {
-        response.end(JSON.stringify({ topValues: [
-          { key: '10.0.0.1' },
-          { key: '10.0.0.2' }
-        ] }));
+      if (url.searchParams.get('type') === 'businessGroups') {
+        response.setHeader('content-type', 'text/csv; charset=utf-8');
+        response.end('Name,IpMembers\r\n服务器网段,"10.0.0.1,10.0.0.2,10.0.0.0-10.0.0.255"\r\n');
         return;
       }
       if (url.searchParams.get('type') === 'packetsPreview') {
+        expect(url.searchParams.getAll('ips')).toEqual(['10.0.0.1', '10.0.0.2']);
+        expect(url.searchParams.getAll('ipRanges')).toEqual(['10.0.0.0-10.0.0.255']);
         response.end(JSON.stringify({ packetCount: 2, totalBytes: 1024 }));
         return;
       }
@@ -174,10 +175,13 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
     expect(result.businessGroupResolution).toMatchObject({
       ok: true,
       businessGroupName: '服务器网段',
-      memberIpCount: 2
+      memberIpCount: 2,
+      path: ['businessGroups', 'IpMembers'],
+      memberIpRanges: ['10.0.0.0-10.0.0.255'],
+      invalidMembers: []
     });
     expect(result.preview.overview.packetCount).toBe(2);
-    expect(calls).toEqual(['topValues', 'packetsPreview']);
+    expect(calls).toEqual(['businessGroups', 'packetsPreview']);
   });
 
   test('downloads after workgroup discovery when preview is non-empty', async () => {
@@ -187,9 +191,9 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
       const url = new URL(request.url, 'http://127.0.0.1');
       const type = url.searchParams.get('type');
       calls.push(type);
-      if (type === 'topValues') {
-        response.setHeader('content-type', 'application/json');
-        response.end(JSON.stringify([{ key: '10.0.0.3' }]));
+      if (type === 'businessGroups') {
+        response.setHeader('content-type', 'text/csv; charset=utf-8');
+        response.end('Name,IpMembers\n服务器网段,"10.0.0.3"\n');
         return;
       }
       if (type === 'packetsPreview') {
@@ -228,6 +232,39 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
 
     expect(result.ok).toBe(true);
     expect(result.download).toMatchObject({ ok: true, fileName: 'group.pcap' });
-    expect(calls).toEqual(['topValues', 'packetsPreview', 'packetsDown']);
+    expect(calls).toEqual(['businessGroups', 'packetsPreview', 'packetsDown']);
+  });
+
+  test('does not call packet endpoints when the business-group name is not found', async () => {
+    const calls = [];
+    const server = http.createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      const type = url.searchParams.get('type');
+      calls.push(type);
+      if (type === 'businessGroups') {
+        response.setHeader('content-type', 'text/csv; charset=utf-8');
+        response.end('Name,IpMembers\nother-group,"10.0.0.4"\n');
+        return;
+      }
+      response.statusCode = 500;
+      response.end('packet endpoint must not be called');
+    });
+
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const result = await packet.handleSkillCall({
+      prompt: '服务器网段 分析这个业务组的最近5分钟的数据包情况',
+      mode: 'preview_only',
+      host: `http://127.0.0.1:${address.port}`,
+      criteria: {
+        groupType: 'BusinessGroup',
+        groupArgument: '服务器网段'
+      }
+    });
+    await new Promise((resolve) => server.close(resolve));
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('BUSINESS_GROUP_NOT_FOUND');
+    expect(calls).toEqual(['businessGroups']);
   });
 });

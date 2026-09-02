@@ -7585,11 +7585,10 @@ function createPacketAnalysisToolDefinition() {
             id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. For a combined alert packet request, use napm-alert-packet-analysis and accept an id only from its trusted handoff.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
-            businessGroupName: { type: 'string', description: 'BusinessGroup/workgroup name. The packet skill discovers member IPs before packetsPreview/packetsDown.' },
+            businessGroupName: { type: 'string', description: 'BusinessGroup/workgroup name. The packet skill queries businessGroups CSV, matches Name exactly, expands IpMembers into ips/ipRanges, then calls packetsPreview/packetsDown.' },
             businessGroup: { type: 'string', description: 'Alias of businessGroupName.' },
             groupType: { type: 'string', description: 'Use BusinessGroup for workgroup packet discovery.' },
             groupArgument: { type: 'string', description: 'BusinessGroup object name when groupType=BusinessGroup.' },
-            groupPacketPath: { type: 'array', items: { type: 'string' }, description: 'Optional two-level path after BusinessGroup, defaulting to MemberIPs → IPAddress with ConnectedIPs → IPAddress fallback.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
             pageUrl: { type: 'string', description: 'Alias of page. Use for Web page URL/path packet preview.' },
             pageFamilyId: { type: 'string', description: 'Known PageFamily id. Starts business packet preview from pageViews.' },
@@ -7890,7 +7889,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
-      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests must pass groupType="BusinessGroup" plus groupArgument/businessGroupName; the skill discovers MemberIPs/ConnectedIPs before packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests must pass groupType="BusinessGroup" plus groupArgument/businessGroupName; the skill queries businessGroups?csv=true, matches Name exactly, splits IpMembers into repeated ips/ipRanges, then calls packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
       'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );

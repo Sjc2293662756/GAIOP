@@ -17,11 +17,8 @@ const PREVIEW_MODES = new Set(['preview_only', 'preview_download', 'preview_down
 const ANALYZE_MODES = new Set(['analyze_file', 'download_analyze', 'preview_download_analyze']);
 const BUSINESS_TOP_METRICS = ['PGNPGE', 'PGTME', 'PGNSLPGE', 'PGSLPCT', 'PGHTTP400', 'PGHTTP500'];
 const PAGE_FAMILY_TOP_METRICS = ['PGNPGE', 'PGNOBJE', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500'];
-const BUSINESS_GROUP_PACKET_PATHS = [
-  ['MemberIPs', 'IPAddress'],
-  ['ConnectedIPs', 'IPAddress'],
-];
-const BUSINESS_GROUP_PACKET_METRICS = ['TPIO', 'BYTIO'];
+const BUSINESS_GROUP_NAME_FIELD = 'Name';
+const BUSINESS_GROUP_MEMBERS_FIELD = 'IpMembers';
 const PACKET_COUNT_KEYS = [
   'packetCount',
   'packetsCount',
@@ -776,44 +773,11 @@ async function resolveBusinessPacketInstance(task) {
   };
 }
 
-function normalizeBusinessGroupPacketPath(value) {
-  if (Array.isArray(value)) {
-    const path = value.map((item) => String(item || '').trim()).filter(Boolean);
-    return path.length >= 2 ? path.slice(0, 2) : null;
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const path = value.split(/[>/\u2192,]+/).map((item) => item.trim()).filter(Boolean);
-    return path.length >= 2 ? path.slice(0, 2) : null;
-  }
-  return null;
-}
-
-function getBusinessGroupPacketPaths(criteria = {}) {
-  const explicit = normalizeBusinessGroupPacketPath(
-    criteria.groupPacketPath || criteria.businessGroupPacketPath
-  );
-  if (explicit) return [explicit];
-  return BUSINESS_GROUP_PACKET_PATHS;
-}
-
-function buildBusinessGroupTopValuesUrl(host, criteria = {}, businessGroupName = '') {
-  const [groupType2, groupType3] = getBusinessGroupPacketPaths(criteria)[0];
+function buildBusinessGroupsUrl(host) {
   const url = new URL('/webservice/NetInside', host);
   appendRuntimeAuthQueryParams(url);
-  url.searchParams.set('type', 'topValues');
-  url.searchParams.set('numGroups', '3');
-  url.searchParams.set('groupType1', 'BusinessGroup');
-  url.searchParams.set('groupArgument1', String(
-    businessGroupName || criteria.businessGroupName || criteria.groupArgument || ''
-  ).trim());
-  url.searchParams.set('groupType2', groupType2);
-  url.searchParams.set('groupType3', groupType3);
-  url.searchParams.set('metrics', normalizeMetricList(criteria.businessGroupMetrics, BUSINESS_GROUP_PACKET_METRICS).join(','));
-  url.searchParams.set('topMetric', criteria.businessGroupTopMetric || 'TPIO');
-  url.searchParams.set('topCount', String(criteria.businessGroupTopCount || criteria.packetGroupTopCount || 100));
-  url.searchParams.set('start', String(criteria.start));
-  url.searchParams.set('end', String(criteria.end));
-  url.searchParams.set('json', 'true');
+  url.searchParams.set('type', 'businessGroups');
+  url.searchParams.set('csv', 'true');
   return url.toString();
 }
 
@@ -826,82 +790,180 @@ function isValidIPv4(value = '') {
   });
 }
 
-function extractPacketCandidateIps(rows = []) {
-  const seen = new Set();
-  const visit = (value) => {
-    if (typeof value === 'string') {
-      const matches = value.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) || [];
-      matches.forEach((candidate) => {
-        if (isValidIPv4(candidate)) seen.add(candidate);
-      });
-      return;
+function parseCsvRecords(text = '') {
+  const source = String(text || '').replace(/^\uFEFF/, '');
+  const records = [];
+  let record = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') {
+      if (inQuotes && source[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (character === ',' && !inQuotes) {
+      record.push(field.trim());
+      field = '';
+    } else if ((character === '\n' || character === '\r') && !inQuotes) {
+      if (character === '\r' && source[index + 1] === '\n') index += 1;
+      record.push(field.trim());
+      field = '';
+      if (record.some((value) => value !== '')) records.push(record);
+      record = [];
+    } else {
+      field += character;
     }
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-      return;
+  }
+
+  if (field !== '' || record.length > 0) {
+    record.push(field.trim());
+    if (record.some((value) => value !== '')) records.push(record);
+  }
+  return records;
+}
+
+function parseBusinessGroupsCsv(text = '') {
+  const records = parseCsvRecords(text);
+  if (records.length < 2) return [];
+  const headers = records[0].map((header, index) => {
+    const value = String(header || '').trim();
+    return index === 0 ? value.replace(/^\uFEFF/, '') : value;
+  });
+  if (!headers.some(Boolean)) return [];
+  return records.slice(1).map((values) => {
+    const row = {};
+    headers.forEach((header, index) => {
+      if (header) row[header] = values[index] == null ? '' : values[index];
+    });
+    return row;
+  });
+}
+
+function getCsvField(row, fieldName) {
+  if (!row || typeof row !== 'object') return '';
+  if (Object.prototype.hasOwnProperty.call(row, fieldName)) return String(row[fieldName] || '');
+  const expected = String(fieldName || '').toLowerCase();
+  const key = Object.keys(row).find((candidate) => candidate.toLowerCase() === expected);
+  return key ? String(row[key] || '') : '';
+}
+
+function parseBusinessGroupIpMembers(value = '') {
+  const ips = [];
+  const ipRanges = [];
+  const invalidMembers = [];
+  const seenIps = new Set();
+  const seenRanges = new Set();
+
+  for (const rawMember of String(value || '').split(',')) {
+    const member = rawMember.trim();
+    if (!member) continue;
+    if (member.includes('-')) {
+      const rangeParts = member.split('-').map((part) => part.trim());
+      if (rangeParts.length === 2 && rangeParts.every(isValidIPv4)) {
+        const normalizedRange = `${rangeParts[0]}-${rangeParts[1]}`;
+        if (!seenRanges.has(normalizedRange)) {
+          seenRanges.add(normalizedRange);
+          ipRanges.push(normalizedRange);
+        }
+      } else {
+        invalidMembers.push(member);
+      }
+      continue;
     }
-    if (value && typeof value === 'object') {
-      Object.values(value).forEach(visit);
+    if (isValidIPv4(member)) {
+      if (!seenIps.has(member)) {
+        seenIps.add(member);
+        ips.push(member);
+      }
+    } else {
+      invalidMembers.push(member);
     }
-  };
-  visit(rows);
-  return Array.from(seen);
+  }
+
+  return { ips, ipRanges, invalidMembers };
 }
 
 async function resolveBusinessGroupPacketIps(task) {
   const criteria = task.criteria || {};
   const businessGroupName = String(criteria.businessGroupName || '').trim();
-  const steps = [];
-  let lastFailure = null;
+  const url = buildBusinessGroupsUrl(task.host);
+  const response = await requestNetInsideText(url, 'business_groups');
+  const rows = response.ok ? parseBusinessGroupsCsv(response.text) : [];
+  const step = {
+    name: 'business_groups',
+    path: ['businessGroups', 'IpMembers'],
+    url: publicPacketUrl(url, task.showFullUrls),
+    ok: response.ok,
+    statusCode: response.statusCode,
+    rowCount: rows.length,
+  };
 
-  for (const groupPath of getBusinessGroupPacketPaths(criteria)) {
-    const pathCriteria = { ...criteria, groupPacketPath: groupPath };
-    const url = buildBusinessGroupTopValuesUrl(task.host, pathCriteria, businessGroupName);
-    const response = await requestNetInsideJson(url, `business_group_${groupPath[0].toLowerCase()}`);
-    const ips = response.ok ? extractPacketCandidateIps(response.rows) : [];
-    const step = {
-      name: `business_group_${groupPath[0].toLowerCase()}`,
-      path: ['BusinessGroup', ...groupPath],
-      url: publicPacketUrl(url, task.showFullUrls),
-      ok: response.ok,
-      rowCount: response.rows.length,
-      memberIpCount: ips.length,
-      memberIps: ips.slice(0, 100),
+  if (!response.ok) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [step],
+      error: {
+        code: 'BUSINESS_GROUP_QUERY_FAILED',
+        message: response.message || '工作组清单查询失败。',
+      },
     };
-    steps.push(step);
-
-    if (response.ok && ips.length > 0) {
-      return {
-        ok: true,
-        businessGroupName,
-        path: step.path,
-        memberIpCount: ips.length,
-        memberIps: ips,
-        criteriaPatch: {
-          ips,
-          groupType: 'BusinessGroup',
-          groupArgument: businessGroupName,
-          businessGroupName,
-          groupPacketPath: groupPath,
-        },
-        steps,
-      };
-    }
-
-    lastFailure = response.ok
-      ? { code: 'BUSINESS_GROUP_PACKET_IP_NOT_FOUND', message: '工作组下未找到可用于数据包分析的成员 IP。' }
-      : { code: 'BUSINESS_GROUP_PACKET_QUERY_FAILED', message: response.message || '工作组成员 IP 查询失败。' };
   }
 
-  return {
-    ok: false,
+  const matchedRow = rows.find((row) => getCsvField(row, BUSINESS_GROUP_NAME_FIELD).trim() === businessGroupName);
+  if (!matchedRow) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [{ ...step, matchedName: null }],
+      error: {
+        code: 'BUSINESS_GROUP_NOT_FOUND',
+        message: `businessGroups 清单中未找到名称为“${businessGroupName}”的工作组。`,
+      },
+    };
+  }
+
+  const members = parseBusinessGroupIpMembers(getCsvField(matchedRow, BUSINESS_GROUP_MEMBERS_FIELD));
+  const resolution = {
+    ok: members.ips.length > 0 || members.ipRanges.length > 0,
     businessGroupName,
-    steps,
-    error: lastFailure || {
-      code: 'BUSINESS_GROUP_PACKET_IP_NOT_FOUND',
-      message: '工作组下未找到可用于数据包分析的成员 IP。',
-    },
+    path: ['businessGroups', 'IpMembers'],
+    memberIpCount: members.ips.length,
+    memberIpRangeCount: members.ipRanges.length,
+    memberCount: members.ips.length + members.ipRanges.length,
+    memberIps: members.ips,
+    memberIpRanges: members.ipRanges,
+    invalidMembers: members.invalidMembers,
+    steps: [{
+      ...step,
+      matchedName: getCsvField(matchedRow, BUSINESS_GROUP_NAME_FIELD).trim(),
+      memberIpCount: members.ips.length,
+      memberIpRangeCount: members.ipRanges.length,
+      invalidMembers: members.invalidMembers,
+    }],
   };
+
+  if (!resolution.ok) {
+    resolution.error = {
+      code: 'BUSINESS_GROUP_PACKET_MEMBER_NOT_FOUND',
+      message: `工作组“${businessGroupName}”的 IpMembers 没有可用的 IP 或 IP 范围。`,
+    };
+    return resolution;
+  }
+
+  resolution.criteriaPatch = {
+    ips: members.ips,
+    ipRanges: members.ipRanges,
+    groupType: 'BusinessGroup',
+    groupArgument: businessGroupName,
+    businessGroupName,
+  };
+  return resolution;
 }
 
 function businessResolveFailure(code, message, steps = []) {
@@ -1000,20 +1062,46 @@ function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
   return url.toString();
 }
 
-async function requestNetInsideJson(url, stepName) {
+async function requestNetInsideText(url, stepName) {
   try {
     const response = await httpRequest(url, { responseType: 'text' });
-    const text = response.body.toString('utf8').trim();
-    const parsed = parseMaybeJson(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return {
         ok: false,
-        rows: [],
         message: `${stepName} HTTP 状态码 ${response.statusCode}。`,
         statusCode: response.statusCode,
-        textSample: text.slice(0, 500),
+        text: response.body.toString('utf8'),
       };
     }
+    return {
+      ok: true,
+      statusCode: response.statusCode,
+      text: response.body.toString('utf8'),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      text: '',
+      message: error.message,
+    };
+  }
+}
+
+async function requestNetInsideJson(url, stepName) {
+  const response = await requestNetInsideText(url, stepName);
+  const text = response.text.trim();
+  const parsed = parseMaybeJson(text);
+  if (!response.ok) {
+    return {
+      ok: false,
+      rows: [],
+      message: response.message,
+      statusCode: response.statusCode,
+      textSample: text.slice(0, 500),
+    };
+  }
+  try {
     const rows = normalizeRowsFromPayload(parsed);
     return {
       ok: true,
@@ -1027,6 +1115,7 @@ async function requestNetInsideJson(url, stepName) {
       ok: false,
       rows: [],
       message: error.message,
+      statusCode: response.statusCode,
     };
   }
 }
@@ -2292,7 +2381,15 @@ function buildSummary(result) {
   if (result.urls && result.urls.preview) highlights.push(`预览 URL 已生成：${result.urls.preview}`);
   if (result.urls && result.urls.download) highlights.push(`下载 URL 已生成：${result.urls.download}`);
   if (result.businessGroupResolution && result.businessGroupResolution.ok) {
-    highlights.push(`工作组 ${result.businessGroupResolution.businessGroupName} 已解析到 ${result.businessGroupResolution.memberIpCount} 个成员 IP。`);
+    const resolution = result.businessGroupResolution;
+    const memberParts = [
+      resolution.memberIpCount ? `${resolution.memberIpCount} 个成员 IP` : null,
+      resolution.memberIpRangeCount ? `${resolution.memberIpRangeCount} 个 IP 范围` : null,
+    ].filter(Boolean);
+    const invalidSuffix = resolution.invalidMembers && resolution.invalidMembers.length > 0
+      ? `，${resolution.invalidMembers.length} 个成员值无效`
+      : '';
+    highlights.push(`工作组 ${resolution.businessGroupName} 已解析：${memberParts.join('、') || '无有效成员'}${invalidSuffix}。`);
   }
   if (result.businessResolution && result.businessResolution.ok && !result.businessResolution.previewOnly) {
     highlights.push(`业务数据包实例已解析：pageFamilyId=${result.businessResolution.pageFamilyId}，pageFamilyDetailId=${result.businessResolution.pageFamilyDetailId}`);
@@ -2338,7 +2435,11 @@ function buildNarrationInput(result) {
       businessGroupName: result.businessGroupResolution.businessGroupName,
       path: result.businessGroupResolution.path,
       memberIpCount: result.businessGroupResolution.memberIpCount,
+      memberIpRangeCount: result.businessGroupResolution.memberIpRangeCount,
+      memberCount: result.businessGroupResolution.memberCount,
       memberIps: result.businessGroupResolution.memberIps,
+      memberIpRanges: result.businessGroupResolution.memberIpRanges,
+      invalidMembers: result.businessGroupResolution.invalidMembers,
       steps: result.businessGroupResolution.steps,
       error: result.businessGroupResolution.error,
     } : null,
@@ -2994,14 +3095,16 @@ module.exports = {
   buildUrls,
   resolvePacketTimeRange,
   buildBusinessTopValuesUrl,
-  buildBusinessGroupTopValuesUrl,
+  buildBusinessGroupsUrl,
   buildPageFamilyTopValuesUrl,
   buildPageViewsUrl,
   buildPageViewsPreview,
+  requestNetInsideText,
   shouldResolveBusinessPacketInstance,
   shouldResolveBusinessGroupPacketInstance,
   resolveBusinessGroupPacketIps,
-  extractPacketCandidateIps,
+  parseBusinessGroupsCsv,
+  parseBusinessGroupIpMembers,
   extractBusinessName,
   extractPageFamilyId,
   extractPageFamilyLabel,
