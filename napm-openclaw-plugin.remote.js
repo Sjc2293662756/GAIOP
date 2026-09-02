@@ -3914,14 +3914,25 @@ function buildAutomaticInspectionToolArgs(prompt = '') {
   const resolver = getNapmResolvedQueryResolverService();
   let timeRange;
   try {
-    const resolved = resolver?.resolveTimeRange?.(normalizedPrompt);
+    const resolved = resolver?.resolvePromptTimeRange?.(normalizedPrompt);
     if (resolved?.key) {
       timeRange = {
         key: resolved.key,
-        displayText: resolved.displayText || normalizedPrompt
+        displayText: resolved.displayText || normalizedPrompt,
+        ...(resolved.mode ? { mode: resolved.mode } : {}),
+        ...(resolved.mode === 'custom' ? {
+          start: resolved.start,
+          end: resolved.end,
+          timezone: resolved.timezone || 'Asia/Shanghai'
+        } : {})
       };
+    } else if (resolver?.hasExplicitTimeRangeExpression?.(normalizedPrompt)) {
+      const error = new Error('Unable to resolve the requested inspection report time range.');
+      error.code = 'INSPECTION_TIME_RANGE_UNRECOGNIZED';
+      throw error;
     }
-  } catch (_error) {
+  } catch (error) {
+    if (error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED') throw error;
     timeRange = undefined;
   }
   return {
@@ -4050,7 +4061,9 @@ async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conve
         error: String(error?.message || error || 'unknown error').slice(0, 500)
       });
       return {
-        content: '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
+        content: error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED'
+          ? '巡检报告未生成：无法识别请求中的时间范围，请使用明确的起止时间、最近N天或年份/季度表达。'
+          : '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
         mediaUrl: '',
         mediaUrls: [],
         failed: true,
