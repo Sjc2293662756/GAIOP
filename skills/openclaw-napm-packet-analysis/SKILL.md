@@ -45,7 +45,7 @@ This skill owns:
 - Calling `tshark`, and optionally `capinfos`, through safe argv arrays.
 - Returning stable JSON for OpenClaw narration.
 
-For a `BusinessGroup` / 工作组 packet request, the packet runtime owns member-IP discovery. It resolves `BusinessGroup -> MemberIPs -> IPAddress`, falls back to `BusinessGroup -> ConnectedIPs -> IPAddress` when needed, then reuses the normal `packetsPreview -> packetsDown` flow for the discovered IPs.
+For a `BusinessGroup` / 工作组 packet request, the packet runtime owns member discovery. It requests `businessGroups?csv=true`, matches the requested `Name` exactly, splits `IpMembers` into `ips` and `ipRanges`, then reuses the normal `packetsPreview -> packetsDown` flow. A missing group name or empty member list stops before packet endpoints.
 
 Do not write custom packet/protocol parsers in this skill. Use host tools such as `tshark`; use `capinfos` only when available for richer file metadata.
 

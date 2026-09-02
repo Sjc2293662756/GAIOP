@@ -83,9 +83,10 @@ Relative time contract:
 BusinessGroup packet criteria:
 
 - Pass `groupType=BusinessGroup` and `groupArgument` (or `businessGroupName` / `businessGroup`).
-- The packet skill discovers member IPs with `BusinessGroup -> MemberIPs -> IPAddress`, then retries `BusinessGroup -> ConnectedIPs -> IPAddress` when the first path is empty or fails.
-- After discovery, the resolved IP list is used by the same `packetsPreview -> packetsDown` flow as an explicit IP request.
-- A successful result records `businessGroupResolution.path`, `memberIps`, and `memberIpCount`; no usable member IP returns `CLARIFICATION_REQUIRED` and never calls `packetsPreview` or `packetsDown`.
+- The packet skill requests `GET /webservice/NetInside?type=businessGroups&csv=true`, matches `Name` exactly, and reads the matched row's `IpMembers` field.
+- Comma-separated members without `-` become repeated `ips` parameters; members containing `-` become repeated `ipRanges` parameters. Blank values are ignored, duplicates are removed, and malformed members are recorded in `invalidMembers`.
+- After discovery, the resolved `ips` and `ipRanges` are used by the same `packetsPreview -> packetsDown` flow as an explicit IP request.
+- A successful result records `businessGroupResolution.path=['businessGroups','IpMembers']`, `memberIps`, `memberIpRanges`, and their counts. A missing exact name or no usable member returns `CLARIFICATION_REQUIRED` and never calls `packetsPreview` or `packetsDown`.
 
 Business packet criteria:
 
@@ -174,18 +175,18 @@ BusinessGroup packet flow:
 ```text
 packetQuery(criteria.businessGroupName, relative time)
   -> resolve relative time with server clock
-  -> NetInside topValues(BusinessGroup + MemberIPs + IPAddress)
-  -> if empty/fails: NetInside topValues(BusinessGroup + ConnectedIPs + IPAddress)
-  -> extract/deduplicate member IPs
-  -> packetsPreview(ips=...)
-  -> if preview has data: packetsDown(ips=...)
+  -> NetInside businessGroups(csv=true)
+  -> exact Name match
+  -> split IpMembers into ips/ipRanges
+  -> packetsPreview(ips=..., ipRanges=...)
+  -> if preview has data: packetsDown(ips=..., ipRanges=...)
   -> optional tshark analysis
   -> JSON result
 ```
 
 Rules for business packet flow:
 
-- Do not route business packet tasks to `openclaw-napm-query` just because the resolver uses `topValues` internally. Those `topValues` calls are implementation steps inside this packet skill.
+- Do not route business-group packet tasks to `openclaw-napm-query` just because the resolver first reads the `businessGroups` inventory. The inventory lookup and member expansion are implementation steps inside this packet skill.
 - `DownServlet` has no `packetsPreview` equivalent. Do not call `packetsPreview` for the resolved `DownServlet` URL.
 - When the user asks to preview a business page packet before choosing a peer IP, use `pageViews(json=true)` and return `businessResolution.pageViewsPreview.rows`.
 - The pageViews preview rows are user-selectable candidates; do not auto-select the first row when `mode=preview_only`.
@@ -287,6 +288,9 @@ Common decisions:
 - `PACKET_DOWNLOAD_FAILED`: file stream download failed.
 - `PACKET_TSHARK_FAILED`: tshark analysis failed.
 - `PACKET_STORAGE_NOT_ENOUGH_SPACE`: download was blocked by storage governance before file download.
+- `BUSINESS_GROUP_QUERY_FAILED`: businessGroups inventory request failed.
+- `BUSINESS_GROUP_NOT_FOUND`: no exact `Name` match was found in the businessGroups CSV.
+- `BUSINESS_GROUP_PACKET_MEMBER_NOT_FOUND`: the matched `IpMembers` field contained no usable IP or IP range.
 - `BUSINESS_PACKET_BUSINESS_QUERY_FAILED`: business Top query failed.
 - `BUSINESS_PACKET_PAGE_FAMILY_QUERY_FAILED`: page-family Top query failed.
 - `BUSINESS_PACKET_PAGE_VIEWS_QUERY_FAILED`: pageViews query failed.
