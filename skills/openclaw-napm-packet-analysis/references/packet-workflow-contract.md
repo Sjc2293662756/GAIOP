@@ -2,7 +2,7 @@
 
 This document contains packet-specific workflow rules that belong to `openclaw-napm-packet-analysis`.
 
-OpenClaw owns natural-language understanding, follow-up inheritance, time resolution, and final Chinese narration. This skill owns packet query validation, URL construction, preview, download, tshark analysis, artifact handling, and machine-readable result output.
+OpenClaw owns natural-language understanding, follow-up inheritance, and final Chinese narration. The shared runtime `ResolvedQueryTimeRangeService` is the single source for relative time resolution; callers pass the original prompt or a canonical `timeRange.key`, and the packet skill materializes minute-aligned root-level `start/end` from the server clock. This skill owns packet query validation, workgroup member discovery, URL construction, preview, download, tshark analysis, artifact handling, and machine-readable result output.
 
 ## 1. Accepted Scope
 
@@ -12,7 +12,7 @@ Use this skill for:
 - pcap / cap / packet capture / packet file.
 - packetsPreview / packetsDown / DownServlet.
 - Constructing packet preview/download URLs.
-- Previewing whether packets exist for an IP, IP range, top condition, or event ID.
+- Previewing whether packets exist for an IP, IP range, top condition, event ID, or BusinessGroup/workgroup.
 - Downloading packet files after preview.
 - Analyzing downloaded or local `.pcap` / `.cap` files with `tshark`.
 
@@ -26,7 +26,8 @@ Hard boundary:
 
 ```text
 If the user says 数据包 / 报文 / 抓包 / pcap / cap / packetsPreview / packetsDown / 数据包情况,
-do not reinterpret the request as topValues, timeValues, averageValues, overview, BusinessGroup, DefinedApp, or other ordinary metric query.
+do not reinterpret the request as an ordinary topValues, timeValues, averageValues, overview, DefinedApp, or other metric query.
+BusinessGroup is allowed only as the packet target whose member IPs are discovered inside this skill.
 ```
 
 ## 2. Primary Execution Contract
@@ -71,6 +72,20 @@ Rules:
 - `end` must be greater than `start`.
 - `iprangs` is a page spelling and must be normalized to API `ipRanges`.
 - Never put credentials in user-provided `criteria`; credentials come from runtime env or `.env`.
+
+Relative time contract:
+
+- The caller may send the original prompt containing `最近5分钟` / `最近一小时` or `criteria.timeRange.key` such as `last5minutes` / `last1hour`.
+- The runtime resolves that expression against the server clock and minute-aligns both values before validation and URL construction.
+- Explicit root-level `start/end` take precedence over a relative declaration.
+- The model must not calculate timestamps or use shell/date/curl to obtain time.
+
+BusinessGroup packet criteria:
+
+- Pass `groupType=BusinessGroup` and `groupArgument` (or `businessGroupName` / `businessGroup`).
+- The packet skill discovers member IPs with `BusinessGroup -> MemberIPs -> IPAddress`, then retries `BusinessGroup -> ConnectedIPs -> IPAddress` when the first path is empty or fails.
+- After discovery, the resolved IP list is used by the same `packetsPreview -> packetsDown` flow as an explicit IP request.
+- A successful result records `businessGroupResolution.path`, `memberIps`, and `memberIpCount`; no usable member IP returns `CLARIFICATION_REQUIRED` and never calls `packetsPreview` or `packetsDown`.
 
 Business packet criteria:
 
@@ -152,6 +167,20 @@ packetQuery(criteria.businessName)
   -> if analysis requested: tshark
   -> JSON result
   -> OpenClaw Chinese answer
+```
+
+BusinessGroup packet flow:
+
+```text
+packetQuery(criteria.businessGroupName, relative time)
+  -> resolve relative time with server clock
+  -> NetInside topValues(BusinessGroup + MemberIPs + IPAddress)
+  -> if empty/fails: NetInside topValues(BusinessGroup + ConnectedIPs + IPAddress)
+  -> extract/deduplicate member IPs
+  -> packetsPreview(ips=...)
+  -> if preview has data: packetsDown(ips=...)
+  -> optional tshark analysis
+  -> JSON result
 ```
 
 Rules for business packet flow:
