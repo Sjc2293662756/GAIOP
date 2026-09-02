@@ -28,11 +28,11 @@ OpenClaw user request
 
 ## Responsibilities
 
-OpenClaw owns:
+OpenClaw and the shared runtime own:
 
 - Natural-language understanding.
 - Follow-up context inheritance.
-- Time-range resolution into Unix seconds.
+- Passing the original prompt or a canonical `timeRange.key` to the packet runtime. The shared `ResolvedQueryTimeRangeService` resolves relative ranges against the server clock and minute-aligns the resulting Unix seconds; callers must not calculate timestamps with shell/date or model arithmetic.
 - Clarification when target IP, IP range, event ID, or time range is missing.
 - Final Chinese narration.
 
@@ -44,6 +44,8 @@ This skill owns:
 - File-stream download with size limits.
 - Calling `tshark`, and optionally `capinfos`, through safe argv arrays.
 - Returning stable JSON for OpenClaw narration.
+
+For a `BusinessGroup` / 工作组 packet request, the packet runtime owns member-IP discovery. It resolves `BusinessGroup -> MemberIPs -> IPAddress`, falls back to `BusinessGroup -> ConnectedIPs -> IPAddress` when needed, then reuses the normal `packetsPreview -> packetsDown` flow for the discovered IPs.
 
 Do not write custom packet/protocol parsers in this skill. Use host tools such as `tshark`; use `capinfos` only when available for richer file metadata.
 
@@ -113,6 +115,48 @@ For local file analysis:
   "file": "./capture.pcap"
 }
 ```
+
+Relative time can be supplied without hand-computing timestamps:
+
+```json
+{
+  "prompt": "分析 101.254.144.238 最近5分钟的数据包情况",
+  "mode": "preview_only",
+  "criteria": {
+    "ips": ["101.254.144.238"]
+  }
+}
+```
+
+or with an explicit key:
+
+```json
+{
+  "mode": "preview_only",
+  "criteria": {
+    "ips": ["101.254.144.238"],
+    "timeRange": { "key": "last5minutes" }
+  }
+}
+```
+
+The runtime fills root-level `start` and `end` from the server clock. Supported keys include `lastNminutes`, `lastNhours`, `lastNdays`, `last1hour`, `last24hours`, `today`, and `yesterday`; explicit `start/end` always take precedence.
+
+For a workgroup target, pass the group name and let the packet skill discover member IPs:
+
+```json
+{
+  "prompt": "服务器网段分析这个业务组最近5分钟的数据包情况",
+  "mode": "preview_download",
+  "criteria": {
+    "groupType": "BusinessGroup",
+    "groupArgument": "服务器网段",
+    "timeRange": { "key": "last5minutes" }
+  }
+}
+```
+
+Do not route this request to the ordinary metric query skill or invent an IP list. If discovery returns no usable IP, the result records the attempted paths and stops before packet preview/download.
 
 ## Setup
 

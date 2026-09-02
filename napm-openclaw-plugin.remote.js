@@ -7541,7 +7541,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known and the request is not tied to an alert event. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, BusinessGroup member-IP discovery, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests when the target IPs are already known OR a BusinessGroup/workgroup name is supplied, and the request is not tied to an alert event. Pass the original prompt or a concrete criteria.timeRange.key such as last5minutes; the runtime resolves relative time against its server clock and fills start/end. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
     parameters: {
       type: 'object',
       properties: {
@@ -7564,7 +7564,7 @@ function createPacketAnalysisToolDefinition() {
         packetQuery: { type: 'object', description: 'Optional full packet query payload accepted by openclaw-napm-packet-analysis.', additionalProperties: true },
         criteria: {
           type: 'object',
-          description: 'Packet criteria. Live preview/download requires start/end and one target such as ips, ipRanges, id, top, instanceId, businessName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
+          description: 'Packet criteria. Live preview/download requires start/end (or a relative prompt/timeRange.key) and one target such as ips, ipRanges, id, top, instanceId, businessName, BusinessGroup/businessGroupName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
           properties: {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
@@ -7572,6 +7572,11 @@ function createPacketAnalysisToolDefinition() {
             id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. For a combined alert packet request, use napm-alert-packet-analysis and accept an id only from its trusted handoff.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
+            businessGroupName: { type: 'string', description: 'BusinessGroup/workgroup name. The packet skill discovers member IPs before packetsPreview/packetsDown.' },
+            businessGroup: { type: 'string', description: 'Alias of businessGroupName.' },
+            groupType: { type: 'string', description: 'Use BusinessGroup for workgroup packet discovery.' },
+            groupArgument: { type: 'string', description: 'BusinessGroup object name when groupType=BusinessGroup.' },
+            groupPacketPath: { type: 'array', items: { type: 'string' }, description: 'Optional two-level path after BusinessGroup, defaulting to MemberIPs → IPAddress with ConnectedIPs → IPAddress fallback.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
             pageUrl: { type: 'string', description: 'Alias of page. Use for Web page URL/path packet preview.' },
             pageFamilyId: { type: 'string', description: 'Known PageFamily id. Starts business packet preview from pageViews.' },
@@ -7581,7 +7586,9 @@ function createPacketAnalysisToolDefinition() {
             pageViewIndex: { type: 'number', description: 'Optional row index selected from pageViews preview rows.' },
             top: { type: 'object', additionalProperties: true },
             start: { type: 'number', description: 'Unix-second start timestamp.' },
-            end: { type: 'number', description: 'Unix-second end timestamp.' }
+            end: { type: 'number', description: 'Unix-second end timestamp.' },
+            timeRange: { type: 'object', description: 'Optional relative time declaration, e.g. {key:"last5minutes"}; runtime resolves it to minute-aligned start/end.', additionalProperties: true },
+            timeRangeKey: { type: 'string', description: 'Alias for criteria.timeRange.key, e.g. last5minutes or last1hour.' }
           },
           additionalProperties: true
         },
@@ -7870,7 +7877,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
-      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests must pass groupType="BusinessGroup" plus groupArgument/businessGroupName; the skill discovers MemberIPs/ConnectedIPs before packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
       'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );
@@ -8490,6 +8497,11 @@ const plugin = {
               previewRiskAccepted: true
             };
           }
+        }
+        if (toolName === 'napm-packet-analysis' && activePrompt) {
+          // Preserve exact user wording so the packet runtime can resolve relative time
+          // against its server clock even when the model omits prompt from tool arguments.
+          toolParams = buildCanonicalSkillToolParams(activePrompt, toolParams);
         }
         if (toolName === 'napm-inspection-snapshot' && activePrompt) {
           const resolver = getNapmResolvedQueryResolverService();
