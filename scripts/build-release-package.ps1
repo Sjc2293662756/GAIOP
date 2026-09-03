@@ -183,6 +183,7 @@ try {
     'plugin/ReportIntentClassifier.js',
     'plugin/TrustedToolContextStore.js',
     'skills/shared/NapmObjectTargetResolver.js',
+    'skills/shared/NapmPageViewsContract.js',
     'scripts/install-release.sh',
     'scripts/rollback-release.sh',
     'scripts/verify-staged-release.sh',

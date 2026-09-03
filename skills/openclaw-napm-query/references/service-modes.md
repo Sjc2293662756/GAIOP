@@ -17,6 +17,7 @@ NAPM Web Services 的核心执行服务主要包括：
 - `topValues`
 - `averageValues`
 - `timeValues`
+- `pageViews`
 
 这些 service 是执行模式，不是最上层用户意图本身。
 
@@ -91,6 +92,25 @@ NAPM Web Services 的核心执行服务主要包括：
 - 最近 24 小时丢包率趋势
 - 回溯238web 最近 7 天访问量走势
 
+### 1.4 pageViews
+
+用于返回一个页面族在指定时间范围内的逐次访问实例，不是聚合指标查询。必需语义包括：
+
+- `service=pageViews`
+- `queryModeKey=detail`
+- `start/end`
+- 可信数字型 `pageFamilyId`
+- `maxLimit`，缺省 20，本地保护上限 200
+
+详情请求不包含 metrics、groups、topMetric 或 granularity，`PageFamilyDetail` 也不是可追加的 group。OpenClaw 多轮路径应从上一轮权威 `PageFamily` 排行结果解析 `resultReference`，独立 Skill 执行则必须已经拿到可信 `pageFamilyId`。
+
+适合回答：
+
+- 详细查看排名第一页面的前 20 个访问实例
+- 查看这个页面在同一时间范围内的访问明细
+
+用户要求分析状态码错误原因时应切换到故障诊断；要求下载某条访问的数据包时应切换到数据包分析。
+
 ---
 
 ## 2. 元数据服务
@@ -157,7 +177,11 @@ NAPM Web Services 的核心执行服务主要包括：
 - `timeValues` 用来回答趋势，不负责替代“先发现对象”的那一步。
 - 如果用户先问“哪个波动最大”，这一步仍应先做发现，再决定是否补趋势。
 
-### 3.4 选择 overview 的典型场景
+### 3.4 选择 pageViews 的典型场景
+
+当用户已经通过页面族排行选中了具体页面，并要求查看逐次访问明细时，使用 `pageViews`。自然语言序号不能直接当作页面族 ID；OpenClaw adapter 必须从当前 Query Turn 冻结的来源结果集解析。引用不存在、过期、跨会话、类型错误或越界时停止执行并要求重新取得页面排行。
+
+### 3.5 选择 overview 的典型场景
 
 当用户目标不是单点数值，而是希望对对象做综合分析、深度分析、整体判断时，优先考虑 `overview`：
 
@@ -332,6 +356,7 @@ NAPM Web Services 的核心执行服务主要包括：
 - `topValues`
 - `averageValues`
 - `timeValues`
+- `pageViews`
 - `overview`
 
 并补齐所有参数。

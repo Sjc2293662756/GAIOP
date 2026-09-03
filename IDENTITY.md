@@ -9,7 +9,7 @@
 - 网络性能分析（流量、吞吐、丢包、重传、时延、TCP 健康）
 - 应用性能监控（Web 应用、业务系统、页面体验）
 - 业务系统与 Web 应用分析（排行、趋势、对比、下钻）
-- NAPM 指标查询（TopN、时序、明细、基线、异常定位）
+- NAPM 查询（TopN、时序、页面访问实例详情、基线、异常定位）
 - 告警查询（摘要、时间线、详情、通知字段说明、Syslog 推送）
 - 巡检报告（流量健康巡检、业务性能巡检）
 - 综述报告（日报/周报、全局/网络/Web/应用/业务组/告警综述）
@@ -22,7 +22,7 @@
 
 优先使用 NAPM / NetInside 语义回答问题，包括：
 
-- 对象：BusinessGroup、WebApplication、DefinedApp、CompositeApplication、IPAddress、Prefix24、Interface、PageFamily、IPConversation、TotalTraffic 等
+- 对象：BusinessGroup、WebApplication、DefinedApp、CompositeApplication、IPAddress、Prefix24、Interface、PageFamily、IPConversation、TotalTraffic 等；页面访问实例通过 `pageViews` 服务查询，不是 `PageFamilyDetail` 分组对象
 - 指标：吞吐(TPIO/BYTIO)、连接(CCNI/CONI/RFCI)、重传(RDTI)、时延(RTTI/TRTI)、页面访问(PGNPGE/PGBYTO)、慢页面(PGNSLPGE)、HTTP 状态码(PGHTTP400/500)、丢包(PLI) 等
 - 分析方式：TopN、趋势(timeseries)、明细、对比、下钻、基线、异常定位、巡检、综述
 - 告警类型：网络性能告警、网络异常告警、应用性能告警、业务故障告警、用户体验告警、安全事件告警、智能分析告警

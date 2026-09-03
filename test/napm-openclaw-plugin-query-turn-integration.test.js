@@ -1308,4 +1308,252 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       { turnId: 'bound-run-turn' }
     )).toBe('bound-run-turn');
   });
+
+  test('resolves a pageViews ordinal from the prior authoritative PageFamily result', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(async (query) => {
+        if (query.service === 'topValues') {
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [{
+              groupPath: 'root>WebApplication business-a>pages>page 8573007/https://example.invalid/api',
+              group: { key: 'PageFamily', argument: 'https://example.invalid/api' },
+              metricValues: [{ metric: { id: 'PGNPGE' }, value: 1393 }]
+            }],
+            error: null
+          };
+        }
+        return {
+          ok: true,
+          service: 'pageViews',
+          data: [{
+            index: 1,
+            rowRef: 'page-view:1',
+            startTime: '2026-08-27 14:05:00',
+            page: 'https://example.invalid/api',
+            clientIp: '192.0.2.10',
+            serverIp: '192.0.2.20',
+            httpStatus: 500,
+            pageFamilyDetailId: 'detail-1'
+          }],
+          error: null
+        };
+      });
+
+    const rankCtx = createCtx('run-page-family-rank');
+    const rankPrompt = '今天业务页面访问量排行';
+    await startTurn(rankCtx, rankPrompt);
+    const rankCall = callBeforeTool(rankCtx, 'page-family-rank-call', {
+      prompt: rankPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'PageFamily' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' }
+      }
+    });
+    expect(rankCall.hookResult?.block).not.toBe(true);
+    await executeBound('page-family-rank-call', rankCall);
+
+    const detailCtx = createCtx('run-page-view-detail');
+    const detailPrompt = '详细查看一下排名第一页面的前 20 个访问实例';
+    await startTurn(detailCtx, detailPrompt);
+    const detailCall = callBeforeTool(detailCtx, 'page-view-detail-call', {
+      prompt: detailPrompt,
+      queryDraft: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: {
+          objectType: 'PageFamily',
+          ordinal: 1
+        },
+        maxLimit: 20,
+        semanticConstraints: {
+          workflowType: 'page_view_detail',
+          operation: 'detail_list',
+          targetObjectType: 'PageFamily'
+        }
+      }
+    });
+
+    expect(detailCall.hookResult?.block).not.toBe(true);
+    expect(detailCall.params.resolvedQuery).toMatchObject({
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      pageFamilyId: '8573007',
+      maxLimit: 20,
+      start: expect.any(Number),
+      end: expect.any(Number),
+      sourceReference: {
+        objectType: 'PageFamily',
+        ordinal: 1,
+        sourceTurnId: expect.any(String)
+      }
+    });
+    const result = await executeBound('page-view-detail-call', detailCall);
+
+    expect(result.details).toMatchObject({
+      ok: true,
+      service: 'pageViews',
+      responseType: 'page_view_detail'
+    });
+    expect(southbound).toHaveBeenCalledTimes(2);
+    expect(southbound.mock.calls[1][0]).toMatchObject({
+      service: 'pageViews',
+      pageFamilyId: '8573007',
+      maxLimit: 20
+    });
+    const scope = plugin.__test__.getConversationKey(detailCtx);
+    const detailTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, detailCtx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, detailTurnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'RESULT'
+    });
+
+    await executeBound('page-view-detail-call-replay', detailCall);
+    expect(southbound).toHaveBeenCalledTimes(2);
+
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const invalidTimeCtx = createCtx('run-page-view-invalid-explicit-time');
+    await startTurn(invalidTimeCtx, '把排名第一页面改为非法时间后查看访问实例');
+    const invalidTimeCall = callBeforeTool(invalidTimeCtx, 'page-view-invalid-explicit-time', {
+      prompt: '把排名第一页面改为非法时间后查看访问实例',
+      queryDraft: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 1 },
+        start: 1,
+        maxLimit: 20,
+        semanticConstraints: {
+          workflowType: 'page_view_detail',
+          operation: 'detail_list',
+          targetObjectType: 'PageFamily'
+        }
+      }
+    });
+    expect(invalidTimeCall.hookResult).toMatchObject({ block: true });
+    expect(skill).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    [
+      'missing page family reference',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        timeRange: { key: 'today' },
+        maxLimit: 20
+      },
+      'PAGE_FAMILY_ID_REQUIRED'
+    ],
+    [
+      'synthetic PageFamilyDetail group',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        timeRange: { key: 'today' },
+        pageFamilyId: '8573007',
+        maxLimit: 20,
+        groups: [{ type: 'PageFamilyDetail' }]
+      },
+      'PAGE_FAMILY_DETAIL_GROUP_FORBIDDEN'
+    ],
+    [
+      'out-of-range result ordinal',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 99 },
+        maxLimit: 20
+      },
+      'RESULT_REFERENCE_NOT_FOUND'
+    ]
+  ])('blocks direct pageViews execution for %s before Query Skill or southbound calls', async (
+    _label,
+    queryDraft,
+    reasonCode
+  ) => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const direct = bindTrustedDirect(createCtx(`run-page-view-invalid-${reasonCode}`), {
+      prompt: '详细查看排名第一页面的访问实例',
+      queryDraft
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      `page-view-invalid-${reasonCode}`,
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        decision: {
+          outcome: 'VALIDATION_FAILURE',
+          reasonCode,
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('blocks an invalid pageViews result reference in the Hook before any query runtime call', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-page-view-hook-invalid-reference');
+    const prompt = '详细查看排名第一页面的前 20 个访问实例';
+
+    await startTurn(ctx, prompt);
+    const call = callBeforeTool(ctx, 'page-view-hook-invalid-reference', {
+      prompt,
+      queryDraft: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 1 },
+        maxLimit: 20,
+        semanticConstraints: {
+          workflowType: 'page_view_detail',
+          operation: 'detail_list',
+          targetObjectType: 'PageFamily'
+        }
+      }
+    });
+
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('No authoritative PageFamily result');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      phase: 'REPAIR_PENDING',
+      attempts: [expect.objectContaining({
+        reasonCode: 'result_reference_not_found'
+      })]
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
 });

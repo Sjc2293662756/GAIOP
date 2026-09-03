@@ -24,6 +24,7 @@ NAPM Web Services 的通用 URL 结构为：
 - metrics
 - groups
 - extra query args（如 topCount、granularity）
+- 详情参数（仅 `pageViews` 使用的 `pageFamilyId/maxLimit`）
 
 ---
 
@@ -38,6 +39,7 @@ NAPM Web Services 的通用 URL 结构为：
 - `metrics`
 - `groupArguments`
 - `metricsForGroup` 
+- `pageViews`
 
 ### 2.2 start / end
 表示查询时间范围，单位为 UNIX 时间戳（秒）。
@@ -67,6 +69,14 @@ NAPM Web Services 的通用 URL 结构为：
 
 ### 2.9 granularity
 在 `timeValues` 中表示时间颗粒度（秒）。可通过 `granularities` 服务查看支持值。
+
+### 2.10 pageFamilyId / maxLimit
+
+仅用于 `pageViews` 访问实例详情：
+
+- `pageFamilyId` 必须是可信的数字型页面族标识；不能由页面 URL、标签或排行序号猜测。
+- `maxLimit` 必须为正整数，缺省 20；当前 200 是本地保护上限，不是已确认的上游正式限制。
+- OpenClaw adapter 的自然语言追问优先传 `resultReference`，由插件解析出 `pageFamilyId`；standalone resolved query 必须直接携带可信 ID。
 
 ---
 
@@ -104,6 +114,20 @@ NAPM Web Services 的通用 URL 结构为：
 - `numGroups`
 - `groupTypei`
 - `groupArgumenti`（按需） 
+
+### 3.4 pageViews
+
+参数组合：
+
+- `type=pageViews`
+- `queryModeKey=detail`
+- `start`
+- `end`
+- `pageFamilyId`
+- `maxLimit`
+- `json=true`
+
+不得携带 `groups`、`metrics`、`metric`、`topMetric` 或 `granularity`。`PageFamilyDetail` 不是 group；`pageFamilyDetailId` 是返回的单次访问实例标识。
 
 ---
 
@@ -172,6 +196,24 @@ NAPM Web Services 的通用 URL 结构为：
 - 补最深层 `groupArgument` 锁定 IP
 - 去掉 `topMetric/topCount` :contentReference[oaicite:89]{index=89}
 
+### 5.5 查看页面排行第一名的前 20 个访问实例
+
+OpenClaw adapter 构造：
+
+```json
+{
+  "service": "pageViews",
+  "queryModeKey": "detail",
+  "resultReference": {
+    "objectType": "PageFamily",
+    "ordinal": 1
+  },
+  "maxLimit": 20
+}
+```
+
+插件从该 Query Turn 冻结的上一权威页面排行中解析 ID，并继承来源时间范围。若引用无效，Query Skill、`NapmClient` 和南向接口调用次数均为 0。
+
 ---
 
 ## 6. explanation / metadata / execution 使用建议
@@ -200,3 +242,4 @@ NAPM Web Services 的通用 URL 结构为：
 - metrics
 - group chain
 - extra args（topCount / topMetric / granularity）
+- 或详情参数（pageFamilyId / maxLimit；不与 metric/group 参数混用）

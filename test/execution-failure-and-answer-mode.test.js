@@ -61,6 +61,29 @@ describe('execution failure classifier and answer mode router', () => {
     });
   });
 
+  test.each([
+    [400, 'PAGE_VIEWS_UPSTREAM_400'],
+    [403, 'PAGE_VIEWS_UPSTREAM_403']
+  ])('should classify pageViews upstream %s as a detail failure', (status, category) => {
+    const failure = ExecutionFailureClassifier.classify({
+      status,
+      message: `${status} upstream response`
+    }, {
+      service: 'pageViews',
+      semanticConstraints: {
+        workflowType: 'page_view_detail'
+      }
+    });
+
+    expect(failure).toMatchObject({
+      category,
+      domain: 'detail',
+      service: 'pageViews',
+      workflowType: 'page_view_detail'
+    });
+    expect(failure.userMessage).toContain('页面访问详情');
+  });
+
   test('should keep final answer mode from forwarding raw failure display text', () => {
     const output = buildOpenClawReplyContract({
       ok: false,

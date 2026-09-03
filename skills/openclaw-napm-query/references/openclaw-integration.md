@@ -21,7 +21,7 @@ Prefer this skill when the request is likely one of:
 - direct query, ranking, average, trend, or overview
 - broad analysis entry, such as "最近情况怎么样" or "为什么最近慢"
 - result interpretation
-- multi-turn refinement, such as "改成最近24小时" or "只看这个对象"
+- multi-turn refinement, such as "改成最近24小时", "只看这个对象", or a `PageFamily` ordinal detail follow-up
 
 Do not require a hard NAPM keyword match when there is an active NAPM session and the current turn looks like a continuation.
 
@@ -32,6 +32,7 @@ Do not require a hard NAPM keyword match when there is an active NAPM session an
 3. Treat `decision` and `intent` as optional hints, but do not require them for execution.
 4. Require executable `resolvedQuery` for normal query execution.
 5. Return a machine-readable result for OpenClaw final narration.
+6. For `pageViews`, resolve `resultReference` inside the bound Query Turn before time materialization; never ask the model to invent `pageFamilyId` from an ordinal.
 
 ## Recommended Invocation
 
@@ -72,6 +73,9 @@ Executor output should stay machine-readable, but OpenClaw should turn it into t
 - `RTT`, `往返时延`, `网络时延`, and `延迟` are latency / RTT concepts.
 - `访问其他web应用次数最多的客户端是谁` should prefer:
   `service=topValues`, `metric=PGNPGE`, `groups=[{type:"WebApplication",argument:"Other Web Application"},{type:"ClientIPs"}]`, `topCount=1`.
+- `详细查看排名第一页面的前20个访问实例` should use `service=pageViews`, `queryModeKey=detail`, `resultReference={objectType:"PageFamily",ordinal:1}`, and `maxLimit=20`. The plugin inherits the authoritative source time range.
+- `PageFamilyDetail` is not a group. A detail query has no metrics, groups, topMetric, or granularity.
+- Invalid or expired result references must fail before Query Skill, `NapmClient`, or southbound execution. An empty successful `pageViews` result is `NO_DATA`.
 
 ## Output Advice
 
@@ -79,5 +83,6 @@ Executor output should stay machine-readable, but OpenClaw should turn it into t
 - Every data answer must include the data time range. Prefer `narrationInput.result.timeRange.displayText` or `narrationInput.summary.timeRange.displayText`.
 - Summarize the returned rows in Chinese.
 - For empty results, say what metric, object, time range, and scope were queried.
+- For `pageViews`, report the page-family scope, time range, requested limit, returned row count, and only the normalized instance fields needed by the user.
 - Do not use old cached data as the answer for a failed fresh query.
 - Show debug API only when explicitly enabled by runtime policy, and always mask credentials.

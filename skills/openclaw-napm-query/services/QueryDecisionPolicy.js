@@ -2,6 +2,9 @@
 
 const ResolutionSpecService = require('./ResolutionSpecService');
 const GroupPathPlannerService = require('./GroupPathPlannerService');
+const {
+  validatePageViewsQuery
+} = require('../../shared/NapmPageViewsContract');
 const WorkflowClassifierService = require('./WorkflowClassifierService');
 
 const QUERY_ACTIONS = Object.freeze({
@@ -153,6 +156,44 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
 
   const semanticPrompt = String(prompt || queryDraft.userRequirement || '').trim();
   const classifiedWorkflow = WorkflowClassifierService.classifyWorkflow(semanticPrompt);
+  const service = String(queryDraft.service || '').trim();
+  const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
+  const declaredWorkflowType = String(
+    queryDraft?.semanticConstraints?.workflowType
+    || queryDraft?.workflowType
+    || ''
+  ).trim();
+  const declaredOperation = String(queryDraft?.semanticConstraints?.operation || '').trim();
+  const hasPageViewDetailIntent = classifiedWorkflow.workflowType === 'page_view_detail'
+    || declaredWorkflowType === 'page_view_detail'
+    || declaredOperation === 'detail_list';
+
+  if (hasPageViewDetailIntent && service !== 'pageViews') {
+    return {
+      ok: false,
+      reason: 'page_view_detail_service_mismatch',
+      code: 'PAGE_VIEW_DETAIL_SERVICE_MISMATCH',
+      message: '页面访问实例详情必须使用 service=pageViews，不能构造成 PageFamilyDetail 分组查询。',
+      details: {
+        expectedService: 'pageViews',
+        actualService: service || null,
+        operation: classifiedWorkflow.operation || 'detail_list'
+      }
+    };
+  }
+
+  if (service === 'pageViews') {
+    const pageViewsValidation = validatePageViewsQuery(queryDraft, { phase: 'construction' });
+    if (!pageViewsValidation.ok) return pageViewsValidation;
+  } else if (groups.some((group) => String(group?.type || '').trim() === 'PageFamilyDetail')) {
+    return {
+      ok: false,
+      reason: 'page_family_detail_group_forbidden',
+      code: 'PAGE_FAMILY_DETAIL_GROUP_FORBIDDEN',
+      message: 'PageFamilyDetail 不是合法分组层级；页面访问实例详情必须使用 pageViews。'
+    };
+  }
+
   const inventoryValidation = validateObjectInventorySemanticContract(
     semanticPrompt,
     queryDraft,
@@ -163,8 +204,6 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
   const multiGroupValidation = validateMultiGroupQueryContract(queryDraft);
   if (!multiGroupValidation.ok) return multiGroupValidation;
 
-  const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
-  const service = String(queryDraft.service || '').trim();
   const semanticTargetType = normalizeObjectType(queryDraft?.semanticConstraints?.targetObjectType);
   const hasTotalTraffic = groups.some((group) => String(group?.type || '').trim() === 'TotalTraffic');
   if (
@@ -298,6 +337,12 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
   const basicValidation = validation === undefined
     ? buildBasicValidation(queryDraft)
     : validation;
+  if (
+    basicValidation?.ok === false
+    && String(basicValidation?.code || '').startsWith('RESULT_REFERENCE_')
+  ) {
+    return validationFailureDecision(basicValidation, queryDraft);
+  }
   const semanticValidation = evaluateHighRiskSemanticConsistency(prompt, queryDraft);
   if (!semanticValidation.ok) {
     if (semanticValidation.code === 'APPLICATION_SCOPE_MISMATCH') {

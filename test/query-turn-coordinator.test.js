@@ -7,6 +7,9 @@ const {
   QUERY_ROUTES,
   QueryTurnCoordinator
 } = require('../plugin/QueryTurnCoordinator');
+const {
+  extractPageFamilyId
+} = require('../skills/shared/NapmPageViewsContract');
 
 describe('QueryTurnCoordinator', () => {
   let now;
@@ -14,7 +17,11 @@ describe('QueryTurnCoordinator', () => {
 
   beforeEach(() => {
     now = 1000;
-    coordinator = new QueryTurnCoordinator({ now: () => now, maxAgeMs: 10_000 });
+    coordinator = new QueryTurnCoordinator({
+      now: () => now,
+      maxAgeMs: 10_000,
+      extractPageFamilyId
+    });
   });
 
   test('records clarification as a normal terminal outcome', () => {
@@ -579,5 +586,171 @@ describe('QueryTurnCoordinator', () => {
 
     now += 10_001;
     expect(coordinator.get('conversation-b', 'turn-1')).toBeNull();
+  });
+
+  test('stores a minimal PageFamily result set and resolves an ordinal in the same scope', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'page-rank-turn',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      queryDraft: {
+        service: 'topValues',
+        start: 1785310980,
+        end: 1785314580,
+        groups: [{ type: 'WebApplication', argument: 'business-a' }, { type: 'PageFamily' }]
+      }
+    });
+    coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'page-rank-turn',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    coordinator.beginExecution({ scope: 'conversation-a', turnId: 'page-rank-turn', attemptId: 'rank-execute' });
+    coordinator.recordResult({
+      scope: 'conversation-a',
+      turnId: 'page-rank-turn',
+      result: {
+        ok: true,
+        data: [
+          { groupPath: 'root>pages>page 8573007/https://example.invalid/first' },
+          { groupPath: 'root>pages>page 8573008/https://example.invalid/second' }
+        ]
+      }
+    });
+
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'detail-turn',
+      route: QUERY_ROUTES.NAPM_QUERY
+    });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      turnId: 'detail-turn',
+      reference: { objectType: 'PageFamily', ordinal: 1 }
+    })).toMatchObject({
+      ok: true,
+      pageFamilyId: '8573007',
+      inheritedQuery: {
+        start: 1785310980,
+        end: 1785314580
+      },
+      sourceReference: {
+        objectType: 'PageFamily',
+        ordinal: 1,
+        sourceTurnId: 'page-rank-turn'
+      }
+    });
+    const referenceSet = coordinator.getLatestResultReference('conversation-a');
+    expect(referenceSet.rows).toEqual([
+      expect.objectContaining({ ordinal: 1, pageFamilyId: '8573007' }),
+      expect.objectContaining({ ordinal: 2, pageFamilyId: '8573008' })
+    ]);
+    expect(referenceSet.rows[0]).not.toHaveProperty('groupPath');
+  });
+
+  test('rejects expired, out-of-range, wrong-type, and cross-scope references', () => {
+    coordinator = new QueryTurnCoordinator({
+      now: () => now,
+      maxAgeMs: 10_000,
+      resultReferenceMaxAgeMs: 20_000,
+      extractPageFamilyId
+    });
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'rank-turn',
+      queryDraft: {
+        service: 'topValues',
+        start: 1785310980,
+        end: 1785314580,
+        groups: [{ type: 'PageFamily' }]
+      }
+    });
+    coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'rank-turn',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    coordinator.beginExecution({ scope: 'conversation-a', turnId: 'rank-turn', attemptId: 'execute' });
+    coordinator.recordResult({
+      scope: 'conversation-a',
+      turnId: 'rank-turn',
+      result: { ok: true, data: [{ pageFamilyId: '8573007', page: '/first' }] }
+    });
+    const resultSetId = coordinator.getLatestResultReference('conversation-a').resultSetId;
+
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      reference: { objectType: 'PageFamily', ordinal: 2 }
+    })).toMatchObject({ ok: false, code: 'RESULT_REFERENCE_ORDINAL_OUT_OF_RANGE' });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      reference: { objectType: 'DefinedApp', ordinal: 1 }
+    })).toMatchObject({ ok: false, code: 'RESULT_REFERENCE_OBJECT_TYPE_MISMATCH' });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-b',
+      reference: { resultSetId, objectType: 'PageFamily', ordinal: 1 }
+    })).toMatchObject({ ok: false, code: 'RESULT_REFERENCE_SCOPE_MISMATCH' });
+
+    now += 20_001;
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      reference: { resultSetId, objectType: 'PageFamily', ordinal: 1 }
+    })).toMatchObject({ ok: false, code: 'RESULT_REFERENCE_EXPIRED' });
+  });
+
+  test('freezes the source result set when overlapping turns begin', () => {
+    const completeRanking = (turnId, pageFamilyId) => {
+      coordinator.begin({
+        scope: 'conversation-a',
+        turnId,
+        queryDraft: {
+          service: 'topValues',
+          start: 1785310980,
+          end: 1785314580,
+          groups: [{ type: 'PageFamily' }]
+        }
+      });
+      coordinator.recordDecision({
+        scope: 'conversation-a',
+        turnId,
+        decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+      });
+      coordinator.beginExecution({ scope: 'conversation-a', turnId, attemptId: `${turnId}-execute` });
+      coordinator.recordResult({
+        scope: 'conversation-a',
+        turnId,
+        result: { ok: true, data: [{ pageFamilyId }] }
+      });
+    };
+
+    completeRanking('rank-a', '8573007');
+    const sourceA = coordinator.getLatestResultReference('conversation-a');
+    coordinator.begin({ scope: 'conversation-a', turnId: 'detail-a' });
+    completeRanking('rank-b', '8573999');
+    const sourceB = coordinator.getLatestResultReference('conversation-a');
+
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      turnId: 'detail-a',
+      reference: { objectType: 'PageFamily', ordinal: 1 }
+    })).toMatchObject({ ok: true, pageFamilyId: '8573007' });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      turnId: 'detail-a',
+      reference: {
+        resultSetId: sourceA.resultSetId,
+        objectType: 'PageFamily',
+        ordinal: 1
+      }
+    })).toMatchObject({ ok: true, pageFamilyId: '8573007' });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      turnId: 'detail-a',
+      reference: {
+        resultSetId: sourceB.resultSetId,
+        objectType: 'PageFamily',
+        ordinal: 1
+      }
+    })).toMatchObject({ ok: false, code: 'RESULT_REFERENCE_SOURCE_MISMATCH' });
   });
 });

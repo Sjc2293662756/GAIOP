@@ -39,6 +39,14 @@ function hasAverageIntent(text = '') {
   return /(平均|均值|average|avg)/i.test(text);
 }
 
+function hasPageViewDetailIntent(text = '') {
+  const explicitDetail = /page\s*views?|访问(?:实例|明细|详情)|页面(?:访问)?实例/i.test(text);
+  const rankedPageDetail = /页面/.test(text)
+    && /(详细查看|查看详情|明细)/.test(text)
+    && /(排名|排行|第\s*[一二三四五六七八九十\d]+|前\s*\d+)/.test(text);
+  return explicitDetail || rankedPageDetail;
+}
+
 function matchAlertPacketIntent(text = '') {
   if (!/告警/i.test(text) || !/(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text)) {
     return null;
@@ -85,6 +93,17 @@ function classifyWorkflow(prompt = '') {
       confidence: 1,
       eventId: alertPacketIntent.eventId,
       reason: 'alert_packet_event_intent'
+    };
+  }
+
+  if (hasPageViewDetailIntent(text)) {
+    return {
+      ...structuredIntent,
+      workflowType: 'page_view_detail',
+      operation: 'detail_list',
+      targetObjectType: targetObjectType || 'PageFamily',
+      confidence: 0.95,
+      reason: 'page_view_detail_intent'
     };
   }
 

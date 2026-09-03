@@ -110,4 +110,16 @@ describe('WorkflowClassifierService', () => {
       }
     });
   });
+
+  test.each([
+    '详细查看排名第一页面的前 20 条访问明细',
+    '列出这个页面最近的 pageViews',
+    '查看该页面的访问实例详情'
+  ])('classifies page visit details before generic ranking: %s', (prompt) => {
+    expect(WorkflowClassifierService.classifyWorkflow(prompt)).toMatchObject({
+      workflowType: 'page_view_detail',
+      operation: 'detail_list',
+      targetObjectType: 'PageFamily'
+    });
+  });
 });
