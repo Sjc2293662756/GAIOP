@@ -3,6 +3,7 @@
 const axios = require('axios');
 const https = require('https');
 const { URL, URLSearchParams } = require('url');
+const { selectGranularityForRange } = require('../../shared/TimeGranularityPolicy');
 
 // ── URL helpers ─────────────────────────────────────────────────
 
@@ -231,10 +232,7 @@ class SummaryClient {
   // ── Helpers ────────────────────────────────────────────────
 
   _autoGranularity(start, end) {
-    const rangeSec = Math.abs(Number(end || 0) - Number(start || 0));
-    if (rangeSec <= 86400) return 60;       // ≤1 day → 1min
-    if (rangeSec <= 604800) return 3600;     // ≤7 days → 1hour
-    return 86400;                            // >7 days → 1day
+    return selectGranularityForRange(start, end);
   }
 }
 

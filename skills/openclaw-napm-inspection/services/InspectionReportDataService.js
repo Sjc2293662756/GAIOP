@@ -27,7 +27,7 @@ function normalizeWindowMode(key = '', mode = '') {
   const requestedMode = asText(mode).toLowerCase();
   if (['rolling', 'calendar', 'custom'].includes(requestedMode)) return requestedMode;
   if (String(key).toLowerCase() === 'custom') return 'custom';
-  if (/quarter|year/i.test(String(key))) return 'calendar';
+  if (/month|quarter|year/i.test(String(key))) return 'calendar';
   return 'rolling';
 }
 
@@ -89,8 +89,19 @@ function resolveInspectionWindowContract(input = {}, options = {}) {
     });
   } else {
     parsedPrompt = TimeRangeService.resolvePromptTimeRange(prompt, { nowSeconds });
+    if (!parsedPrompt && TimeRangeService.hasExplicitTimeRangeExpression(prompt)) {
+      const error = new Error('Unable to resolve the requested inspection report time range.');
+      error.code = 'INSPECTION_TIME_RANGE_UNRECOGNIZED';
+      error.details = { prompt };
+      throw error;
+    }
     resolved = parsedPrompt
-      ? resolveExecutionTime({ timeRangeKey: parsedPrompt.key, nowSeconds })
+      ? resolveExecutionTime({
+        timeRangeKey: parsedPrompt.mode === 'custom' ? '' : parsedPrompt.key,
+        start: parsedPrompt.start,
+        end: parsedPrompt.end,
+        nowSeconds
+      })
       : resolveExecutionTime({ defaultKey: 'last1hour', nowSeconds });
   }
 

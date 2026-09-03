@@ -82,6 +82,34 @@ describe('ResolvedQueryTimeRangeService', () => {
     });
   });
 
+  test.each([
+    ['最近一个月的巡检', 'last30days', 30 * 86400],
+    ['过去一个月的巡检', 'last30days', 30 * 86400],
+    ['近三个月的巡检', 'last90days', 90 * 86400],
+    ['最近12个月的巡检', 'last365days', 365 * 86400]
+  ])('should normalize rolling month wording %s as %s', (prompt, key, durationSeconds) => {
+    expect(TimeRangeService.resolvePromptTimeRange(prompt, {
+      nowSeconds: 1786093000
+    })).toMatchObject({
+      key,
+      start: 1786092960 - durationSeconds,
+      end: 1786092960
+    });
+  });
+
+  test.each([
+    ['本月巡检', 'currentMonth'],
+    ['上个月巡检', 'previousMonth']
+  ])('marks the natural month wording %s as a calendar window', (prompt, key) => {
+    expect(TimeRangeService.resolvePromptTimeRange(prompt, {
+      nowSeconds: 1786093000
+    })).toMatchObject({
+      key,
+      mode: 'calendar',
+      boundary: 'local_month'
+    });
+  });
+
   test('should keep legacy lastNseconds keys executable at the shared boundary', () => {
     const result = TimeRangeService.resolveKnownTimeRangeKey('last10800seconds', 1786093000);
 
@@ -127,6 +155,39 @@ describe('ResolvedQueryTimeRangeService', () => {
 
     expect(new Date((currentQuarter.start + 8 * 3600) * 1000).toISOString()).toContain('-07-01T00:00:00.000Z');
     expect(new Date((currentYear.start + 8 * 3600) * 1000).toISOString()).toContain('-01-01T00:00:00.000Z');
+  });
+
+  test.each([
+    ['2026年第一季度巡检', '自然季度', 1767196800, 1774972740],
+    ['2025年巡检', '自然年', 1735660800, 1767196740]
+  ])('resolves the explicit calendar period in %s', (prompt, displayToken, start, end) => {
+    expect(TimeRangeService.resolvePromptTimeRange(prompt, {
+      nowSeconds: 1786093000
+    })).toMatchObject({
+      key: 'custom',
+      mode: 'custom',
+      displayText: expect.stringContaining(displayToken),
+      start,
+      end,
+      timezone: 'Asia/Shanghai'
+    });
+  });
+
+  test('clamps the explicitly named current year to the current minute', () => {
+    expect(TimeRangeService.resolvePromptTimeRange('2026年巡检', {
+      nowSeconds: 1786093000
+    })).toMatchObject({
+      key: 'custom',
+      start: 1767196800,
+      end: 1786092960
+    });
+  });
+
+  test('detects an explicit but unsupported calendar expression without resolving it', () => {
+    expect(TimeRangeService.hasExplicitTimeRangeExpression('2026年第5季度巡检')).toBe(true);
+    expect(TimeRangeService.resolvePromptTimeRange('2026年第5季度巡检', {
+      nowSeconds: 1786093000
+    })).toBeNull();
   });
 
   test.each([

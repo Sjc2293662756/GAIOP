@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const { URL } = require('url');
 const https = require('https');
 const http = require('http');
+const TimeRangeService = require('../../openclaw-napm-query/services/ResolvedQueryTimeRangeService');
 
 const DEFAULT_MODE = 'build_url_only';
 const DOWNLOAD_MODES = new Set(['download_only', 'preview_download', 'download_analyze', 'preview_download_analyze']);
@@ -16,6 +17,8 @@ const PREVIEW_MODES = new Set(['preview_only', 'preview_download', 'preview_down
 const ANALYZE_MODES = new Set(['analyze_file', 'download_analyze', 'preview_download_analyze']);
 const BUSINESS_TOP_METRICS = ['PGNPGE', 'PGTME', 'PGNSLPGE', 'PGSLPCT', 'PGHTTP400', 'PGHTTP500'];
 const PAGE_FAMILY_TOP_METRICS = ['PGNPGE', 'PGNOBJE', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500'];
+const BUSINESS_GROUP_NAME_FIELD = 'Name';
+const BUSINESS_GROUP_MEMBERS_FIELD = 'IpMembers';
 const PACKET_COUNT_KEYS = [
   'packetCount',
   'packetsCount',
@@ -79,6 +82,38 @@ async function main() {
   }
 
   const task = resolved.task;
+  if (task.needsBusinessGroupResolution) {
+    const businessGroupResolution = await resolveBusinessGroupPacketIps(task);
+    task.businessGroupResolution = businessGroupResolution;
+    if (!businessGroupResolution.ok) {
+      writeJson({
+        ok: false,
+        mode: task.mode,
+        downloadType: task.downloadType,
+        criteria: task.criteria,
+        businessGroupResolution,
+        error: businessGroupResolution.error,
+        decision: {
+          next_action: 'CLARIFICATION_REQUIRED',
+          reason: businessGroupResolution.error && businessGroupResolution.error.code,
+          message: businessGroupResolution.error && businessGroupResolution.error.message,
+        },
+        summary: {
+          title: '工作组数据包成员解析失败',
+          highlights: [businessGroupResolution.error && businessGroupResolution.error.message].filter(Boolean),
+        },
+      });
+      return;
+    }
+    task.criteria = { ...task.criteria, ...businessGroupResolution.criteriaPatch };
+    task.urls = buildUrls({
+      host: task.host,
+      criteria: task.criteria,
+      downloadType: task.downloadType,
+      showFullUrls: task.showFullUrls,
+    });
+  }
+
   if (task.needsBusinessInstanceResolution) {
     const businessResolution = await resolveBusinessPacketInstance(task);
     task.businessResolution = businessResolution;
@@ -94,6 +129,7 @@ async function main() {
         preview: null,
         download: null,
         analysis: null,
+        businessGroupResolution: task.businessGroupResolution || null,
         businessResolution,
         error: businessResolution.ok ? null : businessResolution.error,
         decision: businessResolution.ok
@@ -155,6 +191,7 @@ async function main() {
     preview: null,
     download: null,
     analysis: null,
+    businessGroupResolution: task.businessGroupResolution || null,
     businessResolution: task.businessResolution || null,
     error: null,
     decision: null,
@@ -363,11 +400,33 @@ function resolveQuery(query) {
     };
   }
 
-  const criteria = normalizeCriteria(query.criteria || query);
+  const nestedCriteria = isPlainObject(query.criteria) ? query.criteria : {};
+  const rawCriteria = {
+    ...(isPlainObject(query) ? query : {}),
+    ...nestedCriteria,
+  };
+  delete rawCriteria.criteria;
+  for (const controlKey of [
+    'mode', 'downloadType', 'analysis', 'filePolicy', 'forceDownload',
+    'previewRiskAccepted', 'showFullUrls', 'url', 'file', 'queryFile', 'queryJson',
+    'traceId', 'packetQuery',
+  ]) {
+    delete rawCriteria[controlKey];
+  }
+  for (const nestedCriteriaKey of ['host', 'downloadType', 'forceDownload', 'previewRiskAccepted', 'prompt']) {
+    if (Object.prototype.hasOwnProperty.call(nestedCriteria, nestedCriteriaKey)) {
+      rawCriteria[nestedCriteriaKey] = nestedCriteria[nestedCriteriaKey];
+    }
+  }
+  const normalized = normalizeCriteria(rawCriteria);
+  const timeResolution = resolvePacketTimeRange(query, normalized);
+  if (!timeResolution.ok) return timeResolution;
+  const criteria = timeResolution.criteria;
   const validation = validateCriteria(criteria, mode);
   if (!validation.ok) return validation;
 
   const needsBusinessInstanceResolution = shouldResolveBusinessPacketInstance(criteria);
+  const needsBusinessGroupResolution = shouldResolveBusinessGroupPacketInstance(criteria);
   const downloadType = needsBusinessInstanceResolution
     ? 'DownServlet'
     : (query.downloadType || criteria.downloadType || 'packetsDown');
@@ -389,10 +448,84 @@ function resolveQuery(query) {
       urls,
       showFullUrls,
       needsBusinessInstanceResolution,
+      needsBusinessGroupResolution,
       analysis: normalizeAnalysisOptions(query.analysis),
       filePolicy: normalizeFilePolicy(query.filePolicy),
       forceDownload: Boolean(query.forceDownload || criteria.forceDownload),
       previewRiskAccepted: Boolean(query.previewRiskAccepted || criteria.previewRiskAccepted),
+    },
+  };
+}
+
+function resolvePacketTimeRange(query = {}, criteria = {}) {
+  const source = isPlainObject(query) ? query : {};
+  const nested = isPlainObject(criteria.timeRange)
+    ? criteria.timeRange
+    : (isPlainObject(source.timeRange) ? source.timeRange : {});
+  // Nested timeRange.start/end are declarative metadata only. Executable packet
+  // timestamps must come from root-level start/end or the shared resolver.
+  const explicitStart = criteria.start ?? source.start;
+  const explicitEnd = criteria.end ?? source.end;
+  const timeRangeKey = String(
+    nested.key
+      || criteria.timeRangeKey
+      || source.timeRangeKey
+      || ''
+  ).trim();
+
+  if (explicitStart != null || explicitEnd != null) {
+    const start = normalizeTimestamp(explicitStart);
+    const end = normalizeTimestamp(explicitEnd);
+    if (!start || !end || end <= start) {
+      return failResolve('PACKET_TIME_RANGE_INVALID', 'start 和 end 必须是有效的 Unix 秒级时间戳，且 end 必须大于 start。');
+    }
+    return {
+      ok: true,
+      criteria: {
+        ...criteria,
+        start,
+        end,
+        timeRange: {
+          ...nested,
+          key: timeRangeKey || nested.key || 'custom',
+          displayText: nested.displayText || (timeRangeKey ? timeRangeKey : '自定义时间范围'),
+          start,
+          end,
+        },
+      },
+    };
+  }
+
+  const prompt = String(source.prompt || criteria.prompt || '').trim();
+  const resolved = timeRangeKey
+    ? TimeRangeService.resolveKnownTimeRangeKey(timeRangeKey)
+    : TimeRangeService.resolvePromptTimeRange(prompt);
+  if (!resolved) {
+    if (timeRangeKey) {
+      return failResolve('PACKET_TIME_RANGE_UNSUPPORTED', `不支持的数据包时间范围：${timeRangeKey}。`);
+    }
+    return {
+      ok: true,
+      criteria,
+    };
+  }
+
+  return {
+    ok: true,
+    criteria: {
+      ...criteria,
+      start: resolved.start,
+      end: resolved.end,
+      timeRange: {
+        ...nested,
+        key: resolved.key,
+        requestedKey: resolved.requestedKey || resolved.key,
+        displayText: nested.displayText || resolved.displayText,
+        start: resolved.start,
+        end: resolved.end,
+        source: resolved.source || 'time_range_resolver',
+        alignment: resolved.alignment || 'minute_floor',
+      },
     },
   };
 }
@@ -419,6 +552,18 @@ function normalizeCriteria(input) {
   if (criteria.start != null) criteria.start = normalizeTimestamp(criteria.start);
   if (criteria.end != null) criteria.end = normalizeTimestamp(criteria.end);
 
+  const groupType = String(criteria.groupType || criteria.objectType || '').trim();
+  const explicitBusinessGroupName = criteria.businessGroupName
+    || criteria.businessGroup
+    || ((/^BusinessGroup$/i.test(groupType) || /(?:业务组|工作组|业务分组)/.test(groupType))
+      ? criteria.groupArgument
+      : '');
+  if (explicitBusinessGroupName && typeof explicitBusinessGroupName !== 'object') {
+    criteria.businessGroupName = String(explicitBusinessGroupName).trim();
+    criteria.groupType = 'BusinessGroup';
+    if (!criteria.groupArgument) criteria.groupArgument = criteria.businessGroupName;
+  }
+
   if (criteria.instanceId && !String(criteria.instanceId).startsWith('PATH1/')) {
     criteria.instanceId = normalizeInstanceId(criteria.instanceId);
   }
@@ -441,11 +586,19 @@ function validateCriteria(criteria, mode) {
     const hasPacketCondition = criteria.ips.length || criteria.ipRanges.length || criteria.id || Number.isFinite(criteria.top);
     const hasDownServletCondition = criteria.instanceId;
     const hasBusinessPacketCondition = criteria.businessName || criteria.pageFamilyId || criteria.pageFamilyDetailId || criteria.resultName;
-    if (!hasPacketCondition && !hasDownServletCondition && !hasBusinessPacketCondition) {
-      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top、instanceId、businessName、pageFamilyId 或 pageFamilyDetailId 之一。');
+    const hasBusinessGroupCondition = criteria.businessGroupName;
+    if (!hasPacketCondition && !hasDownServletCondition && !hasBusinessPacketCondition && !hasBusinessGroupCondition) {
+      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top、instanceId、businessName、pageFamilyId、pageFamilyDetailId 或 BusinessGroup 之一。');
     }
   }
   return { ok: true };
+}
+
+function shouldResolveBusinessGroupPacketInstance(criteria = {}) {
+  if (!criteria || criteria.ips?.length || criteria.ipRanges?.length) {
+    return false;
+  }
+  return Boolean(String(criteria.businessGroupName || '').trim());
 }
 
 function shouldResolveBusinessPacketInstance(criteria = {}) {
@@ -620,6 +773,199 @@ async function resolveBusinessPacketInstance(task) {
   };
 }
 
+function buildBusinessGroupsUrl(host) {
+  const url = new URL('/webservice/NetInside', host);
+  appendRuntimeAuthQueryParams(url);
+  url.searchParams.set('type', 'businessGroups');
+  url.searchParams.set('csv', 'true');
+  return url.toString();
+}
+
+function isValidIPv4(value = '') {
+  const parts = String(value || '').split('.');
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    const number = Number(part);
+    return number >= 0 && number <= 255;
+  });
+}
+
+function parseCsvRecords(text = '') {
+  const source = String(text || '').replace(/^\uFEFF/, '');
+  const records = [];
+  let record = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') {
+      if (inQuotes && source[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (character === ',' && !inQuotes) {
+      record.push(field.trim());
+      field = '';
+    } else if ((character === '\n' || character === '\r') && !inQuotes) {
+      if (character === '\r' && source[index + 1] === '\n') index += 1;
+      record.push(field.trim());
+      field = '';
+      if (record.some((value) => value !== '')) records.push(record);
+      record = [];
+    } else {
+      field += character;
+    }
+  }
+
+  if (field !== '' || record.length > 0) {
+    record.push(field.trim());
+    if (record.some((value) => value !== '')) records.push(record);
+  }
+  return records;
+}
+
+function parseBusinessGroupsCsv(text = '') {
+  const records = parseCsvRecords(text);
+  if (records.length < 2) return [];
+  const headers = records[0].map((header, index) => {
+    const value = String(header || '').trim();
+    return index === 0 ? value.replace(/^\uFEFF/, '') : value;
+  });
+  if (!headers.some(Boolean)) return [];
+  return records.slice(1).map((values) => {
+    const row = {};
+    headers.forEach((header, index) => {
+      if (header) row[header] = values[index] == null ? '' : values[index];
+    });
+    return row;
+  });
+}
+
+function getCsvField(row, fieldName) {
+  if (!row || typeof row !== 'object') return '';
+  if (Object.prototype.hasOwnProperty.call(row, fieldName)) return String(row[fieldName] || '');
+  const expected = String(fieldName || '').toLowerCase();
+  const key = Object.keys(row).find((candidate) => candidate.toLowerCase() === expected);
+  return key ? String(row[key] || '') : '';
+}
+
+function parseBusinessGroupIpMembers(value = '') {
+  const ips = [];
+  const ipRanges = [];
+  const invalidMembers = [];
+  const seenIps = new Set();
+  const seenRanges = new Set();
+
+  for (const rawMember of String(value || '').split(',')) {
+    const member = rawMember.trim();
+    if (!member) continue;
+    if (member.includes('-')) {
+      const rangeParts = member.split('-').map((part) => part.trim());
+      if (rangeParts.length === 2 && rangeParts.every(isValidIPv4)) {
+        const normalizedRange = `${rangeParts[0]}-${rangeParts[1]}`;
+        if (!seenRanges.has(normalizedRange)) {
+          seenRanges.add(normalizedRange);
+          ipRanges.push(normalizedRange);
+        }
+      } else {
+        invalidMembers.push(member);
+      }
+      continue;
+    }
+    if (isValidIPv4(member)) {
+      if (!seenIps.has(member)) {
+        seenIps.add(member);
+        ips.push(member);
+      }
+    } else {
+      invalidMembers.push(member);
+    }
+  }
+
+  return { ips, ipRanges, invalidMembers };
+}
+
+async function resolveBusinessGroupPacketIps(task) {
+  const criteria = task.criteria || {};
+  const businessGroupName = String(criteria.businessGroupName || '').trim();
+  const url = buildBusinessGroupsUrl(task.host);
+  const response = await requestNetInsideText(url, 'business_groups');
+  const rows = response.ok ? parseBusinessGroupsCsv(response.text) : [];
+  const step = {
+    name: 'business_groups',
+    path: ['businessGroups', 'IpMembers'],
+    url: publicPacketUrl(url, task.showFullUrls),
+    ok: response.ok,
+    statusCode: response.statusCode,
+    rowCount: rows.length,
+  };
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [step],
+      error: {
+        code: 'BUSINESS_GROUP_QUERY_FAILED',
+        message: response.message || '工作组清单查询失败。',
+      },
+    };
+  }
+
+  const matchedRow = rows.find((row) => getCsvField(row, BUSINESS_GROUP_NAME_FIELD).trim() === businessGroupName);
+  if (!matchedRow) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [{ ...step, matchedName: null }],
+      error: {
+        code: 'BUSINESS_GROUP_NOT_FOUND',
+        message: `businessGroups 清单中未找到名称为“${businessGroupName}”的工作组。`,
+      },
+    };
+  }
+
+  const members = parseBusinessGroupIpMembers(getCsvField(matchedRow, BUSINESS_GROUP_MEMBERS_FIELD));
+  const resolution = {
+    ok: members.ips.length > 0 || members.ipRanges.length > 0,
+    businessGroupName,
+    path: ['businessGroups', 'IpMembers'],
+    memberIpCount: members.ips.length,
+    memberIpRangeCount: members.ipRanges.length,
+    memberCount: members.ips.length + members.ipRanges.length,
+    memberIps: members.ips,
+    memberIpRanges: members.ipRanges,
+    invalidMembers: members.invalidMembers,
+    steps: [{
+      ...step,
+      matchedName: getCsvField(matchedRow, BUSINESS_GROUP_NAME_FIELD).trim(),
+      memberIpCount: members.ips.length,
+      memberIpRangeCount: members.ipRanges.length,
+      invalidMembers: members.invalidMembers,
+    }],
+  };
+
+  if (!resolution.ok) {
+    resolution.error = {
+      code: 'BUSINESS_GROUP_PACKET_MEMBER_NOT_FOUND',
+      message: `工作组“${businessGroupName}”的 IpMembers 没有可用的 IP 或 IP 范围。`,
+    };
+    return resolution;
+  }
+
+  resolution.criteriaPatch = {
+    ips: members.ips,
+    ipRanges: members.ipRanges,
+    groupType: 'BusinessGroup',
+    groupArgument: businessGroupName,
+    businessGroupName,
+  };
+  return resolution;
+}
+
 function businessResolveFailure(code, message, steps = []) {
   return {
     ok: false,
@@ -716,20 +1062,46 @@ function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
   return url.toString();
 }
 
-async function requestNetInsideJson(url, stepName) {
+async function requestNetInsideText(url, stepName) {
   try {
     const response = await httpRequest(url, { responseType: 'text' });
-    const text = response.body.toString('utf8').trim();
-    const parsed = parseMaybeJson(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return {
         ok: false,
-        rows: [],
         message: `${stepName} HTTP 状态码 ${response.statusCode}。`,
         statusCode: response.statusCode,
-        textSample: text.slice(0, 500),
+        text: response.body.toString('utf8'),
       };
     }
+    return {
+      ok: true,
+      statusCode: response.statusCode,
+      text: response.body.toString('utf8'),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      text: '',
+      message: error.message,
+    };
+  }
+}
+
+async function requestNetInsideJson(url, stepName) {
+  const response = await requestNetInsideText(url, stepName);
+  const text = response.text.trim();
+  const parsed = parseMaybeJson(text);
+  if (!response.ok) {
+    return {
+      ok: false,
+      rows: [],
+      message: response.message,
+      statusCode: response.statusCode,
+      textSample: text.slice(0, 500),
+    };
+  }
+  try {
     const rows = normalizeRowsFromPayload(parsed);
     return {
       ok: true,
@@ -743,6 +1115,7 @@ async function requestNetInsideJson(url, stepName) {
       ok: false,
       rows: [],
       message: error.message,
+      statusCode: response.statusCode,
     };
   }
 }
@@ -750,7 +1123,7 @@ async function requestNetInsideJson(url, stepName) {
 function normalizeRowsFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
-  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
+  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list', 'topValues']) {
     if (Array.isArray(payload[key])) return payload[key];
   }
   if (payload.data && typeof payload.data === 'object') {
@@ -2007,6 +2380,17 @@ function buildSummary(result) {
   const highlights = [];
   if (result.urls && result.urls.preview) highlights.push(`预览 URL 已生成：${result.urls.preview}`);
   if (result.urls && result.urls.download) highlights.push(`下载 URL 已生成：${result.urls.download}`);
+  if (result.businessGroupResolution && result.businessGroupResolution.ok) {
+    const resolution = result.businessGroupResolution;
+    const memberParts = [
+      resolution.memberIpCount ? `${resolution.memberIpCount} 个成员 IP` : null,
+      resolution.memberIpRangeCount ? `${resolution.memberIpRangeCount} 个 IP 范围` : null,
+    ].filter(Boolean);
+    const invalidSuffix = resolution.invalidMembers && resolution.invalidMembers.length > 0
+      ? `，${resolution.invalidMembers.length} 个成员值无效`
+      : '';
+    highlights.push(`工作组 ${resolution.businessGroupName} 已解析：${memberParts.join('、') || '无有效成员'}${invalidSuffix}。`);
+  }
   if (result.businessResolution && result.businessResolution.ok && !result.businessResolution.previewOnly) {
     highlights.push(`业务数据包实例已解析：pageFamilyId=${result.businessResolution.pageFamilyId}，pageFamilyDetailId=${result.businessResolution.pageFamilyDetailId}`);
   }
@@ -2046,6 +2430,19 @@ function buildNarrationInput(result) {
     mode: result.mode,
     ok: result.ok,
     criteria: result.criteria,
+    businessGroupResolution: result.businessGroupResolution ? {
+      ok: result.businessGroupResolution.ok,
+      businessGroupName: result.businessGroupResolution.businessGroupName,
+      path: result.businessGroupResolution.path,
+      memberIpCount: result.businessGroupResolution.memberIpCount,
+      memberIpRangeCount: result.businessGroupResolution.memberIpRangeCount,
+      memberCount: result.businessGroupResolution.memberCount,
+      memberIps: result.businessGroupResolution.memberIps,
+      memberIpRanges: result.businessGroupResolution.memberIpRanges,
+      invalidMembers: result.businessGroupResolution.invalidMembers,
+      steps: result.businessGroupResolution.steps,
+      error: result.businessGroupResolution.error,
+    } : null,
     businessResolution: result.businessResolution ? summarizeBusinessResolution(result.businessResolution) : null,
     urls: result.urls,
     preview: summarizePreview(result.preview),
@@ -2500,6 +2897,36 @@ async function handleSkillCall(params = {}) {
 
     const task = resolved.task;
 
+    if (task.needsBusinessGroupResolution) {
+      const businessGroupResolution = await resolveBusinessGroupPacketIps(task);
+      task.businessGroupResolution = businessGroupResolution;
+      if (!businessGroupResolution.ok) {
+        const result = buildPacketResult(task, startedAt, {
+          businessGroupResolution,
+          ok: false,
+          error: businessGroupResolution.error,
+          decision: {
+            next_action: 'CLARIFICATION_REQUIRED',
+            reason: businessGroupResolution.error?.code,
+            message: businessGroupResolution.error?.message,
+          },
+        });
+        result.summary = {
+          title: '工作组数据包成员解析失败',
+          highlights: [businessGroupResolution.error?.message].filter(Boolean),
+        };
+        result.narrationInput = buildNarrationInput(result);
+        return result;
+      }
+      task.criteria = { ...task.criteria, ...businessGroupResolution.criteriaPatch };
+      task.urls = buildUrls({
+        host: task.host,
+        criteria: task.criteria,
+        downloadType: task.downloadType,
+        showFullUrls: task.showFullUrls,
+      });
+    }
+
     // Business packet instance resolution
     if (task.needsBusinessInstanceResolution) {
       const businessResolution = await resolveBusinessPacketInstance(task);
@@ -2557,6 +2984,7 @@ function buildPacketResult(task, startedAt, overrides = {}) {
     preview: null,
     download: null,
     analysis: null,
+    businessGroupResolution: task.businessGroupResolution || null,
     businessResolution: task.businessResolution || null,
     error: null,
     decision: null,
@@ -2665,11 +3093,18 @@ module.exports = {
   normalizeCriteria,
   validateCriteria,
   buildUrls,
+  resolvePacketTimeRange,
   buildBusinessTopValuesUrl,
+  buildBusinessGroupsUrl,
   buildPageFamilyTopValuesUrl,
   buildPageViewsUrl,
   buildPageViewsPreview,
+  requestNetInsideText,
   shouldResolveBusinessPacketInstance,
+  shouldResolveBusinessGroupPacketInstance,
+  resolveBusinessGroupPacketIps,
+  parseBusinessGroupsCsv,
+  parseBusinessGroupIpMembers,
   extractBusinessName,
   extractPageFamilyId,
   extractPageFamilyLabel,

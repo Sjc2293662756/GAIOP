@@ -110,6 +110,33 @@ describe('napm-openclaw-plugin inspection snapshot integration', () => {
     });
   });
 
+  test('should normalize rolling month wording for automatic inspection reports', () => {
+    expect(plugin.__test__.buildAutomaticInspectionToolArgs('给我系统最近一个月的巡检报告').timeRange).toMatchObject({
+      key: 'last30days',
+      displayText: '最近1个月'
+    });
+  });
+
+  test('should pass explicit calendar quarter boundaries to the inspection tool', () => {
+    expect(plugin.__test__.buildAutomaticInspectionToolArgs('给我2026年第一季度巡检报告').timeRange).toMatchObject({
+      key: 'custom',
+      mode: 'custom',
+      start: 1767196800,
+      end: 1774972740,
+      timezone: 'Asia/Shanghai'
+    });
+  });
+
+  test('should leave the time range absent when the user did not request one', () => {
+    expect(plugin.__test__.buildAutomaticInspectionToolArgs('给我系统巡检报告')).not.toHaveProperty('timeRange');
+  });
+
+  test('should reject explicit time wording that cannot be resolved', () => {
+    expect(() => plugin.__test__.buildAutomaticInspectionToolArgs('给我2026年第5季度巡检报告')).toThrow(
+      expect.objectContaining({ code: 'INSPECTION_TIME_RANGE_UNRECOGNIZED' })
+    );
+  });
+
   test('should execute inspection snapshot and remember reportData', async () => {
     const tool = plugin.__test__.createInspectionSnapshotToolDefinition();
     const args = {

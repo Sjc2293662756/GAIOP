@@ -5,6 +5,7 @@ const { getFlow, isPerfDescription } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
 const { requireExecutionTimeRange } = require('../../openclaw-napm-query/src/shared/timeResolver');
 const { evaluateSettledPlan } = require('../../shared/ExecutionOutcome');
+const { selectGranularityForRange } = require('../../shared/TimeGranularityPolicy');
 const {
   NapmObjectTargetResolver,
   TARGET_RESOLUTION_STATUS
@@ -1016,10 +1017,7 @@ class FaultDiagnosisService {
   }
 
   _autoGranularity(start, end) {
-    const rangeSec = Math.abs(Number(end || 0) - Number(start || 0));
-    if (rangeSec <= 86400) return 60;
-    if (rangeSec <= 604800) return 3600;
-    return 86400;
+    return selectGranularityForRange(start, end);
   }
 
   _buildNextOptions(session) {
