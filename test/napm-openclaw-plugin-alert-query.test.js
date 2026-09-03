@@ -469,6 +469,13 @@ describe('napm-openclaw-plugin alert query integration', () => {
             ]
           },
           {
+            category: 'networkIssueAlerts',
+            categoryLabel: '网络异常告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          },
+          {
             category: 'appAlerts',
             categoryLabel: '应用性能告警',
             total: 1,
@@ -500,6 +507,8 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('🟠 重大 1 条');
     expect(text).toContain('🔴 吞吐过高 — 192.168.1.16（紧急，持续 2 分钟）');
     expect(text).toContain('🟠 外部应用性能下降 — HTTPS（重大，持续 1 分钟）');
+    expect(text).not.toContain('网络异常告警 — 0 条');
+    expect(text).not.toContain('无告警记录');
   });
 
   test('should keep global alert table when an alert type is specified', () => {
@@ -531,6 +540,42 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('| 级别 | 类型 | 对象 | 描述 |');
     expect(text).toContain('| 🟠 重大 | 应用性能 | HTTPS | 外部应用性能下降 |');
     expect(text).not.toContain('应用性能告警：');
+  });
+
+  test('should render a single no-data message for an all-zero grouped summary fallback', () => {
+    const text = plugin.__test__.buildAlertQueryReply({
+      ok: true,
+      mode: 'summary',
+      criteria: { categories: [] },
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 0,
+        bySeverity: { critical: 0, major: 0, minor: 0 },
+        byCategoryDetail: [
+          {
+            category: 'networkAlerts',
+            categoryLabel: '网络性能告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          },
+          {
+            category: 'appAlerts',
+            categoryLabel: '应用性能告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          }
+        ]
+      },
+      events: []
+    });
+
+    expect(text).toContain('告警总数：0 条');
+    expect(text).toContain('本时间范围内未查询到告警事件。');
+    expect(text).not.toContain('网络性能告警 — 0 条');
+    expect(text).not.toContain('应用性能告警 — 0 条');
+    expect(text).not.toContain('无告警记录');
   });
 
   test('should classify alert event questions separately from broad overview prompts', () => {

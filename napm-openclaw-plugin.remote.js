@@ -10,8 +10,7 @@ const {
   QueryTurnCoordinator
 } = require('./plugin/QueryTurnCoordinator');
 const {
-  buildDeterministicFinalReply: buildAlertPacketFinalReply,
-  prepareModelFinalContent: prepareAlertPacketModelFinalContent
+  buildDeterministicFinalReply: buildAlertPacketFinalReply
 } = require('./plugin/AlertPacketFinalReplyService');
 const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
 const {
@@ -24,7 +23,6 @@ const ReportSourceStore = require('./plugin/ReportSourceStore');
 const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
 const AlertReferenceStore = require('./plugin/AlertReferenceStore');
 
-const NAPM_DIRECT_SKILL_MODE = true;
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
 const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
 const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
@@ -116,8 +114,6 @@ const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmSentMediaByConversation = new Map();
 const nativeCommandByScope = new Map();
-let cachedGroupPathPlannerService = null;
-let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
 let promptRoutingLookupComplete = false;
 let cachedWorkflowClassifierService = null;
@@ -198,85 +194,6 @@ const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
   'napm-mainflow-query'
 ]);
-const NAPM_OBJECT_PATTERNS = [
-  /napm/i,
-  /netinside/i,
-  /239web/i,
-  /\bhis\b/i,
-  /观枢/,
-  /智维/
-];
-const NAPM_DOMAIN_PATTERNS = [
-  /系统/,
-  /网络/,
-  /应用/,
-  /业务/,
-  /web\s*application/i,
-  /webapp/i,
-  /网站/,
-  /页面/,
-  /流量/,
-  /吞吐/,
-  /响应/,
-  /时延/,
-  /延迟/,
-  /异常/,
-  /告警/,
-  /丢包/,
-  /重传/,
-  /性能/,
-  /监控/,
-  /http/i,
-  /[45]xx/i
-];
-const SYSTEM_DOMAIN_HINT_PATTERNS = [
-  /服务/,
-  /结果/,
-  /分析/,
-  /排查/,
-  /趋势/,
-  /排行/,
-  /排名/,
-  /情况/,
-  /状态/
-];
-
-const fetchImpl = (...args) => {
-  if (typeof fetch === 'function') {
-    return fetch(...args);
-  }
-  return import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
-};
-
-function getBaseUrl(api) {
-  const baseUrl =
-    api?.config?.gatewayBaseUrl ||
-    process.env.NAPM_GATEWAY_BASE_URL ||
-    NAPM_GATEWAY_BASE_URL;
-  return String(baseUrl).replace(/\/+$/, '');
-}
-
-async function postJson(url, body) {
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-
-  try {
-    return JSON.parse(text);
-  } catch (_error) {
-    return { raw: text };
-  }
-}
-
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1091,7 +1008,7 @@ function normalizePromptKey(prompt) {
   return String(prompt || '')
     .trim()
     .toLowerCase()
-    .replace(/[\s　]+/g, '')
+    .replace(/[\s\u3000]+/g, '')
     .replace(/[?？!！。；;，,、：:]+$/g, '');
 }
 
@@ -1294,19 +1211,6 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
   };
 }
 
-function normalizeGroupsForPlanning(groups = []) {
-  if (!Array.isArray(groups)) {
-    return [];
-  }
-
-  return groups
-    .map((item) => ({
-      type: typeof item?.type === 'string' ? item.type.trim() : item?.type || null,
-      argument: item?.argument ?? null
-    }))
-    .filter((item) => item.type);
-}
-
 function getSkillWorkspaceRootFromExecutor() {
   const executorPath = path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-query/scripts/run_napm_query.js');
   if (!executorPath) {
@@ -1317,33 +1221,6 @@ function getSkillWorkspaceRootFromExecutor() {
     ? executorPath
     : path.resolve(process.cwd(), executorPath);
   return path.resolve(path.dirname(absoluteExecutorPath), '..', '..', '..');
-}
-
-function collectGroupPathPlannerModuleCandidates() {
-  const candidates = [];
-  const pushCandidate = (candidatePath) => {
-    const normalized = String(candidatePath || '').trim();
-    if (!normalized) {
-      return;
-    }
-
-    const resolved = path.resolve(normalized);
-    if (!candidates.includes(resolved)) {
-      candidates.push(resolved);
-    }
-  };
-
-  pushCandidate(path.resolve(__dirname, 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  pushCandidate(path.resolve(__dirname, '..', 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  pushCandidate(path.resolve(__dirname, '..', '..', 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-
-  const workspaceRoot = getSkillWorkspaceRootFromExecutor();
-  if (workspaceRoot) {
-    pushCandidate(path.join(workspaceRoot, 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  }
-
-  pushCandidate(path.resolve(process.cwd(), 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  return candidates;
 }
 
 function collectPromptRoutingModuleCandidates() {
@@ -1454,32 +1331,6 @@ function loadSkillDotenvIfAvailable() {
   }
 }
 
-function getGroupPathPlannerService() {
-  if (groupPathPlannerLookupComplete) {
-    return cachedGroupPathPlannerService;
-  }
-
-  loadSkillDotenvIfAvailable();
-  groupPathPlannerLookupComplete = true;
-  for (const candidatePath of collectGroupPathPlannerModuleCandidates()) {
-    try {
-      if (!fs.existsSync(candidatePath)) {
-        continue;
-      }
-
-      const service = require(candidatePath);
-      if (service && typeof service.planPath === 'function') {
-        cachedGroupPathPlannerService = service;
-        break;
-      }
-    } catch (_error) {
-      // Try the next candidate.
-    }
-  }
-
-  return cachedGroupPathPlannerService;
-}
-
 function getPromptRoutingService() {
   if (promptRoutingLookupComplete) {
     return cachedPromptRoutingService;
@@ -1582,32 +1433,12 @@ function getResolutionSpecQueryContract() {
   return null;
 }
 
-function getResolutionSpecObjectAliases() {
-  const service = getResolutionSpecService();
-  if (service && typeof service.getObjectAliases === 'function') {
-    return service.getObjectAliases() || {};
-  }
-  return {};
-}
-
 function getResolutionSpecRoutingRules() {
   const service = getResolutionSpecService();
   if (service && typeof service.getRoutingRules === 'function') {
     return service.getRoutingRules() || {};
   }
   return {};
-}
-
-function getResolutionSpecMetadataRules() {
-  const service = getResolutionSpecService();
-  if (service && typeof service.getMetadataRules === 'function') {
-    return service.getMetadataRules() || {};
-  }
-  return {};
-}
-
-function hasExplicitResolvedQuery(args = {}) {
-  return isPlainObject(args?.resolvedQuery);
 }
 
 function normalizeQueryModeKeyForService(serviceName = '', queryModeKey = '') {
@@ -2382,155 +2213,12 @@ function buildNapmSkillExecutionFailureResult(args = {}) {
   };
 }
 
-function shouldSkipPathPreflight(resolvedQuery = {}) {
-  const service = String(resolvedQuery?.service || '').trim();
-  return service === 'overview'
-    || service === 'drilldownCatalog'
-    || service === 'query_explanation'
-    || service === 'security_refusal';
-}
-
-function resolvePathPlanningSeedGroups(resolvedQuery = {}, sessionState = null, prompt = '') {
-  const explicitGroups = normalizeGroupsForPlanning(resolvedQuery?.groups);
-  if (explicitGroups.length > 0) {
-    return explicitGroups;
-  }
-
-  if (!sessionState || typeof sessionState !== 'object' || !isContinuationPrompt(prompt)) {
-    return [];
-  }
-
-  return normalizeGroupsForPlanning(sessionState?.last_groups);
-}
-
-function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, prompt = '', sessionState = null) {
+function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, _prompt = '', _sessionState = null) {
   return resolvedQuery;
 }
 
 function applyPathPreflightToSkillArgs(args = {}) {
   return isPlainObject(args) ? { ...args } : {};
-}
-
-function roundToNearestMinute(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return null;
-  }
-  return Math.floor(numeric / 60) * 60;
-}
-
-function getDefaultTimeRange() {
-  const end = roundToNearestMinute(Math.floor(Date.now() / 1000));
-  return {
-    start: end - (24 * 60 * 60),
-    end
-  };
-}
-
-function formatNumber(value, digits = 2) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return '';
-  }
-  return numeric.toFixed(digits).replace(/\.?0+$/, '');
-}
-
-function normalizeTimeRange(args = {}) {
-  const fallback = getDefaultTimeRange();
-  const start = roundToNearestMinute(args.start);
-  const end = roundToNearestMinute(args.end);
-  if (start && end && end > start) {
-    return { start, end };
-  }
-  if (end && !start) {
-    return { start: end - (24 * 60 * 60), end };
-  }
-  if (start && !end) {
-    return { start, end: start + (24 * 60 * 60) };
-  }
-  return fallback;
-}
-
-function looksLikeMetricCode(value = '') {
-  const text = String(value || '').trim().toUpperCase();
-  return /^[A-Z][A-Z0-9]{2,}$/.test(text);
-}
-
-function normalizeMetricInput(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return 'TPIO';
-  }
-
-  const normalized = raw.toUpperCase();
-  if (looksLikeMetricCode(normalized)) {
-    return normalized;
-  }
-
-  if (/(请求次数|访问量|访问次数|页面访问|page\s*views|visit\s*count|visits)/i.test(raw)) return 'PGNPGE';
-  if (/(http响应数|响应数|response\s*count|http\s*responses)/i.test(raw)) return 'PGNOBJE';
-  if (/(吞吐|吞吐量|带宽|throughput|bandwidth)/i.test(raw)) return 'TPIO';
-  if (/(页面流量|网站流量|web页面流量)/i.test(raw)) return 'PGBYTO';
-  if (/(请求流量|页面请求流量|请求数据量)/i.test(raw)) return 'PGBYTI';
-  if (/(总流量|流量|traffic)/i.test(raw)) return 'BYTIO';
-  if (/(服务端响应时间|服务器响应时间|server\s*response)/i.test(raw)) return 'TRTI';
-  if (/(往返时延|网络时延|延迟|时延|latency|rtt)/i.test(raw)) return 'RTTI';
-  if (/(慢页面|慢页|slow\s*page)/i.test(raw)) return 'PGNSLPGE';
-  if (/(http\s*500|5xx|500错误|500异常)/i.test(raw)) return 'PGHTTP500';
-  if (/(http\s*400|4xx|400错误|400异常)/i.test(raw)) return 'PGHTTP400';
-  if (/(丢包|丢包率|packet\s*loss|loss)/i.test(raw)) return 'PLI';
-  if (/(重传|retransmission)/i.test(raw)) return 'RDTI';
-  if (/(连接请求数|建连请求数|connection\s*request)/i.test(raw)) return 'CONI';
-  if (/(连接失败数|失败连接数|connection\s*failure)/i.test(raw)) return 'RFCI';
-  if (/(连接数|新建连接数|connection\s*count)/i.test(raw)) return 'CCNI';
-  return raw;
-}
-
-function normalizeGroupInput(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return 'IPAddress';
-  }
-
-  if (/^(?:ClientIPs|BusinessGroup|WebApplication|DefinedApp|Application|Prefix24|IPConversation|TotalTraffic|IPAddress)$/i.test(raw)) {
-    if (/^Application$/i.test(raw)) {
-      return 'DefinedApp';
-    }
-    if (/^ClientIPs$/i.test(raw)) {
-      return 'ClientIPs';
-    }
-    return raw;
-  }
-
-  if (/(客户端ip|client\s*ip|clientip)/i.test(raw)) return 'IPAddress';
-  if (/(服务端ip|server\s*ip|serverip)/i.test(raw)) return 'IPAddress';
-  if (/(ip地址|主机|host|\bip\b)/i.test(raw)) return 'IPAddress';
-  if (/(业务组|工作组|业务分组|business\s*group)/i.test(raw)) return 'BusinessGroup';
-  if (/(web应用|业务系统|网站|站点|web\s*application|webapp|website|\bweb\b)/i.test(raw)) return 'WebApplication';
-  if (/(已知应用|协议应用|应用|app|application)/i.test(raw)) return 'DefinedApp';
-  if (/(ip会话|会话|session|conversation)/i.test(raw)) return 'IPConversation';
-  if (/(网段|prefix24|\/24)/i.test(raw)) return 'Prefix24';
-  if (/(总流量|全局|整体|概览|系统整体|global|overall|total\s*traffic)/i.test(raw)) return 'TotalTraffic';
-  return raw;
-}
-
-function normalizeGranularity(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) {
-    return 3600;
-  }
-
-  const numeric = Number(raw);
-  if (Number.isFinite(numeric) && numeric > 0) {
-    return numeric;
-  }
-
-  if (raw === '1m' || raw === '1min' || raw === '1minute') return 60;
-  if (raw === '5m' || raw === '5min' || raw === '5minute') return 300;
-  if (raw === '15m' || raw === '15min' || raw === '15minute') return 900;
-  if (raw === '30m' || raw === '30min' || raw === '30minute') return 1800;
-  if (raw === '1h' || raw === '1hr' || raw === '1hour') return 3600;
-  return 3600;
 }
 
 function isOverviewPrompt(prompt = '') {
@@ -2714,31 +2402,12 @@ function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
   return napmQueryDecisionPolicy().evaluateHighRiskSemanticConsistency(prompt, resolvedQuery);
 }
 
-function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
+function buildBusinessObjectInventoryResolvedQuery(_prompt = '') {
   return null;
 }
 
-function buildMetricInventoryResolvedQuery(prompt = '') {
+function buildMetricInventoryResolvedQuery(_prompt = '') {
   return null;
-}
-
-function getOverviewDayStart(offsetDays = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + Number(offsetDays || 0));
-  date.setHours(0, 0, 0, 0);
-  return Math.floor(date.getTime() / 1000);
-}
-
-function getOverviewDayEndExclusive(offsetDays = 0) {
-  return getOverviewDayStart(Number(offsetDays || 0) + 1);
-}
-
-function getOverviewRelativeRange(seconds) {
-  const end = roundToNearestMinute(Math.floor(Date.now() / 1000));
-  return {
-    start: end - Number(seconds || 0),
-    end
-  };
 }
 
 function inferOverviewScene(prompt = '') {
@@ -2753,39 +2422,7 @@ function inferOverviewTimeRangeKey(prompt = '') {
   return getPromptRoutingService().inferOverviewTimeRangeKey(prompt);
 }
 
-function parseOverviewTimeRange(timeRangeKey = 'last24hours') {
-  switch (String(timeRangeKey || '').toLowerCase()) {
-    case 'today':
-      return {
-        start: getOverviewDayStart(0),
-        end: getOverviewDayEndExclusive(0)
-      };
-    case 'yesterday':
-      return {
-        start: getOverviewDayStart(-1),
-        end: getOverviewDayEndExclusive(-1)
-      };
-    case 'last7days':
-      return getOverviewRelativeRange(7 * 24 * 3600);
-    case 'last30days':
-      return getOverviewRelativeRange(30 * 24 * 3600);
-    case 'last1hour':
-      return getOverviewRelativeRange(3600);
-    case 'last24hours':
-    default:
-      return getOverviewRelativeRange(24 * 3600);
-  }
-}
-
-function materializePluginPromptRoute(route = null, options = {}) {
-  return null;
-}
-
-function buildOverviewResolvedQuery(prompt = '') {
-  return null;
-}
-
-function resolvePromptInjectedResolvedQuery(prompt = '', currentResolvedQuery = undefined, options = {}) {
+function buildOverviewResolvedQuery(_prompt = '') {
   return null;
 }
 
@@ -2814,64 +2451,6 @@ function getResolvedQueryValidationOptions(args = {}) {
   return {
     nowSeconds: args?.nowSeconds
   };
-}
-
-function rememberResolvedQueryFailureForTurn(
-  activePrompt = '',
-  validation = {},
-  args = {},
-  conversationKey = '',
-  turnId = ''
-) {
-  const failureResult = buildResolvedQueryBoundaryFailureResult(validation, args);
-  const prompt = activePrompt || normalizePrompt(args);
-  const failureRecord = napmOperationState.rememberQueryFailure({
-    scope: conversationKey,
-    turnId,
-    promptKey: buildPromptScopeKey(prompt, conversationKey),
-    result: failureResult,
-    resolvedQuery: normalizeObject(args?.resolvedQuery) || null
-  });
-
-  if (failureRecord?.terminal) {
-    failureResult.decision = {
-      next_action: 'STOP_RETRYING',
-      reason: failureResult.error.reason,
-      message: 'Query repair budget exhausted. Stop reconstructing and report the typed failure.'
-    };
-  }
-
-  return failureRecord || {
-    result: failureResult,
-    attemptCount: 1,
-    mayRepair: true,
-    terminal: false,
-    duplicate: false
-  };
-}
-
-function rememberResolvedQueryBoundaryFailureForTurn(
-  activePrompt = '',
-  validation = {},
-  args = {},
-  conversationKey = '',
-  conversationState = null,
-  guardState = null
-) {
-  return rememberResolvedQueryFailureForTurn(
-    activePrompt,
-    validation,
-    args,
-    conversationKey,
-    getActiveTurnId(conversationState, guardState)
-  );
-}
-
-function clearResolvedQueryFailureForTurn(conversationKey = '', conversationState = null, guardState = null) {
-  return napmOperationState.clearQueryFailureForTurn(
-    conversationKey,
-    getActiveTurnId(conversationState, guardState)
-  );
 }
 
 function rememberSkillExecutionFailureForTurn(
@@ -2942,11 +2521,39 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
   return prepareSkillExecutionArgs(nextParams);
 }
 
-function isPluginStructuredOverviewInjection(originalArgs = {}, preparedArgs = {}) {
-  return !isPlainObject(originalArgs?.resolvedQuery)
-    && isPlainObject(preparedArgs?.resolvedQuery)
-    && String(preparedArgs.resolvedQuery?.service || '').trim() === 'overview'
-    && isOverviewPrompt(normalizePrompt(preparedArgs));
+function normalizePacketToolParams(activePrompt = '', toolParams = {}) {
+  const prompt = String(activePrompt || '').trim();
+  const nextParams = buildCanonicalSkillToolParams(prompt, toolParams);
+  const packetQuery = isPlainObject(nextParams.packetQuery) ? nextParams.packetQuery : {};
+  const packetCriteria = isPlainObject(packetQuery.criteria) ? packetQuery.criteria : {};
+  const inputCriteria = isPlainObject(nextParams.criteria) ? nextParams.criteria : {};
+  const criteria = {
+    ...packetCriteria,
+    ...inputCriteria,
+    ...(prompt ? { prompt } : {})
+  };
+
+  // Reuse the packet runtime's canonicalization at the plugin boundary. This
+  // repairs a model payload such as ipRanges:["服务器网段"] before any
+  // packetsPreview/packetsDown URL can be built.
+  try {
+    const packetRuntime = napmPacketSkill();
+    if (typeof packetRuntime.normalizeCriteria === 'function') {
+      nextParams.criteria = packetRuntime.normalizeCriteria(criteria);
+      if (isPlainObject(nextParams.packetQuery)) {
+        nextParams.packetQuery = {
+          ...nextParams.packetQuery,
+          criteria: nextParams.criteria
+        };
+      }
+    } else {
+      nextParams.criteria = criteria;
+    }
+  } catch (_error) {
+    nextParams.criteria = criteria;
+  }
+
+  return nextParams;
 }
 
 function buildGuardKey(prefix, value) {
@@ -3914,14 +3521,25 @@ function buildAutomaticInspectionToolArgs(prompt = '') {
   const resolver = getNapmResolvedQueryResolverService();
   let timeRange;
   try {
-    const resolved = resolver?.resolveTimeRange?.(normalizedPrompt);
+    const resolved = resolver?.resolvePromptTimeRange?.(normalizedPrompt);
     if (resolved?.key) {
       timeRange = {
         key: resolved.key,
-        displayText: resolved.displayText || normalizedPrompt
+        displayText: resolved.displayText || normalizedPrompt,
+        ...(resolved.mode ? { mode: resolved.mode } : {}),
+        ...(resolved.mode === 'custom' ? {
+          start: resolved.start,
+          end: resolved.end,
+          timezone: resolved.timezone || 'Asia/Shanghai'
+        } : {})
       };
+    } else if (resolver?.hasExplicitTimeRangeExpression?.(normalizedPrompt)) {
+      const error = new Error('Unable to resolve the requested inspection report time range.');
+      error.code = 'INSPECTION_TIME_RANGE_UNRECOGNIZED';
+      throw error;
     }
-  } catch (_error) {
+  } catch (error) {
+    if (error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED') throw error;
     timeRange = undefined;
   }
   return {
@@ -4050,7 +3668,9 @@ async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conve
         error: String(error?.message || error || 'unknown error').slice(0, 500)
       });
       return {
-        content: '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
+        content: error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED'
+          ? '巡检报告未生成：无法识别请求中的时间范围，请使用明确的起止时间、最近N天或年份/季度表达。'
+          : '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
         mediaUrl: '',
         mediaUrls: [],
         failed: true,
@@ -4289,7 +3909,7 @@ async function dispatchReportReplyPayload(
   };
 }
 
-async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}, conversationKey = '', turnId = '') {
+async function dispatchAlertReplyPayload(record = null, _event = {}, hookCtx = {}, conversationKey = '', turnId = '') {
   const content = isCurrentAlertQueryResultRecord(record, turnId)
     ? buildAlertQueryReply(record.result)
     : '';
@@ -4354,6 +3974,19 @@ async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}
   };
 }
 
+function preparePacketFinalContent(record = null, conversationKey = '', turnId = '') {
+  if (!isPacketSkillResultRecord(record) || !conversationKey || !turnId) {
+    return null;
+  }
+  return napmOperationState.prepareFinalContent({
+    scope: conversationKey,
+    turnId,
+    content: buildPacketFinalReply(record.result),
+    source: 'napm-packet-analysis',
+    workflowState: record.result?.decision?.next_action || 'PACKET_COMPLETED'
+  });
+}
+
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
   return Boolean(
     record
@@ -4400,18 +4033,6 @@ function getReportDataFromRecord(record = null) {
     return record.result.result.reportData;
   }
   return null;
-}
-
-function getRememberedDebugApi(prompt, conversationKey = '') {
-  const key = buildPromptScopeKey(prompt, conversationKey);
-  if (!key) {
-    return '';
-  }
-  return String(napmOperationState.getDebugApi(key)?.requestUrl || '').trim();
-}
-
-function getRecentDebugApiFallback(conversationKey = '') {
-  return String(napmOperationState.getLatestDebugApi(conversationKey)?.requestUrl || '').trim();
 }
 
 function getRememberedSkillResult(prompt, conversationKey = '') {
@@ -4532,6 +4153,19 @@ function isAlertPacketSkillResultRecord(record = null) {
   );
 }
 
+function isPacketSkillResultRecord(record = null) {
+  if (!record || record.sourceTool !== 'napm-packet-analysis' || !isPlainObject(record.result)) {
+    return false;
+  }
+  return Boolean(
+    record.result?.narrationInput?.schema === 'openclaw_napm_packet_analysis.v1'
+    || record.result?.mode
+    || record.result?.businessGroupResolution
+    || record.result?.preview
+    || record.result?.download
+  );
+}
+
 function isSkillResultRecordForTurn(record = null, turnId = '') {
   const normalizedTurnId = normalizeTurnId(turnId);
   return Boolean(
@@ -4615,45 +4249,6 @@ function extractOverviewSceneFromRememberedRecord(record = null) {
   );
 }
 
-function readRecentAuditLines(maxLines = 400) {
-  try {
-    const raw = fs.readFileSync(AUDIT_LOG_PATH, 'utf8');
-    const lines = raw.split(/\r?\n/).filter(Boolean);
-    return lines.slice(Math.max(0, lines.length - maxLines));
-  } catch (_error) {
-    return [];
-  }
-}
-
-function findRecentPacketLossAuditWindow(metric = 'PLI') {
-  const lines = readRecentAuditLines();
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (!line.includes('"event":"napm_api_request_built"') || !line.includes('"service":"topValues"')) {
-      continue;
-    }
-
-    try {
-      const entry = JSON.parse(line);
-      const request = isPlainObject(entry?.gatewayRequest) ? entry.gatewayRequest : {};
-      const groups = Array.isArray(request.groups) ? request.groups : [];
-      if (String(request.metric || '').trim().toUpperCase() !== metric) {
-        continue;
-      }
-      if (groups.length !== 1 || String(groups[0]?.type || '').trim() !== 'IPAddress') {
-        continue;
-      }
-      const start = Number(request.start);
-      const end = Number(request.end);
-      const topCount = Number(request.topCount || 5);
-      if (start > 0 && end > 0) {
-        return { start, end, topCount: topCount > 0 ? topCount : 5 };
-      }
-    } catch (_error) {}
-  }
-  return null;
-}
-
 function isPacketLossClientTopPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
@@ -4667,7 +4262,7 @@ function isPacketLossClientTopPrompt(prompt = '') {
   return hasLoss && hasRanking && hasAddressScope;
 }
 
-function buildPacketLossClientTopResolvedQuery(prompt = '', seedResolvedQuery) {
+function buildPacketLossClientTopResolvedQuery(_prompt = '', _seedResolvedQuery) {
   return null;
 }
 
@@ -4927,27 +4522,6 @@ function normalizeReportFormat(format = '') {
   return raw || 'docx';
 }
 
-function buildReportTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-report-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildPacketTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-packet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildAlertTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-alert-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildInspectionTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-inspection-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-
 
 function buildFaultDiagnosisReply(result = {}) {
   if (!result?.ok) {
@@ -5133,7 +4707,6 @@ function buildAlertQueryReply(result = {}) {
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
-  const bySeverity = result.summary?.bySeverity || {};
   const shouldGroupByCategory = shouldRenderAlertCategorySections(result);
   const timeRange = result.timeRange || {};
   const timeText = timeRange.displayText
@@ -5403,25 +4976,6 @@ function resolveAlertDurationSeconds(event = {}) {
   return rangeSeconds;
 }
 
-function formatAlertTimestamp(value) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return '未知';
-  }
-  const milliseconds = timestamp > 1000000000000 ? timestamp : timestamp * 1000;
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).formatToParts(new Date(milliseconds));
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
-}
-
 function formatSeverityBadge(severity) {
   const value = Number(severity);
   if (value === 4) return '🔴';
@@ -5474,113 +5028,132 @@ function maskDebugApiUrl(inputUrl = '') {
 }
 
 
-function looksLikeBusinessPagePacketPreviewPrompt(text = '') {
-  const raw = String(text || '');
-  if (!raw) return false;
-  const hasPacketPreview = /(数据包|报文|抓包|原始包|pcap|cap\b|packet|DownServlet|pageViews)/i.test(raw)
-    && /(预览|查看|分析|明细|访问实例|对端|选择)/i.test(raw);
-  const hasHttpPageUrl = /https?:\/\/[^\s"'<>]+\/[^\s"'<>]+/i.test(raw);
-  const hasPagePath = /\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)+/.test(raw);
-  return hasPacketPreview && (hasHttpPageUrl || hasPagePath);
-}
-
-function extractFirstHttpPageUrl(text = '') {
-  const match = String(text || '').match(/https?:\/\/[^\s"'<>，。；、]+\/[^\s"'<>，。；、]+/i);
-  return match ? match[0] : '';
-}
-
-function normalizePacketBusinessPagePayload(payload = {}) {
-  const criteria = isPlainObject(payload.criteria) ? { ...payload.criteria } : {};
-  const prompt = String(payload.prompt || '').trim();
-  const hasBusinessPageSignal = Boolean(
-    criteria.page
-    || criteria.pageUrl
-    || criteria.pageFamilyId
-    || criteria.pageFamilyDetailId
-    || criteria.businessName
-    || criteria.businessPageViewsPreviewOnly
-    || payload.downloadType === 'DownServlet'
-    || looksLikeBusinessPagePacketPreviewPrompt(prompt)
-  );
-  if (!hasBusinessPageSignal) {
-    return payload;
-  }
-
-  const pageUrl = String(criteria.page || criteria.pageUrl || '').trim() || extractFirstHttpPageUrl(prompt);
-  if (pageUrl && !criteria.page) criteria.page = pageUrl;
-  if (pageUrl && !criteria.pageUrl) criteria.pageUrl = pageUrl;
-
-  const normalized = {
-    ...payload,
-    downloadType: 'DownServlet',
-    criteria
-  };
-
-  const asksPreview = String(normalized.mode || '').trim() === 'preview_only'
-    || /预览|查看|明细|访问实例|对端|选择/.test(prompt)
-    || criteria.businessPageViewsPreviewOnly;
-  if (asksPreview) {
-    normalized.mode = 'preview_only';
-    normalized.criteria.businessPageViewsPreviewOnly = true;
-  }
-
-  return normalized;
-}
-
-
 function buildPacketAnalysisReply(result = {}) {
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const highlights = Array.isArray(summary.highlights)
-    ? summary.highlights.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (!result?.ok) {
-    return String(
-      result?.message
-      || result?.error?.message
-      || highlights.join('\n')
-      || '数据包任务执行失败。'
-    ).trim();
-  }
-  if (highlights.length > 0) {
-    // 2026-07-14: 禁止 AI 看到 Password=*** 后自己猜密码填进去。
-    // skill 内部已从 .env 读取正确凭证，URL 中的 *** 是脱敏标记。
-    const credentialNotice = '⛔ 安全提示：所有 URL 中的认证（UserName/Password）已由 skill 从 .env 自动注入。Password=*** 是脱敏标记，不是占位符——禁止自行替换或拼接密码！如需下载/分析数据包，请使用 napm-packet-analysis 工具而非 curl。';
-    return highlights.join('\n') + '\n\n' + credentialNotice;
-  }
-  return JSON.stringify(result, null, 2);
+  return buildPacketFinalReply(result);
 }
 
-function buildLegacyReportDataForExport(args = {}) {
-  const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
-  const conversationKey = getTrustedConversationKey(args);
-  const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
-  const rememberedReportData = getReportDataFromRecord(rememberedRecord);
-  const sourceReportData = explicitReportData || rememberedReportData;
-  if (!sourceReportData) {
-    return {
-      ok: false,
-      errorCode: 'REPORT_DATA_NOT_FOUND',
-      message: '未找到可导出的 NAPM reportData。请先完成一次 NAPM 查询或分析，再说“将以上导出为 Word”。'
-    };
+function formatPacketTimestamp(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const milliseconds = numeric > 1000000000000 ? numeric : numeric * 1000;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(milliseconds));
+  const values = Object.fromEntries(parts
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]));
+  if (!values.year || !values.month || !values.day) return '';
+  return `${values.year}-${values.month}-${values.day} ${values.hour || '00'}:${values.minute || '00'}:${values.second || '00'}`;
+}
+
+function formatPacketInteger(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.floor(numeric).toLocaleString('en-US') : '';
+}
+
+function formatPacketBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let scaled = numeric;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  const precision = scaled >= 100 || index === 0 ? 0 : scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(precision)} ${units[index]}`;
+}
+
+function buildPacketFinalReply(result = {}) {
+  const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
+  const preview = isPlainObject(result?.preview) ? result.preview : null;
+  const overview = isPlainObject(preview?.overview) ? preview.overview : {};
+  const resolution = isPlainObject(result?.businessGroupResolution)
+    ? result.businessGroupResolution
+    : null;
+  const hasPreviewEvidence = Boolean(preview?.ok && !preview?.empty);
+  const errorMessage = String(result?.error?.message || result?.message || '').trim();
+
+  // A failed discovery/request has no evidence to narrate. Return only the
+  // typed failure instead of letting the model infer a packet conclusion.
+  if (!result?.ok && !hasPreviewEvidence) {
+    return errorMessage || '数据包任务执行失败。';
   }
 
-  const format = normalizeReportFormat(args.format || args.reportPlan?.format || sourceReportData.format || sourceReportData.defaultFormat || 'docx');
-  return {
-    ok: true,
-    reportData: {
-      ...sourceReportData,
-      format,
-      title: String(args.title || args.reportPlan?.title || sourceReportData.title || '').trim() || sourceReportData.title,
-      sourceQuestion: String(args.sourceQuestion || args.prompt || sourceReportData.sourceQuestion || '').trim() || sourceReportData.sourceQuestion,
-      audit: {
-        ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
-        exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result',
-        sourcePromptKey: rememberedRecord?.promptKey || null
+  const lines = [
+    result?.mode === 'preview_only' ? '数据包预览结果' : '数据包任务结果'
+  ];
+  const startText = formatPacketTimestamp(criteria.start);
+  const endText = formatPacketTimestamp(criteria.end);
+  if (startText && endText) {
+    lines.push(`时间范围：${startText} 至 ${endText}`);
+  }
+
+  const businessGroupName = String(
+    criteria.businessGroupName
+    || resolution?.businessGroupName
+    || ''
+  ).trim();
+  if (businessGroupName) {
+    lines.push(`业务组：${businessGroupName}`);
+  }
+  if (resolution?.ok) {
+    const members = [
+      Number(resolution.memberIpCount) > 0 ? `${Number(resolution.memberIpCount)} 个成员 IP` : '',
+      Number(resolution.memberIpRangeCount) > 0 ? `${Number(resolution.memberIpRangeCount)} 个 IP 范围` : ''
+    ].filter(Boolean);
+    if (members.length > 0) lines.push(`成员范围：${members.join('、')}`);
+    if (Array.isArray(resolution.invalidMembers) && resolution.invalidMembers.length > 0) {
+      lines.push(`成员解析：忽略 ${resolution.invalidMembers.length} 个无效成员值`);
+    }
+  }
+
+  if (preview) {
+    if (preview.empty || !preview.ok) {
+      lines.push(`预览：${preview.error?.message || '未返回数据。'}`);
+    } else {
+      if (overview.packetCount != null) {
+        lines.push(`预览包数：${formatPacketInteger(overview.packetCount)} 个`);
+      } else if (Number(overview.rowCount) > 0) {
+        lines.push(`预览记录数：${formatPacketInteger(overview.rowCount)} 条`);
+      } else {
+        lines.push('预览接口已返回数据。');
       }
-    },
-    source: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result'
-  };
+      if (overview.estimatedBytes != null) {
+        lines.push(`预估大小：${overview.estimatedSizeText || formatPacketBytes(overview.estimatedBytes)}`);
+      }
+      if (preview.risk?.level && result?.mode !== 'preview_only') {
+        lines.push(`下载风险评估：${preview.risk.level}`);
+      }
+    }
+  }
+
+  if (result?.download?.ok) {
+    const fileName = String(result.download.fileName || 'packet capture').trim();
+    const bytes = Number(result.download.bytes);
+    lines.push(Number.isFinite(bytes) ? `下载完成：${fileName}（${bytes} bytes）` : `下载完成：${fileName}`);
+  } else if (result?.mode === 'preview_only') {
+    lines.push('仅预览，未下载。');
+  } else if (result?.decision?.next_action === 'CONFIRM_DOWNLOAD') {
+    lines.push('当前未下载：需要确认后才能继续。');
+  }
+
+  const previewUrl = String(result?.urls?.preview || preview?.urlMasked || '').trim();
+  if (previewUrl) lines.push(`预览链接：${maskDebugApiUrl(previewUrl)}`);
+  const downloadUrl = String(result?.urls?.download || result?.download?.urlMasked || '').trim();
+  if (downloadUrl && result?.mode !== 'preview_only') {
+    lines.push(`下载链接：${maskDebugApiUrl(downloadUrl)}`);
+  }
+  if (errorMessage) lines.push(`任务状态：${errorMessage}`);
+  return lines.join('\n').trim();
 }
 
 function buildReportDataForExport(args = {}) {
@@ -5875,60 +5448,11 @@ function buildResolvedQueryForPrompt(prompt = '', args = {}) {
   };
 }
 
-async function runResolvedSkillExecutor(args = {}) {
-  const prompt = normalizePrompt(args);
-  const traceId = normalizeTraceId(args?.traceId) || `napm-resolved-refresh-${Date.now()}`;
-  const nextArgs = isPlainObject(args) ? { ...args } : {};
-  if (!isPlainObject(nextArgs.resolvedQuery)) {
-    const resolverPrompt = normalizePrompt(args?.resolverPrompt || '') || prompt;
-    const resolved = buildResolvedQueryForPrompt(resolverPrompt, args);
-    if (isPlainObject(resolved.resolvedQuery)) {
-      nextArgs.resolvedQuery = resolved.resolvedQuery;
-      if (resolverPrompt !== prompt) {
-        nextArgs.resolvedQuery = {
-          ...nextArgs.resolvedQuery,
-          userRequirement: prompt
-        };
-      }
-      appendPluginAuditEvent('napm_resolver_resolved_query_created', {
-        traceId,
-        prompt,
-        resolverPrompt,
-        source: resolved.source,
-        ok: true,
-        intent: normalizeObject(resolved.result?.intent) || null,
-        resolvedQuery: normalizeObject(nextArgs.resolvedQuery) || null,
-        resolvedQuerySummary: summarizeResolvedQueryForAudit(nextArgs.resolvedQuery),
-        diagnostics: normalizeObject(resolved.result?.diagnostics) || null
-      });
-    }
-  }
-  nextArgs.traceId = traceId;
-  return napmQuerySkill().handleSkillCall(nextArgs);
-}
-
-function isQueryLikeAction(nextAction) {
-  return nextAction === 'GO_DIRECT_QUERY' || nextAction === 'GO_OVERVIEW_QUERY';
-}
-
-async function runGatewaySkillFallback(args = {}) {
-  return napmQuerySkill().handleSkillCall(args);
-}
-
 function isDirectNapmTool(toolName = '') {
   const normalized = String(toolName || '').trim();
   return normalized === 'napm-topn'
     || normalized === 'napm-average'
     || normalized === 'napm-timeseries';
-}
-
-function buildRemovedDirectToolReply(toolName = '') {
-  const normalized = String(toolName || '').trim() || 'legacy NAPM direct tool';
-  return {
-    ok: false,
-    error: `${normalized} has been removed from this deployment. Use napm-skill-query and let OpenClaw construct a structured queryDraft instead.`,
-    nextAction: 'USE_NAPM_SKILL_QUERY'
-  };
 }
 
 function makeTextReply(text) {
@@ -5984,6 +5508,10 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
 
   if (isAlertPacketSkillResultRecord(rememberedRecord)) {
     return buildAlertPacketFinalReply(rememberedRecord.result);
+  }
+
+  if (isPacketSkillResultRecord(rememberedRecord)) {
+    return buildPacketFinalReply(rememberedRecord.result);
   }
 
   if (isAlertSkillResultRecord(rememberedRecord)) {
@@ -7541,7 +7069,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known and the request is not tied to an alert event. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, BusinessGroup member-IP discovery, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests when the target IPs are already known OR a BusinessGroup/workgroup name is supplied, and the request is not tied to an alert event. Pass the original prompt or a concrete criteria.timeRange.key such as last5minutes; the runtime resolves relative time against its server clock and fills start/end. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
     parameters: {
       type: 'object',
       properties: {
@@ -7564,7 +7092,7 @@ function createPacketAnalysisToolDefinition() {
         packetQuery: { type: 'object', description: 'Optional full packet query payload accepted by openclaw-napm-packet-analysis.', additionalProperties: true },
         criteria: {
           type: 'object',
-          description: 'Packet criteria. Live preview/download requires start/end and one target such as ips, ipRanges, id, top, instanceId, businessName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
+          description: 'Packet criteria. Live preview/download requires start/end (or a relative prompt/timeRange.key) and one target such as ips, ipRanges, id, top, instanceId, businessName, BusinessGroup/businessGroupName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
           properties: {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
@@ -7572,6 +7100,10 @@ function createPacketAnalysisToolDefinition() {
             id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. For a combined alert packet request, use napm-alert-packet-analysis and accept an id only from its trusted handoff.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
+            businessGroupName: { type: 'string', description: 'BusinessGroup/workgroup name. The packet skill queries businessGroups CSV, matches Name exactly, expands IpMembers into ips/ipRanges, then calls packetsPreview/packetsDown.' },
+            businessGroup: { type: 'string', description: 'Alias of businessGroupName.' },
+            groupType: { type: 'string', description: 'Use BusinessGroup for workgroup packet discovery.' },
+            groupArgument: { type: 'string', description: 'BusinessGroup object name when groupType=BusinessGroup.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
             pageUrl: { type: 'string', description: 'Alias of page. Use for Web page URL/path packet preview.' },
             pageFamilyId: { type: 'string', description: 'Known PageFamily id. Starts business packet preview from pageViews.' },
@@ -7581,7 +7113,9 @@ function createPacketAnalysisToolDefinition() {
             pageViewIndex: { type: 'number', description: 'Optional row index selected from pageViews preview rows.' },
             top: { type: 'object', additionalProperties: true },
             start: { type: 'number', description: 'Unix-second start timestamp.' },
-            end: { type: 'number', description: 'Unix-second end timestamp.' }
+            end: { type: 'number', description: 'Unix-second end timestamp.' },
+            timeRange: { type: 'object', description: 'Optional relative time declaration, e.g. {key:"last5minutes"}; runtime resolves it to minute-aligned start/end.', additionalProperties: true },
+            timeRangeKey: { type: 'string', description: 'Alias for criteria.timeRange.key, e.g. last5minutes or last1hour.' }
           },
           additionalProperties: true
         },
@@ -7806,7 +7340,6 @@ function buildNapmRoutingSystemContext(opts = {}) {
     }
   } catch (_e) { /* classifier errors → inject all rules as fallback */ }
 
-  var isNapm = Boolean(opts.napmRelated) || (prompt && isNapmRelatedPrompt(prompt));
   // Guard: if no scene detected, default to data-query + packet scenes to cover all possibilities
   var anyScene = isFault || isSummary || isInspection || isAlert || isPacket;
   if (!anyScene) { isFault = true; isSummary = true; isAlert = true; isPacket = true; }
@@ -7870,7 +7403,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
-      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests must pass groupType="BusinessGroup" plus groupArgument/businessGroupName; the skill queries businessGroups?csv=true, matches Name exactly, splits IpMembers into repeated ips/ipRanges, then calls packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
       'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );
@@ -8321,7 +7854,18 @@ const plugin = {
       'before_tool_call',
       (event, ctx) => {
         if (isNativeCommandTurn(ctx)) {
-          return undefined;
+          const nativeParams = isPlainObject(event?.params) ? event.params : {};
+          const nativeParamsText = JSON.stringify(nativeParams).toLowerCase();
+          const nativePrompt = normalizePrompt(nativeParams);
+          const packetBypassSignal = isPacketCapturePrompt(nativePrompt)
+            || /(packetspreview|packetsdown|downservlet|pcap|抓包|数据包|报文|ipranges?)/i.test(nativeParamsText);
+          if (!packetBypassSignal) {
+            return undefined;
+          }
+          appendPluginAuditEvent('napm_native_command_packet_guard_not_bypassed', {
+            toolName: String(event?.toolName || '').trim() || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
         }
 
         const guardKeys = getGuardKeys(ctx);
@@ -8490,6 +8034,12 @@ const plugin = {
               previewRiskAccepted: true
             };
           }
+        }
+        if (toolName === 'napm-packet-analysis') {
+          // Preserve exact user wording for server-clock time resolution and
+          // canonicalize BusinessGroup targets before the packet runtime builds
+          // any southbound URL.
+          toolParams = normalizePacketToolParams(activePrompt || normalizePrompt(toolParams), toolParams);
         }
         if (toolName === 'napm-inspection-snapshot' && activePrompt) {
           const resolver = getNapmResolvedQueryResolverService();
@@ -9157,6 +8707,30 @@ const plugin = {
           });
           return { content: preparedFinal.content };
         }
+        if (
+          isPacketCapturePrompt(activePromptForReport)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          if (isStreamingPreviewMessageEvent(event)) {
+            return { cancel: true };
+          }
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (!preparedFinal || !napmOperationState.claimPreparedFinalDelivery(conversationKey, turnId)) {
+            appendPluginAuditEvent('napm_plugin_duplicate_packet_final_delivery_suppressed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null
+            });
+            return { cancel: true };
+          }
+          appendPluginAuditEvent('napm_plugin_packet_final_delivery_claimed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            source: preparedFinal.source,
+            fingerprint: preparedFinal.fingerprint
+          });
+          return { content: preparedFinal.content };
+        }
         if (shouldCancelNapmPreviewMessage(event, ctx, activePromptForReport, guardState, rememberedRecord)) {
           api.logger.warn('[napm-openclaw-plugin] canceled NAPM preview before output rewriting');
           return { cancel: true };
@@ -9518,6 +9092,25 @@ const plugin = {
           ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
+        if (
+          isPacketCapturePrompt(activePrompt)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (preparedFinal) {
+            appendPluginAuditEvent('napm_plugin_packet_deterministic_final_prepared', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              source: preparedFinal.source,
+              fingerprint: preparedFinal.fingerprint,
+              replacedModelContent: Boolean(existingText)
+            });
+            return {
+              message: buildAssistantTextMessage(preparedFinal.content, message)
+            };
+          }
+        }
         if (isCurrentAlertQueryResultRecord(rememberedRecord, turnId)) {
           const content = buildAlertQueryReply(rememberedRecord.result);
           appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
@@ -9759,6 +9352,8 @@ module.exports.__test__ = {
   buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
   buildPacketAnalysisReply,
+  buildPacketFinalReply,
+  normalizePacketToolParams,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,
@@ -9806,6 +9401,7 @@ module.exports.__test__ = {
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,
   isAlertPacketSkillResultRecord,
+  isPacketSkillResultRecord,
   buildAlertSkillRequiredReply,
   buildAlertPacketSkillRequiredReply,
   buildAlertExecutionTraceReplyFromRememberedRecord,

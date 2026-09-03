@@ -207,8 +207,8 @@ describe('InspectionFixedTemplateService', () => {
         },
         dataset: {
           timezone: 'Asia/Shanghai',
-          effectiveGranularity: 604800,
-          aggregation: { method: 'calendar_week_average' },
+          effectiveGranularity: 86400,
+          aggregation: null,
           points: [{ timestamp: 1750003200, TPIO: 1 }],
           stats: { max: 1, min: 1, avg: 1, missingPointCount: 0, zeroSegmentCount: 0, spikeCount: 0 }
         }
@@ -223,8 +223,8 @@ describe('InspectionFixedTemplateService', () => {
       'Asia/Shanghai',
       86400,
       86400,
-      604800,
-      'calendar_week_average',
+      86400,
+      '',
       '有数据'
     ]));
     expect(rows[0][2]).toContain('2025-06-16 00:00');
@@ -359,6 +359,7 @@ describe('InspectionFixedTemplateService', () => {
     const settingsXml = await zip.file('word/settings.xml').async('string');
     const stylesXml = await zip.file('word/styles.xml').async('string');
     const reportXml = [documentXml, headerXml, footerXml, stylesXml].join('\n');
+    const drawingProperties = [...reportXml.matchAll(/<wp:docPr\b[^>]*>/g)].map(([tag]) => tag);
 
     expect(headerXml).toContain('网深科技基于AI的全流量性能分析平台');
     expect(headerXml).toContain('北京烟草');
@@ -373,6 +374,8 @@ describe('InspectionFixedTemplateService', () => {
     expect(reportXml).toContain('2 基本信息');
     expect(reportXml).toContain('3.1 性能状况');
     expect(reportXml).toContain('4 巡检总结');
+    expect(drawingProperties.length).toBeGreaterThan(0);
+    expect(drawingProperties.every((tag) => /\bname="[^"]+"/.test(tag))).toBe(true);
     expect(reportXml).not.toContain('六、巡检结果');
     for (const oldColor of ['0F766E', '334155', '111827', '374151', '64748B', '1F2937']) {
       expect(reportXml).not.toContain(`w:val="${oldColor}"`);
