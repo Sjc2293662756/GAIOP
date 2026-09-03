@@ -1,7 +1,7 @@
 'use strict';
 
 const { shouldDiscover } = require('./AlertIndirectPacketDiscoveryService');
-const { ALERT_CATEGORY_LABELS, ALERT_SEVERITY_LABELS } = require('./AlertConstants');
+const { ALERT_CATEGORY_LABELS } = require('./AlertConstants');
 const { formatAlertCategoryHeading } = require('./AlertDisplayFormatService');
 
 function buildTimeRange(criteria = {}) {
@@ -135,7 +135,7 @@ function looksLikeIp(value = '') {
 /**
  * 生成告警查询结果的展示文本。格式由 skill 定义，plugin 直接透传。
  */
-function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
+function buildDisplayText(result = {}, packetHandoff, _triggerInfo) {
   const lines = [];
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
@@ -155,12 +155,17 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
   // ── 概况 ──
   const bySev = summary.bySeverity || {};
   const total = summary.total != null ? summary.total : events.length;
+  const hasNoAlerts = Number.isFinite(Number(total)) && Number(total) === 0;
   lines.push(`告警总数：${total} 条`);
   lines.push(`  🔴 紧急 ${bySev.critical || 0} 条  |  🟠 重大 ${bySev.major || 0} 条  |  🟢 轻微 ${bySev.minor || 0} 条`);
   if (Number.isFinite(Number(total)) && Number(total) > events.length) {
     lines.push(`统计口径：分类与严重级别基于全部 ${total} 条告警；明细仅展示 ${events.length} 条原始事件中的聚合概览。`);
   }
   lines.push('');
+  if (hasNoAlerts) {
+    lines.push('本时间范围内未查询到告警事件。');
+    lines.push('');
+  }
 
   // ── 按类别 + name+severity 分组 ──
   const categoryOrder = ['networkAlerts', 'networkIssueAlerts', 'appAlerts', 'busAlerts', 'userAlerts', 'securityAlerts', 'AIAlerts'];
@@ -180,7 +185,9 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
     detail
   ]));
 
+  let categoryDisplayIndex = 0;
   for (let i = 0; i < categoryOrder.length; i++) {
+    if (hasNoAlerts) continue;
     const catKey = categoryOrder[i];
     const catLabel = ALERT_CATEGORY_LABELS[catKey] || catKey;
     const catEvents = eventsByCategory.get(catKey) || [];
@@ -210,76 +217,68 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
       }
     }
 
-    if (catTotal === 0) {
-      // 空类别：显式标注
-      lines.push(formatAlertCategoryHeading({
-        index: i + 1,
-        label: catLabel,
-        total: 0,
-        bySeverity: { critical: 0, major: 0, minor: 0 },
-      }));
-      lines.push('   无告警记录');
-    } else {
-      lines.push(formatAlertCategoryHeading({
-        index: i + 1,
-        label: catLabel,
-        total: catTotal,
-        bySeverity: { critical: catCritical, major: catMajor, minor: catMinor },
-      }));
+    if (catTotal <= 0) continue;
+
+    categoryDisplayIndex += 1;
+    lines.push(formatAlertCategoryHeading({
+      index: categoryDisplayIndex,
+      label: catLabel,
+      total: catTotal,
+      bySeverity: { critical: catCritical, major: catMajor, minor: catMinor },
+    }));
+    lines.push('');
+
+    // 按 name + severity 分组聚合
+    const groupMap = new Map();
+    for (const e of displayEvents) {
+      const key = `${e.name || '未知告警'}||${e.severity || 0}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          name: e.name || '未知告警',
+          severity: e.severity || 0,
+          severityLabel: e.severityLabel || '',
+          groups: new Map(),
+          count: 0,
+          totalPeriod: 0,
+          firstStart: e.start,
+        });
+      }
+      const g = groupMap.get(key);
+      const triggerCount = Number(e.triggerCount) > 0 ? Number(e.triggerCount) : 1;
+      const totalPeriod = Number(e.totalPeriod) > 0 ? Number(e.totalPeriod) : Number(e.period);
+      const firstStart = e.firstStart || e.start;
+      g.count += triggerCount;
+      if (totalPeriod > 0) g.totalPeriod += totalPeriod;
+      if (firstStart && (!g.firstStart || firstStart < g.firstStart)) g.firstStart = firstStart;
+      // 按 group 聚合对象名
+      const objKey = e.group || '?';
+      g.groups.set(objKey, (g.groups.get(objKey) || 0) + triggerCount);
+    }
+
+    // 按严重级别降序排列分组
+    const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
+    if (sortedGroups.length === 0) {
+      lines.push('   当前统计中存在告警，但没有保留可展示的聚合明细。');
+    }
+    for (let j = 0; j < sortedGroups.length; j++) {
+      const g = sortedGroups[j];
+      const sevEmoji = g.severity === 4 ? '🔴' : g.severity === 3 ? '🟠' : '🟢';
+      const sevLabel = g.severityLabel || (g.severity === 4 ? '紧急' : g.severity === 3 ? '重大' : '轻微');
+      const topObjects = [...g.groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+      const objText = topObjects.join('、');
+      const durationText = g.totalPeriod > 0
+        ? (g.totalPeriod < 60 ? `${Math.round(g.totalPeriod * 60)}秒` : `${g.totalPeriod}分钟`)
+        : '?';
+      const startText = g.firstStart ? formatTimestamp(g.firstStart) : '?';
+
+      lines.push(`# ${g.name}触发（${sevEmoji} ${sevLabel}）`);
+      lines.push('');
+      lines.push(`对象 **${objText}** 触发了 **${g.count}** 次告警，持续时长为 **${durationText}**，开始时间为 **${startText}**。`);
       lines.push('');
 
-      // 按 name + severity 分组聚合
-      const groupMap = new Map();
-      for (const e of displayEvents) {
-        const key = `${e.name || '未知告警'}||${e.severity || 0}`;
-        if (!groupMap.has(key)) {
-          groupMap.set(key, {
-            name: e.name || '未知告警',
-            severity: e.severity || 0,
-            severityLabel: e.severityLabel || '',
-            groups: new Map(),
-            count: 0,
-            totalPeriod: 0,
-            firstStart: e.start,
-          });
-        }
-        const g = groupMap.get(key);
-        const triggerCount = Number(e.triggerCount) > 0 ? Number(e.triggerCount) : 1;
-        const totalPeriod = Number(e.totalPeriod) > 0 ? Number(e.totalPeriod) : Number(e.period);
-        const firstStart = e.firstStart || e.start;
-        g.count += triggerCount;
-        if (totalPeriod > 0) g.totalPeriod += totalPeriod;
-        if (firstStart && (!g.firstStart || firstStart < g.firstStart)) g.firstStart = firstStart;
-        // 按 group 聚合对象名
-        const objKey = e.group || '?';
-        g.groups.set(objKey, (g.groups.get(objKey) || 0) + triggerCount);
-      }
-
-      // 按严重级别降序排列分组
-      const sortedGroups = [...groupMap.values()].sort((a, b) => b.severity - a.severity || b.count - a.count);
-      if (sortedGroups.length === 0) {
-        lines.push('   当前统计中存在告警，但没有保留可展示的聚合明细。');
-      }
-      for (let j = 0; j < sortedGroups.length; j++) {
-        const g = sortedGroups[j];
-        const sevEmoji = g.severity === 4 ? '🔴' : g.severity === 3 ? '🟠' : '🟢';
-        const sevLabel = g.severityLabel || (g.severity === 4 ? '紧急' : g.severity === 3 ? '重大' : '轻微');
-        const topObjects = [...g.groups.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
-        const objText = topObjects.join('、');
-        const durationText = g.totalPeriod > 0
-          ? (g.totalPeriod < 60 ? `${Math.round(g.totalPeriod * 60)}秒` : `${g.totalPeriod}分钟`)
-          : '?';
-        const startText = g.firstStart ? formatTimestamp(g.firstStart) : '?';
-
-        lines.push(`# ${g.name}触发（${sevEmoji} ${sevLabel}）`);
+      if (j < sortedGroups.length - 1) {
+        lines.push('---');
         lines.push('');
-        lines.push(`对象 **${objText}** 触发了 **${g.count}** 次告警，持续时长为 **${durationText}**，开始时间为 **${startText}**。`);
-        lines.push('');
-
-        if (j < sortedGroups.length - 1) {
-          lines.push('---');
-          lines.push('');
-        }
       }
     }
     lines.push('');
@@ -296,7 +295,7 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
   const unknownTotal = Number.isFinite(unknownDetailTotal)
     ? unknownDetailTotal
     : (Number.isFinite(unknownSummaryTotal) ? unknownSummaryTotal : retainedUnknownEvents.length);
-  if (unknownTotal > 0) {
+  if (!hasNoAlerts && unknownTotal > 0) {
     const unknownSeverity = unknownDetail?.bySeverity || {};
     const unkCritical = Number.isFinite(Number(unknownSeverity.critical))
       ? Number(unknownSeverity.critical)
@@ -308,7 +307,7 @@ function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
       ? Number(unknownSeverity.minor)
       : retainedUnknownEvents.filter(e => e.severity === 2).length;
     lines.push(formatAlertCategoryHeading({
-      index: categoryOrder.length + 1,
+      index: categoryDisplayIndex + 1,
       label: '其他告警',
       total: unknownTotal,
       bySeverity: { critical: unkCritical, major: unkMajor, minor: unkMinor },
@@ -378,35 +377,6 @@ function formatTimestamp(ts) {
   if (!ts) return '?';
   const d = new Date(ts > 9999999999 ? ts : ts * 1000);
   return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-}
-
-function formatDuration(event = {}) {
-  const period = Number(event.period);
-  if (period > 0) {
-    if (period < 60) return `${Math.round(period * 60)}秒`;
-    return `${period}分钟`;
-  }
-  const s = (event.start || event.firstStart) && (event.end || event.lastEnd)
-    ? (event.end || event.lastEnd) - (event.start || event.firstStart) : 0;
-  if (s <= 0) return '?';
-  if (s < 60) return `${Math.round(s)}秒`;
-  return `${Math.round(s / 60)}分钟`;
-}
-
-function buildCategoryDetailFromEvents(events = []) {
-  const map = new Map();
-  for (const e of events) {
-    const cat = e.category || e.categoryLabel || 'unknown';
-    const label = e.categoryLabel || cat;
-    if (!map.has(cat)) map.set(cat, { category: cat, categoryLabel: label, total: 0, bySeverity: { critical: 0, major: 0, minor: 0 }, overviewEvents: [] });
-    const d = map.get(cat);
-    d.total++;
-    if (e.severity === 4) d.bySeverity.critical++;
-    else if (e.severity === 3) d.bySeverity.major++;
-    else d.bySeverity.minor++;
-    if (d.overviewEvents.length < 3) d.overviewEvents.push(e);
-  }
-  return [...map.values()].sort((a, b) => b.total - a.total);
 }
 
 function buildNarrationInput(result = {}) {

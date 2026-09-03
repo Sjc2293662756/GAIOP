@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { ESLint } = require('eslint');
 const {
   isExpectedSecurityRefusal
 } = require('../scripts/verify-openclaw-extension-runtime');
@@ -24,6 +25,22 @@ function copyDirectorySync(sourceDir, targetDir) {
 }
 
 describe('installed extension smoke contract', () => {
+  test('keeps the plugin runtime free of ESLint errors and warnings', async () => {
+    const eslint = new ESLint({ cwd: path.resolve(__dirname, '..') });
+    const results = await eslint.lintFiles([
+      'napm-openclaw-plugin.remote.js',
+      'plugin/**/*.js'
+    ]);
+    const findings = results.flatMap((result) => result.messages.map((message) => ({
+      filePath: path.relative(path.resolve(__dirname, '..'), result.filePath),
+      line: message.line,
+      ruleId: message.ruleId,
+      message: message.message
+    })));
+
+    expect(findings).toEqual([]);
+  });
+
   test('accepts only the typed sensitive-credential refusal result', () => {
     expect(isExpectedSecurityRefusal({
       ok: false,

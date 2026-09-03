@@ -277,7 +277,35 @@ describe('openclaw-napm-alert-query services', () => {
     });
 
     expect(displayText).toMatch(/^# \*\*① 网络性能告警 — 8 条（🔴 1 \/ 🟠 0 \/ 🟢 0）\*\*$/mu);
-    expect(displayText).toMatch(/^# \*\*② 网络异常告警 — 0 条（🔴 0 \/ 🟠 0 \/ 🟢 0）\*\*$/mu);
+    expect(displayText).not.toMatch(/网络异常告警 — 0 条/mu);
+    expect(displayText).not.toContain('无告警记录');
     expect(displayText).not.toMatch(/^\*\*① 网络性能告警/mu);
+  });
+
+  test('should omit all category sections when the alert total is zero', () => {
+    const displayText = buildDisplayText({
+      ok: true,
+      mode: 'summary',
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 0,
+        bySeverity: { critical: 0, major: 0, minor: 0 },
+        byCategory: {
+          networkAlerts: 0,
+          networkIssueAlerts: 0,
+          appAlerts: 0,
+          busAlerts: 0,
+          userAlerts: 0,
+          securityAlerts: 0,
+          AIAlerts: 0,
+        },
+      },
+      events: [],
+    });
+
+    expect(displayText).toContain('告警总数：0 条');
+    expect(displayText).toContain('本时间范围内未查询到告警事件。');
+    expect(displayText).not.toMatch(/# \*\*[①②③④⑤⑥⑦] /mu);
+    expect(displayText).not.toContain('无告警记录');
   });
 });
