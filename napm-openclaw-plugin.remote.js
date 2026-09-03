@@ -41,7 +41,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-inspection/scripts/run_inspection_snapshot.js',
   'openclaw-napm-summary/scripts/run_summary.js',
   'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js',
-  'shared/NapmObjectTargetResolver.js'
+  'shared/NapmObjectTargetResolver.js',
+  'shared/NapmPageViewsContract.js'
 ]);
 
 function hasCompleteNapmSkillRuntime(skillsRoot = '', existsSync = fs.existsSync) {
@@ -93,6 +94,10 @@ const napmQuerySkill = () => loadSkill('openclaw-napm-query', 'run_napm_query.js
 const napmQueryDecisionPolicy = () => require(path.join(
   OPENCLAW_SKILLS_ROOT,
   'openclaw-napm-query/services/QueryDecisionPolicy.js'
+));
+const napmPageViewsContract = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'shared/NapmPageViewsContract.js'
 ));
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
@@ -147,7 +152,8 @@ const napmOperationState = new ConversationOperationState({
   queryContextMaxAgeMs: QUERY_CONTEXT_MAX_AGE_MS
 });
 const queryTurnCoordinator = new QueryTurnCoordinator({
-  maxAgeMs: RESULT_CACHE_MAX_AGE_MS
+  maxAgeMs: RESULT_CACHE_MAX_AGE_MS,
+  extractPageFamilyId: (row) => napmPageViewsContract().extractPageFamilyId(row)
 });
 const assistantOutputLedger = new AssistantOutputLedger({
   maxAgeMs: RESULT_CACHE_MAX_AGE_MS
@@ -1609,6 +1615,12 @@ function normalizeQueryModeKeyForService(serviceName = '', queryModeKey = '') {
       trends: 'timeseries',
       data: 'timeseries'
     },
+    pageViews: {
+      detail: 'detail',
+      pageviews: 'detail',
+      details: 'detail',
+      list: 'detail'
+    },
     overview: {
       overview: 'overview',
       overall: 'overview',
@@ -1662,6 +1674,7 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     topValues_multi_protocol: 'topn',
     averageValues: 'average',
     timeValues: 'timeseries',
+    pageViews: 'detail',
     overview: 'overview',
     groups: 'metadata',
     metrics: 'metadata',
@@ -1745,7 +1758,15 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     next.topMetric = next.metric || next.metrics?.[0];
   }
 
-  ['start', 'end', 'topCount', 'granularity'].forEach((field) => {
+  if (serviceName === 'pageViews') {
+    try {
+      next.maxLimit = napmPageViewsContract().normalizePageViewsMaxLimit(next.maxLimit);
+    } catch (_error) {
+      // Keep invalid input for deterministic validation below.
+    }
+  }
+
+  ['start', 'end', 'topCount', 'granularity', 'maxLimit'].forEach((field) => {
     if (next[field] == null || next[field] === '') return;
     const numeric = Number(next[field]);
     if (Number.isFinite(numeric)) {
@@ -1786,6 +1807,65 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
   });
 
   return next;
+}
+
+function resolvePageViewsResultReference(resolvedQuery, scope = '', turnId = '') {
+  const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
+  if (!isPlainObject(normalized) || normalized.service !== 'pageViews') {
+    return { ok: true, resolvedQuery: normalized };
+  }
+
+  const reference = isPlainObject(normalized.resultReference)
+    ? normalized.resultReference
+    : null;
+  if (!reference) {
+    return { ok: true, resolvedQuery: normalized };
+  }
+
+  const resolution = queryTurnCoordinator.resolveResultReference({
+    scope,
+    turnId,
+    reference
+  });
+  if (!resolution?.ok) return resolution;
+
+  const explicitPageFamilyId = String(normalized.pageFamilyId || '').trim();
+  if (explicitPageFamilyId && explicitPageFamilyId !== resolution.pageFamilyId) {
+    return {
+      ok: false,
+      code: 'RESULT_REFERENCE_PAGE_FAMILY_ID_MISMATCH',
+      reason: 'result_reference_page_family_id_mismatch',
+      message: 'queryDraft.pageFamilyId does not match the authoritative resultReference selection.'
+    };
+  }
+
+  const hasExplicitTime = ['start', 'end'].some((field) => (
+    normalized[field] !== undefined
+    && normalized[field] !== null
+    && normalized[field] !== ''
+  )) || Boolean(String(normalized?.timeRange?.key || '').trim());
+  const inheritedQuery = isPlainObject(resolution.inheritedQuery) ? resolution.inheritedQuery : {};
+  const next = {
+    ...normalized,
+    pageFamilyId: resolution.pageFamilyId,
+    sourceReference: resolution.sourceReference
+  };
+  if (!hasExplicitTime) {
+    next.start = inheritedQuery.start;
+    next.end = inheritedQuery.end;
+    if (isPlainObject(inheritedQuery.timeRange)) {
+      next.timeRange = { ...inheritedQuery.timeRange };
+    }
+    next.executionOptions = {
+      ...(isPlainObject(next.executionOptions) ? next.executionOptions : {}),
+      timeMode: 'fixed'
+    };
+  }
+
+  return {
+    ok: true,
+    resolvedQuery: normalizeResolvedQueryForPlugin(next)
+  };
 }
 
 function getResolutionSpecServiceNames() {
@@ -1905,7 +1985,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  const normalizedResolvedQuery = normalizeResolvedQueryForPlugin(resolvedQuery);
+  let normalizedResolvedQuery = normalizeResolvedQueryForPlugin(resolvedQuery);
   const serviceName = String(normalizedResolvedQuery.service || '').trim();
   if (!serviceName) {
     return {
@@ -1953,6 +2033,17 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
       message: `Unsupported queryDraft timeRange.key=${declaredTimeKey}; provide a concrete key such as last60minutes.`,
       details: { timeRangeKey: declaredTimeKey }
     };
+  }
+
+  if (serviceName === 'pageViews') {
+    const pageViewsValidation = napmPageViewsContract().validatePageViewsQuery(
+      normalizedResolvedQuery,
+      { phase: options?.phase }
+    );
+    if (!pageViewsValidation.ok) {
+      return pageViewsValidation;
+    }
+    normalizedResolvedQuery = pageViewsValidation.query;
   }
 
   if ((requiresRootStart || requiresRootEnd) && (!hasValidRootStart || !hasValidRootEnd) && (hasNestedStart || hasNestedEnd)) {
@@ -6656,6 +6747,33 @@ function createSkillToolDefinition() {
               }
             },
             topCount: { type: 'number' },
+            pageFamilyId: {
+              type: 'string',
+              pattern: '^\\d+$',
+              description: 'Trusted NAPM PageFamily identifier for service=pageViews. Prefer resultReference for natural-language ordinal follow-ups.'
+            },
+            maxLimit: {
+              type: 'number',
+              minimum: 1,
+              maximum: 200,
+              description: 'Maximum page visit rows for pageViews. Defaults to the local client value 20; 200 is a local protection limit, not an asserted upstream maximum.'
+            },
+            resultReference: {
+              type: 'object',
+              description: 'Ordinal selection from the authoritative PageFamily ranking captured for this Query Turn.',
+              properties: {
+                resultSetId: { type: 'string' },
+                objectType: { type: 'string', enum: ['PageFamily'] },
+                ordinal: { type: 'number', minimum: 1 }
+              },
+              required: ['objectType', 'ordinal'],
+              additionalProperties: false
+            },
+            sourceReference: {
+              type: 'object',
+              description: 'Plugin-generated provenance for a resolved pageViews selection. Callers must not invent this field.',
+              additionalProperties: true
+            },
             granularity: {
               type: 'number',
               minimum: 1,
@@ -6876,6 +6994,56 @@ function createSkillToolDefinition() {
             toolCallId: String(toolCallId || '').trim() || null
           });
           return makeToolResult(buildQueryExecutionInProgressResult(currentQueryTurn));
+        }
+
+        const resultReferenceResolution = resolvePageViewsResultReference(
+          preparedArgs?.resolvedQuery,
+          conversationKey,
+          turnId
+        );
+        if (!resultReferenceResolution.ok) {
+          const referencePrompt = String(
+            currentQueryTurn?.semanticQuestion
+            || normalizePrompt(preparedArgs)
+            || preparedArgs?.resolvedQuery?.userRequirement
+            || ''
+          ).trim();
+          const referenceDecision = evaluatePluginQueryDecision(
+            referencePrompt,
+            preparedArgs?.resolvedQuery,
+            resultReferenceResolution
+          );
+          const failureResult = buildResolvedQueryBoundaryFailureResult(
+            resultReferenceResolution,
+            preparedArgs
+          );
+          failureResult.decision = {
+            action: referenceDecision.action,
+            next_action: referenceDecision.action,
+            outcome: referenceDecision.outcome,
+            reasonCode: referenceDecision.reasonCode,
+            southboundAllowed: false
+          };
+          queryTurnCoordinator.recordValidationFailure({
+            scope: conversationKey,
+            turnId,
+            attemptId: String(toolCallId || '').trim() || `result-reference-${crypto.randomUUID()}`,
+            queryDraft: preparedArgs?.resolvedQuery,
+            validation: resultReferenceResolution,
+            result: failureResult,
+            finalContent: buildResolvedQueryValidationFailureReply()
+          });
+          appendPluginAuditEvent('napm_page_views_result_reference_blocked', {
+            traceId,
+            conversationKey,
+            turnId,
+            reasonCode: resultReferenceResolution.code || null
+          });
+          return makeToolResult(failureResult);
+        }
+        if (isPlainObject(resultReferenceResolution.resolvedQuery)) {
+          preparedArgs.resolvedQuery = resultReferenceResolution.resolvedQuery;
+          preparedArgs.queryDraft = resultReferenceResolution.resolvedQuery;
         }
 
         const timeResolverPath = path.join(
@@ -8668,15 +8836,26 @@ const plugin = {
           const originalTraceId = normalizeTraceId(toolParams?.traceId);
           const canonicalTraceId = normalizeTraceId(canonicalSkillParams?.traceId);
           const originalResolvedGroup = String(toolParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
-          const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
-          const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
           const semanticGuardMode = getQuerySemanticGuardMode();
-          const resolvedQueryValidation = validateResolvedQueryAgainstSpec(
+          const resultReferenceResolution = resolvePageViewsResultReference(
             canonicalSkillParams?.resolvedQuery,
-            { phase: 'construction' }
+            conversationKey,
+            queryTurnContext.turnId
           );
+          if (isPlainObject(resultReferenceResolution.resolvedQuery)) {
+            canonicalSkillParams.resolvedQuery = resultReferenceResolution.resolvedQuery;
+            canonicalSkillParams.queryDraft = resultReferenceResolution.resolvedQuery;
+          }
+          const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
+          const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
+          const resolvedQueryValidation = resultReferenceResolution.ok
+            ? validateResolvedQueryAgainstSpec(
+                canonicalSkillParams?.resolvedQuery,
+                { phase: 'construction' }
+              )
+            : resultReferenceResolution;
           if (isPlainObject(resolvedQueryValidation.resolvedQuery)) {
             canonicalSkillParams.resolvedQuery = resolvedQueryValidation.resolvedQuery;
           }
@@ -9664,6 +9843,7 @@ module.exports.__test__ = {
   summarizeResolvedQueryForAudit,
   normalizeQueryModeKeyForService,
   normalizeResolvedQueryForPlugin,
+  resolvePageViewsResultReference,
   validateResolvedQueryAgainstSpec,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,

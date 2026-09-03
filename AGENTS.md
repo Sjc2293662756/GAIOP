@@ -21,6 +21,8 @@
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Query Turn 生成权威 `finalContent` 并 exactly-once 交付。普通查询到达非流式最终输出时不得停留在非终态：`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行，终结为契约违规；`REPAIR_PENDING` 终结为校验失败；`EXECUTING` 无结果终结为执行失败。不得由模型猜测数据。
 - 直接调用 Tool execute 也必须经过统一高风险语义策略，包括应用趋势/平均值/排行与 `TotalTraffic` 范围错配、`CompositeApplication`/一般对象清单以及普通查询多 group 契约；无 prompt 的 `overview/auto_apps` 也不得绕过清单契约。普通查询包含多个 groups 时默认 `VALIDATION_FAILURE`，只有 `pathPlanning` 与静态 groups tree 验证一致的显式多级路径可执行。未获 `EXECUTE_QUERY` 不得调用 Query Skill 或南向接口。
 - 应用流量高风险判断必须消费 `WorkflowClassifierService` 输出的结构化操作、对象和指标语义；对象别名来自 Object Ontology，指标语义来自 Metric Semantic Normalizer。不得在 `PromptRoutingService`、插件或 `QueryDecisionPolicy` 中另建同义正则。
+- 页面访问实例详情使用 `service=pageViews`、`queryModeKey=detail`，输入为分钟对齐的 `start/end`、可信 `pageFamilyId` 和正整数 `maxLimit`（本地缺省 20、保护上限 200；该上限不是已确认的上游限制）。`PageFamilyDetail` 不是 group，metrics、groups、topMetric 和 granularity 不得出现在详情请求中。
+- “详细查看排名第 N 个页面”等追问必须通过 Query Turn 冻结的 `PageFamily` 结果投影解析 `resultReference`；结果集按 conversation scope 隔离并单独保留 30 分钟。缺失、过期、跨 scope、对象类型错误或序号越界均在时间物化和 Skill 调用前失败，Query Skill、`NapmClient` 和南向调用次数必须为 0。
 - 报告类请求走 `napm-report-export`（巡检/故障诊断/综述/Word/PDF）。
 - 告警查询走 `napm-alert-query`（摘要/时间线/详情/通知字段）。
 - 数据包分析走 `napm-packet-analysis`（下载/预览/业务页面）。

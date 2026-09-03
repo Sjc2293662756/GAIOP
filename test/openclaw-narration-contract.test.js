@@ -1,6 +1,47 @@
 const { buildOpenClawReplyContract } = require('../skills/openclaw-napm-query/services/OpenClawNarrationContractService');
 
 describe('OpenClawNarrationContractService', () => {
+  test('builds a page visit detail narration structure', () => {
+    const payload = buildOpenClawReplyContract({
+      service: 'pageViews',
+      resolvedQuery: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        pageFamilyId: '8573007',
+        maxLimit: 20,
+        start: 1777478400,
+        end: 1777564800
+      },
+      summary: {
+        title: '页面访问详情',
+        rowCount: 1,
+        empty: false
+      },
+      rows: [{
+        index: 1,
+        rowRef: 'page-view:1',
+        startTime: '2026-04-30 10:00:00',
+        page: 'https://example.invalid/api',
+        clientIp: '192.0.2.10',
+        serverIp: '192.0.2.20',
+        httpStatus: 500,
+        pageTime: 1.2
+      }]
+    }, { forwardDisplayText: false });
+
+    expect(payload.responseType).toBe('page_view_detail');
+    expect(payload.narrationStructure).toMatchObject({
+      responseType: 'page_view_detail',
+      itemCount: 1,
+      pageFamilyId: '8573007',
+      items: [expect.objectContaining({
+        rowRef: 'page-view:1',
+        httpStatus: 500,
+        clientIp: '192.0.2.10'
+      })]
+    });
+  });
+
   test('should build machine narration payload with topn narration structure', () => {
     const payload = buildOpenClawReplyContract({
       service: 'topValues',

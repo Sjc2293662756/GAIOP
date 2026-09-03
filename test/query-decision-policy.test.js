@@ -378,4 +378,96 @@ describe('QueryDecisionPolicy', () => {
       resolvedQuery: queryDraft
     });
   });
+
+  test('executes a complete pageViews detail query without metric or group fields', () => {
+    const queryDraft = {
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      pageFamilyId: '8573007',
+      maxLimit: 20,
+      timeRange: { key: 'today' },
+      semanticConstraints: {
+        workflowType: 'page_view_detail',
+        operation: 'detail_list',
+        targetObjectType: 'PageFamily'
+      }
+    };
+
+    expect(evaluateQueryDecision({
+      prompt: '详细查看排名第一页面的前 20 条访问明细',
+      queryDraft
+    })).toMatchObject({
+      ok: true,
+      action: QUERY_ACTIONS.EXECUTE_QUERY,
+      southboundAllowed: true,
+      resolvedQuery: queryDraft
+    });
+  });
+
+  test('blocks a declared page detail workflow from drifting to a metric service', () => {
+    const queryDraft = {
+      service: 'topValues',
+      queryModeKey: 'topn',
+      groups: [{ type: 'PageFamily' }],
+      metrics: ['PGNPGE'],
+      metric: 'PGNPGE',
+      topMetric: 'PGNPGE',
+      topCount: 20,
+      timeRange: { key: 'today' },
+      semanticConstraints: {
+        workflowType: 'page_view_detail',
+        operation: 'detail_list',
+        targetObjectType: 'PageFamily'
+      }
+    };
+
+    expect(evaluateQueryDecision({
+      prompt: '详细查看排名第一的前 20 个',
+      queryDraft,
+      validation: { ok: true, resolvedQuery: queryDraft }
+    })).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'PAGE_VIEW_DETAIL_SERVICE_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
+  test.each([
+    [
+      'synthetic PageFamilyDetail grouping',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        pageFamilyId: '8573007',
+        maxLimit: 20,
+        timeRange: { key: 'today' },
+        groups: [{ type: 'PageFamilyDetail' }]
+      },
+      'PAGE_FAMILY_DETAIL_GROUP_FORBIDDEN'
+    ],
+    [
+      'old topValues detail shape',
+      {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        metrics: ['PGNPGE'],
+        topMetric: 'PGNPGE',
+        topCount: 20,
+        timeRange: { key: 'today' },
+        groups: [{ type: 'PageFamilyDetail' }]
+      },
+      'PAGE_VIEW_DETAIL_SERVICE_MISMATCH'
+    ]
+  ])('blocks %s', (_label, queryDraft, reasonCode) => {
+    expect(evaluateQueryDecision({
+      prompt: '详细查看排名第一页面的前 20 条访问明细',
+      queryDraft
+    })).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode,
+      southboundAllowed: false
+    });
+  });
 });

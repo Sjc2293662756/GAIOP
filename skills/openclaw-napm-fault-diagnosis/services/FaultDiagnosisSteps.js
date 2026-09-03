@@ -2,6 +2,11 @@
 
 const path = require('path');
 const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClient');
+const {
+  extractPageFamilyId,
+  normalizePageViewRows,
+  normalizePageViewsMaxLimit
+} = require('../../shared/NapmPageViewsContract');
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -430,13 +435,7 @@ class FaultDiagnosisSteps {
 
     const queries = [];
     for (const item of topItems.slice(0, 20)) {
-      // pageFamilyId from groupPath: ">pages>page 8573230/http://..."
-      let pageFamilyId = '';
-      if (item.groupPath) {
-        const m = String(item.groupPath).match(/page\s+(\d+)/i);
-        if (m) pageFamilyId = m[1];
-      }
-      if (!pageFamilyId) pageFamilyId = item.group?.argument || item.key || '';
+      const pageFamilyId = extractPageFamilyId(item);
       if (!pageFamilyId) continue;
 
       queries.push({
@@ -446,7 +445,8 @@ class FaultDiagnosisSteps {
         fn: () => this.client.request('pageViews', {
           start: faultStart,
           end: faultEnd,
-          pageFamilyId
+          pageFamilyId,
+          maxLimit: normalizePageViewsMaxLimit(ctx.pageViewsMaxLimit)
         })
       });
     }
@@ -506,13 +506,21 @@ class FaultDiagnosisSteps {
    */
   _pageHasStatusCode(pageData, statusCode) {
     if (!pageData) return false;
-    // pageViews response format: may contain rows with status code field
-    const rows = Array.isArray(pageData) ? pageData
-      : (Array.isArray(pageData?.rows) ? pageData.rows
-        : (Array.isArray(pageData?.data) ? pageData.data : []));
+    const normalizedStatus = String(statusCode || '').trim();
+    const statusPrefix = /^\d00$/.test(normalizedStatus)
+      ? normalizedStatus.slice(0, 1)
+      : normalizedStatus;
+    let rows = [];
+    try {
+      rows = normalizePageViewRows(pageData);
+    } catch (_error) {
+      return false;
+    }
     for (const row of rows) {
-      const code = String(row?.statusCode || row?.status || row?.code || '');
-      if (code.startsWith(statusCode)) return true;
+      const code = String(row?.httpStatus || '');
+      if (statusPrefix && code.startsWith(statusPrefix)) return true;
+      if (normalizedStatus === '400' && Number(row?.http400S) > 0) return true;
+      if (normalizedStatus === '500' && Number(row?.http500S) > 0) return true;
     }
     return false;
   }
@@ -1041,12 +1049,7 @@ class FaultDiagnosisSteps {
 
     const queries = [];
     for (const item of sorted.slice(0, 10)) {
-      let pageFamilyId = '';
-      if (item.groupPath) {
-        const m = String(item.groupPath).match(/page\s+(\d+)/i);
-        if (m) pageFamilyId = m[1];
-      }
-      if (!pageFamilyId) pageFamilyId = item.group?.argument || item.key || '';
+      const pageFamilyId = extractPageFamilyId(item);
       if (!pageFamilyId) continue;
 
       queries.push({
@@ -1056,7 +1059,8 @@ class FaultDiagnosisSteps {
         fn: () => this.client.request('pageViews', {
           start: faultStart,
           end: faultEnd,
-          pageFamilyId
+          pageFamilyId,
+          maxLimit: normalizePageViewsMaxLimit(ctx.pageViewsMaxLimit)
         })
       });
     }

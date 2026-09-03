@@ -23,6 +23,7 @@ const QueryMetadataConstraintService = require('./QueryMetadataConstraintService
 const ResolutionSpecService = require('./ResolutionSpecService');
 const MetadataExecutionKernel = require('./MetadataExecutionKernel');
 const MetricExecutionKernel = require('./MetricExecutionKernel');
+const PageViewsExecutionKernel = require('./PageViewsExecutionKernel');
 const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
@@ -69,6 +70,10 @@ class RequirementParserService {
       queryValidator: this.queryValidator,
       buildMetricCsv: this.buildMetricCsv.bind(this),
       parseNapmPayload: this.parseNapmPayload.bind(this)
+    });
+    this.pageViewsExecutionKernel = new PageViewsExecutionKernel({
+      napmClient: this.napmClient,
+      queryValidator: this.queryValidator
     });
     this.assertDependencyContracts();
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
@@ -339,6 +344,8 @@ class RequirementParserService {
       metricFilter: gatewayRequest.metricFilter || null,
       topCount: gatewayRequest.topCount,
       granularity: gatewayRequest.granularity,
+      pageFamilyId: gatewayRequest.pageFamilyId || null,
+      maxLimit: gatewayRequest.maxLimit,
       groups: gatewayRequest.groups,
       stableTemplate: gatewayRequest.stableTemplate || null,
       executionBinding: gatewayRequest.executionBinding || null,
@@ -911,6 +918,16 @@ class RequirementParserService {
    */
   async prepareGatewayExecution(gatewayRequest = {}, requestContext = null) {
     const normalizedQuery = this.normalizeTopLevelQueryShape(gatewayRequest);
+    if (normalizedQuery?.service === 'pageViews') {
+      return {
+        query: normalizedQuery,
+        metadataReview: null,
+        staticConstraint: null,
+        dynamicConstraint: null,
+        inventoryFallback: null,
+        serviceFallbackQuery: null
+      };
+    }
     const staticConstraint = this.queryMetadataConstraintService.constrain(
       normalizedQuery,
       normalizedQuery?.userRequirement || ''
@@ -1112,6 +1129,10 @@ class RequirementParserService {
         queryModeKey: passthroughGatewayRequest.queryModeKey,
         semanticConstraints: passthroughGatewayRequest.semanticConstraints,
         workflowType: passthroughGatewayRequest.workflowType,
+        pageFamilyId: passthroughGatewayRequest.pageFamilyId,
+        maxLimit: passthroughGatewayRequest.maxLimit,
+        resultReference: passthroughGatewayRequest.resultReference,
+        sourceReference: passthroughGatewayRequest.sourceReference,
         groups: passthroughGatewayRequest.groups ? passthroughGatewayRequest.groups.map(g => ({
           type: g.type,
           argument: g.argument
@@ -1147,6 +1168,8 @@ class RequirementParserService {
         ? await this.metadataExecutionKernel.execute(queryRequest, kernelHelpers, requestContext)
         : kernelType === 'metric'
           ? await this.metricExecutionKernel.execute(queryRequest, kernelHelpers, requestContext)
+          : kernelType === 'detail'
+            ? await this.pageViewsExecutionKernel.execute(queryRequest, kernelHelpers, requestContext)
           : null;
 
       if (!kernelResult) {

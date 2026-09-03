@@ -130,6 +130,34 @@
         "timeseries"
       ]
     },
+    "pageViews": {
+      "category": "detail_query",
+      "semanticHints": [
+        "访问详情",
+        "访问明细",
+        "访问实例",
+        "pageViews",
+        "页面实例"
+      ],
+      "required": [
+        "service",
+        "queryModeKey",
+        "pageFamilyId",
+        "start",
+        "end"
+      ],
+      "optional": [
+        "maxLimit",
+        "resultReference",
+        "sourceReference",
+        "timeRange",
+        "format",
+        "semanticConstraints"
+      ],
+      "queryModes": [
+        "detail"
+      ]
+    },
     "overview": {
       "category": "analysis_query",
       "semanticHints": [

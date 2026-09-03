@@ -12,6 +12,10 @@ const METRIC_WORKFLOWS = new Set([
   'composite_analysis'
 ]);
 
+const DETAIL_WORKFLOWS = new Set([
+  'page_view_detail'
+]);
+
 const METADATA_SERVICES = new Set([
   'groups',
   'metrics',
@@ -28,6 +32,10 @@ const METRIC_SERVICES = new Set([
   'timeValues',
   'overview',
   'alertsSummary'
+]);
+
+const DETAIL_SERVICES = new Set([
+  'pageViews'
 ]);
 
 function getWorkflowType(query = {}) {
@@ -58,6 +66,14 @@ function isMetricService(service = '') {
   return METRIC_SERVICES.has(String(service || '').trim());
 }
 
+function isDetailWorkflow(workflowType = '') {
+  return DETAIL_WORKFLOWS.has(String(workflowType || '').trim());
+}
+
+function isDetailService(service = '') {
+  return DETAIL_SERVICES.has(String(service || '').trim());
+}
+
 function resolveExecutionKernel(query = {}) {
   const workflowType = getWorkflowType(query);
   const service = getService(query);
@@ -68,11 +84,17 @@ function resolveExecutionKernel(query = {}) {
   if (isMetricWorkflow(workflowType)) {
     return 'metric';
   }
+  if (isDetailWorkflow(workflowType)) {
+    return 'detail';
+  }
   if (isMetadataService(service)) {
     return 'metadata';
   }
   if (isMetricService(service)) {
     return 'metric';
+  }
+  if (isDetailService(service)) {
+    return 'detail';
   }
   return 'unknown';
 }
@@ -104,20 +126,40 @@ function assertWorkflowServiceContract(query = {}) {
     throw buildContractMismatchError(query, 'metric', 'metadata');
   }
 
+  if (isMetricWorkflow(workflowType) && isDetailService(service)) {
+    throw buildContractMismatchError(query, 'metric', 'detail');
+  }
+
+  if (isMetadataWorkflow(workflowType) && isDetailService(service)) {
+    throw buildContractMismatchError(query, 'metadata', 'detail');
+  }
+
+  if (isDetailWorkflow(workflowType) && !isDetailService(service)) {
+    throw buildContractMismatchError(
+      query,
+      'detail',
+      isMetadataService(service) ? 'metadata' : (isMetricService(service) ? 'metric' : 'unknown')
+    );
+  }
+
   return true;
 }
 
 module.exports = {
   METADATA_WORKFLOWS,
   METRIC_WORKFLOWS,
+  DETAIL_WORKFLOWS,
   METADATA_SERVICES,
   METRIC_SERVICES,
+  DETAIL_SERVICES,
   getWorkflowType,
   getService,
   isMetadataWorkflow,
   isMetricWorkflow,
   isMetadataService,
   isMetricService,
+  isDetailWorkflow,
+  isDetailService,
   resolveExecutionKernel,
   assertWorkflowServiceContract
 };

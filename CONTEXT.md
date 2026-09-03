@@ -60,6 +60,18 @@ _Avoid_: validate-then-dedupe, second execution attempt, replay-owned southbound
 The successful data returned by the NAPM execution adapter for a turn. `RESULT` and `NO_DATA` both produce authoritative `finalContent`; a later failed Query Attempt cannot replace either result.
 _Avoid_: latest attempt, cached failure, ConversationOperationState as query reply source
 
+**Page Family Result Set**:
+The minimal authoritative projection retained after a successful `topValues` query whose terminal group is `PageFamily`. It contains only `resultSetId`, source turn, inherited time range, ordinal, row reference, label, and resolved `pageFamilyId`; it is frozen when a follow-up Query Turn begins, scoped to one conversation, and expires after 30 minutes.
+_Avoid_: full cached result rows, conversation-latest lookup during execution, model-invented pageFamilyId
+
+**Page View Detail Query**:
+The executable `service=pageViews`, `queryModeKey=detail` request for visit instances under one Page Family. It requires a trusted numeric `pageFamilyId`, minute-aligned root time range, and validated `maxLimit`; it has no groups, metrics, topMetric, or granularity. `PageFamilyDetail` is not a group type. Returned `pageFamilyDetailId` identifies one visit and may support a later packet action.
+_Avoid_: PageFamilyDetail drilldown, metric query, page-family aggregate ranking
+
+**Result Reference**:
+The ordinal selection `{resultSetId?, objectType:"PageFamily", ordinal}` used by a page-detail follow-up. The plugin resolves it against the current Query Turn's frozen source set before time materialization and execution. Invalid, expired, cross-scope, wrong-type, or out-of-range references fail closed without a Query Skill or southbound call.
+_Avoid_: raw pageFamilyId guessed from prose, mutable latest-result pointer, cross-conversation reference
+
 **Contract Violation**:
 The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call, or after the Tool call was accepted but before its adapter started execution. It produces a safe final response and never fabricates data or starts a southbound request. If adapter execution already started but no result exists at final output, the distinct terminal outcome is `EXECUTION_FAILURE`.
 _Avoid_: heuristic-only guard, direct model answer for a required query
@@ -80,6 +92,7 @@ _Avoid_: business, WebApplication
 
 - Chinese inventory wording such as “有哪些” does not by itself define the operation. An explicit metric comparison, average, or trend in the same Monitoring Question takes precedence.
 - `Business`, `Application`, and `Business Group` are distinct object types and must not be used as aliases for each other.
+- `PageFamily`, a `pageViews` visit instance, and `pageFamilyDetailId` are distinct concepts; only `PageFamily` is a query group.
 
 ## Example Dialogue
 
@@ -94,3 +107,7 @@ Developer: “One repair is allowed. A repeated failure terminates, while an exi
 Domain expert: “用户被问应用名后只回复 HTTP，会发生什么？”
 
 Developer: “The new run is bound to a new turn. The model supplies `clarificationAnswer=HTTP`; the plugin restores the pending Query Draft, sets `DefinedApp.argument=HTTP`, reevaluates the full policy, and then executes once.”
+
+Domain expert: “页面排行后只说‘详细查看第一名的前 20 个’会怎样？”
+
+Developer: “The new Query Turn freezes the prior Page Family Result Set. The model supplies an ordinal Result Reference; the plugin resolves its trusted `pageFamilyId`, inherits the source time range, and executes one `pageViews` request with `maxLimit=20`.”

@@ -408,10 +408,66 @@ function resolveResponseType(payload = {}, hasResultData = false) {
   const service = String(payload?.service || payload?.resolvedQuery?.service || '').trim();
   if (service === 'topValues') return 'topn';
   if (service === 'timeValues') return 'trend';
+  if (service === 'pageViews') return 'page_view_detail';
   if (service === 'metrics') return 'metric_list';
   if (service === 'groups') return 'group_list';
   if (service === 'averageValues') return 'query';
   return hasResultData ? 'query' : 'decision_result';
+}
+
+function buildPageViewDetailDisplayText(payload = {}, items = []) {
+  if (items.length === 0) {
+    return '当前页面族在所选时间范围内未返回访问实例。';
+  }
+  const escapeCell = (value) => String(value == null || value === '' ? '-' : value)
+    .replace(/\|/g, '\\|')
+    .replace(/[\r\n]+/g, ' ');
+  const lines = [
+    `页面访问详情（PageFamily ID: ${escapeCell(payload?.resolvedQuery?.pageFamilyId)}）`,
+    '',
+    '| 序号 | 访问时间 | 页面 | 客户端 IP | 服务端 IP | 状态码 | 页面耗时 |',
+    '|---:|---|---|---|---|---:|---:|'
+  ];
+  items.forEach((item, index) => {
+    lines.push(`| ${index + 1} | ${escapeCell(item.startTime)} | ${escapeCell(item.page)} | ${escapeCell(item.clientIp)} | ${escapeCell(item.serverIp)} | ${escapeCell(item.httpStatus)} | ${escapeCell(item.pageTime)} |`);
+  });
+  return lines.join('\n');
+}
+
+function buildPageViewDetailStructure(payload, rows, followUpPrompts) {
+  const timeRange = normalizeTimeRange(payload, payload?.summary || {});
+  const items = rows.map((row, index) => ({
+    index: Number.isFinite(Number(row?.index)) ? Number(row.index) : index + 1,
+    rowRef: row?.rowRef || `page-view:${index + 1}`,
+    startTime: row?.startTime || null,
+    page: row?.page || null,
+    clientIp: row?.clientIp || null,
+    serverIp: row?.serverIp || null,
+    originatingIp: row?.originatingIp || null,
+    httpStatus: row?.httpStatus ?? null,
+    http200S: row?.http200S ?? 0,
+    http400S: row?.http400S ?? 0,
+    http500S: row?.http500S ?? 0,
+    httpResponses: row?.httpResponses ?? null,
+    pageTime: row?.pageTime ?? null,
+    pageTraffic: row?.pageTraffic ?? null,
+    requestTraffic: row?.requestTraffic ?? null,
+    userAgent: row?.userAgent || null
+  }));
+  return {
+    responseType: 'page_view_detail',
+    title: payload?.summary?.title || '页面访问详情',
+    explanation: items.length > 0
+      ? `这是页面族 ${payload?.resolvedQuery?.pageFamilyId || 'unknown'} 的访问实例列表。请按访问时间、页面、客户端、服务端、状态码和耗时概括，不要把它解释为聚合排行。`
+      : 'pageViews 已成功执行，但当前时间范围内没有返回访问实例。',
+    timeRange,
+    pageFamilyId: payload?.resolvedQuery?.pageFamilyId || null,
+    maxLimit: payload?.resolvedQuery?.maxLimit || null,
+    itemCount: items.length,
+    items,
+    displayText: buildPageViewDetailDisplayText(payload, items),
+    nextActions: followUpPrompts
+  };
 }
 
 /**
@@ -826,6 +882,9 @@ function buildNarrationStructure(payload = {}, rows = [], structuredRows = [], s
   if (responseType === 'trend') {
     return buildTrendStructure(payload, rows, structuredSeries, followUpPrompts);
   }
+  if (responseType === 'page_view_detail') {
+    return buildPageViewDetailStructure(payload, rows.length > 0 ? rows : structuredRows, followUpPrompts);
+  }
   if (responseType === 'overview') {
     return buildOverviewStructure(payload, followUpPrompts);
   }
@@ -987,6 +1046,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     replyText: displayText,
     responseMode: displayText ? 'verbatim_display_text' : 'machine_narration_input',
     narrationBy: 'openclaw',
+    responseType,
     narrationStructure,
     reportData,
     narrationInput: {

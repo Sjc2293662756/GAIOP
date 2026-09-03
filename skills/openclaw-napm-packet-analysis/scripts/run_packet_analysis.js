@@ -9,6 +9,12 @@ const { spawn } = require('child_process');
 const { URL } = require('url');
 const https = require('https');
 const http = require('http');
+const {
+  buildPageViewsParams,
+  extractPageFamilyDetailId: extractSharedPageFamilyDetailId,
+  extractPageFamilyId: extractSharedPageFamilyId,
+  normalizePageViewRows
+} = require('../../shared/NapmPageViewsContract');
 
 const DEFAULT_MODE = 'build_url_only';
 const DOWNLOAD_MODES = new Set(['download_only', 'preview_download', 'download_analyze', 'preview_download_analyze']);
@@ -629,8 +635,8 @@ function businessResolveFailure(code, message, steps = []) {
 }
 
 function buildPageViewsPreview(rows = [], context = {}) {
-  const normalizedRows = rows
-    .map((row, index) => normalizePageViewPreviewRow(row, index))
+  const normalizedRows = normalizePageViewRows(rows)
+    .map((row, index) => ({ ...row, index }))
     .filter((row) => row.pageFamilyDetailId);
   const uniqueClientIps = Array.from(new Set(normalizedRows.map((row) => row.clientIp).filter(Boolean)));
   const statusCounts = {};
@@ -647,27 +653,6 @@ function buildPageViewsPreview(rows = [], context = {}) {
     statusCounts,
     rows: normalizedRows.slice(0, 50),
     selectionHint: '选择 clientIp 或 pageViewIndex 后，可继续构造 DownServlet 下载链接。',
-  };
-}
-
-function normalizePageViewPreviewRow(row, index) {
-  const detailId = extractPageFamilyDetailId(row);
-  return {
-    index,
-    startTime: row && (row.startTime || row.StartTime || row.time || row.timestamp) || null,
-    page: row && (row.page || row.Page || row.url || row.uri) || null,
-    clientIp: row && (row.clientIp || row.clientIP || row.ClientIp || row.client || row.originatingIp) || null,
-    serverIp: row && (row.serverIp || row.serverIP || row.ServerIp || row.server) || null,
-    originatingIp: row && (row.originatingIp || row.OriginatingIp) || null,
-    httpStatus: row && (row.httpStatus || row.HttpStatus || row.status || row.responseCode) || null,
-    http400S: row && (row.http400S || row.Http400S) || 0,
-    http500S: row && (row.http500S || row.Http500S) || 0,
-    pageTime: row && (row.pageTime || row.PageTime) || null,
-    pageTraffic: row && (row.pageTraffic || row.PageTraffic) || null,
-    requestTraffic: row && (row.requestTraffic || row.RequestTraffic) || null,
-    userAgent: row && (row.userAgent || row.UserAgent) || null,
-    pageFamilyDetailId: detailId,
-    instanceId: detailId ? normalizeInstanceId(detailId) : null,
   };
 }
 
@@ -707,12 +692,15 @@ function buildPageFamilyTopValuesUrl(host, criteria = {}, businessName = '') {
 function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
   const url = new URL('/webservice/NetInside', host);
   appendRuntimeAuthQueryParams(url);
-  url.searchParams.set('type', 'pageViews');
-  url.searchParams.set('start', String(criteria.start));
-  url.searchParams.set('end', String(criteria.end));
-  url.searchParams.set('json', 'true');
-  url.searchParams.set('pageFamilyId', String(pageFamilyId));
-  url.searchParams.set('maxLimit', String(criteria.maxLimit == null ? 'undefined' : criteria.maxLimit));
+  const params = buildPageViewsParams({
+    service: 'pageViews',
+    queryModeKey: 'detail',
+    start: criteria.start,
+    end: criteria.end,
+    pageFamilyId,
+    maxLimit: criteria.maxLimit
+  }, { validateTime: false });
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
   return url.toString();
 }
 
@@ -811,34 +799,11 @@ function extractPageFamilyLabel(row) {
 }
 
 function extractPageFamilyId(row) {
-  if (!row || typeof row !== 'object') return '';
-  const direct = row.pageFamilyId || row.pageFamilyID || row.id;
-  if (direct && /^\d+$/.test(String(direct))) return String(direct);
-  const groupPath = String(row.groupPath || row.path || row.group_path || '').trim();
-  const match = groupPath.match(/page\s+(\d+)\//i)
-    || groupPath.match(/pageFamilyId[=: ]+(\d+)/i)
-    || groupPath.match(/PageFamily[^\d]+(\d+)/i);
-  return match ? match[1] : '';
+  return extractSharedPageFamilyId(row);
 }
 
 function extractPageFamilyDetailId(row) {
-  if (!row) return '';
-  if (typeof row === 'string') return extractDetailIdFromText(row, false);
-  if (Array.isArray(row)) {
-    for (let index = row.length - 1; index >= 0; index -= 1) {
-      const found = extractDetailIdFromText(row[index], false);
-      if (found) return found;
-    }
-    return '';
-  }
-  if (typeof row !== 'object') return '';
-  const direct = row.pageFamilyDetailId || row.pageFamilyDetailID || row.resultName || row.instanceId;
-  if (direct) return extractDetailIdFromText(direct, true);
-  for (const value of Object.values(row).reverse()) {
-    const found = extractPageFamilyDetailId(value);
-    if (found) return found;
-  }
-  return '';
+  return extractSharedPageFamilyDetailId(row);
 }
 
 function extractDetailIdFromText(value, loose = false) {

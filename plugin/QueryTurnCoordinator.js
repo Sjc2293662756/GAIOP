@@ -85,13 +85,20 @@ class QueryTurnCoordinator {
     this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.maxAgeMs = Number(options.maxAgeMs) || 90 * 1000;
     this.pendingMaxAgeMs = Number(options.pendingMaxAgeMs) || 30 * 60 * 1000;
+    this.resultReferenceMaxAgeMs = Number(options.resultReferenceMaxAgeMs) || 30 * 60 * 1000;
     this.maxEntries = Number(options.maxEntries) || 2000;
     this.queryRepairBudget = Number.isInteger(options.queryRepairBudget)
       ? Math.max(0, options.queryRepairBudget)
       : 1;
+    this.extractPageFamilyId = typeof options.extractPageFamilyId === 'function'
+      ? options.extractPageFamilyId
+      : () => '';
     this.turns = new Map();
     this.runBindings = new Map();
     this.pendingByScope = new Map();
+    this.resultReferencesById = new Map();
+    this.latestResultReferenceByScope = new Map();
+    this.resultReferenceScopeById = new Map();
   }
 
   begin({
@@ -121,6 +128,8 @@ class QueryTurnCoordinator {
       parentTurnId: normalizeText(parentTurnId) || null,
       resumedFromClarification: Boolean(resumedFromClarification),
       clarificationAnswer: normalizeText(clarificationAnswer) || null,
+      sourceResultSetId: this._latestResultSetIdForScope(scope),
+      resultReferenceSetId: null,
       route,
       phase: QUERY_PHASES.RECEIVED,
       action: null,
@@ -391,7 +400,7 @@ class QueryTurnCoordinator {
       return clone(current);
     }
     const empty = isEmptyResult(result);
-    const next = {
+    let next = {
       ...current,
       phase: QUERY_PHASES.TERMINAL,
       outcome: empty ? QUERY_OUTCOMES.NO_DATA : QUERY_OUTCOMES.RESULT,
@@ -400,6 +409,13 @@ class QueryTurnCoordinator {
       finalContent: normalizeText(finalContent) || buildFallbackFinalContent(result, empty),
       updatedAt: this.now()
     };
+    const resultReferenceSet = this._rememberResultReferenceSet(next);
+    if (resultReferenceSet) {
+      next = {
+        ...next,
+        resultReferenceSetId: resultReferenceSet.resultSetId
+      };
+    }
     this._setTurn(key, next);
     return clone(next);
   }
@@ -482,6 +498,131 @@ class QueryTurnCoordinator {
     return normalizedScope ? clone(this._freshPending(normalizedScope)) : null;
   }
 
+  getLatestResultReference(scope) {
+    const normalizedScope = normalizeText(scope);
+    const resultSetId = this._latestResultSetIdForScope(normalizedScope);
+    return resultSetId ? clone(this._freshResultReference(resultSetId)?.record || null) : null;
+  }
+
+  resolveResultReference({ scope, turnId = '', reference = null } = {}) {
+    const normalizedScope = normalizeText(scope);
+    const normalizedReference = reference && typeof reference === 'object' ? reference : {};
+    if (!normalizedScope) {
+      return this._referenceFailure('RESULT_REFERENCE_SCOPE_REQUIRED', 'A conversation scope is required.');
+    }
+
+    const requestedObjectType = normalizeText(normalizedReference.objectType) || 'PageFamily';
+    if (requestedObjectType !== 'PageFamily') {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_OBJECT_TYPE_MISMATCH',
+        'pageViews resultReference must select a PageFamily row.'
+      );
+    }
+
+    const ordinal = Number(normalizedReference.ordinal);
+    if (!Number.isInteger(ordinal) || ordinal <= 0) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_ORDINAL_INVALID',
+        'resultReference.ordinal must be a positive one-based integer.'
+      );
+    }
+
+    const explicitResultSetId = normalizeText(normalizedReference.resultSetId);
+    if (explicitResultSetId) {
+      const ownerScope = this.resultReferenceScopeById.get(explicitResultSetId);
+      if (ownerScope && ownerScope !== normalizedScope) {
+        return this._referenceFailure(
+          'RESULT_REFERENCE_SCOPE_MISMATCH',
+          'The referenced result set belongs to another conversation scope.'
+        );
+      }
+    }
+
+    const normalizedTurnId = normalizeText(turnId);
+    const currentTurn = normalizedTurnId ? this._freshTurn(this._key(normalizedScope, normalizedTurnId)) : null;
+    if (normalizedTurnId && !currentTurn) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_TURN_MISSING',
+        'The current Query Turn is unavailable for result reference resolution.'
+      );
+    }
+    const frozenResultSetId = normalizeText(currentTurn?.sourceResultSetId);
+    if (
+      normalizedTurnId
+      && explicitResultSetId
+      && explicitResultSetId !== frozenResultSetId
+    ) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_SOURCE_MISMATCH',
+        'The referenced result set is not the source frozen for this Query Turn.'
+      );
+    }
+    const resultSetId = explicitResultSetId
+      || (normalizedTurnId ? frozenResultSetId : this._latestResultSetIdForScope(normalizedScope));
+    if (!resultSetId) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_NOT_FOUND',
+        'No authoritative PageFamily result is available in this conversation.'
+      );
+    }
+
+    const lookup = this._freshResultReference(resultSetId);
+    if (lookup?.expired) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_EXPIRED',
+        'The referenced PageFamily result has expired; run the page ranking again.'
+      );
+    }
+    const resultSet = lookup?.record || null;
+    if (!resultSet) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_NOT_FOUND',
+        'The authoritative PageFamily result set was not found.'
+      );
+    }
+    if (resultSet.conversationKey !== normalizedScope) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_SCOPE_MISMATCH',
+        'The referenced result set belongs to another conversation scope.'
+      );
+    }
+    if (resultSet.objectType !== requestedObjectType) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_OBJECT_TYPE_MISMATCH',
+        'The referenced result set does not contain PageFamily rows.'
+      );
+    }
+
+    const selected = resultSet.rows.find((row) => row.ordinal === ordinal) || null;
+    if (!selected) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_ORDINAL_OUT_OF_RANGE',
+        `The referenced PageFamily ranking does not contain ordinal ${ordinal}.`,
+        { rowCount: resultSet.rows.length, ordinal }
+      );
+    }
+    if (!selected.pageFamilyId) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_PAGE_FAMILY_ID_MISSING',
+        'The selected PageFamily row does not contain a resolvable pageFamilyId.'
+      );
+    }
+
+    return {
+      ok: true,
+      pageFamilyId: selected.pageFamilyId,
+      inheritedQuery: clone(resultSet.inheritedQuery),
+      sourceReference: {
+        resultSetId: resultSet.resultSetId,
+        rowRef: selected.rowRef,
+        objectType: resultSet.objectType,
+        ordinal: selected.ordinal,
+        sourceTurnId: resultSet.sourceTurnId,
+        label: selected.label || null
+      }
+    };
+  }
+
   resumePending({ scope, turnId, runId = '', answer = '' } = {}) {
     const normalizedScope = normalizeText(scope);
     const normalizedAnswer = normalizeText(answer);
@@ -558,7 +699,124 @@ class QueryTurnCoordinator {
       if (record.conversationKey === normalized && this.runBindings.delete(key)) cleared += 1;
     }
     if (this.pendingByScope.delete(normalized)) cleared += 1;
+    const latest = this.latestResultReferenceByScope.get(normalized);
+    if (this.latestResultReferenceByScope.delete(normalized)) cleared += 1;
+    for (const [resultSetId, record] of this.resultReferencesById.entries()) {
+      if (record.conversationKey === normalized) {
+        this.resultReferencesById.delete(resultSetId);
+        this.resultReferenceScopeById.delete(resultSetId);
+        cleared += 1;
+      }
+    }
+    if (latest?.resultSetId) this.resultReferenceScopeById.delete(latest.resultSetId);
     return cleared;
+  }
+
+  _rememberResultReferenceSet(record) {
+    const queryDraft = record?.queryDraft || {};
+    const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
+    const terminalGroupType = normalizeText(groups[groups.length - 1]?.type);
+    if (queryDraft.service !== 'topValues' || terminalGroupType !== 'PageFamily') return null;
+
+    const sourceRows = Array.isArray(record?.result?.data)
+      ? record.result.data
+      : (Array.isArray(record?.result?.rows)
+        ? record.result.rows
+        : (Array.isArray(record?.result?.narrationInput?.result?.rows)
+          ? record.result.narrationInput.result.rows
+          : []));
+    const rows = sourceRows.map((row, index) => {
+      const pageFamilyId = normalizeText(this.extractPageFamilyId(row));
+      if (!pageFamilyId) return null;
+      const label = normalizeText(
+        row?.group?.argument
+        || row?.object
+        || row?.page
+        || row?.url
+        || row?.label
+      );
+      return {
+        ordinal: index + 1,
+        rowRef: `page-family:${index + 1}`,
+        pageFamilyId,
+        label: label || null
+      };
+    }).filter(Boolean);
+    if (rows.length === 0) return null;
+
+    const resultSet = {
+      conversationKey: record.conversationKey,
+      resultSetId: crypto.randomUUID(),
+      sourceTurnId: record.turnId,
+      objectType: 'PageFamily',
+      inheritedQuery: {
+        start: queryDraft.start,
+        end: queryDraft.end,
+        ...(queryDraft.timeRange ? { timeRange: clone(queryDraft.timeRange) } : {})
+      },
+      rows,
+      updatedAt: this.now()
+    };
+    this.resultReferencesById.set(resultSet.resultSetId, resultSet);
+    this.latestResultReferenceByScope.set(resultSet.conversationKey, {
+      resultSetId: resultSet.resultSetId,
+      updatedAt: resultSet.updatedAt
+    });
+    this.resultReferenceScopeById.set(resultSet.resultSetId, resultSet.conversationKey);
+    this._trimResultReferences();
+    return resultSet;
+  }
+
+  _referenceFailure(code, message, details = null) {
+    return {
+      ok: false,
+      code,
+      reason: String(code || '').toLowerCase(),
+      message,
+      ...(details ? { details } : {})
+    };
+  }
+
+  _latestResultSetIdForScope(scope) {
+    const normalizedScope = normalizeText(scope);
+    if (!normalizedScope) return null;
+    const latest = this.latestResultReferenceByScope.get(normalizedScope) || null;
+    if (!latest) return null;
+    const lookup = this._freshResultReference(latest.resultSetId);
+    if (!lookup?.record) {
+      this.latestResultReferenceByScope.delete(normalizedScope);
+      return null;
+    }
+    return lookup.record.resultSetId;
+  }
+
+  _freshResultReference(resultSetId) {
+    const normalizedResultSetId = normalizeText(resultSetId);
+    const record = normalizedResultSetId ? this.resultReferencesById.get(normalizedResultSetId) : null;
+    if (!record) return null;
+    if ((this.now() - Number(record.updatedAt || 0)) > this.resultReferenceMaxAgeMs) {
+      this.resultReferencesById.delete(normalizedResultSetId);
+      this.resultReferenceScopeById.delete(normalizedResultSetId);
+      const latest = this.latestResultReferenceByScope.get(record.conversationKey);
+      if (latest?.resultSetId === normalizedResultSetId) {
+        this.latestResultReferenceByScope.delete(record.conversationKey);
+      }
+      return { expired: true, record: null };
+    }
+    return { expired: false, record };
+  }
+
+  _trimResultReferences() {
+    while (this.resultReferencesById.size > this.maxEntries) {
+      const resultSetId = this.resultReferencesById.keys().next().value;
+      const record = this.resultReferencesById.get(resultSetId);
+      this.resultReferencesById.delete(resultSetId);
+      this.resultReferenceScopeById.delete(resultSetId);
+      const latest = this.latestResultReferenceByScope.get(record?.conversationKey);
+      if (latest?.resultSetId === resultSetId) {
+        this.latestResultReferenceByScope.delete(record.conversationKey);
+      }
+    }
   }
 
   _rememberPending(record) {

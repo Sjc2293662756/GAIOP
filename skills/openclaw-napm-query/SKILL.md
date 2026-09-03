@@ -1,6 +1,6 @@
 ---
 name: openclaw-napm-query
-description: Standalone OpenClaw skill for NetInside / NAPM structured queries. Use when OpenClaw needs NAPM top/ranking queries, trend/time-series queries, average/value queries, overview analysis, drilldown path questions, metadata object lists, metric inventory, metric ownership/scope checks, metric compatibility validation, or Chinese narration input for NAPM results.
+description: Standalone OpenClaw skill for NetInside / NAPM structured queries. Use when OpenClaw needs NAPM top/ranking queries, trend/time-series queries, average/value queries, page visit instance details, overview analysis, drilldown path questions, metadata object lists, metric inventory, metric ownership/scope checks, metric compatibility validation, or Chinese narration input for NAPM results.
 ---
 
 # OpenClaw NAPM Query Skill
@@ -56,6 +56,7 @@ The `napm-skill-query` adapter owns:
 - Applying the static `QueryDecisionPolicy` to a Query Draft.
 - Returning missing user parameters as a normal clarification (`ok=true`, no `error`).
 - Promoting only `EXECUTE_QUERY` drafts to complete Resolved Queries.
+- Resolving ordinal `PageFamily` result references within the bound Query Turn before a `pageViews` query is materialized.
 - Recording the current Query Turn and preventing duplicate final delivery.
 
 This skill owns:
@@ -64,7 +65,7 @@ This skill owns:
 - Query validation and execution guardrails.
 - Metadata and metric compatibility checks.
 - NAPM API request construction and execution.
-- Top, trend, average, overview, drilldown, metadata, and metric inventory execution.
+- Top, trend, average, page visit detail, overview, drilldown, metadata, and metric inventory execution.
 - Machine-readable narration contract output.
 
 The skill remains stateless. It does not read Query Turn records or restore pending clarification state. If `resolvedQuery` is missing or incomplete in standalone mode, return the built-in boundary failure. Do not invent a live query from raw prompt text.
@@ -110,6 +111,8 @@ Accepted inputs:
 - `--payloadFile <path>`: file form of `--payload`.
 - `--session '<json>'`: optional continuation state.
 - `--raw`: include raw upstream response when debugging locally.
+
+The OpenClaw adapter may accept a `resultReference` for an ordinal page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the trusted `pageFamilyId` and concrete time range.
 
 The output is JSON. Prefer `narrationInput.result.narrationStructure`, `narrationInput.result.timeRange`, `summary`, and returned rows when writing the final Chinese answer.
 
@@ -167,6 +170,27 @@ Use `averageValues` for interval average/value queries:
 }
 ```
 
+Use `pageViews` for per-visit details under one trusted page family:
+
+```json
+{
+  "service": "pageViews",
+  "queryModeKey": "detail",
+  "pageFamilyId": "8573007",
+  "maxLimit": 20,
+  "start": 1779410400,
+  "end": 1779414000,
+  "format": "json",
+  "semanticConstraints": {
+    "workflowType": "page_view_detail",
+    "operation": "detail_list",
+    "targetObjectType": "PageFamily"
+  }
+}
+```
+
+`pageViews` does not accept `groups`, `metrics`, `metric`, `topMetric`, or `granularity`. `PageFamilyDetail` is not a group. `maxLimit` defaults to 20 and is capped locally at 200 as a client protection rule; the upstream product's formal maximum and pagination behavior remain unverified.
+
 Object argument policy:
 
 - A single-object `DefinedApp` or `WebApplication` `timeValues`/`averageValues` query must include the concrete object name in `groups[0].argument`.
@@ -178,6 +202,8 @@ Object argument policy:
 - An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
 - Ordinary `topValues`, `averageValues`, `timeValues`, `groups`, and `metrics` queries with multiple groups fail Query Decision validation by default. They are executable only when `pathPlanning` contains planner proof and its anchor, `plannedGroups`, and `selectedPath` match a queryable path in `groups-tree.static.json`. The presence of multiple groups or an unverified `pathPlanning` object never authorizes execution.
 - Application-traffic scope checks consume the structured workflow/object/metric intent from `WorkflowClassifierService`; do not duplicate application-traffic prompt regexes in routing, plugin, or Query Decision code.
+- A page ranking follow-up such as “详细查看第一名的前 20 个” uses `resultReference={objectType:"PageFamily",ordinal:1}` in the adapter path. The plugin resolves the ID from the Query Turn's frozen result set and inherits its time range; the model must not infer `pageFamilyId` from a URL or ordinal.
+- Missing, expired, cross-scope, wrong-type, or out-of-range page references fail before Skill or southbound execution. A successful zero-row `pageViews` response is `NO_DATA`, not a validation failure.
 
 Use `drilldownCatalog` for drilldown path questions:
 
@@ -262,7 +288,7 @@ Metadata and ownership:
 Load references only when needed:
 
 - `references/standalone-skill-runtime.md`: standalone deployment and CLI examples.
-- `references/service-modes.md`: Top, average, trend, metadata, overview, and composite-analysis semantics.
+- `references/service-modes.md`: Top, average, trend, page visit detail, metadata, overview, and composite-analysis semantics.
 - `references/query-construction.md`: required query fields and group path construction.
 - `references/group-hierarchy.md`: object scope and drilldown hierarchy.
 - `references/metric-definitions.md`: metric meanings and aliases.

@@ -21,6 +21,7 @@ describe('ResolutionSpecService extended getters', () => {
     const topValuesServiceSpec = ResolutionSpecService.getServiceSpec('topValues');
     const averageValuesServiceSpec = ResolutionSpecService.getServiceSpec('averageValues');
     const timeValuesServiceSpec = ResolutionSpecService.getServiceSpec('timeValues');
+    const pageViewsServiceSpec = ResolutionSpecService.getServiceSpec('pageViews');
     expect(topValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
     expect(topValuesServiceSpec.required).not.toContain('timeRange');
     expect(averageValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
@@ -28,6 +29,12 @@ describe('ResolutionSpecService extended getters', () => {
     expect(timeValuesServiceSpec.required).toEqual(expect.arrayContaining(['start', 'end']));
     expect(timeValuesServiceSpec.required).toContain('groups');
     expect(timeValuesServiceSpec.required).not.toContain('timeRange');
+    expect(pageViewsServiceSpec).toMatchObject({
+      category: 'detail_query',
+      required: expect.arrayContaining(['service', 'queryModeKey', 'pageFamilyId', 'start', 'end']),
+      queryModes: ['detail']
+    });
+    expect(pageViewsServiceSpec.required).not.toEqual(expect.arrayContaining(['groups', 'metrics']));
     expect(objectCatalog.WebApplication.hasArgument).toBe(true);
     expect(objectCatalog.CompositeApplication.runtimeKey).toBe('DefinedApp');
     expect(ResolutionSpecService.getObjectAliases().CompositeApplication).toEqual(expect.arrayContaining(['复合协议', '自动识别应用']));

@@ -8,6 +8,7 @@ const NEEDS_TIME = new Set([
   'timeValues',
   'overview',
   'topValues_multi_protocol',
+  'pageViews',
 ]);
 
 const EXECUTION_TIME_RANGE = Symbol('napm.executionTimeRange');

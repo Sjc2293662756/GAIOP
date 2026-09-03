@@ -35,6 +35,9 @@ const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionS
 const ClarificationGateService = require(path.join(skillRoot, 'services/ClarificationGateService'));
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
+const {
+  normalizePageViewsMaxLimit
+} = require(path.join(skillRoot, '..', 'shared', 'NapmPageViewsContract'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const { logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
 
@@ -341,6 +344,19 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u6307\u6807\u5217\u8868',
       highlights: [],
+      rowCount: rows.length,
+      empty: rows.length === 0
+    };
+  }
+
+  if (service === 'pageViews') {
+    return {
+      mode: extra.mode || 'GO_DIRECT_QUERY',
+      title: rows.length > 0 ? '页面访问详情' : '未查到页面访问详情',
+      highlights: [
+        resolvedQuery?.pageFamilyId ? `页面族 ID：${resolvedQuery.pageFamilyId}` : null,
+        `返回访问实例：${rows.length} 条`
+      ].filter(Boolean),
       rowCount: rows.length,
       empty: rows.length === 0
     };
@@ -990,6 +1006,14 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
     query.granularity = Number.isFinite(Number(query.granularity)) && Number(query.granularity) > 0
       ? Number(query.granularity)
       : 3600;
+  }
+
+  if (query.service === 'pageViews') {
+    try {
+      query.maxLimit = normalizePageViewsMaxLimit(query.maxLimit);
+    } catch (_error) {
+      // Preserve invalid input so the validator can return the stable contract error.
+    }
   }
 
   return normalizeResolvedQueryTimeRange(query);
