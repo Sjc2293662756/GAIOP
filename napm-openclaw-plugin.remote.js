@@ -241,42 +241,6 @@ const SYSTEM_DOMAIN_HINT_PATTERNS = [
   /状态/
 ];
 
-const fetchImpl = (...args) => {
-  if (typeof fetch === 'function') {
-    return fetch(...args);
-  }
-  return import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
-};
-
-function getBaseUrl(api) {
-  const baseUrl =
-    api?.config?.gatewayBaseUrl ||
-    process.env.NAPM_GATEWAY_BASE_URL ||
-    NAPM_GATEWAY_BASE_URL;
-  return String(baseUrl).replace(/\/+$/, '');
-}
-
-async function postJson(url, body) {
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-
-  try {
-    return JSON.parse(text);
-  } catch (_error) {
-    return { raw: text };
-  }
-}
-
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1091,7 +1055,7 @@ function normalizePromptKey(prompt) {
   return String(prompt || '')
     .trim()
     .toLowerCase()
-    .replace(/[\s　]+/g, '')
+    .replace(/[\s\u3000]+/g, '')
     .replace(/[?？!！。；;，,、：:]+$/g, '');
 }
 
@@ -4649,7 +4613,9 @@ function findRecentPacketLossAuditWindow(metric = 'PLI') {
       if (start > 0 && end > 0) {
         return { start, end, topCount: topCount > 0 ? topCount : 5 };
       }
-    } catch (_error) {}
+    } catch (_error) {
+      continue;
+    }
   }
   return null;
 }
@@ -5133,7 +5099,6 @@ function buildAlertQueryReply(result = {}) {
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
-  const bySeverity = result.summary?.bySeverity || {};
   const shouldGroupByCategory = shouldRenderAlertCategorySections(result);
   const timeRange = result.timeRange || {};
   const timeText = timeRange.displayText

@@ -1,7 +1,7 @@
 'use strict';
 
 const { shouldDiscover } = require('./AlertIndirectPacketDiscoveryService');
-const { ALERT_CATEGORY_LABELS, ALERT_SEVERITY_LABELS } = require('./AlertConstants');
+const { ALERT_CATEGORY_LABELS } = require('./AlertConstants');
 const { formatAlertCategoryHeading } = require('./AlertDisplayFormatService');
 
 function buildTimeRange(criteria = {}) {
@@ -135,7 +135,7 @@ function looksLikeIp(value = '') {
 /**
  * 生成告警查询结果的展示文本。格式由 skill 定义，plugin 直接透传。
  */
-function buildDisplayText(result = {}, packetHandoff, triggerInfo) {
+function buildDisplayText(result = {}, packetHandoff, _triggerInfo) {
   const lines = [];
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
@@ -377,35 +377,6 @@ function formatTimestamp(ts) {
   if (!ts) return '?';
   const d = new Date(ts > 9999999999 ? ts : ts * 1000);
   return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-}
-
-function formatDuration(event = {}) {
-  const period = Number(event.period);
-  if (period > 0) {
-    if (period < 60) return `${Math.round(period * 60)}秒`;
-    return `${period}分钟`;
-  }
-  const s = (event.start || event.firstStart) && (event.end || event.lastEnd)
-    ? (event.end || event.lastEnd) - (event.start || event.firstStart) : 0;
-  if (s <= 0) return '?';
-  if (s < 60) return `${Math.round(s)}秒`;
-  return `${Math.round(s / 60)}分钟`;
-}
-
-function buildCategoryDetailFromEvents(events = []) {
-  const map = new Map();
-  for (const e of events) {
-    const cat = e.category || e.categoryLabel || 'unknown';
-    const label = e.categoryLabel || cat;
-    if (!map.has(cat)) map.set(cat, { category: cat, categoryLabel: label, total: 0, bySeverity: { critical: 0, major: 0, minor: 0 }, overviewEvents: [] });
-    const d = map.get(cat);
-    d.total++;
-    if (e.severity === 4) d.bySeverity.critical++;
-    else if (e.severity === 3) d.bySeverity.major++;
-    else d.bySeverity.minor++;
-    if (d.overviewEvents.length < 3) d.overviewEvents.push(e);
-  }
-  return [...map.values()].sort((a, b) => b.total - a.total);
 }
 
 function buildNarrationInput(result = {}) {
