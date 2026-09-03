@@ -558,10 +558,29 @@ function normalizeCriteria(input) {
     || ((/^BusinessGroup$/i.test(groupType) || /(?:业务组|工作组|业务分组)/.test(groupType))
       ? criteria.groupArgument
       : '');
-  if (explicitBusinessGroupName && typeof explicitBusinessGroupName !== 'object') {
-    criteria.businessGroupName = String(explicitBusinessGroupName).trim();
+
+  // Models occasionally put a workgroup name into ipRanges because the
+  // target was described as a "network segment". When the prompt establishes
+  // a BusinessGroup scope, promote that value to the canonical group target
+  // and clear the direct-IP fields so discovery cannot be skipped.
+  const promptBusinessGroupName = extractBusinessGroupNameFromPrompt(criteria.prompt);
+  const invalidDirectTargets = [
+    ...criteria.ips.filter((value) => !isValidIPv4(value)),
+    ...criteria.ipRanges.filter((value) => !isValidIPv4Range(value)),
+  ];
+  const inferredBusinessGroupName = explicitBusinessGroupName
+    || promptBusinessGroupName
+    || ((/(?:业务组|工作组|业务分组)/i.test(String(criteria.prompt || ''))
+      && invalidDirectTargets.length === 1)
+      ? invalidDirectTargets[0]
+      : '');
+
+  if (inferredBusinessGroupName && typeof inferredBusinessGroupName !== 'object') {
+    criteria.businessGroupName = String(inferredBusinessGroupName).trim();
     criteria.groupType = 'BusinessGroup';
     if (!criteria.groupArgument) criteria.groupArgument = criteria.businessGroupName;
+    criteria.ips = [];
+    criteria.ipRanges = [];
   }
 
   if (criteria.instanceId && !String(criteria.instanceId).startsWith('PATH1/')) {
@@ -571,6 +590,22 @@ function normalizeCriteria(input) {
   return criteria;
 }
 
+function extractBusinessGroupNameFromPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text || !/(?:业务组|工作组|业务分组)/i.test(text)) return '';
+
+  const quoted = text.match(/(?:业务组|工作组|业务分组)\s*[“"「『‘']\s*([^”"」』’']+?)\s*[”"」』’']/i);
+  if (quoted && quoted[1]) return quoted[1].trim();
+
+  const labelled = text.match(/(?:业务组|工作组|业务分组)\s*[:：]?\s*([^\s，。,。；;！？!?]+)/i);
+  return labelled && labelled[1] ? labelled[1].trim() : '';
+}
+
+function isValidIPv4Range(value = '') {
+  const parts = String(value || '').split('-').map((part) => part.trim());
+  return parts.length === 2 && parts.every(isValidIPv4);
+}
+
 function validateCriteria(criteria, mode) {
   if (mode === 'build_url_only' || PREVIEW_MODES.has(mode) || DOWNLOAD_MODES.has(mode)) {
     if (!criteria.start || !criteria.end) {
@@ -578,6 +613,14 @@ function validateCriteria(criteria, mode) {
     }
     if (criteria.end <= criteria.start) {
       return failResolve('PACKET_TIME_RANGE_INVALID', 'end 必须大于 start。');
+    }
+    const invalidIps = criteria.ips.filter((value) => !isValidIPv4(value));
+    const invalidRanges = criteria.ipRanges.filter((value) => !isValidIPv4Range(value));
+    if (invalidIps.length > 0 || invalidRanges.length > 0) {
+      return failResolve(
+        'PACKET_TARGET_INVALID',
+        `ips/ipRanges 包含无效目标：${[...invalidIps, ...invalidRanges].join('、')}。请传入单个 IPv4 或“起始 IPv4-结束 IPv4”范围。`
+      );
     }
     const maxRange = Number(process.env.PACKET_MAX_TIME_RANGE_SECONDS || 3600);
     if (maxRange > 0 && criteria.end - criteria.start > maxRange) {
@@ -1321,6 +1364,7 @@ function normalizePreviewOverview(parsed, criteria = {}) {
     packetCount,
     estimatedBytes,
     estimatedSizeText: estimatedBytes != null ? formatBytes(estimatedBytes) : null,
+    rowCount: rows.length,
     durationSeconds,
     avgBytesPerSecond: estimatedBytes != null && durationSeconds > 0
       ? estimatedBytes / durationSeconds
@@ -3105,6 +3149,9 @@ module.exports = {
   resolveBusinessGroupPacketIps,
   parseBusinessGroupsCsv,
   parseBusinessGroupIpMembers,
+  extractBusinessGroupNameFromPrompt,
+  isValidIPv4,
+  isValidIPv4Range,
   extractBusinessName,
   extractPageFamilyId,
   extractPageFamilyLabel,
