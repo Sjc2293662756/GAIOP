@@ -1311,8 +1311,8 @@ async function requestPreview(task) {
     const text = response.body.toString('utf8').trim();
     const parsed = parseMaybeJson(text);
     const responseBytes = Buffer.byteLength(response.body);
-    const empty = isEmptyPreview(parsed, text);
     const overview = normalizePreviewOverview(parsed, task.criteria);
+    const empty = isEmptyPreview(parsed, text, overview);
     const risk = assessPacketDownloadRisk(overview, task.criteria, task.filePolicy);
     return {
       ok: response.statusCode >= 200 && response.statusCode < 300,
@@ -1346,6 +1346,7 @@ async function requestPreview(task) {
 
 function normalizePreviewOverview(parsed, criteria = {}) {
   const rows = previewRowsFromPayload(parsed);
+  const trafficSummary = summarizeNetInsidePreview(parsed, criteria);
   const durationSeconds = Number(criteria.end) > Number(criteria.start)
     ? Number(criteria.end) - Number(criteria.start)
     : null;
@@ -1375,6 +1376,7 @@ function normalizePreviewOverview(parsed, criteria = {}) {
     topConversations: summarizePreviewRows(rows, ['conversation', 'flow', 'session', 'srcDst', 'pair']),
     timeBuckets: extractPreviewCollection(parsed, ['timeBuckets', 'timeline', 'series', 'chartData']),
     trafficDistribution: extractPreviewCollection(parsed, ['flowDistribution', 'trafficDistribution', 'distribution']),
+    trafficSummary,
     rawFieldHints: {
       packetCountField: packetCountMatch.path,
       sizeField: estimatedBytesMatch.path,
@@ -1556,6 +1558,8 @@ function normalizeSizeBytes(value) {
 }
 
 function previewRowsFromPayload(payload) {
+  const conversationDataset = findNetInsidePreviewDataset(payload, ['TA', 'TB']);
+  if (conversationDataset) return conversationDataset.rows;
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
   for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
@@ -1563,6 +1567,202 @@ function previewRowsFromPayload(payload) {
   }
   if (payload.data && typeof payload.data === 'object') return previewRowsFromPayload(payload.data);
   return [];
+}
+
+function netInsidePreviewDatasets(payload) {
+  if (Array.isArray(payload)) {
+    return payload.filter((item) => item
+      && typeof item === 'object'
+      && Array.isArray(item.columnIds)
+      && Array.isArray(item.rows));
+  }
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['data', 'result', 'results']) {
+    const datasets = netInsidePreviewDatasets(payload[key]);
+    if (datasets.length > 0) return datasets;
+  }
+  return [];
+}
+
+function findNetInsidePreviewDataset(payload, requiredColumns = []) {
+  const expected = requiredColumns.map((column) => String(column).toUpperCase());
+  return netInsidePreviewDatasets(payload).find((dataset) => {
+    const columns = new Set(dataset.columnIds.map((column) => String(column).toUpperCase()));
+    return expected.every((column) => columns.has(column));
+  }) || null;
+}
+
+function netInsideRowValue(row, key) {
+  if (!row || typeof row !== 'object') return null;
+  if (row.comparableValues && row.comparableValues[key] != null) {
+    return row.comparableValues[key];
+  }
+  if (row.values && row.values[key] != null) return row.values[key];
+  return row[key] != null ? row[key] : null;
+}
+
+function netInsideRowText(row, key) {
+  if (!row || typeof row !== 'object') return '';
+  const value = row.values && row.values[key] != null
+    ? row.values[key]
+    : row[key];
+  return value == null ? '' : String(value).trim();
+}
+
+function ipv4ToNumber(value) {
+  if (!isValidIPv4(value)) return null;
+  return String(value).split('.').reduce((number, part) => (number * 256) + Number(part), 0);
+}
+
+function buildPacketTargetMatcher(criteria = {}) {
+  const ips = new Set(toArray(criteria.ips).filter(isValidIPv4).map(String));
+  const ranges = toArray(criteria.ipRanges)
+    .filter(isValidIPv4Range)
+    .map((range) => {
+      const [first, second] = String(range).split('-').map((part) => ipv4ToNumber(part.trim()));
+      return { start: Math.min(first, second), end: Math.max(first, second) };
+    });
+  return (value) => {
+    const text = String(value || '').trim();
+    if (ips.has(text)) return true;
+    const numeric = ipv4ToNumber(text);
+    return numeric != null && ranges.some((range) => numeric >= range.start && numeric <= range.end);
+  };
+}
+
+function createTrafficDirection() {
+  return { conversationCount: 0, bytes: 0, hasKnownBytes: false };
+}
+
+function addTrafficDirection(direction, bytes) {
+  direction.conversationCount += 1;
+  if (bytes != null) {
+    direction.bytes += bytes;
+    direction.hasKnownBytes = true;
+  }
+}
+
+function finalizeTrafficDirection(direction) {
+  const hasBytes = direction.hasKnownBytes || direction.conversationCount === 0;
+  const bytes = hasBytes ? direction.bytes : null;
+  return {
+    conversationCount: direction.conversationCount,
+    bytes,
+    sizeText: bytes != null ? formatBytes(bytes) : null,
+  };
+}
+
+function summarizeNetInsidePreview(payload, criteria = {}) {
+  const conversationDataset = findNetInsidePreviewDataset(payload, ['TA', 'TB', 'Data']);
+  if (!conversationDataset) return null;
+
+  const endpointDataset = findNetInsidePreviewDataset(payload, ['TN', 'Data']);
+  const isTarget = buildPacketTargetMatcher(criteria);
+  const directions = {
+    outbound: createTrafficDirection(),
+    inbound: createTrafficDirection(),
+    internal: createTrafficDirection(),
+    unmatched: createTrafficDirection(),
+  };
+  const endpointNames = new Set();
+  const derivedMembers = new Map();
+  const conversations = [];
+  let trafficBytes = 0;
+  let hasTrafficBytes = false;
+
+  for (const row of conversationDataset.rows) {
+    const sourceIp = netInsideRowText(row, 'TA');
+    const destinationIp = netInsideRowText(row, 'TB');
+    const bytes = normalizeSizeBytes(netInsideRowValue(row, 'Data'));
+    if (sourceIp) endpointNames.add(sourceIp);
+    if (destinationIp) endpointNames.add(destinationIp);
+    if (bytes != null) {
+      trafficBytes += bytes;
+      hasTrafficBytes = true;
+    }
+
+    const sourceIsTarget = isTarget(sourceIp);
+    const destinationIsTarget = isTarget(destinationIp);
+    const direction = sourceIsTarget && destinationIsTarget
+      ? 'internal'
+      : sourceIsTarget
+        ? 'outbound'
+        : destinationIsTarget
+          ? 'inbound'
+          : 'unmatched';
+    addTrafficDirection(directions[direction], bytes);
+
+    const targetMembers = new Set([
+      sourceIsTarget ? sourceIp : '',
+      destinationIsTarget ? destinationIp : '',
+    ].filter(Boolean));
+    for (const ip of targetMembers) {
+      const member = derivedMembers.get(ip) || {
+        ip,
+        bytes: 0,
+        hasKnownBytes: false,
+        conversationCount: 0,
+      };
+      member.conversationCount += 1;
+      if (bytes != null) {
+        member.bytes += bytes;
+        member.hasKnownBytes = true;
+      }
+      derivedMembers.set(ip, member);
+    }
+
+    if (sourceIp && destinationIp) {
+      conversations.push({
+        sourceIp,
+        destinationIp,
+        bytes,
+        sizeText: bytes != null ? formatBytes(bytes) : null,
+        direction,
+      });
+    }
+  }
+
+  const endpointRows = endpointDataset
+    ? endpointDataset.rows.filter((row) => netInsideRowText(row, 'TN'))
+    : [];
+  const endpointMembers = endpointRows
+    .map((row) => {
+      const ip = netInsideRowText(row, 'TN');
+      const bytes = normalizeSizeBytes(netInsideRowValue(row, 'Data'));
+      const conversationCount = asFiniteNumber(netInsideRowValue(row, 'IPConv'));
+      return {
+        ip,
+        bytes,
+        sizeText: bytes != null ? formatBytes(bytes) : null,
+        conversationCount: conversationCount == null ? null : Math.floor(conversationCount),
+      };
+    })
+    .filter((member) => isTarget(member.ip));
+  const fallbackMembers = Array.from(derivedMembers.values()).map((member) => ({
+    ip: member.ip,
+    bytes: member.hasKnownBytes ? member.bytes : null,
+    sizeText: member.hasKnownBytes ? formatBytes(member.bytes) : null,
+    conversationCount: member.conversationCount,
+  }));
+  const topGroupMembers = (endpointMembers.length > 0 ? endpointMembers : fallbackMembers)
+    .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1)
+      || (right.conversationCount ?? -1) - (left.conversationCount ?? -1)
+      || left.ip.localeCompare(right.ip))
+    .slice(0, 5);
+  const topConversations = conversations
+    .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1))
+    .slice(0, 5);
+
+  return {
+    conversationCount: conversationDataset.rows.length,
+    endpointCount: endpointRows.length || endpointNames.size,
+    trafficBytes: hasTrafficBytes ? trafficBytes : null,
+    trafficSizeText: hasTrafficBytes ? formatBytes(trafficBytes) : null,
+    directions: Object.fromEntries(Object.entries(directions)
+      .map(([key, value]) => [key, finalizeTrafficDirection(value)])),
+    topGroupMembers,
+    topConversations,
+  };
 }
 
 function summarizePreviewRows(rows = [], labelKeys = []) {
@@ -2603,6 +2803,16 @@ function formatPreviewSummary(preview) {
   if (preview.empty) return '预览结果为空。';
   const overview = preview.overview || {};
   const risk = preview.risk || {};
+  const trafficSummary = overview.trafficSummary;
+  if (trafficSummary && typeof trafficSummary === 'object') {
+    const endpointText = trafficSummary.endpointCount != null
+      ? `，涉及 ${formatInteger(trafficSummary.endpointCount)} 个端点`
+      : '';
+    const trafficText = trafficSummary.trafficSizeText
+      ? `，预览流量 ${trafficSummary.trafficSizeText}`
+      : '';
+    return `预览命中 ${formatInteger(trafficSummary.conversationCount)} 条通信记录${endpointText}${trafficText}。`;
+  }
   const packetText = overview.packetCount != null ? `${formatInteger(overview.packetCount)} 个包` : '包数未知';
   const sizeText = overview.estimatedBytes != null ? overview.estimatedSizeText || formatBytes(overview.estimatedBytes) : '大小未知';
   if (risk.level) {
@@ -2640,9 +2850,12 @@ function parseMaybeJson(text) {
   }
 }
 
-function isEmptyPreview(parsed, text) {
+function isEmptyPreview(parsed, text, overview = null) {
   if (parsed == null) return true;
   if (typeof parsed === 'string') return parsed.trim() === '';
+  const conversationDataset = findNetInsidePreviewDataset(parsed, ['TA', 'TB']);
+  if (conversationDataset) return conversationDataset.rows.length === 0;
+  if (overview && Number(overview.rowCount) > 0) return false;
   if (Array.isArray(parsed)) return parsed.length === 0;
   if (typeof parsed === 'object') {
     if (Array.isArray(parsed.data)) return parsed.data.length === 0;

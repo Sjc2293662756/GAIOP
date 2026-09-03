@@ -199,6 +199,11 @@ Rules:
 - Real `packetsDown` download must pass preview by default.
 - Empty preview means no download.
 - Non-empty preview must expose `preview.overview` and `preview.risk` in the JSON result.
+- NetInside returns the standard packet preview as an outer dashboard array. The outer array is not a row list: the dataset whose columns contain `TA/TB/Data` owns communication rows, while `TN/Data/IPConv` owns endpoint rows.
+- For that shape, `preview.overview.rowCount` and `trafficSummary.conversationCount` are the `TA/TB/Data` row count. `trafficSummary.endpointCount` comes from the endpoint dataset when available.
+- `trafficSummary.trafficBytes` is the sum of communication-row `Data` values. It is preview traffic evidence only; it must not populate `estimatedBytes` or be described as estimated pcap/download size.
+- `trafficSummary.directions` uses the resolved `criteria.ips/ipRanges` membership boundary and returns `outbound`, `inbound`, `internal`, and `unmatched` counts/bytes.
+- `trafficSummary.topGroupMembers` and `topConversations` are deterministic, byte-descending summaries. They do not establish protocol, scan, congestion, TCP, HTTP, or health conclusions.
 - Do not summarize preview as only "has data"; include estimated size, packet count, and risk level when available.
 - `preview.responseBytes` is the preview API response size, not the estimated pcap size.
 - `preview.overview.estimatedBytes` is the estimated pcap/download size when the API returns it.
@@ -268,7 +273,11 @@ OpenClaw final answer should:
 
 - Be Chinese.
 - State the time range and target scope.
-- State whether preview found data, and include `packetCount`, `estimatedSizeText`, and `risk.level` when available.
+- State whether preview found data. For the NetInside dashboard shape, include communication count, endpoint count, preview traffic, target direction totals, active target members, and top communications when available.
+- Include `packetCount`, `estimatedSizeText`, and `risk.level` only when those distinct fields are available; do not relabel `trafficSummary.trafficBytes` as a packet count or estimated download size.
+- For an empty preview, retain the exact time and IP/IP-range/BusinessGroup target, then state that no download or protocol analysis occurred.
+- `preview_only` must state that this is a download-gate traffic preview and that pcap protocol/TCP/HTTP analysis has not run.
+- Do not show preview/download URLs in ordinary preview or analysis replies. Show them only for `build_url_only` or an equivalent explicit link request.
 - If downloaded, state artifact path or download reference when safe.
 - If analyzed, summarize protocol distribution, endpoints, conversations, DNS/HTTP/TLS findings when present.
 - If preview risk asks for confirmation or narrowing the time range, do not say the packet was downloaded or analyzed.
