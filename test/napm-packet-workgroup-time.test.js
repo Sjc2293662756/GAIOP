@@ -65,6 +65,24 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
     expect(resolved.task.criteria.businessGroupName).toBe('服务器网段');
   });
 
+  test('repairs a model-generated group name that was placed in ipRanges', () => {
+    const resolved = packet.resolveQuery({
+      prompt: '请分析业务组“服务器网段”最近5分钟的数据包情况，先预览，不下载。',
+      mode: 'preview_only',
+      host: 'http://netinside.example.test',
+      criteria: {
+        ipRanges: ['服务器网段'],
+        timeRange: { key: 'last5minutes' }
+      }
+    });
+
+    expect(resolved.ok).toBe(true);
+    expect(resolved.task.needsBusinessGroupResolution).toBe(true);
+    expect(resolved.task.criteria.businessGroupName).toBe('服务器网段');
+    expect(resolved.task.criteria.ips).toEqual([]);
+    expect(resolved.task.criteria.ipRanges).toEqual([]);
+  });
+
   test('injects the active packet prompt before tool execution', async () => {
     const hooks = new Map();
     plugin.register({

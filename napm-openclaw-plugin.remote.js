@@ -2942,6 +2942,41 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
   return prepareSkillExecutionArgs(nextParams);
 }
 
+function normalizePacketToolParams(activePrompt = '', toolParams = {}) {
+  const prompt = String(activePrompt || '').trim();
+  const nextParams = buildCanonicalSkillToolParams(prompt, toolParams);
+  const packetQuery = isPlainObject(nextParams.packetQuery) ? nextParams.packetQuery : {};
+  const packetCriteria = isPlainObject(packetQuery.criteria) ? packetQuery.criteria : {};
+  const inputCriteria = isPlainObject(nextParams.criteria) ? nextParams.criteria : {};
+  const criteria = {
+    ...packetCriteria,
+    ...inputCriteria,
+    ...(prompt ? { prompt } : {})
+  };
+
+  // Reuse the packet runtime's canonicalization at the plugin boundary. This
+  // repairs a model payload such as ipRanges:["服务器网段"] before any
+  // packetsPreview/packetsDown URL can be built.
+  try {
+    const packetRuntime = napmPacketSkill();
+    if (typeof packetRuntime.normalizeCriteria === 'function') {
+      nextParams.criteria = packetRuntime.normalizeCriteria(criteria);
+      if (isPlainObject(nextParams.packetQuery)) {
+        nextParams.packetQuery = {
+          ...nextParams.packetQuery,
+          criteria: nextParams.criteria
+        };
+      }
+    } else {
+      nextParams.criteria = criteria;
+    }
+  } catch (_error) {
+    nextParams.criteria = criteria;
+  }
+
+  return nextParams;
+}
+
 function isPluginStructuredOverviewInjection(originalArgs = {}, preparedArgs = {}) {
   return !isPlainObject(originalArgs?.resolvedQuery)
     && isPlainObject(preparedArgs?.resolvedQuery)
@@ -4367,6 +4402,19 @@ async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}
   };
 }
 
+function preparePacketFinalContent(record = null, conversationKey = '', turnId = '') {
+  if (!isPacketSkillResultRecord(record) || !conversationKey || !turnId) {
+    return null;
+  }
+  return napmOperationState.prepareFinalContent({
+    scope: conversationKey,
+    turnId,
+    content: buildPacketFinalReply(record.result),
+    source: 'napm-packet-analysis',
+    workflowState: record.result?.decision?.next_action || 'PACKET_COMPLETED'
+  });
+}
+
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
   return Boolean(
     record
@@ -4542,6 +4590,19 @@ function isAlertPacketSkillResultRecord(record = null) {
   return Boolean(
     result.workflowType === 'alert_packet_analysis'
     || result?.narrationInput?.schema === 'openclaw_napm_alert_packet_analysis.v1'
+  );
+}
+
+function isPacketSkillResultRecord(record = null) {
+  if (!record || record.sourceTool !== 'napm-packet-analysis' || !isPlainObject(record.result)) {
+    return false;
+  }
+  return Boolean(
+    record.result?.narrationInput?.schema === 'openclaw_napm_packet_analysis.v1'
+    || record.result?.mode
+    || record.result?.businessGroupResolution
+    || record.result?.preview
+    || record.result?.download
   );
 }
 
@@ -5542,25 +5603,131 @@ function normalizePacketBusinessPagePayload(payload = {}) {
 
 
 function buildPacketAnalysisReply(result = {}) {
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const highlights = Array.isArray(summary.highlights)
-    ? summary.highlights.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (!result?.ok) {
-    return String(
-      result?.message
-      || result?.error?.message
-      || highlights.join('\n')
-      || '数据包任务执行失败。'
-    ).trim();
+  return buildPacketFinalReply(result);
+}
+
+function formatPacketTimestamp(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const milliseconds = numeric > 1000000000000 ? numeric : numeric * 1000;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(milliseconds));
+  const values = Object.fromEntries(parts
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]));
+  if (!values.year || !values.month || !values.day) return '';
+  return `${values.year}-${values.month}-${values.day} ${values.hour || '00'}:${values.minute || '00'}:${values.second || '00'}`;
+}
+
+function formatPacketInteger(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.floor(numeric).toLocaleString('en-US') : '';
+}
+
+function formatPacketBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let scaled = numeric;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
   }
-  if (highlights.length > 0) {
-    // 2026-07-14: 禁止 AI 看到 Password=*** 后自己猜密码填进去。
-    // skill 内部已从 .env 读取正确凭证，URL 中的 *** 是脱敏标记。
-    const credentialNotice = '⛔ 安全提示：所有 URL 中的认证（UserName/Password）已由 skill 从 .env 自动注入。Password=*** 是脱敏标记，不是占位符——禁止自行替换或拼接密码！如需下载/分析数据包，请使用 napm-packet-analysis 工具而非 curl。';
-    return highlights.join('\n') + '\n\n' + credentialNotice;
+  const precision = scaled >= 100 || index === 0 ? 0 : scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(precision)} ${units[index]}`;
+}
+
+function buildPacketFinalReply(result = {}) {
+  const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
+  const preview = isPlainObject(result?.preview) ? result.preview : null;
+  const overview = isPlainObject(preview?.overview) ? preview.overview : {};
+  const resolution = isPlainObject(result?.businessGroupResolution)
+    ? result.businessGroupResolution
+    : null;
+  const hasPreviewEvidence = Boolean(preview?.ok && !preview?.empty);
+  const errorMessage = String(result?.error?.message || result?.message || '').trim();
+
+  // A failed discovery/request has no evidence to narrate. Return only the
+  // typed failure instead of letting the model infer a packet conclusion.
+  if (!result?.ok && !hasPreviewEvidence) {
+    return errorMessage || '数据包任务执行失败。';
   }
-  return JSON.stringify(result, null, 2);
+
+  const lines = [
+    result?.mode === 'preview_only' ? '数据包预览结果' : '数据包任务结果'
+  ];
+  const startText = formatPacketTimestamp(criteria.start);
+  const endText = formatPacketTimestamp(criteria.end);
+  if (startText && endText) {
+    lines.push(`时间范围：${startText} 至 ${endText}`);
+  }
+
+  const businessGroupName = String(
+    criteria.businessGroupName
+    || resolution?.businessGroupName
+    || ''
+  ).trim();
+  if (businessGroupName) {
+    lines.push(`业务组：${businessGroupName}`);
+  }
+  if (resolution?.ok) {
+    const members = [
+      Number(resolution.memberIpCount) > 0 ? `${Number(resolution.memberIpCount)} 个成员 IP` : '',
+      Number(resolution.memberIpRangeCount) > 0 ? `${Number(resolution.memberIpRangeCount)} 个 IP 范围` : ''
+    ].filter(Boolean);
+    if (members.length > 0) lines.push(`成员范围：${members.join('、')}`);
+    if (Array.isArray(resolution.invalidMembers) && resolution.invalidMembers.length > 0) {
+      lines.push(`成员解析：忽略 ${resolution.invalidMembers.length} 个无效成员值`);
+    }
+  }
+
+  if (preview) {
+    if (preview.empty || !preview.ok) {
+      lines.push(`预览：${preview.error?.message || '未返回数据。'}`);
+    } else {
+      if (overview.packetCount != null) {
+        lines.push(`预览包数：${formatPacketInteger(overview.packetCount)} 个`);
+      } else if (Number(overview.rowCount) > 0) {
+        lines.push(`预览记录数：${formatPacketInteger(overview.rowCount)} 条`);
+      } else {
+        lines.push('预览接口已返回数据。');
+      }
+      if (overview.estimatedBytes != null) {
+        lines.push(`预估大小：${overview.estimatedSizeText || formatPacketBytes(overview.estimatedBytes)}`);
+      }
+      if (preview.risk?.level && result?.mode !== 'preview_only') {
+        lines.push(`下载风险评估：${preview.risk.level}`);
+      }
+    }
+  }
+
+  if (result?.download?.ok) {
+    const fileName = String(result.download.fileName || 'packet capture').trim();
+    const bytes = Number(result.download.bytes);
+    lines.push(Number.isFinite(bytes) ? `下载完成：${fileName}（${bytes} bytes）` : `下载完成：${fileName}`);
+  } else if (result?.mode === 'preview_only') {
+    lines.push('仅预览，未下载。');
+  } else if (result?.decision?.next_action === 'CONFIRM_DOWNLOAD') {
+    lines.push('当前未下载：需要确认后才能继续。');
+  }
+
+  const previewUrl = String(result?.urls?.preview || preview?.urlMasked || '').trim();
+  if (previewUrl) lines.push(`预览链接：${maskDebugApiUrl(previewUrl)}`);
+  const downloadUrl = String(result?.urls?.download || result?.download?.urlMasked || '').trim();
+  if (downloadUrl && result?.mode !== 'preview_only') {
+    lines.push(`下载链接：${maskDebugApiUrl(downloadUrl)}`);
+  }
+  if (errorMessage) lines.push(`任务状态：${errorMessage}`);
+  return lines.join('\n').trim();
 }
 
 function buildLegacyReportDataForExport(args = {}) {
@@ -5997,6 +6164,10 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
 
   if (isAlertPacketSkillResultRecord(rememberedRecord)) {
     return buildAlertPacketFinalReply(rememberedRecord.result);
+  }
+
+  if (isPacketSkillResultRecord(rememberedRecord)) {
+    return buildPacketFinalReply(rememberedRecord.result);
   }
 
   if (isAlertSkillResultRecord(rememberedRecord)) {
@@ -8340,7 +8511,18 @@ const plugin = {
       'before_tool_call',
       (event, ctx) => {
         if (isNativeCommandTurn(ctx)) {
-          return undefined;
+          const nativeParams = isPlainObject(event?.params) ? event.params : {};
+          const nativeParamsText = JSON.stringify(nativeParams).toLowerCase();
+          const nativePrompt = normalizePrompt(nativeParams);
+          const packetBypassSignal = isPacketCapturePrompt(nativePrompt)
+            || /(packetspreview|packetsdown|downservlet|pcap|抓包|数据包|报文|ipranges?)/i.test(nativeParamsText);
+          if (!packetBypassSignal) {
+            return undefined;
+          }
+          appendPluginAuditEvent('napm_native_command_packet_guard_not_bypassed', {
+            toolName: String(event?.toolName || '').trim() || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
         }
 
         const guardKeys = getGuardKeys(ctx);
@@ -8510,10 +8692,11 @@ const plugin = {
             };
           }
         }
-        if (toolName === 'napm-packet-analysis' && activePrompt) {
-          // Preserve exact user wording so the packet runtime can resolve relative time
-          // against its server clock even when the model omits prompt from tool arguments.
-          toolParams = buildCanonicalSkillToolParams(activePrompt, toolParams);
+        if (toolName === 'napm-packet-analysis') {
+          // Preserve exact user wording for server-clock time resolution and
+          // canonicalize BusinessGroup targets before the packet runtime builds
+          // any southbound URL.
+          toolParams = normalizePacketToolParams(activePrompt || normalizePrompt(toolParams), toolParams);
         }
         if (toolName === 'napm-inspection-snapshot' && activePrompt) {
           const resolver = getNapmResolvedQueryResolverService();
@@ -9181,6 +9364,30 @@ const plugin = {
           });
           return { content: preparedFinal.content };
         }
+        if (
+          isPacketCapturePrompt(activePromptForReport)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          if (isStreamingPreviewMessageEvent(event)) {
+            return { cancel: true };
+          }
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (!preparedFinal || !napmOperationState.claimPreparedFinalDelivery(conversationKey, turnId)) {
+            appendPluginAuditEvent('napm_plugin_duplicate_packet_final_delivery_suppressed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null
+            });
+            return { cancel: true };
+          }
+          appendPluginAuditEvent('napm_plugin_packet_final_delivery_claimed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
+            source: preparedFinal.source,
+            fingerprint: preparedFinal.fingerprint
+          });
+          return { content: preparedFinal.content };
+        }
         if (shouldCancelNapmPreviewMessage(event, ctx, activePromptForReport, guardState, rememberedRecord)) {
           api.logger.warn('[napm-openclaw-plugin] canceled NAPM preview before output rewriting');
           return { cancel: true };
@@ -9542,6 +9749,25 @@ const plugin = {
           ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
+        if (
+          isPacketCapturePrompt(activePrompt)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (preparedFinal) {
+            appendPluginAuditEvent('napm_plugin_packet_deterministic_final_prepared', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              source: preparedFinal.source,
+              fingerprint: preparedFinal.fingerprint,
+              replacedModelContent: Boolean(existingText)
+            });
+            return {
+              message: buildAssistantTextMessage(preparedFinal.content, message)
+            };
+          }
+        }
         if (isCurrentAlertQueryResultRecord(rememberedRecord, turnId)) {
           const content = buildAlertQueryReply(rememberedRecord.result);
           appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
@@ -9783,6 +10009,8 @@ module.exports.__test__ = {
   buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
   buildPacketAnalysisReply,
+  buildPacketFinalReply,
+  normalizePacketToolParams,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,
@@ -9830,6 +10058,7 @@ module.exports.__test__ = {
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,
   isAlertPacketSkillResultRecord,
+  isPacketSkillResultRecord,
   buildAlertSkillRequiredReply,
   buildAlertPacketSkillRequiredReply,
   buildAlertExecutionTraceReplyFromRememberedRecord,
