@@ -5072,6 +5072,27 @@ function formatPacketBytes(value) {
   return `${scaled.toFixed(precision)} ${units[index]}`;
 }
 
+function formatPacketTrafficEntry(entry = {}) {
+  const formattedBytes = entry.bytes != null && entry.bytes !== ''
+    ? formatPacketBytes(entry.bytes)
+    : '';
+  const sizeText = String(entry.sizeText || formattedBytes || '流量未知').trim();
+  const hasConversationCount = entry.conversationCount != null && entry.conversationCount !== '';
+  const conversationCount = hasConversationCount ? Number(entry.conversationCount) : null;
+  return conversationCount != null && Number.isFinite(conversationCount)
+    ? `${sizeText}（${formatPacketInteger(conversationCount)} 条）`
+    : sizeText;
+}
+
+function packetDirectionLabel(direction = '') {
+  return {
+    outbound: '发出',
+    inbound: '进入',
+    internal: '组内互访',
+    unmatched: '其他',
+  }[direction] || '';
+}
+
 function buildPacketFinalReply(result = {}) {
   const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
   const preview = isPlainObject(result?.preview) ? result.preview : null;
@@ -5080,16 +5101,22 @@ function buildPacketFinalReply(result = {}) {
     ? result.businessGroupResolution
     : null;
   const hasPreviewEvidence = Boolean(preview?.ok && !preview?.empty);
+  const hasPreviewAttempt = Boolean(preview);
+  const previewEmpty = Boolean(preview?.empty || result?.error?.code === 'PACKET_PREVIEW_EMPTY');
   const errorMessage = String(result?.error?.message || result?.message || '').trim();
 
   // A failed discovery/request has no evidence to narrate. Return only the
   // typed failure instead of letting the model infer a packet conclusion.
-  if (!result?.ok && !hasPreviewEvidence) {
+  if (!result?.ok && !hasPreviewEvidence && !hasPreviewAttempt) {
     return errorMessage || '数据包任务执行失败。';
   }
 
   const lines = [
-    result?.mode === 'preview_only' ? '数据包预览结果' : '数据包任务结果'
+    result?.mode === 'preview_only'
+      ? '数据包预览结果'
+      : result?.mode === 'build_url_only'
+        ? '数据包链接'
+        : '数据包分析结果'
   ];
   const startText = formatPacketTimestamp(criteria.start);
   const endText = formatPacketTimestamp(criteria.end);
@@ -5104,12 +5131,23 @@ function buildPacketFinalReply(result = {}) {
   ).trim();
   if (businessGroupName) {
     lines.push(`业务组：${businessGroupName}`);
+  } else {
+    const targetIps = Array.isArray(criteria.ips) ? criteria.ips.filter(Boolean).map(String) : [];
+    const targetRanges = Array.isArray(criteria.ipRanges) ? criteria.ipRanges.filter(Boolean).map(String) : [];
+    if (targetIps.length > 0) lines.push(`目标 IP：${targetIps.join('、')}`);
+    if (targetRanges.length > 0) lines.push(`目标 IP 范围：${targetRanges.join('、')}`);
   }
   if (resolution?.ok) {
-    const members = [
-      Number(resolution.memberIpCount) > 0 ? `${Number(resolution.memberIpCount)} 个成员 IP` : '',
-      Number(resolution.memberIpRangeCount) > 0 ? `${Number(resolution.memberIpRangeCount)} 个 IP 范围` : ''
-    ].filter(Boolean);
+    const memberValues = [
+      ...(Array.isArray(resolution.memberIps) ? resolution.memberIps : []),
+      ...(Array.isArray(resolution.memberIpRanges) ? resolution.memberIpRanges : []),
+    ].filter(Boolean).map(String);
+    const members = memberValues.length > 0
+      ? memberValues
+      : [
+        Number(resolution.memberIpCount) > 0 ? `${Number(resolution.memberIpCount)} 个成员 IP` : '',
+        Number(resolution.memberIpRangeCount) > 0 ? `${Number(resolution.memberIpRangeCount)} 个 IP 范围` : ''
+      ].filter(Boolean);
     if (members.length > 0) lines.push(`成员范围：${members.join('、')}`);
     if (Array.isArray(resolution.invalidMembers) && resolution.invalidMembers.length > 0) {
       lines.push(`成员解析：忽略 ${resolution.invalidMembers.length} 个无效成员值`);
@@ -5117,10 +5155,70 @@ function buildPacketFinalReply(result = {}) {
   }
 
   if (preview) {
-    if (preview.empty || !preview.ok) {
-      lines.push(`预览：${preview.error?.message || '未返回数据。'}`);
+    if (previewEmpty) {
+      lines.push('预览结果：未发现匹配的数据包。');
+    } else if (!preview.ok) {
+      lines.push(`预览失败：${preview.error?.message || errorMessage || '接口未返回有效结果。'}`);
     } else {
-      if (overview.packetCount != null) {
+      const trafficSummary = isPlainObject(overview.trafficSummary)
+        ? overview.trafficSummary
+        : null;
+      if (trafficSummary) {
+        const conversationCount = Number(trafficSummary.conversationCount);
+        const endpointCount = Number(trafficSummary.endpointCount);
+        if (Number.isFinite(conversationCount)) {
+          const endpointText = Number.isFinite(endpointCount)
+            ? `，涉及 ${formatPacketInteger(endpointCount)} 个端点`
+            : '';
+          lines.push(`预览命中：${formatPacketInteger(conversationCount)} 条通信记录${endpointText}`);
+        }
+        const trafficSizeText = String(
+          trafficSummary.trafficSizeText
+          || (trafficSummary.trafficBytes != null
+            ? formatPacketBytes(trafficSummary.trafficBytes)
+            : '')
+          || ''
+        ).trim();
+        if (trafficSizeText) lines.push(`预览流量：${trafficSizeText}`);
+
+        const directions = isPlainObject(trafficSummary.directions)
+          ? trafficSummary.directions
+          : {};
+        const directionParts = ['outbound', 'inbound', 'internal', 'unmatched']
+          .filter((direction) => isPlainObject(directions[direction]))
+          .filter((direction) => direction !== 'unmatched'
+            || Number(directions[direction].conversationCount) > 0)
+          .map((direction) => `${packetDirectionLabel(direction)} ${formatPacketTrafficEntry(directions[direction])}`);
+        if (directionParts.length > 0) {
+          lines.push(`${businessGroupName ? '业务组' : '目标'}流向：${directionParts.join('、')}`);
+        }
+
+        const topGroupMembers = Array.isArray(trafficSummary.topGroupMembers)
+          ? trafficSummary.topGroupMembers.slice(0, 5)
+          : [];
+        if (topGroupMembers.length > 0) {
+          lines.push(`活跃成员：${topGroupMembers.map((member) => {
+            const ip = String(member.ip || '').trim();
+            return `${ip} ${formatPacketTrafficEntry(member)}`.trim();
+          }).join('、')}`);
+        }
+
+        const topConversations = Array.isArray(trafficSummary.topConversations)
+          ? trafficSummary.topConversations.slice(0, 5)
+          : [];
+        if (topConversations.length > 0) {
+          lines.push(`主要通信：${topConversations.map((conversation) => {
+            const sourceIp = String(conversation.sourceIp || '').trim();
+            const destinationIp = String(conversation.destinationIp || '').trim();
+            const sizeText = String(
+              conversation.sizeText
+              || (conversation.bytes != null ? formatPacketBytes(conversation.bytes) : '')
+              || '流量未知'
+            ).trim();
+            return `${sourceIp} -> ${destinationIp} ${sizeText}`;
+          }).join('、')}`);
+        }
+      } else if (overview.packetCount != null) {
         lines.push(`预览包数：${formatPacketInteger(overview.packetCount)} 个`);
       } else if (Number(overview.rowCount) > 0) {
         lines.push(`预览记录数：${formatPacketInteger(overview.rowCount)} 条`);
@@ -5142,17 +5240,21 @@ function buildPacketFinalReply(result = {}) {
     lines.push(Number.isFinite(bytes) ? `下载完成：${fileName}（${bytes} bytes）` : `下载完成：${fileName}`);
   } else if (result?.mode === 'preview_only') {
     lines.push('仅预览，未下载。');
+    lines.push('说明：这是下载前流量预览，尚未执行 pcap 协议分析。');
+  } else if (previewEmpty) {
+    lines.push('未下载，也未执行协议分析。');
   } else if (result?.decision?.next_action === 'CONFIRM_DOWNLOAD') {
     lines.push('当前未下载：需要确认后才能继续。');
   }
 
   const previewUrl = String(result?.urls?.preview || preview?.urlMasked || '').trim();
-  if (previewUrl) lines.push(`预览链接：${maskDebugApiUrl(previewUrl)}`);
+  const shouldShowPacketLinks = result?.mode === 'build_url_only';
+  if (shouldShowPacketLinks && previewUrl) lines.push(`预览链接：${maskDebugApiUrl(previewUrl)}`);
   const downloadUrl = String(result?.urls?.download || result?.download?.urlMasked || '').trim();
-  if (downloadUrl && result?.mode !== 'preview_only') {
+  if (shouldShowPacketLinks && downloadUrl) {
     lines.push(`下载链接：${maskDebugApiUrl(downloadUrl)}`);
   }
-  if (errorMessage) lines.push(`任务状态：${errorMessage}`);
+  if (errorMessage && !previewEmpty) lines.push(`任务状态：${errorMessage}`);
   return lines.join('\n').trim();
 }
 

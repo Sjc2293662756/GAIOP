@@ -41,6 +41,7 @@ This skill owns:
 - Packet query normalization and validation.
 - URL construction and URL explanation.
 - Optional preview request before download.
+- NetInside `packetsPreview` dashboard-dataset normalization and structured traffic summaries.
 - File-stream download with size limits.
 - Calling `tshark`, and optionally `capinfos`, through safe argv arrays.
 - Returning stable JSON for OpenClaw narration.
@@ -203,6 +204,11 @@ Optional for richer file metadata:
 - Page parameter `iprangs` is normalized to API parameter `ipRanges`.
 - `packetsDown` is treated as a file stream, not JSON.
 - Real `packetsDown` downloads must pass the preview gate by default. Empty preview means "no downloadable packet data for the requested scope/time range"; do not download.
+- A NetInside dashboard preview is an outer array of widgets. The `TA/TB/Data` dataset contains communication rows and the `TN/Data/IPConv` dataset contains endpoint rows; never count the outer widgets as packet or communication records.
+- `preview.overview.trafficSummary.trafficBytes` is the sum of the preview communication rows' `Data` values. It is observed preview traffic, not an estimated pcap/download size and not a packet count.
+- Direction summaries are derived only from the resolved `criteria.ips` and `criteria.ipRanges`: target to external is outbound, external to target is inbound, and target to target is internal.
+- `preview_only` final replies state the exact target, time, communication count, endpoints, preview traffic and available top rows, then explicitly state that no pcap download or protocol analysis occurred.
+- Ordinary preview/analyze replies do not display masked API URLs. Display preview/download URLs only for `build_url_only` link requests.
 - Full URLs are masked in output unless `showFullUrls` is true.
 - Even when `showFullUrls` is true, credential-like query parameters must be redacted. Never suggest appending `UserName` or `Password` to packet URLs.
 - Files are written under `PACKET_DOWNLOAD_DIR`, or by default `$HOME/.openclaw/artifacts/openclaw-napm-packet-analysis`.

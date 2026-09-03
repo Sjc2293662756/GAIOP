@@ -159,4 +159,136 @@ describe('NAPM packet deterministic final reply', () => {
     expect(reply).not.toContain('拥塞');
     expect(reply).not.toContain('扫描特征');
   });
+
+  test('renders NetInside preview traffic evidence and omits unusable masked URLs by default', () => {
+    const reply = plugin.__test__.buildPacketFinalReply({
+      ok: true,
+      mode: 'preview_only',
+      criteria: {
+        businessGroupName: '服务器网段',
+        start: 1788394620,
+        end: 1788394920,
+      },
+      businessGroupResolution: {
+        ok: true,
+        businessGroupName: '服务器网段',
+        memberIpCount: 0,
+        memberIpRangeCount: 1,
+        memberIpRanges: ['101.254.114.235-101.254.114.242'],
+      },
+      preview: {
+        ok: true,
+        empty: false,
+        overview: {
+          packetCount: null,
+          estimatedBytes: null,
+          rowCount: 3,
+          trafficSummary: {
+            conversationCount: 3,
+            endpointCount: 4,
+            trafficBytes: 3584,
+            trafficSizeText: '3.50 KB',
+            directions: {
+              outbound: { conversationCount: 1, bytes: 2048, sizeText: '2.00 KB' },
+              inbound: { conversationCount: 1, bytes: 1024, sizeText: '1.00 KB' },
+              internal: { conversationCount: 1, bytes: 512, sizeText: '512 B' },
+              unmatched: { conversationCount: 0, bytes: 0, sizeText: '0 B' },
+            },
+            topGroupMembers: [
+              { ip: '101.254.114.237', bytes: 2560, sizeText: '2.50 KB', conversationCount: 2 },
+              { ip: '101.254.114.238', bytes: 1536, sizeText: '1.50 KB', conversationCount: 2 },
+            ],
+            topConversations: [
+              { sourceIp: '101.254.114.237', destinationIp: '8.8.8.8', bytes: 2048, sizeText: '2.00 KB', direction: 'outbound' },
+              { sourceIp: '9.9.9.9', destinationIp: '101.254.114.238', bytes: 1024, sizeText: '1.00 KB', direction: 'inbound' },
+            ],
+          },
+        },
+      },
+      urls: {
+        preview: 'https://netinside.example.test/webservice/NetInside?UserName=***&Password=***&type=packetsPreview',
+      },
+    });
+
+    expect(reply).toContain('成员范围：101.254.114.235-101.254.114.242');
+    expect(reply).toContain('预览命中：3 条通信记录，涉及 4 个端点');
+    expect(reply).toContain('预览流量：3.50 KB');
+    expect(reply).toContain('业务组流向：发出 2.00 KB（1 条）、进入 1.00 KB（1 条）、组内互访 512 B（1 条）');
+    expect(reply).toContain('活跃成员：101.254.114.237 2.50 KB（2 条）');
+    expect(reply).toContain('主要通信：101.254.114.237 -> 8.8.8.8 2.00 KB');
+    expect(reply).toContain('尚未执行 pcap 协议分析');
+    expect(reply).not.toContain('预览链接');
+    expect(reply).not.toContain('Password=');
+  });
+
+  test('keeps time and target context when packet preview is empty', () => {
+    const reply = plugin.__test__.buildPacketFinalReply({
+      ok: false,
+      mode: 'preview_download_analyze',
+      criteria: {
+        ips: ['101.254.144.238'],
+        start: 1788420840,
+        end: 1788421140,
+      },
+      preview: {
+        ok: true,
+        empty: true,
+        overview: { rowCount: 0 },
+      },
+      error: {
+        code: 'PACKET_PREVIEW_EMPTY',
+        message: 'packetsPreview 未返回可下载数据。',
+      },
+      decision: {
+        next_action: 'NO_DOWNLOAD',
+      },
+    });
+
+    expect(reply).toContain('数据包分析结果');
+    expect(reply).toContain('时间范围：2026-09-03 15:34:00 至 2026-09-03 15:39:00');
+    expect(reply).toContain('目标 IP：101.254.144.238');
+    expect(reply).toContain('预览结果：未发现匹配的数据包');
+    expect(reply).toContain('未下载，也未执行协议分析');
+    expect(reply).not.toBe('packetsPreview 未返回可下载数据。');
+  });
+
+  test('does not render missing preview traffic evidence as zero', () => {
+    const reply = plugin.__test__.buildPacketFinalReply({
+      ok: true,
+      mode: 'preview_only',
+      criteria: {
+        ips: ['10.0.0.1'],
+        start: 1788420840,
+        end: 1788421140,
+      },
+      preview: {
+        ok: true,
+        empty: false,
+        overview: {
+          rowCount: 1,
+          trafficSummary: {
+            conversationCount: 1,
+            endpointCount: 2,
+            trafficBytes: null,
+            trafficSizeText: null,
+            directions: {
+              outbound: { conversationCount: 1, bytes: null, sizeText: null },
+            },
+            topGroupMembers: [
+              { ip: '10.0.0.1', bytes: null, sizeText: null, conversationCount: null },
+            ],
+            topConversations: [
+              { sourceIp: '10.0.0.1', destinationIp: '8.8.8.8', bytes: null, sizeText: null },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(reply).not.toContain('预览流量：0 B');
+    expect(reply).toContain('目标流向：发出 流量未知（1 条）');
+    expect(reply).toContain('活跃成员：10.0.0.1 流量未知');
+    expect(reply).toContain('主要通信：10.0.0.1 -> 8.8.8.8 流量未知');
+    expect(reply).not.toContain('流量未知（0 条）');
+  });
 });
