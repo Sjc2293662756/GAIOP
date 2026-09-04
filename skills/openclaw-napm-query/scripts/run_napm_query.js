@@ -35,6 +35,7 @@ const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionS
 const ClarificationGateService = require(path.join(skillRoot, 'services/ClarificationGateService'));
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
+const TopValuesResultNormalizerService = require(path.join(skillRoot, 'services/TopValuesResultNormalizerService'));
 const {
   normalizePageViewsMaxLimit
 } = require(path.join(skillRoot, '..', 'shared', 'NapmPageViewsContract'));
@@ -1885,8 +1886,11 @@ async function executeSkillCall(args = {}, payload = {}) {
   }
 
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
-  const rows = Array.isArray(executionResult?.data) ? executionResult.data : [];
   const service = executionResult?.service || resolvedQuery?.service || null;
+  const executionRows = Array.isArray(executionResult?.data) ? executionResult.data : [];
+  const rows = service === 'topValues'
+    ? TopValuesResultNormalizerService.normalizeTopValuesRows(executionRows, resolvedQuery)
+    : executionRows;
   const summary = executionResult?.summary || buildSummary(service, resolvedQuery, rows);
   const output = buildOpenClawReplyContract({
     ok: Boolean(executionResult?.ok),

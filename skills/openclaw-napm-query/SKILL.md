@@ -56,7 +56,7 @@ The `napm-skill-query` adapter owns:
 - Applying the static `QueryDecisionPolicy` to a Query Draft.
 - Returning missing user parameters as a normal clarification (`ok=true`, no `error`).
 - Promoting only `EXECUTE_QUERY` drafts to complete Resolved Queries.
-- Resolving ordinal `PageFamily` result references within the bound Query Turn before a `pageViews` query is materialized.
+- Resolving ordinal `WebApplication` references into a validated PageFamily drilldown and ordinal `PageFamily` references into `pageViews`, within the bound Query Turn and before time materialization.
 - Recording the current Query Turn and preventing duplicate final delivery.
 
 This skill owns:
@@ -66,6 +66,7 @@ This skill owns:
 - Metadata and metric compatibility checks.
 - NAPM API request construction and execution.
 - Top, trend, average, page visit detail, overview, drilldown, metadata, and metric inventory execution.
+- Numeric TopN normalization by `topMetric` and structured direction before narration and Query Turn storage.
 - Machine-readable narration contract output.
 
 The skill remains stateless. It does not read Query Turn records or restore pending clarification state. If `resolvedQuery` is missing or incomplete in standalone mode, return the built-in boundary failure. Do not invent a live query from raw prompt text.
@@ -112,7 +113,7 @@ Accepted inputs:
 - `--session '<json>'`: optional continuation state.
 - `--raw`: include raw upstream response when debugging locally.
 
-The OpenClaw adapter may accept a `resultReference` for an ordinal page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the trusted `pageFamilyId` and concrete time range.
+The OpenClaw adapter may accept a `resultReference` for an ordinal business or page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the concrete business path or trusted `pageFamilyId` and concrete time range.
 
 The output is JSON. Prefer `narrationInput.result.narrationStructure`, `narrationInput.result.timeRange`, `summary`, and returned rows when writing the final Chinese answer.
 
@@ -202,8 +203,10 @@ Object argument policy:
 - An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
 - Ordinary `topValues`, `averageValues`, `timeValues`, `groups`, and `metrics` queries with multiple groups fail Query Decision validation by default. They are executable only when `pathPlanning` contains planner proof and its anchor, `plannedGroups`, and `selectedPath` match a queryable path in `groups-tree.static.json`. The presence of multiple groups or an unverified `pathPlanning` object never authorizes execution.
 - Application-traffic scope checks consume the structured workflow/object/metric intent from `WorkflowClassifierService`; do not duplicate application-traffic prompt regexes in routing, plugin, or Query Decision code.
-- A page ranking follow-up such as “详细查看第一名的前 20 个” uses `resultReference={objectType:"PageFamily",ordinal:1}` in the adapter path. The plugin resolves the ID from the Query Turn's frozen result set and inherits its time range; the model must not infer `pageFamilyId` from a URL or ordinal.
-- Missing, expired, cross-scope, wrong-type, or out-of-range page references fail before Skill or southbound execution. A successful zero-row `pageViews` response is `NO_DATA`, not a validation failure.
+- “今天哪些业务页面访问量最高” is `topValues + WebApplication + PGNPGE`; page access is the metric, not permission to replace the result object with `PageFamily`.
+- A follow-up such as “排名第一的都访问了什么” uses `resultReference={objectType:"WebApplication",ordinal:1}`. The plugin resolves the business argument from the frozen normalized result, inherits time, and constructs the validated `WebApplication > PageFamilies > PageFamily` path. Caller-supplied `sourceReference` or validation flags never authorize the path.
+- A page ranking follow-up such as “详细查看第一名的前 20 个” uses `resultReference={objectType:"PageFamily",ordinal:1}`. The plugin resolves the ID from the frozen result and inherits time; the model must not infer `pageFamilyId` from a URL or ordinal.
+- Missing, expired, cross-scope, wrong-type, or out-of-range business/page references fail before Skill or southbound execution. A successful zero-row `pageViews` response is `NO_DATA`, not a validation failure.
 
 Use `drilldownCatalog` for drilldown path questions:
 
@@ -273,6 +276,8 @@ Ranking rules:
 
 - Singular "who / which one / highest" ranking usually uses `topCount=1`.
 - Keep `topMetric` aligned with the user's selection condition.
+- Normalize every `topValues` result numerically by `topMetric`; use structured `direction=asc` only for bottom/lowest requests, otherwise descending. Replace upstream ranks, preserve stable tie order, and keep blank/missing values last.
+- Build narration labels from the effective terminal group. A first-turn business ranking is `WebApplication`; only an explicitly authorized business drilldown is narrated as `PageFamily`.
 - Do not rewrite packet-loss ranking into throughput ranking unless the user explicitly asks for throughput sorting.
 
 Metadata and ownership:

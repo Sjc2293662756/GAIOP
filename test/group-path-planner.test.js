@@ -33,6 +33,20 @@ describe('GroupPathPlannerService', () => {
     expect(result.selectedPath).toEqual(['WebApplication', 'PageFamilies', 'PageFamily']);
   });
 
+  test('does not turn a WebApplication page-access ranking into a PageFamily drilldown', () => {
+    const result = GroupPathPlannerService.planPath({
+      groups: [{ type: 'WebApplication', argument: null }],
+      semanticConstraints: {
+        workflowType: 'metric_topn',
+        operation: 'ranking',
+        targetObjectType: 'WebApplication',
+        drilldownRequested: false
+      }
+    }, '今天哪些业务页面访问量最高？');
+
+    expect(result).toBeNull();
+  });
+
   test('should plan IPAddress to connected group path when prompt asks for connected groups', () => {
     const result = GroupPathPlannerService.planPath({
       groups: [{ type: 'IPAddress', argument: '101.254.114.238' }]

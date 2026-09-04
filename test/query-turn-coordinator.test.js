@@ -648,6 +648,77 @@ describe('QueryTurnCoordinator', () => {
     expect(referenceSet.rows[0]).not.toHaveProperty('groupPath');
   });
 
+  test('stores a minimal WebApplication ranking and resolves its argument by ordinal', () => {
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'business-rank-turn',
+      route: QUERY_ROUTES.NAPM_QUERY,
+      queryDraft: {
+        service: 'topValues',
+        start: 1785310980,
+        end: 1785314580,
+        groups: [{ type: 'WebApplication' }]
+      }
+    });
+    coordinator.recordDecision({
+      scope: 'conversation-a',
+      turnId: 'business-rank-turn',
+      decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+    });
+    coordinator.beginExecution({
+      scope: 'conversation-a',
+      turnId: 'business-rank-turn',
+      attemptId: 'business-rank-execute'
+    });
+    coordinator.recordResult({
+      scope: 'conversation-a',
+      turnId: 'business-rank-turn',
+      result: {
+        ok: true,
+        data: [
+          {
+            groupPath: 'root>WebApplication business-a',
+            group: { key: 'WebApplication', argument: 'business-a' },
+            metricValues: [{ metric: { id: 'PGNPGE' }, value: 2348 }]
+          }
+        ]
+      }
+    });
+
+    coordinator.begin({
+      scope: 'conversation-a',
+      turnId: 'page-rank-turn',
+      route: QUERY_ROUTES.NAPM_QUERY
+    });
+    expect(coordinator.resolveResultReference({
+      scope: 'conversation-a',
+      turnId: 'page-rank-turn',
+      reference: { objectType: 'WebApplication', ordinal: 1 }
+    })).toMatchObject({
+      ok: true,
+      objectType: 'WebApplication',
+      argument: 'business-a',
+      inheritedQuery: {
+        start: 1785310980,
+        end: 1785314580
+      },
+      sourceReference: {
+        objectType: 'WebApplication',
+        ordinal: 1,
+        sourceTurnId: 'business-rank-turn',
+        label: 'business-a'
+      }
+    });
+    expect(coordinator.getLatestResultReference('conversation-a').rows).toEqual([
+      {
+        ordinal: 1,
+        rowRef: 'web-application:1',
+        argument: 'business-a',
+        label: 'business-a'
+      }
+    ]);
+  });
+
   test('rejects expired, out-of-range, wrong-type, and cross-scope references', () => {
     coordinator = new QueryTurnCoordinator({
       now: () => now,

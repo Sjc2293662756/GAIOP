@@ -31,7 +31,8 @@ WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
   → message_received binds run/message to an immutable Query Turn
   → napm-skill-query(queryDraft | clarificationAnswer)
   → QueryDecisionPolicy → QueryTurnCoordinator
-  → ordinal page follow-up → authoritative PageFamily resultReference → pageFamilyId
+  → business TopN → authoritative WebApplication resultReference → PageFamily TopN
+  → page TopN → authoritative PageFamily resultReference → pageFamilyId → pageViews
   → EXECUTE_QUERY only → loadSkill() in-process require() → skill/scripts/run_*.js
   → skill services → NapmClient (axios) → NetInside NAPM WebService
   → authoritative finalContent → exactly-once Chinese reply back to WeChat
@@ -59,8 +60,10 @@ Skills are not spawned as subprocesses; they run in the Gateway process. Runtime
 - A first technical validation failure enters `REPAIR_PENDING` and consumes the one-repair budget. Replaying the same attempt id is idempotent; a second failed construction terminates. `recordResult` and `recordFailure` accept only `EXECUTING`; abandoned repair and execution-time Skill clarification use dedicated transitions. Execution failure terminates immediately.
 - A Tool replay while the turn is already `EXECUTING` returns `QUERY_EXECUTION_IN_PROGRESS` before processing the replayed Draft. It cannot revalidate, change state, start a second attempt, or call southbound again.
 - After clarification, a name-only reply such as `HTTP` is sent as `clarificationAnswer`; the plugin restores the policy-normalized pending Query Draft and fills `DefinedApp.argument` before reevaluating the full policy. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
-- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` supplies structured workflow, object, and metric semantics for application-traffic scope checks; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` carries a planner-produced path whose groups and selected path match a queryable path in the static groups tree.
-- Page visit instances use `service=pageViews` and `queryModeKey=detail`, not a synthetic `PageFamilyDetail` group. The plugin resolves ordinal follow-ups from the Query Turn's frozen `PageFamily` result set before time materialization; missing, expired, cross-scope, wrong-type, and out-of-range references fail with zero Skill, `NapmClient`, or southbound calls. Result references have a separate 30-minute TTL.
+- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` supplies structured workflow, object, and metric semantics for application-traffic scope checks; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` matches a queryable static-tree path, the effective terminal group matches the structured intent, and a plugin-validated result reference explicitly authorizes the drilldown.
+- “Which businesses have the most page visits?” remains `topValues + WebApplication + PGNPGE`. A later ordinal business follow-up resolves a frozen `WebApplication` row, fills its argument, and builds the validated `WebApplication > PageFamilies > PageFamily` path. Page visit instances then use `service=pageViews` and `queryModeKey=detail`, not a synthetic `PageFamilyDetail` group, after a frozen `PageFamily` ordinal resolves to `pageFamilyId`.
+- `WebApplication` and `PageFamily` result references have a separate 30-minute TTL. Missing, expired, cross-scope, wrong-type, and out-of-range references fail before time materialization with zero Skill, `NapmClient`, or southbound calls. Caller-supplied provenance and validation flags are stripped; only the plugin can authorize the path.
+- `topValues` rows are normalized numerically by `topMetric` and structured direction before Query Turn storage and narration. Ranks are reassigned, blank/missing values remain last, and narration labels the effective terminal group.
 - `QueryTurnCoordinator` receives the shared page-family ID extractor through dependency injection. The installed extension contains plugin files but no partial Skill tree, so coordinator modules must not import `../skills/*` by relative path.
 - `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, and `CONTRACT_VIOLATION` all have write-once authoritative `finalContent`. A legacy-shaped Skill clarification is normalized to a successful `clarification_required` Tool result and completes the execution attempt as `CLARIFICATION`, never `EXECUTION_FAILURE`. Streaming partial output does not terminate a turn; a Tool replay after terminal returns the existing authoritative result without another Skill or southbound call.
 - A non-streaming final cannot leave an ordinary query nonterminal. `RECEIVED` without a Decision/Attempt and `DECIDED` without adapter execution terminate as contract violations; `REPAIR_PENDING` terminates as a validation failure; `EXECUTING` without a result terminates as an execution failure. A late adapter result cannot overwrite that outcome.
@@ -87,6 +90,7 @@ The query skill (`openclaw-napm-query`) is the most complex — its `services/` 
 - **OpenClawNarrationContractService.js** — converts query results into Chinese narration input
 - **NapmResolvedQueryResolverService.js** — resolves structured queries into executable form
 - **PageViewsExecutionKernel.js** — executes and normalizes per-visit `pageViews` detail requests
+- **TopValuesResultNormalizerService.js** — numerically orders TopN rows, places missing values last, and assigns authoritative ranks
 
 Cross-skill page detail primitives live in `skills/shared/NapmPageViewsContract.js`. It owns `pageFamilyId`, `maxLimit`, request construction, detail-row normalization, and `pageFamilyDetailId` extraction for Query, Fault Diagnosis, and Packet Analysis.
 

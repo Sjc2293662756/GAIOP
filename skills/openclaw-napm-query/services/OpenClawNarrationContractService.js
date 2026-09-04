@@ -477,7 +477,10 @@ function buildTopnStructure(payload, rows, followUpPrompts) {
   const metricId = extractMetricId(payload);
   const sortMetricId = extractSortMetricId(payload);
   const timeRange = normalizeTimeRange(payload, payload?.summary || {});
-  const objectType = String(payload?.resolvedQuery?.groups?.[0]?.type || '').trim() || null;
+  const groups = Array.isArray(payload?.resolvedQuery?.groups)
+    ? payload.resolvedQuery.groups.filter(Boolean)
+    : [];
+  const objectType = String(groups[groups.length - 1]?.type || '').trim() || null;
   const items = rows.slice(0, 10).map((row, index) => {
     const rawValue = extractMetricValue(row, metricId);
     const unit = extractMetricUnit(row, metricId);

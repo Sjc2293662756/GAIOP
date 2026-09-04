@@ -1661,6 +1661,9 @@ class RequirementParserService {
     }
 
     const request = JSON.parse(JSON.stringify(gatewayRequest));
+    const requestedTargetType = this.normalizeTopLevelGroupType(
+      request?.semanticConstraints?.targetObjectType || ''
+    );
     if (request.skipPathPlanning === true || request.executionHints?.skipPathPlanning === true) {
       return request;
     }
@@ -1684,11 +1687,17 @@ class RequirementParserService {
 
     const targetType = pathPlan.plannedGroups[pathPlan.plannedGroups.length - 1]?.type || null;
     if (targetType) {
+      request.executionBinding = {
+        ...(request.executionBinding && typeof request.executionBinding === 'object'
+          ? request.executionBinding
+          : {}),
+        effectiveTerminalGroupType: targetType
+      };
       request.semanticConstraints = {
         ...(request.semanticConstraints && typeof request.semanticConstraints === 'object'
           ? request.semanticConstraints
           : {}),
-        targetObjectType: targetType
+        targetObjectType: requestedTargetType || targetType
       };
     }
 

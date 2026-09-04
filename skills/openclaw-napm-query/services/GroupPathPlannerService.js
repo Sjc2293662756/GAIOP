@@ -222,19 +222,30 @@ class GroupPathPlannerService {
 
     const concepts = this.matchPromptConcepts(prompt);
     const targetTypes = this.collectTargetTypes(query);
+    const structuredOperation = String(
+      query?.semanticConstraints?.operation
+      || query?.operation
+      || ''
+    ).trim().toLowerCase();
     const shouldDrilldown = this.isDrilldownPrompt(prompt)
       || String(query?.pathPlanning?.followUpAction || '').trim().toLowerCase() === 'drilldown'
-      || String(query?.semanticConstraints?.followUpAction || '').trim().toLowerCase() === 'drilldown';
+      || String(query?.semanticConstraints?.followUpAction || '').trim().toLowerCase() === 'drilldown'
+      || query?.semanticConstraints?.drilldownRequested === true
+      || ['drilldown', 'detail_list'].includes(structuredOperation);
 
     if (shouldDrilldown) {
       return true;
+    }
+
+    const currentTerminalType = currentGroups[currentGroups.length - 1]?.type || '';
+    if (targetTypes.includes(currentTerminalType)) {
+      return false;
     }
 
     if (concepts.length > 0) {
       return true;
     }
 
-    const currentTerminalType = currentGroups[currentGroups.length - 1]?.type || '';
     return targetTypes.some((item) => item && item !== currentTerminalType);
   }
 
@@ -572,6 +583,9 @@ class GroupPathPlannerService {
   planPath(query = {}, prompt = '', options = {}) {
     const groups = this.normalizeGroups(options?.groups || query?.groups || []);
     if (groups.length === 0) {
+      return null;
+    }
+    if (!this.shouldAttemptPlan(query, prompt, groups)) {
       return null;
     }
 

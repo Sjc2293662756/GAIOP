@@ -66,6 +66,27 @@ function promptEndsWithSource(prompt, sourcePrompt) {
     && (normalizedPrompt === normalizedSource || normalizedPrompt.endsWith(normalizedSource));
 }
 
+const RESULT_REFERENCE_OBJECT_TYPES = new Set(['WebApplication', 'PageFamily']);
+
+function getResultReferenceObjectLabel(objectType = '') {
+  return objectType === 'WebApplication' ? 'WebApplication' : 'PageFamily';
+}
+
+function getResultReferenceRowPrefix(objectType = '') {
+  return objectType === 'WebApplication' ? 'web-application' : 'page-family';
+}
+
+function extractResultRowLabel(row = {}) {
+  return normalizeText(
+    row?.group?.argument
+    || row?.object
+    || row?.page
+    || row?.url
+    || row?.label
+    || row?.name
+  );
+}
+
 function isEmptyResult(result = null) {
   return Boolean(result?.summary?.empty)
     || (Array.isArray(result?.rows) && result.rows.length === 0)
@@ -560,12 +581,13 @@ class QueryTurnCoordinator {
     }
 
     const requestedObjectType = normalizeText(normalizedReference.objectType) || 'PageFamily';
-    if (requestedObjectType !== 'PageFamily') {
+    if (!RESULT_REFERENCE_OBJECT_TYPES.has(requestedObjectType)) {
       return this._referenceFailure(
         'RESULT_REFERENCE_OBJECT_TYPE_MISMATCH',
-        'pageViews resultReference must select a PageFamily row.'
+        'resultReference.objectType must select a supported authoritative ranking.'
       );
     }
+    const requestedObjectLabel = getResultReferenceObjectLabel(requestedObjectType);
 
     const ordinal = Number(normalizedReference.ordinal);
     if (!Number.isInteger(ordinal) || ordinal <= 0) {
@@ -610,7 +632,7 @@ class QueryTurnCoordinator {
     if (!resultSetId) {
       return this._referenceFailure(
         'RESULT_REFERENCE_NOT_FOUND',
-        'No authoritative PageFamily result is available in this conversation.'
+        `No authoritative ${requestedObjectLabel} result is available in this conversation.`
       );
     }
 
@@ -618,14 +640,14 @@ class QueryTurnCoordinator {
     if (lookup?.expired) {
       return this._referenceFailure(
         'RESULT_REFERENCE_EXPIRED',
-        'The referenced PageFamily result has expired; run the page ranking again.'
+        `The referenced ${requestedObjectLabel} result has expired; run the ranking again.`
       );
     }
     const resultSet = lookup?.record || null;
     if (!resultSet) {
       return this._referenceFailure(
         'RESULT_REFERENCE_NOT_FOUND',
-        'The authoritative PageFamily result set was not found.'
+        `The authoritative ${requestedObjectLabel} result set was not found.`
       );
     }
     if (resultSet.conversationKey !== normalizedScope) {
@@ -637,7 +659,7 @@ class QueryTurnCoordinator {
     if (resultSet.objectType !== requestedObjectType) {
       return this._referenceFailure(
         'RESULT_REFERENCE_OBJECT_TYPE_MISMATCH',
-        'The referenced result set does not contain PageFamily rows.'
+        `The referenced result set does not contain ${requestedObjectLabel} rows.`
       );
     }
 
@@ -645,20 +667,28 @@ class QueryTurnCoordinator {
     if (!selected) {
       return this._referenceFailure(
         'RESULT_REFERENCE_ORDINAL_OUT_OF_RANGE',
-        `The referenced PageFamily ranking does not contain ordinal ${ordinal}.`,
+        `The referenced ${requestedObjectLabel} ranking does not contain ordinal ${ordinal}.`,
         { rowCount: resultSet.rows.length, ordinal }
       );
     }
-    if (!selected.pageFamilyId) {
+    if (requestedObjectType === 'PageFamily' && !selected.pageFamilyId) {
       return this._referenceFailure(
         'RESULT_REFERENCE_PAGE_FAMILY_ID_MISSING',
         'The selected PageFamily row does not contain a resolvable pageFamilyId.'
       );
     }
+    if (requestedObjectType === 'WebApplication' && !selected.argument) {
+      return this._referenceFailure(
+        'RESULT_REFERENCE_OBJECT_ARGUMENT_MISSING',
+        'The selected WebApplication row does not contain a resolvable object argument.'
+      );
+    }
 
     return {
       ok: true,
-      pageFamilyId: selected.pageFamilyId,
+      objectType: resultSet.objectType,
+      ...(selected.argument ? { argument: selected.argument } : {}),
+      ...(selected.pageFamilyId ? { pageFamilyId: selected.pageFamilyId } : {}),
       inheritedQuery: clone(resultSet.inheritedQuery),
       sourceReference: {
         resultSetId: resultSet.resultSetId,
@@ -766,7 +796,9 @@ class QueryTurnCoordinator {
     const queryDraft = record?.queryDraft || {};
     const groups = Array.isArray(queryDraft.groups) ? queryDraft.groups : [];
     const terminalGroupType = normalizeText(groups[groups.length - 1]?.type);
-    if (queryDraft.service !== 'topValues' || terminalGroupType !== 'PageFamily') return null;
+    if (queryDraft.service !== 'topValues' || !RESULT_REFERENCE_OBJECT_TYPES.has(terminalGroupType)) {
+      return null;
+    }
 
     const sourceRows = Array.isArray(record?.result?.data)
       ? record.result.data
@@ -776,19 +808,18 @@ class QueryTurnCoordinator {
           ? record.result.narrationInput.result.rows
           : []));
     const rows = sourceRows.map((row, index) => {
-      const pageFamilyId = normalizeText(this.extractPageFamilyId(row));
-      if (!pageFamilyId) return null;
-      const label = normalizeText(
-        row?.group?.argument
-        || row?.object
-        || row?.page
-        || row?.url
-        || row?.label
-      );
+      const label = extractResultRowLabel(row);
+      const pageFamilyId = terminalGroupType === 'PageFamily'
+        ? normalizeText(this.extractPageFamilyId(row))
+        : '';
+      const argument = terminalGroupType === 'WebApplication' ? label : '';
+      if (terminalGroupType === 'PageFamily' && !pageFamilyId) return null;
+      if (terminalGroupType === 'WebApplication' && !argument) return null;
       return {
         ordinal: index + 1,
-        rowRef: `page-family:${index + 1}`,
-        pageFamilyId,
+        rowRef: `${getResultReferenceRowPrefix(terminalGroupType)}:${index + 1}`,
+        ...(argument ? { argument } : {}),
+        ...(pageFamilyId ? { pageFamilyId } : {}),
         label: label || null
       };
     }).filter(Boolean);
@@ -798,7 +829,7 @@ class QueryTurnCoordinator {
       conversationKey: record.conversationKey,
       resultSetId: crypto.randomUUID(),
       sourceTurnId: record.turnId,
-      objectType: 'PageFamily',
+      objectType: terminalGroupType,
       inheritedQuery: {
         start: queryDraft.start,
         end: queryDraft.end,

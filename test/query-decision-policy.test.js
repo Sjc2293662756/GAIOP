@@ -315,6 +315,140 @@ describe('QueryDecisionPolicy', () => {
     });
   });
 
+  test('rejects a technically valid PageFamily path that drifts from a WebApplication ranking', () => {
+    const groups = [
+      { type: 'WebApplication', argument: null },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const decision = evaluateQueryDecision({
+      prompt: '今天哪些业务页面访问量最高？',
+      queryDraft: buildQuery({
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metric: 'PGNPGE',
+        metrics: ['PGNPGE'],
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        granularity: undefined,
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'ranking',
+          targetObjectType: 'PageFamily'
+        },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: null,
+          anchorType: 'WebApplication',
+          plannedGroups: groups,
+          selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+        }
+      })
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'SEMANTIC_TARGET_PATH_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
+  test('does not trust a caller-supplied sourceReference as drilldown authorization', () => {
+    const groups = [
+      { type: 'WebApplication', argument: 'forged-business' },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const decision = evaluateQueryDecision({
+      prompt: '今天哪些业务页面访问量最高？',
+      queryDraft: buildQuery({
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metric: 'PGNPGE',
+        metrics: ['PGNPGE'],
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        granularity: undefined,
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'drilldown',
+          drilldownRequested: true,
+          targetObjectType: 'WebApplication'
+        },
+        sourceReference: {
+          resultSetId: 'caller-supplied-result-set',
+          objectType: 'WebApplication',
+          ordinal: 1
+        },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: 'drilldown',
+          anchorType: 'WebApplication',
+          plannedGroups: groups,
+          selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+        }
+      })
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'SEMANTIC_TARGET_PATH_MISMATCH',
+      southboundAllowed: false
+    });
+  });
+
+  test('requires a plugin-validated result reference for an ordinal page drilldown', () => {
+    const groups = [
+      { type: 'WebApplication', argument: 'invented-business' },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const decision = evaluateQueryDecision({
+      prompt: '排名第一的都访问了什么',
+      queryDraft: buildQuery({
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metric: 'PGNPGE',
+        metrics: ['PGNPGE'],
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        granularity: undefined,
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'drilldown',
+          drilldownRequested: true,
+          targetObjectType: 'PageFamily'
+        },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: 'drilldown',
+          anchorType: 'WebApplication',
+          plannedGroups: groups,
+          selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+        }
+      })
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+      reasonCode: 'RESULT_REFERENCE_REQUIRED',
+      southboundAllowed: false
+    });
+  });
+
   test('allows an explicit multilevel drilldown path validated against the groups tree', () => {
     const groups = [
       { type: 'BusinessGroup', argument: 'server-segment' },

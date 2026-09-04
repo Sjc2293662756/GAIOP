@@ -1132,6 +1132,9 @@ function resolveQueryCoordinatorRoute(prompt = '', state = null) {
   if (state?.pendingQueryDraft) {
     return QUERY_ROUTES.NAPM_QUERY;
   }
+  if (state?.queryResultFollowUpPrompt) {
+    return QUERY_ROUTES.NAPM_QUERY;
+  }
 
   const text = String(prompt || '').trim();
   const otherSkillTurn = Boolean(
@@ -1823,10 +1826,19 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
   return next;
 }
 
-function resolvePageViewsResultReference(resolvedQuery, scope = '', turnId = '') {
+function resolveQueryResultReference(resolvedQuery, scope = '', turnId = '', prompt = '') {
   const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
-  if (!isPlainObject(normalized) || normalized.service !== 'pageViews') {
+  if (!isPlainObject(normalized)) {
     return { ok: true, resolvedQuery: normalized };
+  }
+
+  delete normalized.sourceReference;
+  if (isPlainObject(normalized.executionBinding)) {
+    delete normalized.executionBinding.resultReferenceValidated;
+    delete normalized.executionBinding.resultReferenceObjectType;
+    if (Object.keys(normalized.executionBinding).length === 0) {
+      delete normalized.executionBinding;
+    }
   }
 
   const reference = isPlainObject(normalized.resultReference)
@@ -1836,12 +1848,100 @@ function resolvePageViewsResultReference(resolvedQuery, scope = '', turnId = '')
     return { ok: true, resolvedQuery: normalized };
   }
 
+  const referenceObjectType = String(reference.objectType || '').trim();
+  const supportsPageViewReference = normalized.service === 'pageViews'
+    && referenceObjectType === 'PageFamily';
+  const workflow = classifyNapmWorkflow(prompt || normalized.userRequirement || '');
+  const groups = Array.isArray(normalized.groups) ? normalized.groups.filter(Boolean) : [];
+  const terminalGroupType = String(groups[groups.length - 1]?.type || '').trim();
+  const supportsBusinessPageDrilldown = normalized.service === 'topValues'
+    && referenceObjectType === 'WebApplication'
+    && terminalGroupType === 'PageFamily'
+    && workflow.workflowType === 'metric_topn'
+    && workflow.operation === 'drilldown'
+    && workflow.drilldownRequested === true;
+  if (!supportsPageViewReference && !supportsBusinessPageDrilldown) {
+    return {
+      ok: false,
+      code: 'RESULT_REFERENCE_WORKFLOW_MISMATCH',
+      reason: 'result_reference_workflow_mismatch',
+      message: 'resultReference is not valid for the requested query workflow.'
+    };
+  }
+
   const resolution = queryTurnCoordinator.resolveResultReference({
     scope,
     turnId,
     reference
   });
   if (!resolution?.ok) return resolution;
+
+  const hasExplicitTime = ['start', 'end'].some((field) => (
+    normalized[field] !== undefined
+    && normalized[field] !== null
+    && normalized[field] !== ''
+  )) || Boolean(String(normalized?.timeRange?.key || '').trim());
+  const inheritedQuery = isPlainObject(resolution.inheritedQuery) ? resolution.inheritedQuery : {};
+
+  if (supportsBusinessPageDrilldown) {
+    const selectedBusiness = String(resolution.argument || '').trim();
+    if (!selectedBusiness) {
+      return {
+        ok: false,
+        code: 'RESULT_REFERENCE_OBJECT_ARGUMENT_MISSING',
+        reason: 'result_reference_object_argument_missing',
+        message: 'The selected WebApplication result does not contain a usable object argument.'
+      };
+    }
+    const plannedGroups = [
+      { type: 'WebApplication', argument: selectedBusiness },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const next = {
+      ...normalized,
+      groups: plannedGroups,
+      sourceReference: resolution.sourceReference,
+      semanticConstraints: {
+        ...(isPlainObject(normalized.semanticConstraints) ? normalized.semanticConstraints : {}),
+        workflowType: 'metric_topn',
+        operation: 'drilldown',
+        drilldownRequested: true,
+        targetObjectType: 'PageFamily'
+      },
+      pathPlanning: {
+        applied: true,
+        shouldApply: true,
+        strategy: 'static_groups_tree',
+        followUpAction: 'drilldown',
+        anchorType: 'WebApplication',
+        plannedGroups,
+        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily'],
+        reason: 'authoritative_result_reference'
+      },
+      executionBinding: {
+        ...(isPlainObject(normalized.executionBinding) ? normalized.executionBinding : {}),
+        resultReferenceValidated: true,
+        resultReferenceObjectType: 'WebApplication',
+        effectiveTerminalGroupType: 'PageFamily'
+      }
+    };
+    if (!hasExplicitTime) {
+      next.start = inheritedQuery.start;
+      next.end = inheritedQuery.end;
+      if (isPlainObject(inheritedQuery.timeRange)) {
+        next.timeRange = { ...inheritedQuery.timeRange };
+      }
+      next.executionOptions = {
+        ...(isPlainObject(next.executionOptions) ? next.executionOptions : {}),
+        timeMode: 'fixed'
+      };
+    }
+    return {
+      ok: true,
+      resolvedQuery: normalizeResolvedQueryForPlugin(next)
+    };
+  }
 
   const explicitPageFamilyId = String(normalized.pageFamilyId || '').trim();
   if (explicitPageFamilyId && explicitPageFamilyId !== resolution.pageFamilyId) {
@@ -1853,16 +1953,15 @@ function resolvePageViewsResultReference(resolvedQuery, scope = '', turnId = '')
     };
   }
 
-  const hasExplicitTime = ['start', 'end'].some((field) => (
-    normalized[field] !== undefined
-    && normalized[field] !== null
-    && normalized[field] !== ''
-  )) || Boolean(String(normalized?.timeRange?.key || '').trim());
-  const inheritedQuery = isPlainObject(resolution.inheritedQuery) ? resolution.inheritedQuery : {};
   const next = {
     ...normalized,
     pageFamilyId: resolution.pageFamilyId,
-    sourceReference: resolution.sourceReference
+    sourceReference: resolution.sourceReference,
+    executionBinding: {
+      ...(isPlainObject(normalized.executionBinding) ? normalized.executionBinding : {}),
+      resultReferenceValidated: true,
+      resultReferenceObjectType: 'PageFamily'
+    }
   };
   if (!hasExplicitTime) {
     next.start = inheritedQuery.start;
@@ -1881,6 +1980,8 @@ function resolvePageViewsResultReference(resolvedQuery, scope = '', turnId = '')
     resolvedQuery: normalizeResolvedQueryForPlugin(next)
   };
 }
+
+const resolvePageViewsResultReference = resolveQueryResultReference;
 
 function getResolutionSpecServiceNames() {
   const service = getResolutionSpecService();
@@ -2903,6 +3004,12 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || (previousState?.lastMetricInventoryGroup && isMetricInventoryDetailPrompt(prompt));
   const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
   const resultDeliveryFollowUpPrompt = isResultDeliveryFollowUpPrompt(prompt, previousState);
+  const workflow = classifyNapmWorkflow(prompt);
+  const queryResultFollowUpPrompt = Boolean(
+    previousState?.napmRelated
+    && workflow.operation === 'drilldown'
+    && workflow.requiresResultReference === true
+  );
   const reportExportPrompt = isReportExportPrompt(prompt);
   const reportWorkflowPrompt = isReportWorkflowPrompt(prompt);
   const domainRelated = overviewRelated
@@ -2914,6 +3021,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || isSystemDomainPrompt(prompt)
     || metaFollowUpPrompt
     || resultDeliveryFollowUpPrompt
+    || queryResultFollowUpPrompt
     || (previousState?.domainRelated && isContinuationPrompt(prompt));
   const napmRelated = overviewRelated
     || reportWorkflowPrompt
@@ -2924,6 +3032,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     || isNapmRelatedPrompt(prompt)
     || metaFollowUpPrompt
     || resultDeliveryFollowUpPrompt
+    || queryResultFollowUpPrompt
     || (previousState?.napmRelated && isContinuationPrompt(prompt));
   const alertRelated = alertEventPrompt
     || alertMetaFollowUpPrompt
@@ -2950,6 +3059,7 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     metricInventoryPrompt,
     metaFollowUpPrompt,
     resultDeliveryFollowUpPrompt,
+    queryResultFollowUpPrompt,
     lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
       ? inferMetricInventoryGroup(prompt)
       : (previousState?.lastMetricInventoryGroup || ''),
@@ -6634,6 +6744,20 @@ function buildQueryExecutionInProgressResult(turn = null) {
   };
 }
 
+function buildQueryResultReferenceSchema() {
+  return {
+    type: 'object',
+    description: 'Ordinal selection from the authoritative Query Turn ranking. WebApplication selects a business for a PageFamily TopN drilldown; PageFamily selects a page for pageViews detail.',
+    properties: {
+      resultSetId: { type: 'string' },
+      objectType: { type: 'string', enum: ['WebApplication', 'PageFamily'] },
+      ordinal: { type: 'number', minimum: 1 }
+    },
+    required: ['objectType', 'ordinal'],
+    additionalProperties: false
+  };
+}
+
 function createSkillToolDefinition() {
   const queryContract = getResolutionSpecQueryContract() || {};
   const allowedServices = getResolutionSpecServiceNames();
@@ -6654,6 +6778,7 @@ function createSkillToolDefinition() {
   const timeConstructionRules = Array.isArray(queryContract.constructionRules)
     ? queryContract.constructionRules.join(' ')
     : 'Executable timestamps must be root-level start/end.';
+  const resultReferenceSchema = buildQueryResultReferenceSchema();
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
@@ -6669,6 +6794,9 @@ function createSkillToolDefinition() {
         queryDraft: {
           type: 'object',
           description: 'Structured query interpretation evaluated by QueryDecisionPolicy. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to a Resolved Query.',
+          properties: {
+            resultReference: resultReferenceSchema
+          },
           additionalProperties: true
         },
         resolvedQuery: {
@@ -6710,20 +6838,10 @@ function createSkillToolDefinition() {
               maximum: 200,
               description: 'Maximum page visit rows for pageViews. Defaults to the local client value 20; 200 is a local protection limit, not an asserted upstream maximum.'
             },
-            resultReference: {
-              type: 'object',
-              description: 'Ordinal selection from the authoritative PageFamily ranking captured for this Query Turn.',
-              properties: {
-                resultSetId: { type: 'string' },
-                objectType: { type: 'string', enum: ['PageFamily'] },
-                ordinal: { type: 'number', minimum: 1 }
-              },
-              required: ['objectType', 'ordinal'],
-              additionalProperties: false
-            },
+            resultReference: resultReferenceSchema,
             sourceReference: {
               type: 'object',
-              description: 'Plugin-generated provenance for a resolved pageViews selection. Callers must not invent this field.',
+              description: 'Plugin-generated provenance for a resolved ordinal selection. Callers must not invent this field.',
               additionalProperties: true
             },
             granularity: {
@@ -6948,18 +7066,19 @@ function createSkillToolDefinition() {
           return makeToolResult(buildQueryExecutionInProgressResult(currentQueryTurn));
         }
 
-        const resultReferenceResolution = resolvePageViewsResultReference(
+        const referencePrompt = String(
+          currentQueryTurn?.semanticQuestion
+          || normalizePrompt(preparedArgs)
+          || preparedArgs?.resolvedQuery?.userRequirement
+          || ''
+        ).trim();
+        const resultReferenceResolution = resolveQueryResultReference(
           preparedArgs?.resolvedQuery,
           conversationKey,
-          turnId
+          turnId,
+          referencePrompt
         );
         if (!resultReferenceResolution.ok) {
-          const referencePrompt = String(
-            currentQueryTurn?.semanticQuestion
-            || normalizePrompt(preparedArgs)
-            || preparedArgs?.resolvedQuery?.userRequirement
-            || ''
-          ).trim();
           const referenceDecision = evaluatePluginQueryDecision(
             referencePrompt,
             preparedArgs?.resolvedQuery,
@@ -8906,10 +9025,11 @@ const plugin = {
           const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
           const semanticGuardMode = getQuerySemanticGuardMode();
-          const resultReferenceResolution = resolvePageViewsResultReference(
+          const resultReferenceResolution = resolveQueryResultReference(
             canonicalSkillParams?.resolvedQuery,
             conversationKey,
-            queryTurnContext.turnId
+            queryTurnContext.turnId,
+            querySemanticPrompt
           );
           if (isPlainObject(resultReferenceResolution.resolvedQuery)) {
             canonicalSkillParams.resolvedQuery = resultReferenceResolution.resolvedQuery;
@@ -9940,6 +10060,7 @@ module.exports.__test__ = {
   summarizeResolvedQueryForAudit,
   normalizeQueryModeKeyForService,
   normalizeResolvedQueryForPlugin,
+  resolveQueryResultReference,
   resolvePageViewsResultReference,
   validateResolvedQueryAgainstSpec,
   applyPathPreflightToResolvedQuery,
