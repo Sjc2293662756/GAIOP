@@ -491,7 +491,10 @@ function isAlertPacketConfirmationPrompt(prompt = '', previousState = null) {
 function normalizeAlertPacketCommand(prompt = '') {
   return String(prompt || '')
     .trim()
-    .replace(/[!！。．.]+$/u, '')
+    // WeChat users often append Chinese punctuation to a short confirmation
+    // (for example: "确认下载并分析；"). Strip only trailing punctuation so
+    // the exact confirmation vocabulary remains fail-closed.
+    .replace(/[!！。．.;；,，、…]+$/u, '')
     .trim();
 }
 

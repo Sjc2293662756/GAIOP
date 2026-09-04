@@ -130,7 +130,7 @@ describe('NAPM packet deterministic final reply', () => {
     }, scope, 'napm-packet-analysis', previewTurnId);
 
     const followUpCtx = { ...previewCtx, runId: 'packet-download-confirmation-run' };
-    const followUpPrompt = '进行下载分析！';
+    const followUpPrompt = '确认下载并分析；';
     hooks.get('message_received')({ content: followUpPrompt }, followUpCtx);
     await hooks.get('before_prompt_build')({ prompt: followUpPrompt }, followUpCtx);
 
