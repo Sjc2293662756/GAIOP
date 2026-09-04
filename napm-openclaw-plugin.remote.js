@@ -184,7 +184,9 @@ function getNapmAlertReferenceStore() {
 }
 const napmTrustedToolContextByTraceId = new Map();
 const napmAutomaticReportByTurn = new Map();
+const napmPacketExecutionByTurn = new Map();
 const AUTOMATIC_REPORT_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
+const PACKET_EXECUTION_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-alert-packet-analysis', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
@@ -525,6 +527,81 @@ function buildAlertPacketContinuationPrompt(prompt = '', previousState = null) {
   if (!reference) return '';
   const candidateId = String(previousState?.alertPacketCandidateId || '').trim();
   return candidateId ? `分析 ${candidateId}` : `分析告警 ${reference}`;
+}
+
+function isPacketDownloadConfirmationPrompt(prompt = '') {
+  const text = normalizeAlertPacketCommand(prompt);
+  if (!text) return false;
+  return /^(?:开始分析|进行(?:下载)?分析|继续(?:下载(?:并)?分析|下载|分析)?|确认(?:继续)?(?:下载(?:并)?分析|下载|分析)?|下载(?:并)?分析|下载|同意(?:下载|分析)?|可以(?:下载|分析)?)$/i.test(text);
+}
+
+function buildPendingPacketDownloadContext(prompt = '', conversationKey = '') {
+  if (!conversationKey || !isPacketDownloadConfirmationPrompt(prompt)) {
+    return null;
+  }
+
+  const record = getRecentRememberedSkillResult(conversationKey);
+  if (!isFreshRememberedRecord(record) || !isPacketSkillResultRecord(record)) {
+    return null;
+  }
+
+  const result = record.result;
+  if (
+    result?.preview?.ok !== true
+    || result?.preview?.empty !== false
+    || result?.decision?.next_action !== 'CONFIRM_DOWNLOAD'
+  ) {
+    return null;
+  }
+
+  const sourceCriteria = isPlainObject(result.criteria)
+    ? cloneJsonObject(result.criteria)
+    : null;
+  const start = Number(sourceCriteria?.start);
+  const end = Number(sourceCriteria?.end);
+  if (
+    !sourceCriteria
+    || !Number.isFinite(start)
+    || !Number.isFinite(end)
+    || start <= 0
+    || end <= start
+    || start > 9999999999
+    || end > 9999999999
+  ) {
+    return null;
+  }
+
+  delete sourceCriteria.prompt;
+  delete sourceCriteria.userQuery;
+  delete sourceCriteria.timeRange;
+  delete sourceCriteria.timeRangeKey;
+  delete sourceCriteria.previewRiskAccepted;
+  sourceCriteria.start = Math.floor(start);
+  sourceCriteria.end = Math.floor(end);
+
+  const hasTarget = Boolean(
+    (Array.isArray(sourceCriteria.ips) && sourceCriteria.ips.some(Boolean))
+    || (Array.isArray(sourceCriteria.ipRanges) && sourceCriteria.ipRanges.some(Boolean))
+    || String(sourceCriteria.id || '').trim()
+    || String(sourceCriteria.instanceId || '').trim()
+    || String(sourceCriteria.pageFamilyDetailId || '').trim()
+    || (isPlainObject(sourceCriteria.top) && Object.keys(sourceCriteria.top).length > 0)
+  );
+  if (!hasTarget) {
+    return null;
+  }
+
+  return {
+    sourceTurnId: normalizeTurnId(record.turnId),
+    mode: 'preview_download_analyze',
+    downloadType: String(result.downloadType || 'packetsDown').trim() || 'packetsDown',
+    criteria: sourceCriteria
+  };
+}
+
+function buildPacketDownloadContinuationPrompt(context = null) {
+  if (!isPlainObject(context?.criteria)) return '';
+  return '确认下载并分析上一轮已预览的数据包（沿用固定目标和时间窗口）';
 }
 
 const ALERT_REFERENCE_PATTERN = /\bGJ-[A-Z2-9]{6,16}(?:-P\d{1,3})?\b/i;
@@ -2647,6 +2724,40 @@ function normalizePacketToolParams(activePrompt = '', toolParams = {}) {
   return nextParams;
 }
 
+function stripUntrustedPacketPreviewConfirmation(toolParams = {}) {
+  const nextParams = isPlainObject(toolParams) ? cloneJsonObject(toolParams) : {};
+  delete nextParams.previewRiskAccepted;
+
+  if (isPlainObject(nextParams.criteria)) {
+    delete nextParams.criteria.previewRiskAccepted;
+  }
+  if (isPlainObject(nextParams.packetQuery)) {
+    delete nextParams.packetQuery.previewRiskAccepted;
+    if (isPlainObject(nextParams.packetQuery.criteria)) {
+      delete nextParams.packetQuery.criteria.previewRiskAccepted;
+    }
+  }
+  return nextParams;
+}
+
+function buildConfirmedPacketToolParams(activePrompt = '', toolParams = {}, confirmationContext = null) {
+  const nextParams = stripUntrustedPacketPreviewConfirmation(toolParams);
+  if (!isPlainObject(confirmationContext?.criteria)) {
+    return nextParams;
+  }
+
+  delete nextParams.packetQuery;
+  return {
+    ...nextParams,
+    prompt: String(activePrompt || '').trim(),
+    userQuery: String(activePrompt || '').trim(),
+    mode: confirmationContext.mode || 'preview_download_analyze',
+    downloadType: confirmationContext.downloadType || 'packetsDown',
+    criteria: cloneJsonObject(confirmationContext.criteria),
+    previewRiskAccepted: true
+  };
+}
+
 function buildGuardKey(prefix, value) {
   const normalized = String(value == null ? '' : value).trim();
   return normalized ? `${prefix}:${normalized}` : '';
@@ -2948,6 +3059,7 @@ function clearNapmConversationScope(ctx = {}) {
     trustedContexts: napmTrustedToolContextStore.clearScope(scope),
     inMemoryTrustedContexts: 0,
     automaticReportOperations: 0,
+    packetExecutionOperations: 0,
     mediaState: napmSentMediaByConversation.delete(scope),
     nativeCommandState: nativeCommandByScope.delete(scope),
     scopeAliases: 0,
@@ -2964,6 +3076,11 @@ function clearNapmConversationScope(ctx = {}) {
   for (const key of napmAutomaticReportByTurn.keys()) {
     if (key.startsWith(`${scope}::`) && napmAutomaticReportByTurn.delete(key)) {
       summary.automaticReportOperations += 1;
+    }
+  }
+  for (const key of napmPacketExecutionByTurn.keys()) {
+    if (key.startsWith(`${scope}::`) && napmPacketExecutionByTurn.delete(key)) {
+      summary.packetExecutionOperations += 1;
     }
   }
   for (const [key, state] of napmGuardState.entries()) {
@@ -3011,6 +3128,42 @@ function rememberAutomaticReportOperation(operationKey = '', operation = null) {
   }
   pruneAutomaticReportOperations();
   napmAutomaticReportByTurn.set(key, { operation, updatedAt: Date.now() });
+  return operation;
+}
+
+function prunePacketExecutionOperations() {
+  const now = Date.now();
+  for (const [key, record] of napmPacketExecutionByTurn.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > PACKET_EXECUTION_OPERATION_MAX_AGE_MS) {
+      napmPacketExecutionByTurn.delete(key);
+    }
+  }
+  while (napmPacketExecutionByTurn.size > 2000) {
+    napmPacketExecutionByTurn.delete(napmPacketExecutionByTurn.keys().next().value);
+  }
+}
+
+function buildPacketExecutionOperationKey(args = {}) {
+  const conversationKey = getTrustedConversationKey(args);
+  const turnId = getTrustedTurnId(args);
+  const toolName = getTrustedToolName(args);
+  return conversationKey && turnId && toolName === 'napm-packet-analysis'
+    ? `${conversationKey}::${turnId}`
+    : '';
+}
+
+function getPacketExecutionOperation(operationKey = '') {
+  prunePacketExecutionOperations();
+  return napmPacketExecutionByTurn.get(String(operationKey || '').trim())?.operation || null;
+}
+
+function rememberPacketExecutionOperation(operationKey = '', operation = null) {
+  const key = String(operationKey || '').trim();
+  if (!key || !operation || typeof operation.then !== 'function') {
+    return null;
+  }
+  prunePacketExecutionOperations();
+  napmPacketExecutionByTurn.set(key, { operation, updatedAt: Date.now() });
   return operation;
 }
 
@@ -5184,6 +5337,30 @@ function packetDirectionLabel(direction = '') {
   }[direction] || '';
 }
 
+function formatPacketAnalysisRow(value) {
+  return String(value == null ? '' : value)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+function formatPacketAnalysisValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .slice(0, limit)
+    .map((item) => {
+      if (isPlainObject(item)) {
+        const value = formatPacketAnalysisRow(item.value || item.name || item.label || '');
+        const count = Number(item.count);
+        return value && Number.isFinite(count)
+          ? `${value}（${formatPacketInteger(count)} 次）`
+          : value;
+      }
+      return formatPacketAnalysisRow(item);
+    })
+    .filter(Boolean);
+}
+
 function buildPacketFinalReply(result = {}) {
   const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
   const preview = isPlainObject(result?.preview) ? result.preview : null;
@@ -5336,6 +5513,45 @@ function buildPacketFinalReply(result = {}) {
     lines.push('未下载，也未执行协议分析。');
   } else if (result?.decision?.next_action === 'CONFIRM_DOWNLOAD') {
     lines.push('当前未下载：需要确认后才能继续。');
+  }
+
+  const analysis = isPlainObject(result?.analysis) ? result.analysis : null;
+  if (analysis?.ok) {
+    lines.push('协议分析：已完成');
+    const packetCountValue = analysis.capinfos?.number_of_packets || analysis.capinfos?.packet_count;
+    const packetCount = Number(packetCountValue);
+    if (Number.isFinite(packetCount)) {
+      lines.push(`数据包数：${formatPacketInteger(packetCount)} 个`);
+    }
+
+    const protocolHierarchy = formatPacketAnalysisValues(analysis.protocolHierarchy, 8);
+    if (protocolHierarchy.length > 0) {
+      lines.push(`协议层级：${protocolHierarchy.join('；')}`);
+    }
+    const endpoints = formatPacketAnalysisValues(analysis.endpoints, 5);
+    if (endpoints.length > 0) {
+      lines.push(`主要端点：${endpoints.join('；')}`);
+    }
+    const conversations = formatPacketAnalysisValues(analysis.conversations, 5);
+    if (conversations.length > 0) {
+      lines.push(`主要会话：${conversations.join('；')}`);
+    }
+    const dnsQueries = formatPacketAnalysisValues(analysis.dnsQueries, 5);
+    if (dnsQueries.length > 0) {
+      lines.push(`DNS 查询：${dnsQueries.join('、')}`);
+    }
+    const httpRows = formatPacketAnalysisValues(analysis.httpRows, 5);
+    if (httpRows.length > 0) {
+      lines.push(`HTTP 记录：${httpRows.join('；')}`);
+    }
+    const tlsSni = formatPacketAnalysisValues(analysis.tlsSni, 5);
+    if (tlsSni.length > 0) {
+      lines.push(`TLS SNI：${tlsSni.join('、')}`);
+    }
+  } else if (analysis) {
+    lines.push(`协议分析：失败（${analysis.error?.message || 'tshark 未返回有效分析结果'}）`);
+  } else if (result?.download?.ok && ['download_analyze', 'preview_download_analyze'].includes(result?.mode)) {
+    lines.push('协议分析：未完成');
   }
 
   const previewUrl = String(result?.urls?.preview || preview?.urlMasked || '').trim();
@@ -7396,25 +7612,44 @@ function createPacketAnalysisToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await napmPacketSkill().handleSkillCall(args || {});
-      const handoffRecord = rememberSkillResult(
-        normalizePrompt(args),
-        result,
-        getTrustedConversationKey(args),
-        'napm-packet-analysis',
-        getTrustedTurnId(args)
-      );
-      const reportSourceId = handoffRecord?.reportSourceId || '';
-      return {
-        content: [
-          {
-            type: 'text',
-            text: appendReportSourceId(buildPacketAnalysisReply(result), reportSourceId)
-          }
-        ],
-        details: result,
-        metadata: reportSourceId ? { reportSourceId } : undefined
-      };
+      const operationKey = buildPacketExecutionOperationKey(args);
+      const existingOperation = operationKey
+        ? getPacketExecutionOperation(operationKey)
+        : null;
+      if (existingOperation) {
+        appendPluginAuditEvent('napm_packet_execution_replayed', {
+          scopeHash: ReportSourceStore.hashScope(getTrustedConversationKey(args)),
+          turnId: getTrustedTurnId(args)
+        });
+        return existingOperation;
+      }
+
+      const operation = (async () => {
+        const result = await napmPacketSkill().handleSkillCall(args || {});
+        const handoffRecord = rememberSkillResult(
+          normalizePrompt(args),
+          result,
+          getTrustedConversationKey(args),
+          'napm-packet-analysis',
+          getTrustedTurnId(args)
+        );
+        const reportSourceId = handoffRecord?.reportSourceId || '';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: appendReportSourceId(buildPacketAnalysisReply(result), reportSourceId)
+            }
+          ],
+          details: result,
+          metadata: reportSourceId ? { reportSourceId } : undefined
+        };
+      })();
+
+      if (operationKey) {
+        rememberPacketExecutionOperation(operationKey, operation);
+      }
+      return operation;
     }
   };
 }
@@ -7776,7 +8011,11 @@ const plugin = {
         const continuationPrompt = batchContinuationPrompt
           || buildAlertPacketContinuationPrompt(content, previousState);
         const analyzeAllCandidates = Boolean(batchContinuationPrompt);
-        const effectivePrompt = continuationPrompt || content;
+        const packetDownloadContext = continuationPrompt
+          ? null
+          : buildPendingPacketDownloadContext(content, conversationKey);
+        const packetDownloadContinuationPrompt = buildPacketDownloadContinuationPrompt(packetDownloadContext);
+        const effectivePrompt = continuationPrompt || packetDownloadContinuationPrompt || content;
         const turnId = buildNapmTurnId();
         const pendingClarification = conversationKey
           ? queryTurnCoordinator.getPending(conversationKey)
@@ -7823,6 +8062,9 @@ const plugin = {
             : continuationPrompt
             ? (extractAlertReference(continuationPrompt)?.candidateId || previousState?.alertPacketCandidateId || null)
             : (previousState?.alertPacketCandidateId || extractAlertReference(effectivePrompt)?.candidateId || null),
+          packetDownloadContinuationPrompt: Boolean(packetDownloadContinuationPrompt),
+          packetPreviewRiskAccepted: Boolean(packetDownloadContinuationPrompt),
+          packetDownloadContext,
           turnId,
           runId: normalizeTraceId(ctx?.runId) || null,
           messageId: normalizeTraceId(ctx?.messageId) || null,
@@ -7831,6 +8073,15 @@ const plugin = {
 
         if (conversationKey) {
           napmConversationState.set(conversationKey, nextState);
+          if (packetDownloadContext) {
+            appendPluginAuditEvent('napm_packet_download_confirmation_resumed', {
+              scopeHash: ReportSourceStore.hashScope(conversationKey),
+              turnId,
+              sourceTurnId: packetDownloadContext.sourceTurnId || null,
+              start: packetDownloadContext.criteria.start,
+              end: packetDownloadContext.criteria.end
+            });
+          }
           queryTurnCoordinator.begin({
             scope: conversationKey,
             turnId,
@@ -7974,8 +8225,17 @@ const plugin = {
               '插件会从当前 Query Turn 恢复并注入待补全的 queryDraft。'
             ].join('\n')
           : '';
+        const packetDownloadContinuation = conversationState?.packetDownloadContinuationPrompt
+          ? [
+              'PACKET DOWNLOAD CONFIRMATION CONTINUATION:',
+              '用户已确认下载上一轮预览的数据包。只调用一次 napm-packet-analysis；插件会恢复上一轮固定目标和 start/end，并注入可信下载确认。',
+              '不得改用相对时间、重算时间窗口、替换目标，或调用 napm-skill-query。'
+            ].join('\n')
+          : '';
         return {
-          appendSystemContext: [routingContext, clarificationContinuation].filter(Boolean).join('\n\n')
+          appendSystemContext: [routingContext, clarificationContinuation, packetDownloadContinuation]
+            .filter(Boolean)
+            .join('\n\n')
         };
       },
       {
@@ -8309,7 +8569,26 @@ const plugin = {
           // Preserve exact user wording for server-clock time resolution and
           // canonicalize BusinessGroup targets before the packet runtime builds
           // any southbound URL.
-          toolParams = normalizePacketToolParams(activePrompt || normalizePrompt(toolParams), toolParams);
+          const packetParams = activePromptState?.packetDownloadContinuationPrompt
+            ? buildConfirmedPacketToolParams(
+                activePrompt || normalizePrompt(toolParams),
+                toolParams,
+                activePromptState.packetDownloadContext
+              )
+            : stripUntrustedPacketPreviewConfirmation(toolParams);
+          toolParams = normalizePacketToolParams(
+            activePrompt || normalizePrompt(packetParams),
+            packetParams
+          );
+          if (activePromptState?.packetDownloadContinuationPrompt) {
+            appendPluginAuditEvent('napm_packet_download_confirmation_applied', {
+              scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+              turnId: queryTurnContext.turnId || null,
+              sourceTurnId: activePromptState.packetDownloadContext?.sourceTurnId || null,
+              start: toolParams.criteria?.start || null,
+              end: toolParams.criteria?.end || null
+            });
+          }
         }
         if (toolName === 'napm-inspection-snapshot' && activePrompt) {
           const resolver = getNapmResolvedQueryResolverService();

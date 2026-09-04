@@ -1,17 +1,22 @@
 const plugin = require('../napm-openclaw-plugin.remote');
+const packetRuntime = require('../skills/openclaw-napm-packet-analysis/scripts/run_packet_analysis');
 
 describe('NAPM packet deterministic final reply', () => {
   function createHarness() {
     const hooks = new Map();
+    const tools = new Map();
     plugin.register({
       config: {},
       logger: { info() {}, warn() {}, error() {} },
-      registerTool() {},
+      registerTool(tool) {
+        tools.set(tool.name, tool);
+      },
       registerCommand() {},
       registerHook(name, handler) {
         (Array.isArray(name) ? name : [name]).forEach((eventName) => hooks.set(eventName, handler));
       }
     });
+    hooks.tools = tools;
     return hooks;
   }
 
@@ -74,6 +79,262 @@ describe('NAPM packet deterministic final reply', () => {
     }, ctx);
 
     expect(blocked).toMatchObject({ block: true });
+  });
+
+  test('continues a confirmed packet preview with fixed criteria and executes the skill once', async () => {
+    const hooks = createHarness();
+    const previewCtx = createContext();
+    previewCtx.runId = 'packet-preview-confirmation-run';
+    const previewPrompt = '分析 101.254.114.238 最近5分钟的数据包情况';
+    hooks.get('message_received')({ content: previewPrompt }, previewCtx);
+    await hooks.get('before_prompt_build')({ prompt: previewPrompt }, previewCtx);
+    const previewBound = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-preview-confirmation',
+      params: {
+        prompt: previewPrompt,
+        mode: 'preview_download_analyze',
+        criteria: {
+          ips: ['101.254.114.238'],
+          timeRange: { key: 'last5minutes' }
+        }
+      }
+    }, previewCtx);
+    const scope = plugin.__test__.getTrustedConversationKey(previewBound.params);
+    const previewTurnId = plugin.__test__.getTrustedTurnId(previewBound.params);
+    plugin.__test__.rememberSkillResult(previewPrompt, {
+      ok: false,
+      mode: 'preview_download_analyze',
+      criteria: {
+        prompt: previewPrompt,
+        userQuery: previewPrompt,
+        ips: ['101.254.114.238'],
+        ipRanges: [],
+        start: 1788493200,
+        end: 1788493500,
+        timeRange: {
+          key: 'last5minutes',
+          start: 1788493200,
+          end: 1788493500
+        }
+      },
+      preview: {
+        ok: true,
+        empty: false,
+        overview: { rowCount: 101 },
+        risk: { level: 'unknown', recommendation: 'CONFIRM_DOWNLOAD' }
+      },
+      decision: { next_action: 'CONFIRM_DOWNLOAD' },
+      error: { code: 'PACKET_PREVIEW_REQUIRES_CONFIRMATION' },
+      narrationInput: { schema: 'openclaw_napm_packet_analysis.v1' }
+    }, scope, 'napm-packet-analysis', previewTurnId);
+
+    const followUpCtx = { ...previewCtx, runId: 'packet-download-confirmation-run' };
+    const followUpPrompt = '进行下载分析！';
+    hooks.get('message_received')({ content: followUpPrompt }, followUpCtx);
+    await hooks.get('before_prompt_build')({ prompt: followUpPrompt }, followUpCtx);
+
+    const modelParams = {
+      prompt: previewPrompt,
+      mode: 'preview_download_analyze',
+      criteria: {
+        ips: ['203.0.113.99'],
+        timeRange: { key: 'last5minutes' }
+      }
+    };
+    const firstBound = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-download-confirmation-1',
+      params: modelParams
+    }, followUpCtx);
+    const secondBound = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-download-confirmation-2',
+      params: modelParams
+    }, followUpCtx);
+
+    expect(firstBound.block).not.toBe(true);
+    expect(firstBound.params).toMatchObject({
+      mode: 'preview_download_analyze',
+      previewRiskAccepted: true,
+      criteria: {
+        ips: ['101.254.114.238'],
+        ipRanges: [],
+        start: 1788493200,
+        end: 1788493500
+      }
+    });
+    expect(firstBound.params.criteria.timeRange).toBeUndefined();
+    expect(firstBound.params.prompt).toContain('数据包');
+    expect(firstBound.params.traceId).toBeTruthy();
+    expect(plugin.__test__.queryTurnCoordinator.get(
+      scope,
+      plugin.__test__.getTrustedTurnId(firstBound.params)
+    )).toMatchObject({ route: 'OTHER_SKILL' });
+
+    const completedResult = {
+      ok: true,
+      mode: 'preview_download_analyze',
+      criteria: firstBound.params.criteria,
+      preview: { ok: true, empty: false, overview: { rowCount: 101 } },
+      download: { ok: true, fileName: 'capture.pcap', bytes: 2048 },
+      analysis: {
+        ok: true,
+        capinfos: { number_of_packets: '42' },
+        protocolHierarchy: ['eth frames:42 bytes:2048', '  ip frames:42 bytes:2048'],
+        endpoints: ['10.0.0.1 10 1024'],
+        conversations: ['10.0.0.1 <-> 10.0.0.2 10 1024'],
+        dnsQueries: [{ value: 'example.test', count: 2 }],
+        httpRows: ['example.test|/health|200'],
+        tlsSni: [{ value: 'example.test', count: 1 }]
+      },
+      narrationInput: { schema: 'openclaw_napm_packet_analysis.v1' }
+    };
+    const executeSpy = jest.spyOn(packetRuntime, 'handleSkillCall')
+      .mockImplementation(async () => completedResult);
+    const packetTool = hooks.tools.get('napm-packet-analysis');
+    const [firstResult, replayResult] = await Promise.all([
+      packetTool.execute('packet-download-confirmation-1', firstBound.params),
+      packetTool.execute('packet-download-confirmation-2', secondBound.params)
+    ]);
+
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(firstResult.details).toEqual(completedResult);
+    expect(replayResult.details).toEqual(completedResult);
+
+    const outgoing = await hooks.get('message_sending')({ content: 'I will summarize the packet.' }, followUpCtx);
+    expect(outgoing.content).toContain('下载完成：capture.pcap');
+    expect(outgoing.content).toContain('协议分析：已完成');
+    expect(outgoing.content).toContain('数据包数：42 个');
+    expect(outgoing.content).toContain('协议层级：eth frames:42 bytes:2048');
+    expect(outgoing.content).toContain('DNS 查询：example.test（2 次）');
+    expect(outgoing.content).toContain('HTTP 记录：example.test|/health|200');
+    expect(outgoing.content).toContain('TLS SNI：example.test（1 次）');
+  });
+
+  test('does not authorize a bare download command without a pending packet preview', async () => {
+    const hooks = createHarness();
+    const ctx = {
+      ...createContext(),
+      conversationId: 'packet-no-pending-conversation',
+      runId: 'packet-no-pending-run'
+    };
+    const prompt = '进行下载分析！';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const guarded = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-no-pending',
+      params: {
+        prompt,
+        mode: 'preview_download_analyze',
+        previewRiskAccepted: true,
+        criteria: {
+          ips: ['203.0.113.99'],
+          start: 1788493200,
+          end: 1788493500,
+          previewRiskAccepted: true
+        }
+      }
+    }, ctx);
+
+    expect(guarded).toMatchObject({ block: true });
+  });
+
+  test('strips model-provided packet preview confirmation from an initial request', async () => {
+    const hooks = createHarness();
+    const ctx = {
+      ...createContext(),
+      conversationId: 'packet-untrusted-confirmation-conversation',
+      runId: 'packet-untrusted-confirmation-run'
+    };
+    const prompt = '分析 101.254.114.238 最近5分钟的数据包情况';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    const guarded = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-untrusted-confirmation',
+      params: {
+        prompt,
+        mode: 'preview_download_analyze',
+        previewRiskAccepted: true,
+        packetQuery: {
+          previewRiskAccepted: true,
+          criteria: { previewRiskAccepted: true }
+        },
+        criteria: {
+          ips: ['101.254.114.238'],
+          timeRange: { key: 'last5minutes' },
+          previewRiskAccepted: true
+        }
+      }
+    }, ctx);
+
+    expect(guarded.block).not.toBe(true);
+    expect(guarded.params.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.criteria.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.packetQuery.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.packetQuery.criteria.previewRiskAccepted).toBeUndefined();
+  });
+
+  test('does not accept confirmation for a preview that requires a narrower time range', async () => {
+    const hooks = createHarness();
+    const previewCtx = {
+      ...createContext(),
+      conversationId: 'packet-narrow-range-conversation',
+      runId: 'packet-narrow-range-preview-run'
+    };
+    const previewPrompt = '分析 101.254.114.238 最近1小时的数据包情况';
+    hooks.get('message_received')({ content: previewPrompt }, previewCtx);
+    await hooks.get('before_prompt_build')({ prompt: previewPrompt }, previewCtx);
+    const previewBound = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-narrow-range-preview',
+      params: {
+        prompt: previewPrompt,
+        mode: 'preview_download_analyze',
+        criteria: {
+          ips: ['101.254.114.238'],
+          start: 1788489900,
+          end: 1788493500
+        }
+      }
+    }, previewCtx);
+    plugin.__test__.rememberSkillResult(previewPrompt, {
+      ok: false,
+      mode: 'preview_download_analyze',
+      criteria: previewBound.params.criteria,
+      preview: {
+        ok: true,
+        empty: false,
+        overview: { rowCount: 101 },
+        risk: { level: 'high', recommendation: 'SUGGEST_NARROW_TIME_RANGE' }
+      },
+      decision: { next_action: 'SUGGEST_NARROW_TIME_RANGE' },
+      error: { code: 'PACKET_PREVIEW_TOO_LARGE' },
+      narrationInput: { schema: 'openclaw_napm_packet_analysis.v1' }
+    }, plugin.__test__.getTrustedConversationKey(previewBound.params), 'napm-packet-analysis',
+    plugin.__test__.getTrustedTurnId(previewBound.params));
+
+    const followUpCtx = { ...previewCtx, runId: 'packet-narrow-range-confirm-run' };
+    const followUpPrompt = '确认下载！';
+    hooks.get('message_received')({ content: followUpPrompt }, followUpCtx);
+    await hooks.get('before_prompt_build')({ prompt: followUpPrompt }, followUpCtx);
+    const guarded = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-narrow-range-confirm',
+      params: {
+        prompt: followUpPrompt,
+        mode: 'preview_download_analyze',
+        previewRiskAccepted: true,
+        criteria: previewBound.params.criteria
+      }
+    }, followUpCtx);
+
+    expect(guarded.params?.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params?.criteria?.previewRiskAccepted).toBeUndefined();
   });
 
   test('replaces model planning text with the current packet result exactly once', async () => {

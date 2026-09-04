@@ -32,6 +32,9 @@ OpenClaw and the shared runtime own:
 
 - Natural-language understanding.
 - Follow-up context inheritance.
+- Download-confirmation continuation state. A short confirmation is valid only when the latest ordinary packet result in the same conversation has `preview.ok=true`, `preview.empty=false`, and `decision.next_action=CONFIRM_DOWNLOAD`.
+- Reusing the previewed target and the exact materialized Unix-second `start/end` on confirmation. Remove relative `timeRange` declarations for the confirmation execution; do not move the window forward.
+- Supplying trusted `previewRiskAccepted=true` only after that state check. Model-provided confirmation flags on an initial request are untrusted and must be removed.
 - Passing the original prompt or a canonical `timeRange.key` to the packet runtime. The shared `ResolvedQueryTimeRangeService` resolves relative ranges against the server clock and minute-aligns the resulting Unix seconds; callers must not calculate timestamps with shell/date or model arithmetic.
 - Clarification when target IP, IP range, event ID, or time range is missing.
 - Final Chinese narration.
@@ -204,6 +207,9 @@ Optional for richer file metadata:
 - Page parameter `iprangs` is normalized to API parameter `ipRanges`.
 - `packetsDown` is treated as a file stream, not JSON.
 - Real `packetsDown` downloads must pass the preview gate by default. Empty preview means "no downloadable packet data for the requested scope/time range"; do not download.
+- A confirmed ordinary packet continuation must reuse the prior preview criteria and fixed `start/end`, then run `packetsDown` and tshark through the same `napm-packet-analysis` Tool. The user does not need to repeat the IP, workgroup, or time range.
+- `SUGGEST_NARROW_TIME_RANGE` is not confirmable through the ordinary short-confirmation path; require a narrower range and a new preview.
+- Duplicate packet Tool executions bound to the same conversation scope and turn are one logical operation and must not download or analyze twice.
 - A NetInside dashboard preview is an outer array of widgets. The `TA/TB/Data` dataset contains communication rows and the `TN/Data/IPConv` dataset contains endpoint rows; never count the outer widgets as packet or communication records.
 - `preview.overview.trafficSummary.trafficBytes` is the sum of the preview communication rows' `Data` values. It is observed preview traffic, not an estimated pcap/download size and not a packet count.
 - Direction summaries are derived only from the resolved `criteria.ips` and `criteria.ipRanges`: target to external is outbound, external to target is inbound, and target to target is internal.

@@ -40,6 +40,8 @@
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Coordinator 生成最终内容并 exactly-once 交付。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会记录契约违规，`REPAIR_PENDING` 会记录校验失败，`EXECUTING` 无结果会记录执行失败；后到结果不得覆盖终态。其他 Skill 的轮次不由普通查询 Coordinator 抢交付。
 - NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。`pageViews` 的 `RESULT/NO_DATA` 也由 Query Turn 生成并 exactly-once 交付。
 - 普通用户问题不要使用 shell、curl 或直接 NetInside WebService 调用。
+- 普通数据包“分析”请求先由 `napm-packet-analysis` 预览；若结果要求 `CONFIRM_DOWNLOAD`，用户下一轮可回复“进行下载分析”“确认下载”或“继续分析”。插件只从同一会话最近的有效 packet 预览恢复目标和固定 `start/end`，并注入可信确认；不重新计算“最近 5 分钟”，也不接受模型自行设置 `previewRiskAccepted`。高风险 `SUGGEST_NARROW_TIME_RANGE` 必须先缩小时间范围，不能用普通确认绕过。
+- 同一 packet Query Turn 的重叠或重复 Tool 调用只执行一次 Skill。下载成功后的确定性答复读取实际 `analysis`，至少说明协议分析状态和可用的包数，并按结果展示协议层级、端点、会话、DNS、HTTP 与 TLS SNI 摘要。
 
 ## 本机关键路径
 
