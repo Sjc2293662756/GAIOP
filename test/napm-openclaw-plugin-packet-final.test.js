@@ -31,6 +31,32 @@ describe('NAPM packet deterministic final reply', () => {
     };
   }
 
+  test.each([
+    '确认下载，进行分析！',
+    '请把刚才预览的数据包下载下来并做协议解析',
+    '上一轮预览没有问题，直接执行下载分析',
+    '可以开始下载这个 pcap 文件并分析吗',
+    '按之前的预览结果继续处理',
+    '好的，继续',
+    'go ahead and download and analyze the preview'
+  ])('recognizes contextual packet download intent: %s', (prompt) => {
+    expect(plugin.__test__.parsePacketDownloadConfirmationIntent(prompt)).toMatchObject({
+      accepted: true
+    });
+  });
+
+  test.each([
+    '下载了吗？',
+    '不要下载，先只看预览',
+    '重新分析 203.0.113.99 最近5分钟的数据包',
+    '帮我分析一下为什么下载失败',
+    '预览流量有多少？'
+  ])('does not treat a status, negative, or new packet request as confirmation: %s', (prompt) => {
+    expect(plugin.__test__.parsePacketDownloadConfirmationIntent(prompt)).toMatchObject({
+      accepted: false
+    });
+  });
+
   test('canonicalizes a misclassified workgroup and blocks shell bypass', async () => {
     const hooks = createHarness();
     const ctx = createContext();

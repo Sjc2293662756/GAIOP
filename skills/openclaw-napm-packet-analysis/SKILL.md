@@ -32,7 +32,8 @@ OpenClaw and the shared runtime own:
 
 - Natural-language understanding.
 - Follow-up context inheritance.
-- Download-confirmation continuation state. A short confirmation is valid only when the latest ordinary packet result in the same conversation has `preview.ok=true`, `preview.empty=false`, and `decision.next_action=CONFIRM_DOWNLOAD`.
+- Download-confirmation continuation state. The plugin first checks the latest ordinary packet result in the same conversation for `preview.ok=true`, `preview.empty=false`, and `decision.next_action=CONFIRM_DOWNLOAD`; only then does it interpret the user's current message as a confirmation intent. Confirmation wording is action-based rather than a fixed phrase list: it may combine approval/continuation actions (确认、同意、允许、批准、开始、继续、执行、进行、请、可以、好的、按上一轮处理, and English equivalents) with packet actions (下载、导出、获取、保存、抓取、拉取、提取、落盘、分析、解析、解码、协议分析, and English equivalents), with punctuation and connective words such as “，进行” allowed.
+- Negative, status-only, diagnostic, retry/replacement, or new-target/time messages are not confirmations; they start or require a separate packet request instead of inheriting the pending download.
 - Reusing the previewed target and the exact materialized Unix-second `start/end` on confirmation. Remove relative `timeRange` declarations for the confirmation execution; do not move the window forward.
 - Supplying trusted `previewRiskAccepted=true` only after that state check. Model-provided confirmation flags on an initial request are untrusted and must be removed.
 - Passing the original prompt or a canonical `timeRange.key` to the packet runtime. The shared `ResolvedQueryTimeRangeService` resolves relative ranges against the server clock and minute-aligns the resulting Unix seconds; callers must not calculate timestamps with shell/date or model arithmetic.

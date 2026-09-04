@@ -503,6 +503,65 @@ function normalizeAlertPacketCommand(prompt = '') {
     .trim();
 }
 
+/**
+ * Interpret a possible packet-download continuation as an action, not as a
+ * fixed phrase. This function deliberately does not authorize anything on
+ * its own: buildPendingPacketDownloadContext() still requires a fresh,
+ * same-scope preview whose decision is CONFIRM_DOWNLOAD. The result here is
+ * only a conservative semantic signal for that context gate.
+ */
+function parsePacketDownloadConfirmationIntent(prompt = '') {
+  const text = normalizeAlertPacketCommand(prompt);
+  if (!text) {
+    return { accepted: false, reason: 'empty' };
+  }
+
+  const hasDownloadAction = /(?:下载|导出|获取|保存|抓取|拉取|提取|落盘|download|export|fetch|save|retrieve)/i.test(text);
+  const hasAnalysisAction = /(?:分析|解析|解码|检查|查看|研判|协议|抓包分析|analy[sz]e|decode|inspect|pcap|tshark)/i.test(text);
+  const hasApprovalAction = /(?:确认|同意|允许|批准|开始|继续|执行|进行|直接|请|帮我|麻烦|可以|能否|能够|好的?|好吧|行|没问题|收到|是的|按(?:照|着)|依照|处理|proceed|go\s*ahead|continue|start|please|yes|ok(?:ay)?|sure)/i.test(text);
+  const hasContinuationAction = /(?:确认|同意|允许|批准|开始|继续|执行|进行|直接|可以|能否|能够|proceed|go\s*ahead|continue|start|please)/i.test(text);
+  const refersPreviousPreview = /(?:刚才|刚刚|上一轮|上一条|之前|前面|预览|预览结果|已预览|这个|该|上述|对应的|上一份|previous|last|prior|preview|above|it)/i.test(text);
+  const hasExplicitNewScope = /(?:\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:start|end)\s*[:=]|最近\s*(?:\d+\s*(?:分钟|小时|天)|一小时|半小时)|从[^，。；;]+到[^，。；;]+|时间范围|换成|改查|另查|另一个|另一个目标|new\s+ip|another\s+ip|different\s+target)/i.test(text);
+  const hasNegativeAction = /(?:不要|别|无需|不用|不需要|暂不|先不|取消|停止|拒绝|免得|只(?:看|做)分析|仅分析|不下载|不做分析|without|don't|do\s+not|not\s+download|cancel|stop)/i.test(text);
+  const hasDiagnosticCue = /(?:为什么|为何|原因|失败|报错|错误|异常|无法|问题|排查|故障|why|failure|failed|error|unable|problem|diagnos)/i.test(text);
+  const hasStatusOnlyQuestion = /(?:下载了吗|分析了吗|完成了吗|是否已经|有没有下载|有没有分析|什么结果|什么状态|进展如何|status|finished|done)/i.test(text)
+    && !hasApprovalAction
+    && !(hasDownloadAction && hasAnalysisAction);
+  const hasRetryOrReplacementCue = /(?:重新|重试|另一个|另一条|新的|换一个|改为|改查|retry|again|another|new\s+query|different)/i.test(text);
+  const isBareAcknowledgement = /^(?:确认|继续|开始|执行|同意|好的?|好吧|行|可以|没问题|收到|明白|是的|yes|ok(?:ay)?|sure)$/i.test(text);
+
+  if (hasNegativeAction) {
+    return { accepted: false, reason: 'negative_action', text };
+  }
+  if (hasExplicitNewScope) {
+    return { accepted: false, reason: 'new_scope', text };
+  }
+  if (hasRetryOrReplacementCue && !refersPreviousPreview) {
+    return { accepted: false, reason: 'new_or_retry_request', text };
+  }
+  if (hasStatusOnlyQuestion) {
+    return { accepted: false, reason: 'status_question', text };
+  }
+  if (hasDiagnosticCue && !hasContinuationAction) {
+    return { accepted: false, reason: 'diagnostic_request', text };
+  }
+
+  const combinedDownloadAnalysis = hasDownloadAction && hasAnalysisAction;
+  const contextualAction = refersPreviousPreview && (hasDownloadAction || hasAnalysisAction || hasApprovalAction);
+  const explicitAction = hasApprovalAction && (hasDownloadAction || hasAnalysisAction || refersPreviousPreview || hasContinuationAction);
+  const accepted = isBareAcknowledgement || combinedDownloadAnalysis || contextualAction || explicitAction;
+
+  return {
+    accepted,
+    reason: accepted ? 'action_intent' : 'no_action_intent',
+    text,
+    hasDownloadAction,
+    hasAnalysisAction,
+    hasApprovalAction,
+    refersPreviousPreview
+  };
+}
+
 function isAlertPacketBatchPrompt(prompt = '', previousState = null) {
   const text = normalizeAlertPacketCommand(prompt);
   if (!text) return false;
@@ -538,9 +597,7 @@ function buildAlertPacketContinuationPrompt(prompt = '', previousState = null) {
 }
 
 function isPacketDownloadConfirmationPrompt(prompt = '') {
-  const text = normalizeAlertPacketCommand(prompt);
-  if (!text) return false;
-  return /^(?:开始分析|进行(?:下载)?分析|继续(?:下载(?:并)?分析|下载|分析)?|确认(?:继续)?(?:分析|下载(?:(?:并)?\s*分析|\s*进行(?:\s*下载)?\s*分析)?)?|下载(?:并)?分析|下载|同意(?:下载|分析)?|可以(?:下载|分析)?)$/i.test(text);
+  return parsePacketDownloadConfirmationIntent(prompt).accepted;
 }
 
 function buildPendingPacketDownloadContext(prompt = '', conversationKey = '') {
@@ -9923,6 +9980,7 @@ module.exports.__test__ = {
   buildPacketAnalysisReply,
   buildPacketFinalReply,
   normalizePacketToolParams,
+  parsePacketDownloadConfirmationIntent,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,
