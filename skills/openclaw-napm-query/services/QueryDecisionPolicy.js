@@ -151,6 +151,56 @@ function validateMultiGroupQueryContract(queryDraft = {}) {
   };
 }
 
+function validateSemanticTargetPathConsistency(queryDraft = {}, classifiedWorkflow = {}) {
+  const service = String(queryDraft?.service || '').trim();
+  if (!['topValues', 'averageValues', 'timeValues'].includes(service)) return { ok: true };
+
+  const groups = Array.isArray(queryDraft?.groups) ? queryDraft.groups.filter(Boolean) : [];
+  const terminalGroupType = normalizeObjectType(groups[groups.length - 1]?.type);
+  if (!terminalGroupType) return { ok: true };
+
+  const declaredWorkflowType = String(queryDraft?.semanticConstraints?.workflowType || '').trim();
+  const classifiedWorkflowType = String(classifiedWorkflow?.workflowType || '').trim();
+  const metricWorkflowTypes = new Set(['metric_topn', 'metric_average', 'metric_timeseries']);
+  const workflowType = metricWorkflowTypes.has(classifiedWorkflowType)
+    ? classifiedWorkflowType
+    : declaredWorkflowType;
+  if (!metricWorkflowTypes.has(workflowType)) return { ok: true };
+
+  const classifiedTargetType = metricWorkflowTypes.has(classifiedWorkflowType)
+    ? normalizeObjectType(classifiedWorkflow?.targetObjectType)
+    : '';
+  const declaredTargetType = normalizeObjectType(queryDraft?.semanticConstraints?.targetObjectType);
+  const requestedTargetType = classifiedTargetType || declaredTargetType;
+  if (!requestedTargetType || requestedTargetType === terminalGroupType) return { ok: true };
+
+  const sourceObjectType = normalizeObjectType(queryDraft?.sourceReference?.objectType);
+  const validatedReferenceObjectType = normalizeObjectType(
+    queryDraft?.executionBinding?.resultReferenceObjectType
+  );
+  const explicitlyAuthorizedDrilldown = String(queryDraft?.semanticConstraints?.operation || '').trim() === 'drilldown'
+    && queryDraft?.semanticConstraints?.drilldownRequested === true
+    && String(queryDraft?.pathPlanning?.followUpAction || '').trim() === 'drilldown'
+    && Boolean(String(queryDraft?.sourceReference?.resultSetId || '').trim())
+    && sourceObjectType === requestedTargetType
+    && queryDraft?.executionBinding?.resultReferenceValidated === true
+    && validatedReferenceObjectType === sourceObjectType;
+  if (explicitlyAuthorizedDrilldown) return { ok: true };
+
+  return {
+    ok: false,
+    reason: 'semantic_target_path_mismatch',
+    code: 'SEMANTIC_TARGET_PATH_MISMATCH',
+    message: `查询终端对象 ${terminalGroupType} 与本轮请求对象 ${requestedTargetType} 不一致，且没有可信下钻授权。`,
+    details: {
+      service,
+      workflowType,
+      requestedTargetType,
+      terminalGroupType
+    }
+  };
+}
+
 function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
   if (!isPlainObject(queryDraft)) return { ok: true };
 
@@ -194,6 +244,30 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
     };
   }
 
+  if (classifiedWorkflow.requiresResultReference === true) {
+    const sourceObjectType = normalizeObjectType(queryDraft?.sourceReference?.objectType);
+    const validatedObjectType = normalizeObjectType(
+      queryDraft?.executionBinding?.resultReferenceObjectType
+    );
+    if (
+      queryDraft?.executionBinding?.resultReferenceValidated !== true
+      || sourceObjectType !== 'WebApplication'
+      || validatedObjectType !== sourceObjectType
+    ) {
+      return {
+        ok: false,
+        reason: 'result_reference_required',
+        code: 'RESULT_REFERENCE_REQUIRED',
+        message: '排名序号下钻必须从当前 Query Turn 冻结的 WebApplication 权威结果集中解析，不能由调用方补造业务名称或来源。',
+        details: {
+          expectedObjectType: 'WebApplication',
+          actualObjectType: sourceObjectType || null,
+          referenceValidated: queryDraft?.executionBinding?.resultReferenceValidated === true
+        }
+      };
+    }
+  }
+
   const inventoryValidation = validateObjectInventorySemanticContract(
     semanticPrompt,
     queryDraft,
@@ -231,6 +305,9 @@ function evaluateHighRiskSemanticConsistency(prompt = '', queryDraft = {}) {
         : '应用流量趋势或平均值不能使用 TotalTraffic 范围；缺少应用名称时必须先澄清。'
     };
   }
+
+  const targetPathValidation = validateSemanticTargetPathConsistency(queryDraft, classifiedWorkflow);
+  if (!targetPathValidation.ok) return targetPathValidation;
 
   return { ok: true };
 }

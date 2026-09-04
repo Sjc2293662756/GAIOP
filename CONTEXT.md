@@ -60,17 +60,21 @@ _Avoid_: validate-then-dedupe, second execution attempt, replay-owned southbound
 The successful data returned by the NAPM execution adapter for a turn. `RESULT` and `NO_DATA` both produce authoritative `finalContent`; a later failed Query Attempt cannot replace either result.
 _Avoid_: latest attempt, cached failure, ConversationOperationState as query reply source
 
-**Page Family Result Set**:
-The minimal authoritative projection retained after a successful `topValues` query whose terminal group is `PageFamily`. It contains only `resultSetId`, source turn, inherited time range, ordinal, row reference, label, and resolved `pageFamilyId`; it is frozen when a follow-up Query Turn begins, scoped to one conversation, and expires after 30 minutes.
-_Avoid_: full cached result rows, conversation-latest lookup during execution, model-invented pageFamilyId
+**Authoritative Ranking Result Set**:
+The minimal projection retained after a successful `topValues` query whose terminal group is `WebApplication` or `PageFamily`. It contains only `resultSetId`, source turn, inherited time range, object type, ordinal, row reference, label, and the required follow-up value: a business argument for `WebApplication`, or `pageFamilyId` for `PageFamily`. TopN rows are numerically normalized and reranked before storage. The set is frozen when a follow-up Query Turn begins, scoped to one conversation, and expires after 30 minutes.
+_Avoid_: full cached result rows, unnormalized upstream order, conversation-latest lookup during execution, model-invented object argument or pageFamilyId
 
 **Page View Detail Query**:
 The executable `service=pageViews`, `queryModeKey=detail` request for visit instances under one Page Family. It requires a trusted numeric `pageFamilyId`, minute-aligned root time range, and validated `maxLimit`; it has no groups, metrics, topMetric, or granularity. `PageFamilyDetail` is not a group type. Returned `pageFamilyDetailId` identifies one visit and may support a later packet action.
 _Avoid_: PageFamilyDetail drilldown, metric query, page-family aggregate ranking
 
 **Result Reference**:
-The ordinal selection `{resultSetId?, objectType:"PageFamily", ordinal}` used by a page-detail follow-up. The plugin resolves it against the current Query Turn's frozen source set before time materialization and execution. Invalid, expired, cross-scope, wrong-type, or out-of-range references fail closed without a Query Skill or southbound call.
-_Avoid_: raw pageFamilyId guessed from prose, mutable latest-result pointer, cross-conversation reference
+An ordinal selection from the current Query Turn's frozen source set. `{objectType:"WebApplication", ordinal}` selects a business for the explicit `WebApplication > PageFamilies > PageFamily` drilldown; `{objectType:"PageFamily", ordinal}` selects a page for `pageViews`. The plugin resolves it before time materialization and execution, strips caller-supplied provenance flags, and issues the trusted `sourceReference`. Invalid, expired, cross-scope, wrong-type, or out-of-range references fail closed without a Query Skill or southbound call.
+_Avoid_: raw object names or pageFamilyId guessed from prose, caller-authored sourceReference, mutable latest-result pointer, cross-conversation reference
+
+**TopN Normalization**:
+The deterministic ordering applied to every `topValues` result before narration or ranking-result storage. Values are parsed numerically using `topMetric`, structured ascending/descending intent determines direction, source ranks are replaced, ties remain stable, and blank/missing values stay last. The narration object type is the effective terminal group.
+_Avoid_: string sorting, trusting upstream row order, treating blank values as zero, labeling a terminal PageFamily result as WebApplication
 
 **Contract Violation**:
 The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call, or after the Tool call was accepted but before its adapter started execution. It produces a safe final response and never fabricates data or starts a southbound request. If adapter execution already started but no result exists at final output, the distinct terminal outcome is `EXECUTION_FAILURE`.
@@ -110,4 +114,8 @@ Developer: “The new run is bound to a new turn. The model supplies `clarificat
 
 Domain expert: “页面排行后只说‘详细查看第一名的前 20 个’会怎样？”
 
-Developer: “The new Query Turn freezes the prior Page Family Result Set. The model supplies an ordinal Result Reference; the plugin resolves its trusted `pageFamilyId`, inherits the source time range, and executes one `pageViews` request with `maxLimit=20`.”
+Developer: “The new Query Turn freezes the prior Authoritative Ranking Result Set. The model supplies a `PageFamily` Result Reference; the plugin resolves its trusted `pageFamilyId`, inherits the source time range, and executes one `pageViews` request with `maxLimit=20`.”
+
+Domain expert: “第一轮问哪些业务页面访问量最高，第二轮只问排名第一的都访问了什么，会怎样？”
+
+Developer: “The first turn returns a normalized `WebApplication` ranking. The second turn resolves ordinal 1 from that frozen set, fills the business argument, and executes the validated path to a `PageFamily` ranking. It never treats the first question as an implicit page drilldown.”

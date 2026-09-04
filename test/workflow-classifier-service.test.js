@@ -122,4 +122,15 @@ describe('WorkflowClassifierService', () => {
       targetObjectType: 'PageFamily'
     });
   });
+
+  test('classifies an ordinal business-result follow-up as a PageFamily drilldown', () => {
+    expect(WorkflowClassifierService.classifyWorkflow('排名第一的都访问了什么')).toMatchObject({
+      workflowType: 'metric_topn',
+      operation: 'drilldown',
+      drilldownRequested: true,
+      targetObjectType: 'PageFamily',
+      requiresResultReference: true,
+      reason: 'ranked_result_page_drilldown_intent'
+    });
+  });
 });

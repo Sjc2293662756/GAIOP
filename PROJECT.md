@@ -8,9 +8,9 @@
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
 2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId`。缺少生命周期身份或绑定时在时间物化、校验和 Skill 调用之前 fail-closed。
-3. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围、可选下钻路径或页面结果引用的 Query Draft，澄清续答则只传 `clarificationAnswer`。
+3. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围、可选下钻路径或权威排行结果引用的 Query Draft，澄清续答则只传 `clarificationAnswer`。
 4. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
-5. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `PageFamily` 结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
+5. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
 6. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
 7. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
 
@@ -60,7 +60,9 @@
 
 页面访问实例详情是一等 Query 服务：`service=pageViews`、`queryModeKey=detail`，要求分钟对齐的根级 `start/end`、可信数字型 `pageFamilyId`，以及正整数 `maxLimit`。缺省条数为 20，本地保护上限为 200，但该上限不代表已确认的上游正式限制。详情请求不接受 metrics、groups、topMetric 或 granularity；`PageFamilyDetail` 不是 group。`WorkflowClassifierService` 统一输出 `page_view_detail/detail_list`，Query Decision、Hook 和直接 execute 使用同一策略。
 
-页面排行成功后，`QueryTurnCoordinator` 只保存 `PageFamily` 行的最小投影，并生成 `resultSetId/rowRef/ordinal`。新 Query Turn 创建时冻结来源结果集；插件在时间物化和 Skill 调用前解析序号引用、继承来源时间范围并生成 `sourceReference`。结果集单独保留 30 分钟，缺失、过期、跨 conversation scope、对象类型错误或序号越界均 fail-closed，Query Skill、`NapmClient` 和南向调用次数为 0。Coordinator 通过插件注入的共享 ID 解析器工作，不相对依赖安装目录外的 Skill tree。
+业务或页面 TopN 成功后，Query Skill 先按 `topMetric` 数值和结构化排序方向归一化行顺序、重排 rank，并把空白或缺失指标值置于末尾；叙述对象取实际终端 group。`QueryTurnCoordinator` 随后保存 `WebApplication` 或 `PageFamily` 行的最小投影并生成 `resultSetId/rowRef/ordinal`。新 Query Turn 创建时冻结来源结果集；插件在时间物化和 Skill 调用前解析序号引用、继承来源时间范围并生成仅由插件签发的 `sourceReference`。结果集单独保留 30 分钟，缺失、过期、跨 conversation scope、对象类型错误或序号越界均 fail-closed，Query Skill、`NapmClient` 和南向调用次数为 0。Coordinator 通过插件注入的共享 ID 解析器工作，不相对依赖安装目录外的 Skill tree。
+
+业务页面访问量的标准三轮链路是：第一轮 `topValues + WebApplication + PGNPGE` 返回业务排行；第二轮“排名第一的都访问了什么”使用 `resultReference={objectType:"WebApplication",ordinal:1}`，由插件补入业务名并执行经静态树验证的 `WebApplication > PageFamilies > PageFamily`；第三轮“详细查看排名第一页面的前 20 个访问实例”使用 `resultReference={objectType:"PageFamily",ordinal:1}`，由插件解析可信 `pageFamilyId` 后执行 `pageViews`。调用方提供的 `sourceReference` 和验证标记一律移除，不能伪造下钻授权。
 
 `skills/shared/NapmPageViewsContract.js` 是 Query、Fault Diagnosis 和 Packet Analysis 的共享契约，统一 `pageFamilyId`/`pageFamilyDetailId` 提取、`maxLimit`、请求参数和访问行字段。故障诊断按 4xx/5xx 类别读取规范化 `httpStatus/http400S/http500S`；数据包路径不再发送 `maxLimit=undefined`。
 
@@ -111,7 +113,7 @@ Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Tur
 - 对"有哪些""列表""目录"类问题，优先给分类和代表项，再给下一步查询建议。
 - 对"为什么慢/异常/失败"类问题，先列可能原因，再建议下钻路径。
 - 对"详细点/继续/下钻"类追问，沿用上一轮对象、指标和时间范围，除非用户明确改变条件。
-- 对页面排行后的“详细查看第 N 个/前 N 个访问实例”，使用上一轮权威页面结果引用执行 `pageViews`；引用失效时要求重新查询页面排行，不猜测 ID。
+- 对业务排行后的“排名第 N 的业务访问了什么”，使用上一轮权威业务结果引用执行页面族排行；对页面排行后的“详细查看第 N 个/前 N 个访问实例”，使用上一轮权威页面结果引用执行 `pageViews`。引用失效时要求重新查询对应排行，不猜测对象名或 ID。
 - 查询不到数据时，优先提示检查时间范围、对象类型、指标映射和数据延迟。
 - 报告类请求（综述/日报/周报/巡检/故障诊断）走对应的报告生成链路，不走纯文本回答。
 - 命名单对象综述和故障报告必须通过 NAPM 动态对象目录确认 `groupType/groupArgument`；对象不存在、同名歧义或目录不可用时禁止降级为整体/全局报告。

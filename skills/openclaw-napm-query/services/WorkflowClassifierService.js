@@ -47,6 +47,12 @@ function hasPageViewDetailIntent(text = '') {
   return explicitDetail || rankedPageDetail;
 }
 
+function hasRankedResultPageDrilldownIntent(text = '') {
+  const hasOrdinalReference = /(?:排名|排行)?第\s*[一二三四五六七八九十\d]+|排名(?:第一|首位)|排行(?:第一|首位)/.test(text);
+  const asksVisitedPages = /(?:都|具体)?访问了(?:什么|哪些)|访问(?:的)?(?:页面|地址|URL)|有哪些页面/i.test(text);
+  return hasOrdinalReference && asksVisitedPages;
+}
+
 function matchAlertPacketIntent(text = '') {
   if (!/告警/i.test(text) || !/(?:数据包|报文|抓包|pcap|\.cap\b)/i.test(text)) {
     return null;
@@ -104,6 +110,19 @@ function classifyWorkflow(prompt = '') {
       targetObjectType: targetObjectType || 'PageFamily',
       confidence: 0.95,
       reason: 'page_view_detail_intent'
+    };
+  }
+
+  if (hasRankedResultPageDrilldownIntent(text)) {
+    return {
+      ...structuredIntent,
+      workflowType: 'metric_topn',
+      operation: 'drilldown',
+      drilldownRequested: true,
+      targetObjectType: 'PageFamily',
+      requiresResultReference: true,
+      confidence: 0.95,
+      reason: 'ranked_result_page_drilldown_intent'
     };
   }
 

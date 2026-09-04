@@ -64,6 +64,36 @@ describe('execution boundary repair policy', () => {
     ]);
   });
 
+  test('preserves the requested target when an authorized path repair changes the terminal group', () => {
+    const request = RequirementParserService.normalizeTopLevelQueryShape({
+      service: 'topValues',
+      queryModeKey: 'topn',
+      executionOptions: { allowPathRepair: true },
+      groups: [{ type: 'WebApplication', argument: 'demo-web' }],
+      metrics: ['PGNPGE'],
+      metric: 'PGNPGE',
+      topMetric: 'PGNPGE',
+      topCount: 10,
+      userRequirement: '继续看这个业务系统下面的页面族',
+      semanticConstraints: {
+        workflowType: 'metric_topn',
+        operation: 'drilldown',
+        drilldownRequested: true,
+        targetObjectType: 'WebApplication'
+      }
+    });
+
+    expect(request.groups.map((group) => group.type)).toEqual([
+      'WebApplication',
+      'PageFamilies',
+      'PageFamily'
+    ]);
+    expect(request.semanticConstraints.targetObjectType).toBe('WebApplication');
+    expect(request.executionBinding).toMatchObject({
+      effectiveTerminalGroupType: 'PageFamily'
+    });
+  });
+
   test('should not fallback missing metric or groups without metadata repair permission', () => {
     const result = QueryMetadataConstraintService.constrain({
       service: 'topValues',
