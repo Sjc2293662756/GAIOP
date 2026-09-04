@@ -495,6 +495,11 @@ function normalizeAlertPacketCommand(prompt = '') {
     // (for example: "确认下载并分析；"). Strip only trailing punctuation so
     // the exact confirmation vocabulary remains fail-closed.
     .replace(/[!！。．.;；,，、…]+$/u, '')
+    // Treat punctuation used as a separator (for example the comma in
+    // "确认下载，进行分析") as whitespace; the confirmation grammar below
+    // still requires the complete command vocabulary.
+    .replace(/[;；,，、:：]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
     .trim();
 }
 
@@ -535,7 +540,7 @@ function buildAlertPacketContinuationPrompt(prompt = '', previousState = null) {
 function isPacketDownloadConfirmationPrompt(prompt = '') {
   const text = normalizeAlertPacketCommand(prompt);
   if (!text) return false;
-  return /^(?:开始分析|进行(?:下载)?分析|继续(?:下载(?:并)?分析|下载|分析)?|确认(?:继续)?(?:下载(?:并)?分析|下载|分析)?|下载(?:并)?分析|下载|同意(?:下载|分析)?|可以(?:下载|分析)?)$/i.test(text);
+  return /^(?:开始分析|进行(?:下载)?分析|继续(?:下载(?:并)?分析|下载|分析)?|确认(?:继续)?(?:分析|下载(?:(?:并)?\s*分析|\s*进行(?:\s*下载)?\s*分析)?)?|下载(?:并)?分析|下载|同意(?:下载|分析)?|可以(?:下载|分析)?)$/i.test(text);
 }
 
 function buildPendingPacketDownloadContext(prompt = '', conversationKey = '') {

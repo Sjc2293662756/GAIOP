@@ -81,7 +81,7 @@ describe('NAPM packet deterministic final reply', () => {
     expect(blocked).toMatchObject({ block: true });
   });
 
-  test('continues a confirmed packet preview with fixed criteria and executes the skill once', async () => {
+  test.each(['进行下载分析！', '确认下载并分析；', '确认下载，进行分析！'])('continues a confirmed packet preview with fixed criteria and executes the skill once (%s)', async (followUpPrompt) => {
     const hooks = createHarness();
     const previewCtx = createContext();
     previewCtx.runId = 'packet-preview-confirmation-run';
@@ -130,7 +130,6 @@ describe('NAPM packet deterministic final reply', () => {
     }, scope, 'napm-packet-analysis', previewTurnId);
 
     const followUpCtx = { ...previewCtx, runId: 'packet-download-confirmation-run' };
-    const followUpPrompt = '确认下载并分析；';
     hooks.get('message_received')({ content: followUpPrompt }, followUpCtx);
     await hooks.get('before_prompt_build')({ prompt: followUpPrompt }, followUpCtx);
 
@@ -192,6 +191,7 @@ describe('NAPM packet deterministic final reply', () => {
     };
     const executeSpy = jest.spyOn(packetRuntime, 'handleSkillCall')
       .mockImplementation(async () => completedResult);
+    executeSpy.mockClear();
     const packetTool = hooks.tools.get('napm-packet-analysis');
     const [firstResult, replayResult] = await Promise.all([
       packetTool.execute('packet-download-confirmation-1', firstBound.params),
