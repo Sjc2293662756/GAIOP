@@ -383,6 +383,90 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
+  test('admits a pending clarification answer even when the application name has no NAPM keyword', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [{ timestamp: 1787742000, value: 10 }],
+        error: null
+      });
+    const initialCtx = createCtx('run-non-keyword-clarification');
+    const initialPrompt = '最近 7 天应用流量趋势如何？';
+    await startTurn(initialCtx, initialPrompt);
+    const clarificationCall = callBeforeTool(initialCtx, 'non-keyword-clarification-call', {
+      prompt: initialPrompt,
+      queryDraft: buildTrendDraft('TotalTraffic')
+    });
+    await executeBound('non-keyword-clarification-call', clarificationCall);
+
+    const scope = plugin.__test__.getConversationKey(initialCtx);
+    expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeTruthy();
+    expect(southbound).not.toHaveBeenCalled();
+
+    const answerCtx = createCtx('run-non-keyword-answer');
+    await startTurn(answerCtx, '支付平台');
+    const guardState = plugin.__test__.getGuardState(answerCtx);
+    expect(guardState.turnAdmissionDecision).toMatchObject({
+      conversationKey: scope,
+      turnId: guardState.turnId,
+      runId: answerCtx.runId,
+      messageId: answerCtx.messageId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query',
+      intentType: 'query',
+      handling: 'single_tool',
+      workflow: 'query_clarification_continuation',
+      reasonCode: 'QUERY_CLARIFICATION_RESUMED',
+      classificationSchemaVersion: 'napm.domain-intent-classification.v1',
+      classificationSource: 'existing-domain-classifier-adapter'
+    });
+    expect(Object.isFrozen(guardState.turnAdmissionDecision)).toBe(true);
+
+    const resumedCall = callBeforeTool(answerCtx, 'non-keyword-answer-call', {
+      prompt: '支付平台',
+      clarificationAnswer: '支付平台'
+    });
+    expect(resumedCall.hookResult?.block).not.toBe(true);
+    expect(resumedCall.params.queryDraft).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
+      metrics: ['TPIO'],
+      timeRange: { key: 'last7days' }
+    });
+
+    const result = await executeBound('non-keyword-answer-call', resumedCall);
+    expect(result.details.ok).toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(southbound.mock.calls[0][0]).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
+      metrics: ['TPIO'],
+      timeRange: { key: 'last7days' }
+    });
+  });
+
+  test('does not admit a non-keyword application name without an authoritative pending query', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-non-keyword-without-pending');
+    await startTurn(ctx, '支付平台');
+
+    const guardState = plugin.__test__.getGuardState(ctx);
+    expect(guardState.turnAdmissionDecision).toMatchObject({
+      route: 'model_owned',
+      action: 'MODEL_OWNED',
+      expectedTool: null
+    });
+
+    const attemptedCall = callBeforeTool(ctx, 'non-keyword-without-pending-call', {
+      prompt: '支付平台',
+      clarificationAnswer: '支付平台'
+    });
+    expect(attemptedCall.hookResult).toMatchObject({ block: true });
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
   test('delivers a real Skill clarification as a normal clarification without southbound calls', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-skill-clarification');

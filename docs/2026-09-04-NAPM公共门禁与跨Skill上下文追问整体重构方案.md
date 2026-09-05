@@ -1053,6 +1053,7 @@ OpenClaw 管聊天会话和 Run
 - 同一 trace 下替换对象、指标、时间、Query Draft 或结果引用会返回 `QUERY_TOOL_PARAMETERS_MISMATCH`；缺少准入授权会返回 `TURN_ADMISSION_AUTHORIZATION_REQUIRED`。两类失败的 Query Skill、`NapmClient` 和南向调用均为 0。
 - 参数摘要递归按对象键排序，避免 JSON 键顺序变化产生无意义的不一致；数组顺序保留，因为 groups/path 本身有序。
 - 已处于 `EXECUTING` 或 `TERMINAL` 的同一授权重放仍优先返回执行中/既有权威结果，保持 exactly-once，不因重放参数损坏产生第二次调用。
+- 澄清续答不以回答文本是否命中 NAPM 关键词作为权限来源。只有 `QueryTurnCoordinator.resumePending()` 成功返回正式 Query Turn，`message_received` 才为新的 run/message 重建 `EXECUTE_TOOL + napm-skill-query` Decision；无 pending 的同样短句保持 `MODEL_OWNED` 并零南向调用。
 
 ### 27.4 跨 Skill 已实施的保护
 
@@ -1066,7 +1067,7 @@ OpenClaw 管聊天会话和 Run
 
 ### 27.6 验证结果与当前边界
 
-- `npm test -- --runInBand`：116 个测试套件、1041 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、结构化分类适配、伪造分类拒绝、平台身份 `MODEL_OWNED` 准入、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
+- `npm test -- --runInBand`：116 个测试套件、1043 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、结构化分类适配、伪造分类拒绝、平台身份 `MODEL_OWNED` 准入、非关键词澄清续答、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
 - `npm run lint`、`npm run verify:runtime-contract`、`git diff --check` 和新增运行时文件语法检查全部通过。
 - 当前不是“所有 Skill 的序号续操作均已迁移完成”。Query 已完成本阶段迁移，Alert 完成事件序号详情切片；Packet、Report、Inspection、Summary、Fault 继续使用现有领域状态。对于这些尚未迁移的结果，公共层只做保守澄清，禁止错误回退到更早的 Query 排行。
 - 当前公共解析器也不是完整自然语言指代系统；`这个/它/确认/取消/导出/下载` 的通用化仍属于阶段 3–5，必须随领域 pending、风险确认和 artifact 契约一起迁移，不能只加关键词。

@@ -32,9 +32,15 @@ const QueryContextResolver = require('./plugin/context-resolvers/QueryContextRes
 const AlertContextResolver = require('./plugin/context-resolvers/AlertContextResolver');
 const ContextBoundaryResolver = require('./plugin/context-resolvers/ContextBoundaryResolver');
 const {
+  CLASSIFICATION_SCHEMA_VERSION,
+  CLASSIFICATION_SOURCE,
   createDomainIntentClassificationAdapter
 } = require('./plugin/DomainIntentClassificationAdapter');
-const { resolveTurnIntent } = require('./plugin/TurnIntentResolver');
+const {
+  TURN_INTENT_HANDLING,
+  TURN_INTENT_TYPES,
+  resolveTurnIntent
+} = require('./plugin/TurnIntentResolver');
 
 const NAPM_DIRECT_SKILL_MODE = true;
 const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
@@ -3220,6 +3226,45 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
     turnNapmToolUsed: false,
     updatedAt: Date.now()
   };
+}
+
+function buildResumedQueryAdmissionState({
+  conversationKey = '',
+  turnId = '',
+  runId = '',
+  messageId = ''
+} = {}) {
+  const turnIntent = Object.freeze({
+    intentType: TURN_INTENT_TYPES.QUERY,
+    handling: TURN_INTENT_HANDLING.SINGLE_TOOL,
+    expectedTool: 'napm-skill-query',
+    workflowType: 'query_clarification_continuation',
+    operation: 'resume_clarification',
+    targetObjectType: null
+  });
+  const turnAdmissionDecision = turnAdmissionCoordinator.decide({
+    // Successful pending-query restoration is authoritative. The short answer
+    // must not be reinterpreted as a new cross-skill reference selection.
+    prompt: '',
+    baseDecision: {
+      route: TURN_ADMISSION_ROUTES.NAPM_CANDIDATE,
+      workflow: turnIntent.workflowType,
+      reasonCode: 'QUERY_CLARIFICATION_RESUMED',
+      expectedTool: turnIntent.expectedTool,
+      intentType: turnIntent.intentType,
+      handling: turnIntent.handling,
+      classificationSchemaVersion: CLASSIFICATION_SCHEMA_VERSION,
+      classificationSource: CLASSIFICATION_SOURCE
+    },
+    contextCandidates: [],
+    identity: {
+      conversationKey,
+      turnId,
+      runId,
+      messageId
+    }
+  });
+  return Object.freeze({ turnIntent, turnAdmissionDecision });
 }
 
 function getActiveTurnId(_conversationState = null, guardState = null) {
@@ -8758,6 +8803,14 @@ const plugin = {
               domainRelated: true
             })
           : null;
+        const resumedAdmissionState = resumedTurn
+          ? buildResumedQueryAdmissionState({
+              conversationKey,
+              turnId,
+              runId: normalizeTraceId(ctx?.runId),
+              messageId: normalizeTraceId(ctx?.messageId)
+            })
+          : null;
         const nextState = {
           ...baseState,
           ...(resumedTurn ? {
@@ -8765,6 +8818,8 @@ const plugin = {
             domainRelated: true,
             turnPolicy: resumedTurnPolicy,
             turnRoute: resumedTurnPolicy.route,
+            turnIntent: resumedAdmissionState.turnIntent,
+            turnAdmissionDecision: resumedAdmissionState.turnAdmissionDecision,
             pendingQueryDraft: resumedTurn.queryDraft,
             pendingParentTurnId: resumedTurn.parentTurnId,
             semanticPrompt: resumedTurn.semanticQuestion
