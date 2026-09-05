@@ -1,5 +1,9 @@
 'use strict';
 
+const {
+  CLASSIFICATION_SCHEMA_VERSION
+} = require('./DomainIntentClassificationAdapter');
+
 const TURN_INTENT_HANDLING = Object.freeze({
   DOMAIN_ORCHESTRATED: 'domain_orchestrated',
   MODEL_OWNED: 'model_owned',
@@ -52,7 +56,7 @@ function domainOrchestrated(intentType, workflow = {}) {
   });
 }
 
-function resolveTurnIntent({ route = '', workflow = {}, signals = {} } = {}) {
+function resolveTurnIntent({ route = '', classification = null } = {}) {
   const normalizedRoute = normalizeText(route);
   if (normalizedRoute === 'explicit_out_of_scope') {
     return freezeIntent({
@@ -68,6 +72,12 @@ function resolveTurnIntent({ route = '', workflow = {}, signals = {} } = {}) {
       expectedTool: null
     });
   }
+
+  const structuredClassification = classification?.schemaVersion === CLASSIFICATION_SCHEMA_VERSION
+    ? classification
+    : {};
+  const workflow = structuredClassification.workflow || {};
+  const signals = structuredClassification.signals || {};
 
   if (signals?.alertPacket === true) {
     return singleTool(

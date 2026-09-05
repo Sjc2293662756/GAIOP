@@ -51,6 +51,8 @@ function normalizeBaseDecision(baseDecision = {}, identity = {}) {
     expectedTool: normalizeText(baseDecision?.expectedTool) || null,
     intentType: normalizeText(baseDecision?.intentType) || null,
     handling: normalizeText(baseDecision?.handling) || null,
+    classificationSchemaVersion: normalizeText(baseDecision?.classificationSchemaVersion) || null,
+    classificationSource: normalizeText(baseDecision?.classificationSource) || null,
     workflow: normalizeText(baseDecision?.workflow) || null,
     reasonCode: normalizeText(baseDecision?.reasonCode) || 'BASE_TURN_POLICY',
     source: 'base_policy'

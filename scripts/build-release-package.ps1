@@ -179,6 +179,7 @@ try {
     'plugin/AlertReferenceStore.js',
     'plugin/AlertReferenceService.js',
     'plugin/AlertPacketFinalReplyService.js',
+    'plugin/DomainIntentClassificationAdapter.js',
     'plugin/QueryTurnCoordinator.js',
     'plugin/ReferenceSelectionParser.js',
     'plugin/ReportIntentClassifier.js',

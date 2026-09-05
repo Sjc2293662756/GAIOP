@@ -5,13 +5,20 @@ const {
   TURN_INTENT_TYPES,
   resolveTurnIntent
 } = require('../plugin/TurnIntentResolver');
+const {
+  CLASSIFICATION_SCHEMA_VERSION
+} = require('../plugin/DomainIntentClassificationAdapter');
 
 function napmIntent(signals = {}, overrides = {}) {
+  const workflow = overrides.workflow || { workflowType: 'metric_topn' };
   return resolveTurnIntent({
     route: 'napm_candidate',
-    workflow: { workflowType: 'metric_topn' },
-    signals,
-    ...overrides
+    classification: {
+      schemaVersion: CLASSIFICATION_SCHEMA_VERSION,
+      source: 'existing-domain-classifier-adapter',
+      workflow,
+      signals
+    }
   });
 }
 
@@ -54,14 +61,13 @@ describe('TurnIntentResolver', () => {
   });
 
   test('does not select a NAPM Tool for model-owned or rejected routes', () => {
-    expect(resolveTurnIntent({ route: 'model_owned', signals: { alert: true } })).toMatchObject({
+    expect(resolveTurnIntent({ route: 'model_owned' })).toMatchObject({
       intentType: TURN_INTENT_TYPES.MODEL_OWNED,
       expectedTool: null,
       handling: TURN_INTENT_HANDLING.MODEL_OWNED
     });
     expect(resolveTurnIntent({
-      route: 'explicit_out_of_scope',
-      signals: { packet: true }
+      route: 'explicit_out_of_scope'
     })).toMatchObject({
       intentType: TURN_INTENT_TYPES.REJECTED,
       expectedTool: null,
@@ -86,5 +92,15 @@ describe('TurnIntentResolver', () => {
       targetObjectType: 'PageView'
     });
     expect(Object.isFrozen(intent)).toBe(true);
+  });
+
+  test('does not trust ad-hoc signals outside the structured classification contract', () => {
+    expect(resolveTurnIntent({
+      route: 'napm_candidate',
+      signals: { alert: true }
+    })).toMatchObject({
+      intentType: TURN_INTENT_TYPES.QUERY,
+      expectedTool: 'napm-skill-query'
+    });
   });
 });
