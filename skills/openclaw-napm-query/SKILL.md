@@ -116,6 +116,8 @@ Accepted inputs:
 
 The OpenClaw adapter may accept a `resultReference` for an ordinal business or page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the concrete business path or trusted `pageFamilyId` and concrete time range.
 
+Inside the OpenClaw Plugin, `execute()` is not an independent authorization entry point. The preceding Query Hook must bind the current Turn Admission Decision and a stable digest of the final normalized Tool parameters to the plugin-issued `traceId`. A missing admission or changed object, metric, time, or result reference is rejected before pending restoration, time materialization, validation, Skill loading, or southbound access. This does not apply to the standalone CLI contract, which has no Plugin Query Turn.
+
 The model must not reconstruct an ordinal continuation from prior answer text. The Plugin's common admission layer selects the authoritative Query artifact and overwrites caller-supplied continuation fields with a trusted draft. If a newer artifact belongs to another domain, Query must not fall back to an older ranking; the reception layer clarifies or delegates to that domain.
 
 The output is JSON. Prefer `narrationInput.result.narrationStructure`, `narrationInput.result.timeRange`, `summary`, and returned rows when writing the final Chinese answer.

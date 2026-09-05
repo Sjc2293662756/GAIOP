@@ -40,7 +40,19 @@ describe('ReferenceSelectionParser', () => {
     });
   });
 
-  test.each(['看看最近一小时趋势', '最近 7 天', '第一个', '确认', '', '普通聊天']) (
+  test.each([
+    '看看最近一小时趋势',
+    '最近 7 天',
+    '第一个',
+    '确认',
+    '取消',
+    '这个',
+    '看它',
+    '导出上面结果',
+    '下载第一条',
+    '',
+    '普通聊天'
+  ]) (
     'does not invent a detail selection for %s',
     (prompt) => {
       expect(parseReferenceSelection(prompt)).toBeNull();

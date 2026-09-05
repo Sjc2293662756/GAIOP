@@ -183,6 +183,7 @@ try {
     'plugin/ReferenceSelectionParser.js',
     'plugin/ReportIntentClassifier.js',
     'plugin/TurnAdmissionCoordinator.js',
+    'plugin/TurnIntentResolver.js',
     'plugin/context-resolvers/AlertContextResolver.js',
     'plugin/context-resolvers/ContextBoundaryResolver.js',
     'plugin/context-resolvers/QueryContextResolver.js',

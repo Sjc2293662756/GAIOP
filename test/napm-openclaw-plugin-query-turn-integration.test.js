@@ -95,6 +95,24 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       params: { ...params }
     };
     const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    if (options.authorize !== false) {
+      const admissionDecision = options.admissionDecision || {
+        conversationKey: scope,
+        turnId,
+        runId: ctx.runId,
+        messageId: ctx.messageId,
+        route: 'napm_candidate',
+        action: 'EXECUTE_TOOL',
+        expectedTool: 'napm-skill-query',
+        workflow: 'direct_query_test',
+        reasonCode: 'BASE_TURN_POLICY'
+      };
+      expect(plugin.__test__.authorizeTrustedToolContext(
+        traceId,
+        event.params,
+        admissionDecision
+      )).toBe(true);
+    }
     return { scope, turnId, params: { ...event.params, traceId } };
   }
 
@@ -1226,6 +1244,85 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
+  test('blocks direct query execution when the trusted trace has no Turn Admission authorization', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const direct = bindTrustedDirect(createCtx('run-direct-admission-missing'), {
+      prompt: '最近 7 天 HTTP 应用流量趋势如何？',
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    }, { authorize: false });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-admission-missing',
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED' }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('blocks reused trusted trace when execute parameters differ from the Hook-authorized query', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-reused-trace-query-mutation');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const bound = callBeforeTool(ctx, 'authorized-query', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    });
+    expect(bound.hookResult?.block).not.toBe(true);
+    expect(bound.hookResult).toEqual(expect.objectContaining({
+      params: expect.objectContaining({ traceId: expect.any(String) })
+    }));
+    expect(bound.params.traceId).toEqual(expect.any(String));
+    expect(plugin.__test__.getTrustedConversationKey(bound.params)).toBeTruthy();
+    expect(plugin.__test__.getTrustedTurnId(bound.params)).toBeTruthy();
+
+    const mutatedDraft = {
+      ...bound.params.resolvedQuery,
+      timeRange: { key: 'last24hours' }
+    };
+    const result = await tools.get('napm-skill-query').execute('mutated-query', {
+      ...bound.params,
+      queryDraft: mutatedDraft,
+      resolvedQuery: mutatedDraft
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'QUERY_TOOL_PARAMETERS_MISMATCH' }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
   test('blocks an unverified multi-group query before Query Skill, NapmClient, or southbound execution', async () => {
     const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
     const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
@@ -1617,6 +1714,109 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(invalidTimeCall.hookResult).toMatchObject({ block: true });
     expect(skill).not.toHaveBeenCalled();
     expect(southbound).toHaveBeenCalledTimes(3);
+  });
+
+  test('keeps an ordinal follow-up bound to the result frozen when its message arrived', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(async (query) => {
+        const terminalType = query.groups?.[query.groups.length - 1]?.type;
+        if (terminalType === 'WebApplication') {
+          const sourceName = query.resolutionHints?.testSource === 'newer'
+            ? 'business-newer'
+            : 'business-frozen';
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [{
+              group: { key: 'WebApplication', argument: sourceName },
+              metricValues: [{ metric: { id: 'PGNPGE' }, value: 100 }]
+            }],
+            error: null
+          };
+        }
+        return { ok: true, service: 'topValues', data: [], error: null };
+      });
+
+    const firstCtx = createCtx('run-frozen-source-first');
+    const firstPrompt = '今天哪些业务页面访问量最高？';
+    await startTurn(firstCtx, firstPrompt);
+    const firstCall = callBeforeTool(firstCtx, 'frozen-source-first', {
+      prompt: firstPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' }
+      }
+    });
+    await executeBound('frozen-source-first', firstCall);
+
+    const followUpCtx = createCtx('run-frozen-source-follow-up');
+    const followUpPrompt = '看第一个的详情';
+    await startTurn(followUpCtx, followUpPrompt);
+    const scope = plugin.__test__.getConversationKey(followUpCtx);
+    const followUpTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+      scope,
+      followUpCtx.runId
+    );
+    const frozenSourceResultSetId = plugin.__test__.queryTurnCoordinator
+      .get(scope, followUpTurnId)
+      .sourceResultSetId;
+
+    const newerCtx = createCtx('run-frozen-source-newer');
+    const newerPrompt = '最近一小时哪些业务页面访问量最高？';
+    await startTurn(newerCtx, newerPrompt);
+    const newerCall = callBeforeTool(newerCtx, 'frozen-source-newer', {
+      prompt: newerPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'last1hour' },
+        resolutionHints: { testSource: 'newer' }
+      }
+    });
+    await executeBound('frozen-source-newer', newerCall);
+    expect(plugin.__test__.queryTurnCoordinator.getLatestResultReference(scope)).toMatchObject({
+      rows: [{ argument: 'business-newer' }]
+    });
+
+    const followUpCall = callBeforeTool(followUpCtx, 'frozen-source-follow-up', {
+      prompt: followUpPrompt
+    });
+    expect(followUpCall.hookResult?.block).not.toBe(true);
+    expect(followUpCall.params.resolvedQuery).toMatchObject({
+      groups: [
+        { type: 'WebApplication', argument: 'business-frozen' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      resultReference: {
+        resultSetId: frozenSourceResultSetId,
+        objectType: 'WebApplication',
+        ordinal: 1
+      },
+      sourceReference: {
+        sourceTurnId: expect.any(String),
+        objectType: 'WebApplication',
+        ordinal: 1
+      }
+    });
+    await executeBound('frozen-source-follow-up', followUpCall);
+
+    expect(southbound).toHaveBeenCalledTimes(3);
+    expect(southbound.mock.calls[2][0].groups[0]).toEqual({
+      type: 'WebApplication',
+      argument: 'business-frozen'
+    });
   });
 
   test('resolves an authoritative WebApplication ordinal through direct Tool execution', async () => {

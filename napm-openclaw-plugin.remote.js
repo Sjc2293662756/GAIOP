@@ -6,6 +6,7 @@ const ConversationOperationState = require('./plugin/ConversationOperationState'
 const {
   QUERY_ACTIONS,
   QUERY_OUTCOMES,
+  QUERY_PHASES,
   QUERY_ROUTES,
   QueryTurnCoordinator
 } = require('./plugin/QueryTurnCoordinator');
@@ -23,11 +24,14 @@ const ReportSourceStore = require('./plugin/ReportSourceStore');
 const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
 const AlertReferenceStore = require('./plugin/AlertReferenceStore');
 const {
+  TURN_ADMISSION_ACTIONS,
+  TURN_ADMISSION_ROUTES,
   TurnAdmissionCoordinator
 } = require('./plugin/TurnAdmissionCoordinator');
 const QueryContextResolver = require('./plugin/context-resolvers/QueryContextResolver');
 const AlertContextResolver = require('./plugin/context-resolvers/AlertContextResolver');
 const ContextBoundaryResolver = require('./plugin/context-resolvers/ContextBoundaryResolver');
+const { resolveTurnIntent } = require('./plugin/TurnIntentResolver');
 
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
 const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
@@ -1144,6 +1148,14 @@ function resolveQueryCoordinatorRoute(prompt = '', state = null) {
   }
   if (state?.queryResultFollowUpPrompt) {
     return QUERY_ROUTES.NAPM_QUERY;
+  }
+  const admittedTool = String(state?.turnAdmissionDecision?.expectedTool || '').trim();
+  if (
+    admittedTool
+    && admittedTool !== 'napm-skill-query'
+    && isSafeNapmToolName(admittedTool)
+  ) {
+    return QUERY_ROUTES.OTHER_SKILL;
   }
   if (
     state?.turnAdmissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
@@ -2530,9 +2542,18 @@ function buildLifecycleBindingFailureResult() {
 
 function buildQueryToolAuthorizationFailureResult(code = '') {
   const normalizedCode = String(code || '').trim() || 'QUERY_TOOL_AUTHORIZATION_FAILED';
-  const displayText = normalizedCode === 'QUERY_TURN_ROUTE_MISMATCH'
-    ? '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。'
-    : '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。';
+  const displayTextByCode = {
+    QUERY_TURN_ROUTE_MISMATCH: '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。',
+    QUERY_TOOL_IDENTITY_MISMATCH: '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。',
+    TURN_ADMISSION_AUTHORIZATION_REQUIRED: '当前 Tool 缺少本轮准入授权，已阻止查询执行。',
+    TURN_ADMISSION_TOOL_MISMATCH: '当前轮准入决定不允许执行 napm-skill-query，已阻止查询执行。',
+    TURN_ADMISSION_TURN_MISMATCH: '当前 Tool 的准入轮次与可信轮次不一致，已阻止查询执行。',
+    TURN_ADMISSION_QUERY_CONTEXT_MISMATCH: '当前查询与准入决定冻结的来源查询不一致，已阻止查询执行。',
+    TURN_ADMISSION_RESULT_SOURCE_MISMATCH: '当前查询引用的权威结果与准入决定不一致，已阻止查询执行。',
+    QUERY_TOOL_PARAMETERS_MISMATCH: '当前 Tool 参数与 Hook 授权的查询不一致，已阻止查询执行。'
+  };
+  const displayText = displayTextByCode[normalizedCode]
+    || '当前 Tool 未通过查询执行授权校验，已阻止查询执行。';
   return {
     ok: false,
     source: 'napm_openclaw_plugin_query_turn',
@@ -2858,7 +2879,7 @@ function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = n
 }
 
 function prepareSkillExecutionArgs(args = {}) {
-  const prepared = isPlainObject(args) ? { ...args } : {};
+  const prepared = isPlainObject(args) ? cloneJsonObject(args) : {};
   const prompt = normalizePrompt(prepared);
   if (!prepared.userQuery && prompt) {
     prepared.userQuery = prompt;
@@ -3143,24 +3164,29 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
   const faultDiagnosisPrompt = isFaultDiagnosisPrompt(prompt, {
     hasExplicitTarget: hasSpecificFaultDiagnosisTarget(prompt)
   });
-  const baseExpectedTool = baseTurnPolicy.route !== TURN_POLICY_ROUTES.NAPM_CANDIDATE
-    ? null
-    : alertPacketAnalysisPrompt
-      ? 'napm-alert-packet-analysis'
-      : alertEventPrompt
-        ? 'napm-alert-query'
-        : packetCapturePrompt
-          ? 'napm-packet-analysis'
-          : (!reportWorkflowPrompt && (reportExportPrompt || reportIntent === REPORT_INTENTS.EXPORT))
-            ? 'napm-report-export'
-            : (!reportWorkflowPrompt && !faultDiagnosisPrompt ? 'napm-skill-query' : null);
+  const turnIntent = resolveTurnIntent({
+    route: baseTurnPolicy.route,
+    workflow,
+    signals: {
+      alertPacket: alertPacketAnalysisPrompt,
+      alert: alertEventPrompt,
+      packet: packetCapturePrompt,
+      reportIntent: reportExportPrompt && !reportWorkflowPrompt
+        ? REPORT_INTENTS.EXPORT
+        : reportIntent,
+      faultDiagnosis: faultDiagnosisPrompt,
+      contextContinuation: !workflow.workflowType && isContinuationPrompt(prompt)
+    }
+  });
   const turnAdmissionDecision = turnAdmissionCoordinator.decide({
     prompt,
     baseDecision: {
       route: baseTurnPolicy.route,
-      workflow: workflow.workflowType,
+      workflow: turnIntent.workflowType || workflow.workflowType,
       reasonCode: baseTurnPolicy.reason,
-      expectedTool: baseExpectedTool
+      expectedTool: turnIntent.expectedTool,
+      intentType: turnIntent.intentType,
+      handling: turnIntent.handling
     },
     contextCandidates: buildTurnAdmissionContextCandidates(conversationKey),
     identity: {
@@ -3213,6 +3239,7 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
     metaFollowUpPrompt,
     resultDeliveryFollowUpPrompt,
     queryResultFollowUpPrompt,
+    turnIntent,
     turnAdmissionDecision,
     lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
       ? inferMetricInventoryGroup(prompt)
@@ -3512,6 +3539,87 @@ function pruneTrustedToolContexts() {
   while (napmTrustedToolContextByTraceId.size > 2000) {
     napmTrustedToolContextByTraceId.delete(napmTrustedToolContextByTraceId.keys().next().value);
   }
+}
+
+function sortJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJsonValue);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.keys(value)
+    .sort()
+    .reduce((result, key) => {
+      result[key] = sortJsonValue(value[key]);
+      return result;
+    }, {});
+}
+
+function buildTrustedToolParametersDigest(params = {}) {
+  const normalized = cloneJsonObject(normalizeObject(params) || {});
+  delete normalized.traceId;
+  if (isPlainObject(normalized.sessionState)) {
+    delete normalized.sessionState.traceId;
+  }
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(sortJsonValue(normalized)), 'utf8')
+    .digest('hex');
+}
+
+function authorizeTrustedToolContext(traceId = '', params = {}, admissionDecision = null) {
+  const normalizedTraceId = normalizeTraceId(traceId);
+  if (!normalizedTraceId || !isPlainObject(admissionDecision)) return false;
+  pruneTrustedToolContexts();
+  const current = napmTrustedToolContextByTraceId.get(normalizedTraceId) || null;
+  if (!current) return false;
+
+  const admissionTurnId = normalizeTurnId(admissionDecision.turnId);
+  if (admissionTurnId && admissionTurnId !== normalizeTurnId(current.turnId)) return false;
+  const admissionConversationKey = String(admissionDecision.conversationKey || '').trim();
+  if (admissionConversationKey && admissionConversationKey !== current.conversationKey) return false;
+
+  napmTrustedToolContextByTraceId.set(normalizedTraceId, {
+    ...current,
+    parametersDigest: buildTrustedToolParametersDigest(params),
+    turnAdmissionDecision: normalizeObject(admissionDecision),
+    authorizedAt: Date.now()
+  });
+  return true;
+}
+
+function getTrustedToolContext(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) return null;
+  pruneTrustedToolContexts();
+  return napmTrustedToolContextByTraceId.get(traceId) || null;
+}
+
+function validateTrustedQueryExecutionAuthorization(args = {}, trustedContext = null) {
+  const decision = isPlainObject(trustedContext?.turnAdmissionDecision)
+    ? trustedContext.turnAdmissionDecision
+    : null;
+  if (!decision || !trustedContext?.parametersDigest) {
+    return { ok: false, code: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED' };
+  }
+  if (
+    decision.action !== TURN_ADMISSION_ACTIONS.EXECUTE_TOOL
+    || decision.route !== TURN_ADMISSION_ROUTES.NAPM_CANDIDATE
+    || decision.expectedTool !== 'napm-skill-query'
+  ) {
+    return { ok: false, code: 'TURN_ADMISSION_TOOL_MISMATCH' };
+  }
+  if (
+    normalizeTurnId(decision.turnId)
+    && normalizeTurnId(decision.turnId) !== normalizeTurnId(trustedContext.turnId)
+  ) {
+    return { ok: false, code: 'TURN_ADMISSION_TURN_MISMATCH' };
+  }
+  if (buildTrustedToolParametersDigest(args) !== trustedContext.parametersDigest) {
+    return { ok: false, code: 'QUERY_TOOL_PARAMETERS_MISMATCH', decision };
+  }
+  return { ok: true, decision };
 }
 
 function bindTrustedToolContext(event = {}, ctx = {}) {
@@ -7255,6 +7363,7 @@ function createSkillToolDefinition() {
       additionalProperties: false
     },
     execute: async (toolCallId, args) => {
+      const trustedToolContext = getTrustedToolContext(args || {});
       const preparedArgs = prepareSkillExecutionArgs(args || {});
       const trustedTraceId = normalizeTraceId(preparedArgs?.traceId);
       const conversationKey = getTrustedConversationKey(preparedArgs);
@@ -7288,6 +7397,28 @@ function createSkillToolDefinition() {
           'QUERY_TOOL_IDENTITY_MISMATCH'
         ));
       }
+
+      const executionAuthorization = validateTrustedQueryExecutionAuthorization(
+        args || {},
+        trustedToolContext
+      );
+      const parameterOnlyReplay = Boolean(
+        executionAuthorization.code === 'QUERY_TOOL_PARAMETERS_MISMATCH'
+        && [QUERY_PHASES.EXECUTING, QUERY_PHASES.TERMINAL].includes(currentQueryTurn?.phase)
+      );
+      if (!executionAuthorization.ok && !parameterOnlyReplay) {
+        appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+          traceId,
+          conversationKey,
+          turnId,
+          reasonCode: executionAuthorization.code,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          executionAuthorization.code
+        ));
+      }
+      const turnAdmissionDecision = executionAuthorization.decision;
 
       if (currentQueryTurn && currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
         appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
@@ -7398,6 +7529,47 @@ function createSkillToolDefinition() {
             toolCallId: String(toolCallId || '').trim() || null
           });
           return makeToolResult(buildQueryExecutionInProgressResult(currentQueryTurn));
+        }
+
+        if (
+          turnAdmissionDecision.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+          && turnAdmissionDecision.sourceDomain === 'QUERY'
+        ) {
+          if (turnAdmissionDecision.workflow === 'time_values_followup') {
+            const admittedContinuation = validateAdmittedTimeValuesContinuation(
+              conversationKey,
+              'napm-skill-query',
+              preparedArgs?.resolvedQuery || preparedArgs?.queryDraft,
+              turnAdmissionDecision
+            );
+            if (!admittedContinuation.ok) {
+              appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+                traceId,
+                conversationKey,
+                turnId,
+                reasonCode: 'TURN_ADMISSION_QUERY_CONTEXT_MISMATCH',
+                detailReason: admittedContinuation.reason || null,
+                toolCallId: String(toolCallId || '').trim() || null
+              });
+              return makeToolResult(buildQueryToolAuthorizationFailureResult(
+                'TURN_ADMISSION_QUERY_CONTEXT_MISMATCH'
+              ));
+            }
+          } else if (
+            String(turnAdmissionDecision.sourceArtifactId || '').trim()
+            !== String(currentQueryTurn.sourceResultSetId || '').trim()
+          ) {
+            appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+              traceId,
+              conversationKey,
+              turnId,
+              reasonCode: 'TURN_ADMISSION_RESULT_SOURCE_MISMATCH',
+              toolCallId: String(toolCallId || '').trim() || null
+            });
+            return makeToolResult(buildQueryToolAuthorizationFailureResult(
+              'TURN_ADMISSION_RESULT_SOURCE_MISMATCH'
+            ));
+          }
         }
 
         const referencePrompt = String(
@@ -8695,6 +8867,8 @@ const plugin = {
           action: nextState.turnAdmissionDecision?.action || null,
           expectedTool: nextState.turnAdmissionDecision?.expectedTool || null,
           workflow: nextState.turnAdmissionDecision?.workflow || null,
+          intentType: nextState.turnAdmissionDecision?.intentType || null,
+          handling: nextState.turnAdmissionDecision?.handling || null,
           reasonCode: nextState.turnAdmissionDecision?.reasonCode || null,
           sourceDomain: nextState.turnAdmissionDecision?.sourceDomain || null,
           sourceArtifactType: nextState.turnAdmissionDecision?.sourceArtifactType || null,
@@ -9705,6 +9879,27 @@ const plugin = {
               || canonicalResolvedQueryJson !== originalResolvedQueryJson
             )
           );
+          const authorizedSkillParams = shouldRewriteSkillParams
+            ? canonicalSkillParams
+            : toolParams;
+          if (!authorizeTrustedToolContext(
+            traceId,
+            authorizedSkillParams,
+            activePromptState?.turnAdmissionDecision
+          )) {
+            appendPluginAuditEvent('execution_gate_blocked', {
+              gate: 'turn_admission_authorization',
+              reasonCode: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED',
+              toolName,
+              conversationKey: conversationKey || null,
+              turnId: queryTurnContext.turnId || null,
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED: unable to seal this Query Tool call to the current run-bound admission decision.'
+            };
+          }
           appendPluginAuditEvent('napm_plugin_resolved_query_forwarded', {
             traceId,
             toolName,
@@ -10712,6 +10907,7 @@ module.exports.__test__ = {
   rememberSkillResult,
   getConversationKey,
   bindTrustedToolContext,
+  authorizeTrustedToolContext,
   getTrustedConversationKey,
   getTrustedTurnId,
   getTrustedToolName,
