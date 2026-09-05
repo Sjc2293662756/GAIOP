@@ -14,6 +14,8 @@
 
 - 普通 NAPM 用户查询必须调用 `napm-skill-query`。上游传入结构化 `queryDraft`；只有 Query Decision 为 `EXECUTE_QUERY` 时才能形成完整 `resolvedQuery` 并进入 Query Skill 和南向接口。
 - `conversationKey` 只表示会话 scope。`message_received` 为每个 run/message 创建并绑定不可变 `turnId`；Tool 和输出 Hook 必须使用当前 run/message 的可信绑定，禁止读取会话中的最新 `turnId`。直接 Tool execute 必须携带插件签发的可信 `traceId`，并解析出 scope、turn 和与当前适配器一致的可信 `toolName`；Query Turn route 还必须是 `NAPM_QUERY`。任一条件不满足都必须在 pending Draft 恢复、时间物化、校验和 Query Skill 之前 fail-closed。
+- `message_received` 还必须生成一份绑定当前 run/message 的不可变 Turn Admission Decision。通用选择解析器只解析“第 N 个/详情/前 N 条/更换时间”；Query、Alert 等领域解析器只暴露自己的权威结果。公共门禁消费 Decision 中的 route 和 `expectedTool`，不从模型文字复制对象名或内部 ID。
+- Query 排行、Query 时间追问和 Alert 序号详情已接入统一准入。时间追问必须按 Decision 冻结的来源 turn 读取查询上下文，禁止在 Tool 执行时改读 scope 下的最新 Query。当最近权威结果来自尚未接入序号下钻的 Skill 时，必须正式澄清，不得回退使用更早的 Query 排行。
 - Query Turn 的 route 在创建后不可变。普通 `NAPM_QUERY` 只允许 `napm-skill-query` 满足查询契约，错误的其他 NAPM Tool 不得把轮次改成 `OTHER_SKILL`。
 - 普通查询的 Query Draft、Query Attempt、一次修复预算、pending clarification、终态 `finalContent` 和交付声明统一归 `QueryTurnCoordinator` 管理。旧 `ConversationOperationState` 不再是普通查询修复、查询结果或最终交付的权威源。
 - 首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放保持幂等；只允许一次结构修复，第二个失败终止。`recordResult` 和 `recordFailure` 只允许从 `EXECUTING` 迁移；放弃修复和执行期 Skill 澄清分别使用专用迁移。执行失败立即终止，所有 `TERMINAL` 记录 write-once，流式 partial 不得终结 Query Turn；`EXECUTING` 中的重叠 Tool 调用必须在时间物化和校验前返回执行中结果，终态后的 Tool 重放只返回已有权威结果，两者都不得再次调用 Query Skill 或南向接口。

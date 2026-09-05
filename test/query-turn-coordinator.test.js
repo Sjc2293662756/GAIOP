@@ -635,6 +635,39 @@ describe('QueryTurnCoordinator', () => {
     ]);
   });
 
+  test('does not expose an older ranking after a newer non-ranking query result', () => {
+    const complete = (turnId, queryDraft, result) => {
+      coordinator.begin({ scope: 'conversation-a', turnId, queryDraft });
+      coordinator.recordDecision({
+        scope: 'conversation-a',
+        turnId,
+        decision: { action: QUERY_ACTIONS.EXECUTE_QUERY, southboundAllowed: true }
+      });
+      coordinator.beginExecution({
+        scope: 'conversation-a',
+        turnId,
+        attemptId: `${turnId}-execution`
+      });
+      coordinator.recordResult({ scope: 'conversation-a', turnId, result });
+    };
+
+    complete(
+      'ranking-turn',
+      { service: 'topValues', groups: [{ type: 'WebApplication' }] },
+      { ok: true, data: [{ group: { argument: 'business-a' } }] }
+    );
+    expect(coordinator.getLatestResultReference('conversation-a')).toMatchObject({
+      objectType: 'WebApplication'
+    });
+
+    complete(
+      'trend-turn',
+      { service: 'timeValues', groups: [{ type: 'TotalTraffic' }] },
+      { ok: true, data: [{ time: 1, value: 10 }] }
+    );
+    expect(coordinator.getLatestResultReference('conversation-a')).toBeNull();
+  });
+
   test('rejects expired, out-of-range, wrong-type, and cross-scope references', () => {
     coordinator = new QueryTurnCoordinator({
       now: () => now,

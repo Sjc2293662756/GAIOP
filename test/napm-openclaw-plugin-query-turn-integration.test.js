@@ -1401,30 +1401,20 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     await executeBound('business-rank-call', businessRankCall);
 
     const pageRankCtx = createCtx('run-page-family-rank');
-    const pageRankPrompt = '排名第一的都访问了什么';
+    const pageRankPrompt = '看第一个的详情';
     await startTurn(pageRankCtx, pageRankPrompt);
+    const wrongPageRankTool = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-query',
+      toolCallId: 'page-family-rank-wrong-tool',
+      params: { prompt: pageRankPrompt }
+    }, pageRankCtx);
+    expect(wrongPageRankTool).toMatchObject({ block: true });
+    expect(wrongPageRankTool.blockReason).toContain('EXPECTED_TOOL_MISMATCH');
+    expect(wrongPageRankTool.blockReason).toContain('napm-skill-query');
     const pageRankCall = callBeforeTool(pageRankCtx, 'page-family-rank-call', {
-      prompt: pageRankPrompt,
-      queryDraft: {
-        service: 'topValues',
-        queryModeKey: 'topn',
-        groups: [{ type: 'PageFamily' }],
-        resultReference: {
-          objectType: 'WebApplication',
-          ordinal: 1
-        },
-        metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
-        topMetric: 'PGNPGE',
-        topCount: 10,
-        semanticConstraints: {
-          workflowType: 'metric_topn',
-          operation: 'drilldown',
-          drilldownRequested: true,
-          targetObjectType: 'PageFamily'
-        }
-      }
+      prompt: pageRankPrompt
     });
+    expect(pageRankCall.hookResult?.blockReason).toBeUndefined();
     expect(pageRankCall.hookResult?.block).not.toBe(true);
     expect(pageRankCall.params.resolvedQuery).toMatchObject({
       groups: [
@@ -1459,24 +1449,10 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
 
     const detailCtx = createCtx('run-page-view-detail');
-    const detailPrompt = '详细查看一下排名第一页面的前 20 个访问实例';
+    const detailPrompt = '再看第一个的详情，前 20 条';
     await startTurn(detailCtx, detailPrompt);
     const detailCall = callBeforeTool(detailCtx, 'page-view-detail-call', {
-      prompt: detailPrompt,
-      queryDraft: {
-        service: 'pageViews',
-        queryModeKey: 'detail',
-        resultReference: {
-          objectType: 'PageFamily',
-          ordinal: 1
-        },
-        maxLimit: 20,
-        semanticConstraints: {
-          workflowType: 'page_view_detail',
-          operation: 'detail_list',
-          targetObjectType: 'PageFamily'
-        }
-      }
+      prompt: detailPrompt
     });
 
     expect(detailCall.hookResult?.block).not.toBe(true);
@@ -1527,6 +1503,29 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
 
     await executeBound('page-view-detail-call-replay', detailCall);
     expect(southbound).toHaveBeenCalledTimes(3);
+    const auditRecords = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(auditRecords.filter((record) => record.event === 'authoritative_artifact_stored')).toEqual([
+      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'WebApplication', rowCount: 2 }),
+      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'PageFamily', rowCount: 2 })
+    ]);
+    expect(auditRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'authoritative_artifact_resolved',
+        objectType: 'WebApplication',
+        ordinal: 1,
+        targetService: 'topValues'
+      }),
+      expect.objectContaining({
+        event: 'authoritative_artifact_resolved',
+        objectType: 'PageFamily',
+        ordinal: 1,
+        targetService: 'pageViews'
+      })
+    ]));
 
     const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
     const skill = jest.spyOn(querySkill, 'handleSkillCall');
@@ -1819,7 +1818,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(southbound).not.toHaveBeenCalled();
   });
 
-  test('blocks an invalid pageViews result reference in the Hook before any query runtime call', async () => {
+  test('clarifies an invalid pageViews result reference in the Hook before any query runtime call', async () => {
     const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
     const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
     const skill = jest.spyOn(querySkill, 'handleSkillCall');
@@ -1830,7 +1829,8 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const ctx = createCtx('run-page-view-hook-invalid-reference');
     const prompt = '详细查看排名第一页面的前 20 个访问实例';
 
-    await startTurn(ctx, prompt);
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt }, ctx);
     const call = callBeforeTool(ctx, 'page-view-hook-invalid-reference', {
       prompt,
       queryDraft: {
@@ -1847,19 +1847,121 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
 
     expect(call.hookResult).toMatchObject({ block: true });
-    expect(call.hookResult.blockReason).toContain('No authoritative PageFamily result');
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
+    expect(promptHook.appendSystemContext).toContain('TURN ADMISSION CLARIFICATION REQUIRED');
     const scope = plugin.__test__.getConversationKey(ctx);
     const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
-      phase: 'REPAIR_PENDING',
-      attempts: [expect.objectContaining({
-        reasonCode: 'result_reference_not_found'
-      })]
+      route: 'MODEL_OWNED',
+      phase: 'RECEIVED',
+      attempts: []
     });
     expect(skill).not.toHaveBeenCalled();
     expect(clientGet).not.toHaveBeenCalled();
     expect(clientGetJson).not.toHaveBeenCalled();
     expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('formally clarifies a context-only ordinal follow-up when no authoritative result exists', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-context-reference-without-source');
+    const prompt = '看第一个的详情';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const call = callBeforeTool(ctx, 'context-reference-without-source', { prompt });
+
+    expect(promptHook.appendSystemContext).toContain('TURN ADMISSION CLARIFICATION REQUIRED');
+    expect(promptHook.appendSystemContext).toContain('当前会话没有可安全引用的排行结果');
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      route: 'MODEL_OWNED',
+      phase: 'RECEIVED',
+      attempts: []
+    });
+    const auditRecords = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(auditRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'turn_admission_decided',
+        reasonCode: 'TURN_ADMISSION_CONTEXT_REQUIRED',
+        action: 'ASK_CLARIFYING_QUESTION'
+      }),
+      expect.objectContaining({
+        event: 'execution_gate_blocked',
+        reasonCode: 'TURN_ADMISSION_CONTEXT_REQUIRED'
+      })
+    ]));
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('does not reuse a stale Query ordinal behind a newer unsupported skill result', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-newer-packet-boundary');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const sourceTurnId = 'turn-stale-query-ranking';
+    const queryDraft = {
+      service: 'topValues',
+      queryModeKey: 'topn',
+      groups: [{ type: 'WebApplication' }],
+      metrics: ['PGNPGE'],
+      topMetric: 'PGNPGE',
+      timeRange: { key: 'last1hour' }
+    };
+    plugin.__test__.queryTurnCoordinator.begin({
+      scope,
+      turnId: sourceTurnId,
+      route: 'NAPM_QUERY',
+      queryDraft
+    });
+    plugin.__test__.queryTurnCoordinator.recordDecision({
+      scope,
+      turnId: sourceTurnId,
+      queryDraft,
+      decision: { action: 'EXECUTE_QUERY', queryDraft }
+    });
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId: sourceTurnId,
+      queryDraft
+    });
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId: sourceTurnId,
+      result: {
+        ok: true,
+        data: [{ group: { argument: 'business-a' } }]
+      }
+    });
+    plugin.__test__.rememberSkillResult('packet completed later', {
+      ok: true,
+      workflowState: 'COMPLETED'
+    }, scope, 'napm-packet-analysis', 'turn-newer-packet');
+
+    const prompt = '看第一个的详情';
+    await startTurn(ctx, prompt);
+    const call = callBeforeTool(ctx, 'stale-query-behind-packet', { prompt });
+
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_NOT_MIGRATED');
+    expect(call.hookResult.blockReason).not.toContain('business-a');
     expect(southbound).not.toHaveBeenCalled();
   });
 });

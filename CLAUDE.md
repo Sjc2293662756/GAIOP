@@ -29,6 +29,7 @@ npx eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query
 ```
 WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
   → message_received binds run/message to an immutable Query Turn
+  → TurnAdmissionCoordinator + domain context resolvers select route/expectedTool
   → napm-skill-query(queryDraft | clarificationAnswer)
   → QueryDecisionPolicy → QueryTurnCoordinator
   → business TopN → authoritative WebApplication resultReference → PageFamily TopN
@@ -40,6 +41,8 @@ WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
 
 `conversationKey` is only a scope. Tool and output hooks resolve the immutable `turnId` bound to the current run/message and must not read the conversation's latest turn; missing lifecycle identity or binding fails closed. A Query Turn's route is immutable after creation, so another Tool or Tool result cannot reclassify a `NAPM_QUERY` as `OTHER_SKILL`. `QueryTurnCoordinator` owns ordinary-query drafts, attempts, the one-repair budget, pending clarifications, terminal content, and delivery claims. `ConversationOperationState` is not the authority for ordinary-query repair, result, or final delivery.
 
+`TurnAdmissionCoordinator` is the shared reception layer, not a cross-skill business state machine. `ReferenceSelectionParser` extracts generic ordinal/detail/limit/time-change selections, while Query and Alert resolvers expose only authoritative domain artifacts. The immutable decision fixes the route, expected Tool, source artifact, and reason code for the current run. Query time changes resolve the exact source turn captured by that decision, never the scope-latest Query. A newer result from a not-yet-migrated domain creates a clarification boundary so the plugin cannot silently fall back to an older Query ranking.
+
 ### Plugin: `napm-openclaw-plugin.remote.js`
 
 A monolithic plugin loaded by OpenClaw Gateway. It:
@@ -49,6 +52,7 @@ A monolithic plugin loaded by OpenClaw Gateway. It:
 3. Evaluates Query Drafts at both Hook and direct Tool-execute boundaries, then records attempts, pending clarification, terminal content, and exactly-once delivery in `QueryTurnCoordinator`
 4. Loads each skill's `scripts/run_*.js` in-process via `require()`; this implementation detail is not a deployment or hot-reload contract
 5. Maintains compatibility state for non-query workflows and applies time overrides before complete Resolved Queries execute
+6. Keeps Packet, Report, Inspection, Summary, and Fault domain state in their existing workflows while a conservative context boundary prevents unsafe ordinal fallback during staged migration
 
 Skills are not spawned as subprocesses; they run in the Gateway process. Runtime changes are installed only through the approved complete release package. Do not infer that copying one file makes all plugin and Coordinator changes live, and do not perform an ad hoc restart outside the approved deployment workflow.
 
