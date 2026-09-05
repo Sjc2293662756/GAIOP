@@ -21,8 +21,8 @@ The immutable reception-layer decision produced once for the current run/message
 _Avoid_: mutable route, prompt-only Tool permission, one global cross-skill state machine
 
 **Structured Turn Intent**:
-The base routing result produced by `TurnIntentResolver` from existing classifier signals. It identifies a single expected Tool or marks a multi-stage flow as domain-orchestrated; it never parses the raw prompt or adds another synonym regex. Summary and inspection reporting remain domain-orchestrated because their valid path contains both a source Tool and report export.
-_Avoid_: nested Hook Tool-selection regex, forcing a multi-stage report into one expected Tool
+The versioned, immutable routing input produced by `DomainIntentClassificationAdapter`, the common guard's only prompt-facing domain-classification boundary. The adapter invokes existing domain predicates and projects their output; it owns no synonym regex. `TurnIntentResolver` accepts only this contract, then identifies a single expected Tool or marks a multi-stage flow as domain-orchestrated. Its schema version and source are copied into the Turn Admission Decision and audit. Summary and inspection reporting remain domain-orchestrated because their valid path contains both a source Tool and report export.
+_Avoid_: public Hook assembling domain booleans, ad-hoc resolver signals, nested Tool-selection regex, forcing a multi-stage report into one expected Tool
 
 **Reference Selection**:
 A domain-neutral parse of the currently migrated short continuations: ordinal 1 plus DETAIL, an optional requested limit, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose. Pronoun-only selection, generic confirm/cancel, report export, and packet download are target-stage capabilities, not current generic-parser behavior; existing domain-specific flows continue to own them.

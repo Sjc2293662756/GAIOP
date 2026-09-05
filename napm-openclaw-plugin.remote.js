@@ -32,9 +32,35 @@ const {
 const QueryContextResolver = require('./plugin/context-resolvers/QueryContextResolver');
 const AlertContextResolver = require('./plugin/context-resolvers/AlertContextResolver');
 const ContextBoundaryResolver = require('./plugin/context-resolvers/ContextBoundaryResolver');
+const {
+  createDomainIntentClassificationAdapter
+} = require('./plugin/DomainIntentClassificationAdapter');
 const { resolveTurnIntent } = require('./plugin/TurnIntentResolver');
 
 const NAPM_DIRECT_SKILL_MODE = true;
+const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
+  isPlatformIdentityPrompt,
+  isOverviewPrompt,
+  isAlertEventPrompt,
+  isAlertSkillMetaFollowUpPrompt,
+  isMetricInventoryPrompt,
+  isMetricInventoryDetailPrompt,
+  inferMetricInventoryGroup,
+  isNapmMetaFollowUpPrompt,
+  isResultDeliveryFollowUpPrompt,
+  classifyNapmWorkflow,
+  isAlertPacketAnalysisPrompt,
+  isPacketCapturePrompt,
+  isReportExportPrompt,
+  isReportWorkflowPrompt,
+  isSystemDomainPrompt,
+  isNapmRelatedPrompt,
+  isContinuationPrompt,
+  isOutOfScopeNapmRequest,
+  classifyReportPrompt,
+  hasSpecificFaultDiagnosisTarget,
+  isFaultDiagnosisPrompt
+});
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
 const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
 const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
@@ -3244,7 +3270,13 @@ function buildTurnAdmissionContextCandidates(conversationKey = '') {
 function buildConversationScopedGuardState(content = '', previousState = null, options = {}) {
   const prompt = String(content || '').trim();
   const conversationKey = String(options?.conversationKey || '').trim();
-  const platformIdentityPrompt = isPlatformIdentityPrompt(prompt);
+  const turnIntentClassification = domainIntentClassificationAdapter.classify({
+    prompt,
+    previousState
+  });
+  const classificationFacts = turnIntentClassification.facts;
+  const workflow = turnIntentClassification.workflow;
+  const platformIdentityPrompt = classificationFacts.platformIdentityPrompt;
   if (platformIdentityPrompt) {
     const turnPolicy = buildTurnPolicy({ prompt, platformIdentityPrompt });
     return {
@@ -3268,69 +3300,28 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
     };
   }
 
-  const overviewRelated = isOverviewPrompt(prompt);
-  const alertEventPrompt = isAlertEventPrompt(prompt);
-  const alertMetaFollowUpPrompt = isAlertSkillMetaFollowUpPrompt(prompt, previousState);
-  const metricInventoryPrompt = isMetricInventoryPrompt(prompt)
-    || (previousState?.lastMetricInventoryGroup && isMetricInventoryDetailPrompt(prompt));
-  const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
-  const resultDeliveryFollowUpPrompt = isResultDeliveryFollowUpPrompt(prompt, previousState);
-  const workflow = classifyNapmWorkflow(prompt);
-  const classifiedQueryResultFollowUpPrompt = Boolean(
-    previousState?.napmRelated
-    && workflow.operation === 'drilldown'
-    && workflow.requiresResultReference === true
-  );
-  const alertPacketAnalysisPrompt = isAlertPacketAnalysisPrompt(prompt);
-  const packetCapturePrompt = isPacketCapturePrompt(prompt);
-  const reportExportPrompt = isReportExportPrompt(prompt);
-  const reportWorkflowPrompt = isReportWorkflowPrompt(prompt);
-  const baseDomainRelated = overviewRelated
-    || reportWorkflowPrompt
-    || reportExportPrompt
-    || alertEventPrompt
-    || alertMetaFollowUpPrompt
-    || metricInventoryPrompt
-    || isSystemDomainPrompt(prompt)
-    || metaFollowUpPrompt
-    || resultDeliveryFollowUpPrompt
-    || classifiedQueryResultFollowUpPrompt
-    || (previousState?.domainRelated && isContinuationPrompt(prompt));
-  const baseNapmRelated = overviewRelated
-    || reportWorkflowPrompt
-    || reportExportPrompt
-    || alertEventPrompt
-    || alertMetaFollowUpPrompt
-    || metricInventoryPrompt
-    || isNapmRelatedPrompt(prompt)
-    || metaFollowUpPrompt
-    || resultDeliveryFollowUpPrompt
-    || classifiedQueryResultFollowUpPrompt
-    || (previousState?.napmRelated && isContinuationPrompt(prompt));
+  const {
+    alertEventPrompt,
+    alertMetaFollowUpPrompt,
+    metricInventoryPrompt,
+    metaFollowUpPrompt,
+    resultDeliveryFollowUpPrompt,
+    classifiedQueryResultFollowUpPrompt,
+    continuationPrompt,
+    outOfScopeNapmRequest,
+    baseDomainRelated,
+    baseNapmRelated
+  } = classificationFacts;
   const baseTurnPolicy = buildTurnPolicy({
     prompt,
     napmRelated: baseNapmRelated,
     domainRelated: baseDomainRelated,
     platformIdentityPrompt,
-    outOfScopeBoundaryRequested: baseDomainRelated && isOutOfScopeNapmRequest(prompt)
-  });
-  const reportIntent = classifyReportPrompt(prompt);
-  const faultDiagnosisPrompt = isFaultDiagnosisPrompt(prompt, {
-    hasExplicitTarget: hasSpecificFaultDiagnosisTarget(prompt)
+    outOfScopeBoundaryRequested: baseDomainRelated && outOfScopeNapmRequest
   });
   const turnIntent = resolveTurnIntent({
     route: baseTurnPolicy.route,
-    workflow,
-    signals: {
-      alertPacket: alertPacketAnalysisPrompt,
-      alert: alertEventPrompt,
-      packet: packetCapturePrompt,
-      reportIntent: reportExportPrompt && !reportWorkflowPrompt
-        ? REPORT_INTENTS.EXPORT
-        : reportIntent,
-      faultDiagnosis: faultDiagnosisPrompt,
-      contextContinuation: !workflow.workflowType && isContinuationPrompt(prompt)
-    }
+    classification: turnIntentClassification
   });
   const turnAdmissionDecision = turnAdmissionCoordinator.decide({
     prompt,
@@ -3340,7 +3331,9 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
       reasonCode: baseTurnPolicy.reason,
       expectedTool: turnIntent.expectedTool,
       intentType: turnIntent.intentType,
-      handling: turnIntent.handling
+      handling: turnIntent.handling,
+      classificationSchemaVersion: turnIntentClassification.schemaVersion,
+      classificationSource: turnIntentClassification.source
     },
     contextCandidates: buildTurnAdmissionContextCandidates(conversationKey),
     identity: {
@@ -3367,8 +3360,8 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
       authoritativeContextFollowUp
       && turnAdmissionDecision.sourceDomain === 'ALERT'
     )
-    || Boolean(previousState?.alertRelated && (isContinuationPrompt(prompt) || metaFollowUpPrompt));
-  const outOfScopeBoundaryRequested = domainRelated && isOutOfScopeNapmRequest(prompt);
+    || Boolean(previousState?.alertRelated && (continuationPrompt || metaFollowUpPrompt));
+  const outOfScopeBoundaryRequested = domainRelated && outOfScopeNapmRequest;
   const admissionRequiresClarification = turnAdmissionDecision.action === 'ASK_CLARIFYING_QUESTION';
   const turnPolicy = authoritativeContextFollowUp || admissionRequiresClarification
     ? Object.freeze({
@@ -3395,8 +3388,8 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
     queryResultFollowUpPrompt,
     turnIntent,
     turnAdmissionDecision,
-    lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
-      ? inferMetricInventoryGroup(prompt)
+    lastMetricInventoryGroup: classificationFacts.metricInventoryRootPrompt
+      ? classificationFacts.inferredMetricInventoryGroup
       : (previousState?.lastMetricInventoryGroup || ''),
     generalOutOfScopeRequested: turnPolicy.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE,
     outOfScopeBoundaryRequested,
@@ -8684,6 +8677,9 @@ const plugin = {
           workflow: nextState.turnAdmissionDecision?.workflow || null,
           intentType: nextState.turnAdmissionDecision?.intentType || null,
           handling: nextState.turnAdmissionDecision?.handling || null,
+          classificationSchemaVersion:
+            nextState.turnAdmissionDecision?.classificationSchemaVersion || null,
+          classificationSource: nextState.turnAdmissionDecision?.classificationSource || null,
           reasonCode: nextState.turnAdmissionDecision?.reasonCode || null,
           sourceDomain: nextState.turnAdmissionDecision?.sourceDomain || null,
           sourceArtifactType: nextState.turnAdmissionDecision?.sourceArtifactType || null,

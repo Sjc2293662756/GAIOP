@@ -110,6 +110,12 @@ describe('NAPM cross-skill routing contract', () => {
     hooks.get('message_received')({ content: prompt }, ctx);
     await hooks.get('before_prompt_build')({ prompt }, ctx);
 
+    expect(plugin.__test__.getGuardState(ctx).turnAdmissionDecision).toMatchObject({
+      expectedTool: 'napm-fault-diagnosis',
+      classificationSchemaVersion: 'napm.domain-intent-classification.v1',
+      classificationSource: 'existing-domain-classifier-adapter'
+    });
+
     const result = hooks.get('before_tool_call')({
       toolName: 'napm-fault-diagnosis',
       params: { prompt, description: prompt, timeRange: { key: 'last1hour' } }

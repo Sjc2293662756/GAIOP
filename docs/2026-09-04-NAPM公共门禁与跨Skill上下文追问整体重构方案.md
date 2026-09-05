@@ -1033,7 +1033,8 @@ OpenClaw 管聊天会话和 Run
 
 - 新增 `ReferenceSelectionParser`，只识别序号、详情动作、请求条数和时间变更，不选择 Skill。
 - 新增 `TurnAdmissionCoordinator`，在 `message_received` 生成不可变、run-bound 的 route、action、`expectedTool`、来源 artifact 和 reasonCode。
-- 新增 `TurnIntentResolver`，只消费既有 Alert、Packet、Report、Fault 和 Query workflow 分类信号，输出单 Tool 或领域编排；它不读取原始 prompt、不新增一套业务正则。故障诊断获得明确 `expectedTool`，Summary/Inspection 因为是“来源 Tool + export”的多阶段链而继续标记为领域编排。
+- 新增 `DomainIntentClassificationAdapter` 作为公共门禁唯一的 prompt-facing 领域分类边界。它通过显式依赖契约复用既有 Alert、Packet、Report、Fault、Query 等判断器，投影出带 `schemaVersion/source` 的不可变分类，不新增同义正则；缺失任何既有分类依赖会启动失败。公共 `buildConversationScopedGuardState` 不再逐项调用 prompt 判断器拼装 signals。
+- 新增 `TurnIntentResolver`，只接受上述版本化结构，不读取原始 prompt，也不信任调用方临时传入的 ad-hoc signals；它输出单 Tool 或领域编排。故障诊断获得明确 `expectedTool`，Summary/Inspection 因为是“来源 Tool + export”的多阶段链而继续标记为领域编排。分类 schema/source 会进入 Turn Admission Decision 和审计记录。
 - `before_tool_call` 优先校验准入澄清、`expectedTool` 和可信轮次身份；错误 Tool 不会进入领域解析或南向调用。
 - 新增准入、权威 artifact 保存/解析/失败及门禁阻断审计事件，日志只保存最小摘要。
 
@@ -1065,7 +1066,7 @@ OpenClaw 管聊天会话和 Run
 
 ### 27.6 验证结果与当前边界
 
-- `npm test -- --runInBand`：115 个测试套件、1034 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
+- `npm test -- --runInBand`：116 个测试套件、1039 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、结构化分类适配、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
 - `npm run lint`、`npm run verify:runtime-contract`、`git diff --check` 和新增运行时文件语法检查全部通过。
 - 当前不是“所有 Skill 的序号续操作均已迁移完成”。Query 已完成本阶段迁移，Alert 完成事件序号详情切片；Packet、Report、Inspection、Summary、Fault 继续使用现有领域状态。对于这些尚未迁移的结果，公共层只做保守澄清，禁止错误回退到更早的 Query 排行。
 - 当前公共解析器也不是完整自然语言指代系统；`这个/它/确认/取消/导出/下载` 的通用化仍属于阶段 3–5，必须随领域 pending、风险确认和 artifact 契约一起迁移，不能只加关键词。
