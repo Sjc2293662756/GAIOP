@@ -61,7 +61,7 @@ One identified construction or execution try within a Query Turn. Replaying the 
 _Avoid_: untracked retry, cleared failure history, retry after terminal
 
 **Pending Clarification**:
-The incomplete Query Draft retained at conversation scope after `CLARIFICATION`. If the next user message is only the missing object name, the model calls `napm-skill-query` with `clarificationAnswer`; the plugin creates a new bound Query Turn, restores the pending draft, fills the declared `groups[n].argument`, and consumes the pending record.
+The incomplete Query Draft retained at conversation scope after `CLARIFICATION`. If the next user message is only the missing object name, the model calls `napm-skill-query` with `clarificationAnswer`. A successful `resumePending()` is the sole continuation authority: the plugin creates a new bound Query Turn, rebuilds its immutable admission as `EXECUTE_TOOL + napm-skill-query`, restores the pending draft, fills the declared `groups[n].argument`, and consumes the pending record. The answer need not contain a NAPM keyword; the same short text without a live pending Query remains model-owned and cannot call southbound.
 _Avoid_: model reconstruction of the whole query, reuse of the old turn as mutable state
 
 **Terminal Outcome**:

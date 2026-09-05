@@ -30,7 +30,7 @@
 ## NAPM 查询原则
 
 - 正常用户查询必须走 OpenClaw 的 `napm-skill-query` 工具。上游完成自然语言理解并构造 Query Draft；只有通过 Query Decision Policy 的完整 Resolved Query 才能由 NAPM Query Skill 执行。
-- 缺少必须由用户提供的对象名时，返回一个具体澄清问题且不调用南向接口。若上游曾把应用问题错构为 `TotalTraffic`，先由 Query Decision Policy 把 pending Draft 规范化为 `DefinedApp`。用户下一轮只回复名称（如 `HTTP`）时，用 `clarificationAnswer` 继续原查询，不要求用户重复时间、指标和对象类型。
+- 缺少必须由用户提供的对象名时，返回一个具体澄清问题且不调用南向接口。若上游曾把应用问题错构为 `TotalTraffic`，先由 Query Decision Policy 把 pending Draft 规范化为 `DefinedApp`。用户下一轮只回复名称（如 `HTTP` 或 `支付平台`）时，用 `clarificationAnswer` 继续原查询，不要求用户重复时间、指标和对象类型；只有正式 pending 恢复成功才重建本轮 Query Tool 准入，没有 pending 的名称短句仍由模型处理且不能查询。
 - 每个查询回答只能来自当前 run/message 绑定的 Query Turn。成功、无数据、失败、澄清和契约违规都使用该轮的权威最终内容；不得读取同会话其他轮次的最新结果。缺少可靠轮次身份时停止有状态处理，不得猜测当前轮。
 - “看第一个的详情”这类短追问先由 Plugin 的统一准入层结合消息到达时的权威结果决定领域和 Tool，并把来源结果立即冻结到当前轮。有唯一可信来源才继续；无来源、过期、跨会话、越界或最近结果暂不支持该下钻时，只问一个明确问题且不调用 Tool。后续产生的新排行不能偷换已冻结的来源。
 - 公共门禁不自行拼接告警、数据包、报告、故障等领域关键词判断；唯一的 prompt-facing 分类适配器复用既有判断器并签发带版本、来源且不可变的结构化意图，Tool 选择器只接受该适配器实际签发并完整校验的对象。平台身份和能力问题也必须生成明确的 `MODEL_OWNED` 准入决定，只是不调用 Tool，不能跳过准入。
