@@ -6,19 +6,40 @@ const {
   resolveTurnIntent
 } = require('../plugin/TurnIntentResolver');
 const {
-  CLASSIFICATION_SCHEMA_VERSION
+  CLASSIFICATION_SCHEMA_VERSION,
+  CLASSIFICATION_SOURCE,
+  createDomainIntentClassificationAdapter
 } = require('../plugin/DomainIntentClassificationAdapter');
 
 function napmIntent(signals = {}, overrides = {}) {
   const workflow = overrides.workflow || { workflowType: 'metric_topn' };
+  const classification = createDomainIntentClassificationAdapter({
+    isPlatformIdentityPrompt: () => false,
+    isOverviewPrompt: () => false,
+    isAlertEventPrompt: () => signals.alert === true,
+    isAlertSkillMetaFollowUpPrompt: () => false,
+    isMetricInventoryPrompt: () => false,
+    isMetricInventoryDetailPrompt: () => false,
+    inferMetricInventoryGroup: () => '',
+    isNapmMetaFollowUpPrompt: () => false,
+    isResultDeliveryFollowUpPrompt: () => false,
+    classifyNapmWorkflow: () => workflow,
+    isAlertPacketAnalysisPrompt: () => signals.alertPacket === true,
+    isPacketCapturePrompt: () => signals.packet === true,
+    isReportExportPrompt: () => signals.reportIntent === 'export',
+    isReportWorkflowPrompt: () => false,
+    isSystemDomainPrompt: () => true,
+    isNapmRelatedPrompt: () => true,
+    isContinuationPrompt: () => signals.contextContinuation === true,
+    isOutOfScopeNapmRequest: () => false,
+    classifyReportPrompt: () => signals.reportIntent || null,
+    hasSpecificFaultDiagnosisTarget: () => signals.faultDiagnosis === true,
+    isFaultDiagnosisPrompt: () => signals.faultDiagnosis === true
+  }).classify({ prompt: 'opaque-domain-input' });
+
   return resolveTurnIntent({
     route: 'napm_candidate',
-    classification: {
-      schemaVersion: CLASSIFICATION_SCHEMA_VERSION,
-      source: 'existing-domain-classifier-adapter',
-      workflow,
-      signals
-    }
+    classification
   });
 }
 
@@ -99,8 +120,29 @@ describe('TurnIntentResolver', () => {
       route: 'napm_candidate',
       signals: { alert: true }
     })).toMatchObject({
-      intentType: TURN_INTENT_TYPES.QUERY,
-      expectedTool: 'napm-skill-query'
+      intentType: TURN_INTENT_TYPES.MODEL_OWNED,
+      expectedTool: null,
+      handling: TURN_INTENT_HANDLING.MODEL_OWNED
     });
   });
+
+  test('does not trust a frozen classification that only copies schema and source fields', () => {
+    const forgedClassification = Object.freeze({
+      schemaVersion: CLASSIFICATION_SCHEMA_VERSION,
+      source: CLASSIFICATION_SOURCE,
+      workflow: Object.freeze({ workflowType: 'alert_query' }),
+      signals: Object.freeze({ alert: true }),
+      facts: Object.freeze({ baseNapmRelated: true })
+    });
+
+    expect(resolveTurnIntent({
+      route: 'napm_candidate',
+      classification: forgedClassification
+    })).toMatchObject({
+      intentType: TURN_INTENT_TYPES.MODEL_OWNED,
+      expectedTool: null,
+      handling: TURN_INTENT_HANDLING.MODEL_OWNED
+    });
+  });
+
 });

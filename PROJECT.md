@@ -7,8 +7,8 @@
 ## 生产链路
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
-2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定，并生成一份不可变 Turn Admission Decision。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId` 和 Hook 密封的准入/参数授权。缺少生命周期身份、准入授权或参数一致性时在时间物化、校验和 Skill 调用之前 fail-closed。
-3. `DomainIntentClassificationAdapter` 作为唯一 prompt-facing 领域分类边界，把既有分类器结果投影成带版本和来源的不可变结构；`TurnIntentResolver` 只消费该结构，区分单 Tool 与报告等领域编排。Turn Admission Coordinator 再把通用序号/详情/数量/时间追问与 Query、Alert 等领域权威结果匹配，固化 route、`expectedTool`、分类来源、来源 artifact 和原因码。准入发现候选后立即冻结来源，后续同 scope 新结果不会替换它。公共门禁只消费该决定做身份与 Tool 一致性检查；无权威上下文或最近结果尚未支持序号下钻时正式澄清，不回退到旧 Query 结果。
+2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定，并为每轮生成一份不可变 Turn Admission Decision。平台身份/能力等模型回答轮也必须生成明确 `MODEL_OWNED` Decision，不能走无 Decision 的快路径。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId` 和 Hook 密封的准入/参数授权。缺少生命周期身份、准入授权或参数一致性时在时间物化、校验和 Skill 调用之前 fail-closed。
+3. `DomainIntentClassificationAdapter` 作为唯一 prompt-facing 领域分类边界，把既有分类器结果投影成带版本和来源的不可变结构；`TurnIntentResolver` 只消费同一进程 Adapter 实际签发且 schema/source/冻结结构验证通过的对象，复制或临时构造的 classification 不会选择 Tool。Turn Admission Coordinator 再把通用序号/详情/数量/时间追问与 Query、Alert 等领域权威结果匹配，固化 route、`expectedTool`、分类来源、来源 artifact 和原因码。准入发现候选后立即冻结来源，后续同 scope 新结果不会替换它。公共门禁只消费该决定做身份与 Tool 一致性检查；无权威上下文或最近结果尚未支持序号下钻时正式澄清，不回退到旧 Query 结果。
 4. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围、可选下钻路径或权威排行结果引用的 Query Draft，澄清续答则只传 `clarificationAnswer`。
 5. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
 6. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。

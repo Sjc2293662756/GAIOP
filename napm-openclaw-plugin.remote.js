@@ -3277,29 +3277,6 @@ function buildConversationScopedGuardState(content = '', previousState = null, o
   const classificationFacts = turnIntentClassification.facts;
   const workflow = turnIntentClassification.workflow;
   const platformIdentityPrompt = classificationFacts.platformIdentityPrompt;
-  if (platformIdentityPrompt) {
-    const turnPolicy = buildTurnPolicy({ prompt, platformIdentityPrompt });
-    return {
-      prompt,
-      turnPolicy,
-      turnRoute: turnPolicy.route,
-      napmRelated: false,
-      domainRelated: false,
-      platformIdentityPrompt: true,
-      alertRelated: false,
-      alertEventPrompt: false,
-      alertMetaFollowUpPrompt: false,
-      metricInventoryPrompt: false,
-      metaFollowUpPrompt: false,
-      resultDeliveryFollowUpPrompt: false,
-      lastMetricInventoryGroup: '',
-      generalOutOfScopeRequested: false,
-      outOfScopeBoundaryRequested: false,
-      turnNapmToolUsed: false,
-      updatedAt: Date.now()
-    };
-  }
-
   const {
     alertEventPrompt,
     alertMetaFollowUpPrompt,
