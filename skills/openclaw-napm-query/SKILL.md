@@ -46,7 +46,7 @@ Do not depend on root-level plugin files, root `src/`, root `config/`, removed g
 OpenClaw owns:
 
 - Natural-language understanding and domain boundary judgment.
-- Multi-turn follow-up understanding.
+- Creating one run-bound Turn Admission Decision for a short follow-up by combining a domain-neutral selection with authoritative Plugin context.
 - `queryDraft` construction.
 - Restoring user-supplied follow-up values into a new Query Draft.
 - Final Chinese user-facing narration.
@@ -58,6 +58,7 @@ The `napm-skill-query` adapter owns:
 - Promoting only `EXECUTE_QUERY` drafts to complete Resolved Queries.
 - Resolving ordinal `WebApplication` references into a validated PageFamily drilldown and ordinal `PageFamily` references into `pageViews`, within the bound Query Turn and before time materialization.
 - Recording the current Query Turn and preventing duplicate final delivery.
+- Building trusted continuation drafts for admitted `WebApplication` and `PageFamily` ordinals. A time-change continuation is validated against the exact source Query Turn frozen at admission, not the conversation's latest query context.
 
 This skill owns:
 
@@ -114,6 +115,8 @@ Accepted inputs:
 - `--raw`: include raw upstream response when debugging locally.
 
 The OpenClaw adapter may accept a `resultReference` for an ordinal business or page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the concrete business path or trusted `pageFamilyId` and concrete time range.
+
+The model must not reconstruct an ordinal continuation from prior answer text. The Plugin's common admission layer selects the authoritative Query artifact and overwrites caller-supplied continuation fields with a trusted draft. If a newer artifact belongs to another domain, Query must not fall back to an older ranking; the reception layer clarifies or delegates to that domain.
 
 The output is JSON. Prefer `narrationInput.result.narrationStructure`, `narrationInput.result.timeRange`, `summary`, and returned rows when writing the final Chinese answer.
 

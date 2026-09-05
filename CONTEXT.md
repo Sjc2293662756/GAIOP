@@ -16,6 +16,18 @@ _Avoid_: current turn, latest turn id, delivery source
 The immutable association between one OpenClaw inbound message/agent run and one `turnId`. OpenClaw message hooks expose `messageId`, while agent and Tool hooks expose `runId`; `QueryTurnCoordinator` bridges them by adopting the fresh `RECEIVED` turn whose trusted conversation scope and source prompt match, then binds the agent run to that same turn. Tool and output hooks resolve the Query Turn only through these bindings. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match and a `NAPM_QUERY` route. Missing or mismatched identity/route fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn. Because OpenClaw's `before_message_write` contract does not provide run/message identity, that hook must not finalize or replace a Query Turn when identity is absent; authoritative channel delivery remains owned by identity-bearing output hooks.
 _Avoid_: mutable conversation turn id, latest-turn lookup
 
+**Turn Admission Decision**:
+The immutable reception-layer decision produced once for the current run/message. It records the route, action, expected Tool, workflow, reason code, and any authoritative source artifact selected for a short follow-up. The public execution gate checks this decision but does not reinterpret domain language. It is not the Query Decision and does not own Query, Alert, Packet, or Report business state.
+_Avoid_: mutable route, prompt-only Tool permission, one global cross-skill state machine
+
+**Reference Selection**:
+A domain-neutral parse of a short continuation, such as ordinal 1 plus DETAIL, a requested limit of 20, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose.
+_Avoid_: regex-selected Tool, model-authored internal identifier
+
+**Authoritative Context Candidate**:
+A minimal capability projection exposed by one domain resolver to Turn Admission. Query currently exposes normalized `WebApplication`/`PageFamily` ranking sets and exact-turn `timeValues` context; Alert exposes event ordinals. Freshness selects one source. If the newest successful Skill result is from a domain whose ordinal continuation has not migrated, a Context Boundary requires clarification and prevents fallback to an older Query result.
+_Avoid_: latest chat text, stale-domain fallback, shared mutable result object
+
 **Query Draft**:
 The structured but not-yet-executable interpretation of a Monitoring Question. It may omit a value that must be supplied by the user and must pass Query Decision evaluation before it can become a Resolved Query.
 _Avoid_: incomplete Resolved Query, executable query
@@ -71,6 +83,10 @@ _Avoid_: PageFamilyDetail drilldown, metric query, page-family aggregate ranking
 **Result Reference**:
 An ordinal selection from the current Query Turn's frozen source set. `{objectType:"WebApplication", ordinal}` selects a business for the explicit `WebApplication > PageFamilies > PageFamily` drilldown; `{objectType:"PageFamily", ordinal}` selects a page for `pageViews`. The plugin resolves it before time materialization and execution, strips caller-supplied provenance flags, and issues the trusted `sourceReference`. Invalid, expired, cross-scope, wrong-type, or out-of-range references fail closed without a Query Skill or southbound call.
 _Avoid_: raw object names or pageFamilyId guessed from prose, caller-authored sourceReference, mutable latest-result pointer, cross-conversation reference
+
+**Exact-Turn Query Context**:
+The lightweight successful `timeValues` context stored both as scope-latest for admission discovery and by `conversationKey + sourceTurnId` for execution validation. A time-change follow-up freezes the source turn in its Turn Admission Decision; overlapping later queries cannot replace the metrics or groups being continued.
+_Avoid_: validating an admitted follow-up against the newest query in the conversation
 
 **TopN Normalization**:
 The deterministic ordering applied to every `topValues` result before narration or ranking-result storage. Values are parsed numerically using `topMetric`, structured ascending/descending intent determines direction, source ranks are replaced, ties remain stable, and blank/missing values stay last. The narration object type is the effective terminal group.

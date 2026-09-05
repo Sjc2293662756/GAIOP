@@ -16,6 +16,7 @@ class ConversationOperationState {
     this.skillByTurn = new Map();
     this.latestSkillByScope = new Map();
     this.latestQueryContextByScope = new Map();
+    this.queryContextByTurn = new Map();
     this.queryFailureByPrompt = new Map();
     this.queryFailureByTurn = new Map();
     this.skillExecutionFailureByPrompt = new Map();
@@ -94,6 +95,11 @@ class ConversationOperationState {
     };
     this._prune();
     this.latestQueryContextByScope.set(record.conversationKey, record);
+    const turnKey = this._buildTurnKey(record.conversationKey, record.turnId);
+    if (turnKey) {
+      this.queryContextByTurn.set(turnKey, record);
+      this._trim(this.queryContextByTurn);
+    }
     this._trim(this.latestQueryContextByScope);
     return record;
   }
@@ -107,6 +113,13 @@ class ConversationOperationState {
       String(scope).trim(),
       this.queryContextMaxAgeMs
     );
+  }
+
+  getQueryContext(scope, turnId) {
+    const key = this._buildTurnKey(scope, turnId);
+    return key
+      ? this._getFresh(this.queryContextByTurn, key, this.queryContextMaxAgeMs)
+      : null;
   }
 
   rememberQueryFailure({ scope, turnId = '', promptKey, result, resolvedQuery = null }) {
@@ -421,6 +434,7 @@ class ConversationOperationState {
       this.skillByTurn,
       this.latestSkillByScope,
       this.latestQueryContextByScope,
+      this.queryContextByTurn,
       this.queryFailureByPrompt,
       this.queryFailureByTurn,
       this.skillExecutionFailureByPrompt,
@@ -464,6 +478,7 @@ class ConversationOperationState {
     this._pruneMap(this.skillByTurn, this.resultMaxAgeMs);
     this._pruneMap(this.latestSkillByScope, this.resultMaxAgeMs);
     this._pruneMap(this.latestQueryContextByScope, this.queryContextMaxAgeMs);
+    this._pruneMap(this.queryContextByTurn, this.queryContextMaxAgeMs);
     this._pruneMap(this.queryFailureByPrompt, this.resultMaxAgeMs);
     this._pruneMap(this.queryFailureByTurn, this.resultMaxAgeMs);
     this._pruneMap(this.skillExecutionFailureByPrompt, this.resultMaxAgeMs);

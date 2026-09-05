@@ -484,6 +484,8 @@ class QueryTurnCoordinator {
         ...next,
         resultReferenceSetId: resultReferenceSet.resultSetId
       };
+    } else {
+      this.latestResultReferenceByScope.delete(current.conversationKey);
     }
     this._setTurn(key, next);
     return clone(next);

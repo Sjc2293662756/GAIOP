@@ -32,6 +32,7 @@
 - 正常用户查询必须走 OpenClaw 的 `napm-skill-query` 工具。上游完成自然语言理解并构造 Query Draft；只有通过 Query Decision Policy 的完整 Resolved Query 才能由 NAPM Query Skill 执行。
 - 缺少必须由用户提供的对象名时，返回一个具体澄清问题且不调用南向接口。若上游曾把应用问题错构为 `TotalTraffic`，先由 Query Decision Policy 把 pending Draft 规范化为 `DefinedApp`。用户下一轮只回复名称（如 `HTTP`）时，用 `clarificationAnswer` 继续原查询，不要求用户重复时间、指标和对象类型。
 - 每个查询回答只能来自当前 run/message 绑定的 Query Turn。成功、无数据、失败、澄清和契约违规都使用该轮的权威最终内容；不得读取同会话其他轮次的最新结果。缺少可靠轮次身份时停止有状态处理，不得猜测当前轮。
+- “看第一个的详情”这类短追问先由 Plugin 的统一准入层结合最近权威结果决定领域和 Tool。有唯一可信来源才继续；无来源、过期、跨会话、越界或最近结果暂不支持该下钻时，只问一个明确问题且不调用 Tool。
 - 直接 Tool 执行必须先验证插件签发的可信轮次绑定、可信 `toolName` 和 `NAPM_QUERY` route；任一不匹配时不得恢复 pending Draft、物化时间、校验查询或调用 Query Skill。轮次已在执行时，重复调用即使携带了不同或损坏的 Draft，也只返回执行中状态。
 - Query Turn 的 route 由本轮问题确定后不可由 Tool 或 Tool 结果改写；普通查询调用错误的其他 NAPM Tool 不能绕过 `napm-skill-query`，也不能把查询伪装成其他 Skill 工作流。
 - 流式“正在查询”等 partial 只表示进度，不得被当成查询终态；同一 Query Turn 的最终内容只交付一次，终态后的 Tool 重放不得再次执行 Skill 或南向请求。

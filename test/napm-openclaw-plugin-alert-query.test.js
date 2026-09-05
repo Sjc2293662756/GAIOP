@@ -628,6 +628,70 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(result.blockReason).toContain('napm-alert-query');
   });
 
+  test('should route a generic ordinal detail follow-up to the latest authoritative alert result', async () => {
+    const { hooks } = createApiHarness();
+    const firstCtx = createWeComCtx('alert-ordinal-source');
+    const firstPrompt = '最近一小时有哪些严重告警？';
+    hooks.get('message_received')({ content: firstPrompt }, firstCtx);
+    await hooks.get('before_prompt_build')({ prompt: firstPrompt }, firstCtx);
+    const firstTurnId = plugin.__test__.getActiveTurnId(null, plugin.__test__.getGuardState(firstCtx));
+    const conversationKey = plugin.__test__.getConversationKey(firstCtx);
+    plugin.__test__.rememberSkillResult(firstPrompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      events: [
+        { id: '369652', start: 1781488800, end: 1781492400, group: 'HTTPS' },
+        { id: '369653', start: 1781488800, end: 1781492400, group: 'HTTP' }
+      ]
+    }, conversationKey, 'napm-alert-query', firstTurnId);
+
+    const followCtx = {
+      ...firstCtx,
+      runId: 'run-alert-ordinal-follow-up'
+    };
+    const followPrompt = '看第一个的详情';
+    hooks.get('message_received')({ content: followPrompt }, followCtx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt: followPrompt }, followCtx);
+    const wrongTool = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      toolCallId: 'alert-ordinal-wrong-tool-call',
+      params: { prompt: followPrompt }
+    }, followCtx);
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-query',
+      toolCallId: 'alert-ordinal-detail-call',
+      params: { prompt: followPrompt }
+    }, followCtx);
+
+    expect(promptHook.appendSystemContext).toContain('AUTHORITATIVE CONTEXT FOLLOW-UP');
+    expect(promptHook.appendSystemContext).toContain('来源对象=AlertEvent');
+    expect(wrongTool).toMatchObject({ block: true });
+    expect(wrongTool.blockReason).toContain('EXPECTED_TOOL_MISMATCH');
+    expect(wrongTool.blockReason).toContain('napm-alert-query');
+    expect(result?.block).not.toBe(true);
+    expect(result.params).toMatchObject({
+      prompt: followPrompt,
+      mode: 'detail',
+      criteria: {
+        eventIds: ['369652'],
+        start: 1781488800,
+        end: 1781492400
+      },
+      alertQuery: {
+        mode: 'detail',
+        criteria: { eventIds: ['369652'] }
+      }
+    });
+    const followTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+      conversationKey,
+      followCtx.runId
+    );
+    expect(plugin.__test__.queryTurnCoordinator.get(conversationKey, followTurnId)).toMatchObject({
+      route: 'OTHER_SKILL'
+    });
+  });
+
   test('should answer alert skill meta follow-up only from alert skill record', async () => {
     const { hooks } = createApiHarness();
     const messageReceived = hooks.get('message_received');
