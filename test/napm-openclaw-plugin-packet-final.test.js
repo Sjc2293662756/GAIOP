@@ -232,10 +232,73 @@ describe('NAPM packet deterministic final reply', () => {
     expect(outgoing.content).toContain('下载完成：capture.pcap');
     expect(outgoing.content).toContain('协议分析：已完成');
     expect(outgoing.content).toContain('数据包数：42 个');
-    expect(outgoing.content).toContain('协议层级：eth frames:42 bytes:2048');
+    expect(outgoing.content).toContain('协议分布：以太网（42 帧，2.00 KB）、IP（42 帧，2.00 KB）');
+    expect(outgoing.content).toContain('主要端点：10.0.0.1：10 包，1.00 KB');
+    expect(outgoing.content).toContain('主要会话：10.0.0.1 ↔ 10.0.0.2：10 包，1.00 KB');
     expect(outgoing.content).toContain('DNS 查询：example.test（2 次）');
-    expect(outgoing.content).toContain('HTTP 记录：example.test|/health|200');
+    expect(outgoing.content).toContain('HTTP 记录：example.test /health（HTTP 200）');
     expect(outgoing.content).toContain('TLS SNI：example.test（1 次）');
+  });
+
+  test('turns raw tshark tables into a concise protocol summary', () => {
+    const reply = plugin.__test__.buildPacketFinalReply({
+      ok: true,
+      mode: 'preview_download_analyze',
+      criteria: {
+        ips: ['101.254.114.238'],
+        start: 1788493200,
+        end: 1788493500,
+      },
+      preview: {
+        ok: true,
+        empty: false,
+        overview: { rowCount: 101 },
+      },
+      download: {
+        ok: true,
+        fileName: 'capture.pcap',
+        bytes: 85224,
+      },
+      analysis: {
+        ok: true,
+        capinfos: { number_of_packets: '621' },
+        protocolHierarchy: [
+          '===================================================================',
+          'Protocol Hierarchy Statistics',
+          'Filter:',
+          'eth frames:621 bytes:75264',
+          'ip frames:621 bytes:75264',
+          'tcp frames:499 bytes:54028',
+          'mysql frames:2 bytes:159',
+          '_ws.malformed frames:2 bytes:159',
+        ],
+        endpoints: [
+          '===================================================================',
+          'IPv4 Endpoints',
+          'Filter: <No Filter>',
+          '| Packets | | Bytes | | Tx Packets | | Tx Bytes | | Rx Packets | | Rx Bytes |',
+          '101.254.114.238 621 75264 247 37532 374 37732',
+        ],
+        conversations: [
+          '===================================================================',
+          'IPv4 Conversations',
+          'Filter: <No Filter>',
+          '| <- | | -> | | Total | Relative | Duration |',
+        ],
+        dnsQueries: [{ value: '45.33.109.10.in-addr.arpa', count: 2 }],
+        httpRows: ['101.254.114.238|/|'],
+        tlsSni: [],
+      },
+    });
+
+    expect(reply).toContain('下载完成：capture.pcap（85,224 bytes（83.2 KB））');
+    expect(reply).toContain('协议分布：以太网（621 帧，73.5 KB）、IP（621 帧，73.5 KB）、TCP（499 帧，52.8 KB）、MySQL（2 帧，159 B）、解析异常（_ws.malformed）（2 帧，159 B）');
+    expect(reply).toContain('主要端点：101.254.114.238：621 包，73.5 KB（发出 247 包/36.7 KB，接收 374 包/36.8 KB）');
+    expect(reply).not.toContain('===================================================================');
+    expect(reply).not.toContain('Filter:');
+    expect(reply).not.toContain('| Packets |');
+    expect(reply).toContain('解析提示：发现 2 个协议解析异常帧（不等同于丢包，需结合原始抓包进一步确认）。');
+    expect(reply).toContain('HTTP 记录：101.254.114.238 /');
   });
 
   test('does not authorize a bare download command without a pending packet preview', async () => {

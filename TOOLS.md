@@ -42,7 +42,7 @@
 - NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。`pageViews` 的 `RESULT/NO_DATA` 也由 Query Turn 生成并 exactly-once 交付。
 - 普通用户问题不要使用 shell、curl 或直接 NetInside WebService 调用。
 - 普通数据包“分析”请求先由 `napm-packet-analysis` 预览；若结果要求 `CONFIRM_DOWNLOAD`，用户下一轮可用自然表达确认，例如“确认下载，进行分析”“请把刚才预览的数据包下载下来并做协议解析”“上一轮预览没有问题，直接执行下载分析”“好的，继续”等。插件按同一会话的待确认上下文和动作语义解析确认，不依赖几个固定短句；否定、状态询问、故障诊断、重试/替换目标或新 IP/时间范围不会继承上一轮。插件只从同一会话最近的有效 packet 预览恢复目标和固定 `start/end`，并注入可信确认；不重新计算“最近 5 分钟”，也不接受模型自行设置 `previewRiskAccepted`。高风险 `SUGGEST_NARROW_TIME_RANGE` 必须先缩小时间范围，不能用普通确认绕过。
-- 同一 packet Query Turn 的重叠或重复 Tool 调用只执行一次 Skill。下载成功后的确定性答复读取实际 `analysis`，至少说明协议分析状态和可用的包数，并按结果展示协议层级、端点、会话、DNS、HTTP 与 TLS SNI 摘要。
+- 同一 packet Query Turn 的重叠或重复 Tool 调用只执行一次 Skill。下载成功后的确定性答复读取实际 `analysis`，至少说明协议分析状态和可用的包数，并按结果展示清洗后的协议分布、端点、会话、DNS、HTTP 与 TLS SNI 摘要；不输出 tshark 原始分隔线、`Filter:` 或空表头，`malformed` 只作为解析异常提示。
 
 ## 本机关键路径
 

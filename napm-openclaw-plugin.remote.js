@@ -5536,6 +5536,156 @@ function formatPacketAnalysisValues(values = [], limit = 5) {
     .filter(Boolean);
 }
 
+const PACKET_PROTOCOL_LABELS = Object.freeze({
+  eth: '以太网',
+  ip: 'IP',
+  ipv4: 'IPv4',
+  ipv6: 'IPv6',
+  tcp: 'TCP',
+  udp: 'UDP',
+  dns: 'DNS',
+  http: 'HTTP',
+  tls: 'TLS',
+  mysql: 'MySQL',
+});
+
+function packetProtocolLabel(protocol = '') {
+  const key = String(protocol || '').trim().toLowerCase();
+  if (!key) return '';
+  if (key.includes('malformed')) return `解析异常（${protocol}）`;
+  return PACKET_PROTOCOL_LABELS[key] || protocol;
+}
+
+function parsePacketProtocolValue(value) {
+  if (isPlainObject(value)) {
+    const protocol = String(value.protocol || value.name || value.label || '').trim();
+    const frames = Number(value.frames ?? value.packets ?? value.packetCount);
+    const bytes = Number(value.bytes ?? value.totalBytes);
+    return protocol && (Number.isFinite(frames) || Number.isFinite(bytes))
+      ? { protocol, frames, bytes }
+      : null;
+  }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const match = raw.match(/^([^\s|]+)\s+frames\s*:\s*(\d+)\s+bytes\s*:\s*(\d+)/i);
+  return match
+    ? { protocol: match[1], frames: Number(match[2]), bytes: Number(match[3]) }
+    : null;
+}
+
+function formatPacketProtocolValues(values = [], limit = 8) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketProtocolValue)
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((item) => {
+      const parts = [];
+      if (Number.isFinite(item.frames)) parts.push(`${formatPacketInteger(item.frames)} 帧`);
+      if (Number.isFinite(item.bytes)) parts.push(formatPacketBytes(item.bytes));
+      return `${packetProtocolLabel(item.protocol)}${parts.length > 0 ? `（${parts.join('，')}）` : ''}`;
+    })
+    .filter(Boolean);
+}
+
+function parsePacketEndpointValue(value) {
+  if (isPlainObject(value)) {
+    const address = String(value.address || value.ip || value.endpoint || '').trim();
+    if (!address) return null;
+    return {
+      address,
+      packets: Number(value.packets ?? value.packetCount ?? value.totalPackets),
+      bytes: Number(value.bytes ?? value.totalBytes),
+      txPackets: Number(value.txPackets ?? value.transmitPackets),
+      txBytes: Number(value.txBytes ?? value.transmitBytes),
+      rxPackets: Number(value.rxPackets ?? value.receivePackets),
+      rxBytes: Number(value.rxBytes ?? value.receiveBytes),
+    };
+  }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const match = raw.match(/^([^|\s]+)\s+(\d+)\s+(\d+)(?:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+))?$/);
+  return match
+    ? {
+      address: match[1],
+      packets: Number(match[2]),
+      bytes: Number(match[3]),
+      txPackets: match[4] == null ? NaN : Number(match[4]),
+      txBytes: match[5] == null ? NaN : Number(match[5]),
+      rxPackets: match[6] == null ? NaN : Number(match[6]),
+      rxBytes: match[7] == null ? NaN : Number(match[7]),
+    }
+    : null;
+}
+
+function formatPacketEndpointValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketEndpointValue)
+    .filter((item) => item && Number.isFinite(item.packets))
+    .slice(0, limit)
+    .map((item) => {
+      const summary = [`${formatPacketInteger(item.packets)} 包`];
+      if (Number.isFinite(item.bytes)) summary.push(formatPacketBytes(item.bytes));
+      const direction = [];
+      if (Number.isFinite(item.txPackets)) {
+        direction.push(`发出 ${formatPacketInteger(item.txPackets)} 包${Number.isFinite(item.txBytes) ? `/${formatPacketBytes(item.txBytes)}` : ''}`);
+      }
+      if (Number.isFinite(item.rxPackets)) {
+        direction.push(`接收 ${formatPacketInteger(item.rxPackets)} 包${Number.isFinite(item.rxBytes) ? `/${formatPacketBytes(item.rxBytes)}` : ''}`);
+      }
+      return `${item.address}：${summary.join('，')}${direction.length > 0 ? `（${direction.join('，')}）` : ''}`;
+    });
+}
+
+function parsePacketConversationValue(value) {
+  if (isPlainObject(value)) {
+    const source = String(value.source || value.sourceIp || value.addressA || '').trim();
+    const destination = String(value.destination || value.destinationIp || value.addressB || '').trim();
+    if (!source || !destination) return null;
+    return {
+      source,
+      destination,
+      packets: Number(value.packets ?? value.packetCount ?? value.totalPackets ?? value.frames),
+      bytes: Number(value.bytes ?? value.totalBytes),
+    };
+  }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const addresses = raw.match(/(?:\d{1,3}\.){3}\d{1,3}/g) || [];
+  if (addresses.length < 2) return null;
+  const withoutAddresses = raw.replace(/(?:\d{1,3}\.){3}\d{1,3}/g, ' ');
+  const numbers = withoutAddresses.match(/\b\d+(?:\.\d+)?\b/g) || [];
+  return {
+    source: addresses[0],
+    destination: addresses[1],
+    packets: Number(numbers.length >= 6 ? numbers[4] : numbers[0]),
+    bytes: Number(numbers.length >= 6 ? numbers[5] : numbers[1]),
+  };
+}
+
+function formatPacketConversationValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketConversationValue)
+    .filter((item) => item && Number.isFinite(item.packets))
+    .slice(0, limit)
+    .map((item) => `${item.source} ↔ ${item.destination}：${formatPacketInteger(item.packets)} 包${Number.isFinite(item.bytes) ? `，${formatPacketBytes(item.bytes)}` : ''}`);
+}
+
+function formatPacketHttpValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .slice(0, limit)
+    .map((item) => {
+      if (isPlainObject(item)) {
+        const host = String(item.host || item.httpHost || '').trim();
+        const uri = String(item.uri || item.path || item.requestUri || '/').trim() || '/';
+        const status = String(item.status || item.statusCode || item.responseCode || '').trim();
+        if (!host && !status && uri === '/') return '';
+        return `${host || '未知主机'} ${uri}${status ? `（HTTP ${status}）` : ''}`;
+      }
+      const fields = String(item == null ? '' : item).split('|').map((field) => field.trim());
+      if (fields.length < 2 || fields.every((field) => !field)) return '';
+      const [host, uri, status] = fields;
+      return `${host || '未知主机'} ${uri || '/'}${status ? `（HTTP ${status}）` : ''}`;
+    })
+    .filter(Boolean);
+}
+
 function buildPacketFinalReply(result = {}) {
   const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
   const preview = isPlainObject(result?.preview) ? result.preview : null;
@@ -5680,7 +5830,10 @@ function buildPacketFinalReply(result = {}) {
   if (result?.download?.ok) {
     const fileName = String(result.download.fileName || 'packet capture').trim();
     const bytes = Number(result.download.bytes);
-    lines.push(Number.isFinite(bytes) ? `下载完成：${fileName}（${bytes} bytes）` : `下载完成：${fileName}`);
+    const byteText = Number.isFinite(bytes)
+      ? `${formatPacketInteger(bytes)} bytes（${formatPacketBytes(bytes)}）`
+      : '';
+    lines.push(byteText ? `下载完成：${fileName}（${byteText}）` : `下载完成：${fileName}`);
   } else if (result?.mode === 'preview_only') {
     lines.push('仅预览，未下载。');
     lines.push('说明：这是下载前流量预览，尚未执行 pcap 协议分析。');
@@ -5699,15 +5852,15 @@ function buildPacketFinalReply(result = {}) {
       lines.push(`数据包数：${formatPacketInteger(packetCount)} 个`);
     }
 
-    const protocolHierarchy = formatPacketAnalysisValues(analysis.protocolHierarchy, 8);
+    const protocolHierarchy = formatPacketProtocolValues(analysis.protocolHierarchy, 8);
     if (protocolHierarchy.length > 0) {
-      lines.push(`协议层级：${protocolHierarchy.join('；')}`);
+      lines.push(`协议分布：${protocolHierarchy.join('、')}`);
     }
-    const endpoints = formatPacketAnalysisValues(analysis.endpoints, 5);
+    const endpoints = formatPacketEndpointValues(analysis.endpoints, 5);
     if (endpoints.length > 0) {
       lines.push(`主要端点：${endpoints.join('；')}`);
     }
-    const conversations = formatPacketAnalysisValues(analysis.conversations, 5);
+    const conversations = formatPacketConversationValues(analysis.conversations, 5);
     if (conversations.length > 0) {
       lines.push(`主要会话：${conversations.join('；')}`);
     }
@@ -5715,13 +5868,23 @@ function buildPacketFinalReply(result = {}) {
     if (dnsQueries.length > 0) {
       lines.push(`DNS 查询：${dnsQueries.join('、')}`);
     }
-    const httpRows = formatPacketAnalysisValues(analysis.httpRows, 5);
+    const httpRows = formatPacketHttpValues(analysis.httpRows, 5);
     if (httpRows.length > 0) {
       lines.push(`HTTP 记录：${httpRows.join('；')}`);
     }
     const tlsSni = formatPacketAnalysisValues(analysis.tlsSni, 5);
     if (tlsSni.length > 0) {
       lines.push(`TLS SNI：${tlsSni.join('、')}`);
+    }
+    const malformedRows = (Array.isArray(analysis.protocolHierarchy) ? analysis.protocolHierarchy : [])
+      .map(parsePacketProtocolValue)
+      .filter((item) => item && /malformed/i.test(item.protocol));
+    const malformedFrames = malformedRows.reduce(
+      (total, item) => total + (Number.isFinite(item.frames) ? item.frames : 0),
+      0
+    );
+    if (malformedFrames > 0) {
+      lines.push(`解析提示：发现 ${formatPacketInteger(malformedFrames)} 个协议解析异常帧（不等同于丢包，需结合原始抓包进一步确认）。`);
     }
   } else if (analysis) {
     lines.push(`协议分析：失败（${analysis.error?.message || 'tshark 未返回有效分析结果'}）`);
