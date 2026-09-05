@@ -2,6 +2,7 @@
 
 const CLASSIFICATION_SCHEMA_VERSION = 'napm.domain-intent-classification.v1';
 const CLASSIFICATION_SOURCE = 'existing-domain-classifier-adapter';
+const issuedClassifications = new WeakSet();
 
 const REQUIRED_CLASSIFIERS = Object.freeze([
   'isPlatformIdentityPrompt',
@@ -49,13 +50,29 @@ function projectWorkflow(workflow = {}) {
 }
 
 function freezeClassification({ workflow = {}, signals = {}, facts = {} } = {}) {
-  return Object.freeze({
+  const classification = Object.freeze({
     schemaVersion: CLASSIFICATION_SCHEMA_VERSION,
     source: CLASSIFICATION_SOURCE,
     workflow: Object.freeze({ ...workflow }),
     signals: Object.freeze({ ...signals }),
     facts: Object.freeze({ ...facts })
   });
+  issuedClassifications.add(classification);
+  return classification;
+}
+
+function isDomainIntentClassification(value) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && issuedClassifications.has(value)
+    && value.schemaVersion === CLASSIFICATION_SCHEMA_VERSION
+    && value.source === CLASSIFICATION_SOURCE
+    && Object.isFrozen(value)
+    && Object.isFrozen(value.workflow)
+    && Object.isFrozen(value.signals)
+    && Object.isFrozen(value.facts)
+  );
 }
 
 function buildPlatformIdentityClassification() {
@@ -202,5 +219,6 @@ module.exports = {
   CLASSIFICATION_SCHEMA_VERSION,
   CLASSIFICATION_SOURCE,
   REQUIRED_CLASSIFIERS,
-  createDomainIntentClassificationAdapter
+  createDomainIntentClassificationAdapter,
+  isDomainIntentClassification
 };

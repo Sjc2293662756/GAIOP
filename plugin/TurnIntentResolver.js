@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  CLASSIFICATION_SCHEMA_VERSION
+  isDomainIntentClassification
 } = require('./DomainIntentClassificationAdapter');
 
 const TURN_INTENT_HANDLING = Object.freeze({
@@ -73,11 +73,16 @@ function resolveTurnIntent({ route = '', classification = null } = {}) {
     });
   }
 
-  const structuredClassification = classification?.schemaVersion === CLASSIFICATION_SCHEMA_VERSION
-    ? classification
-    : {};
-  const workflow = structuredClassification.workflow || {};
-  const signals = structuredClassification.signals || {};
+  if (!isDomainIntentClassification(classification)) {
+    return freezeIntent({
+      intentType: TURN_INTENT_TYPES.MODEL_OWNED,
+      handling: TURN_INTENT_HANDLING.MODEL_OWNED,
+      expectedTool: null
+    });
+  }
+
+  const workflow = classification.workflow;
+  const signals = classification.signals;
 
   if (signals?.alertPacket === true) {
     return singleTool(

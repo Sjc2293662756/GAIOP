@@ -1066,7 +1066,7 @@ OpenClaw 管聊天会话和 Run
 
 ### 27.6 验证结果与当前边界
 
-- `npm test -- --runInBand`：116 个测试套件、1039 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、结构化分类适配、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
+- `npm test -- --runInBand`：116 个测试套件、1041 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、结构化分类适配、伪造分类拒绝、平台身份 `MODEL_OWNED` 准入、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
 - `npm run lint`、`npm run verify:runtime-contract`、`git diff --check` 和新增运行时文件语法检查全部通过。
 - 当前不是“所有 Skill 的序号续操作均已迁移完成”。Query 已完成本阶段迁移，Alert 完成事件序号详情切片；Packet、Report、Inspection、Summary、Fault 继续使用现有领域状态。对于这些尚未迁移的结果，公共层只做保守澄清，禁止错误回退到更早的 Query 排行。
 - 当前公共解析器也不是完整自然语言指代系统；`这个/它/确认/取消/导出/下载` 的通用化仍属于阶段 3–5，必须随领域 pending、风险确认和 artifact 契约一起迁移，不能只加关键词。
