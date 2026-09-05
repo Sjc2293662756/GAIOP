@@ -45,6 +45,19 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
     return { hooks, tools };
   }
 
+  function authorizeDirectQuery(event, ctx) {
+    const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    const conversationKey = plugin.__test__.getTrustedConversationKey(event.params);
+    const turnId = plugin.__test__.getTrustedTurnId(event.params);
+    expect(plugin.__test__.authorizeTrustedToolContext(traceId, event.params, {
+      conversationKey,
+      turnId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query'
+    })).toBe(true);
+  }
+
   test('should reject executable timestamps carried only by timeRange at plugin boundary', async () => {
     const { hooks } = createHarness();
     const ctx = {
@@ -167,7 +180,7 @@ describe('napm-openclaw-plugin resolvedQuery time contract guard', () => {
       }
       }
     };
-    plugin.__test__.bindTrustedToolContext(event, ctx);
+    authorizeDirectQuery(event, ctx);
     const result = await tools.get('napm-skill-query').execute('tool-time-contract', event.params);
 
     expect(result.details.ok).toBe(false);

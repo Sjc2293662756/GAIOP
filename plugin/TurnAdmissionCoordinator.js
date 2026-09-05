@@ -49,6 +49,8 @@ function normalizeBaseDecision(baseDecision = {}, identity = {}) {
         ? TURN_ADMISSION_ACTIONS.EXECUTE_TOOL
         : TURN_ADMISSION_ACTIONS.MODEL_OWNED,
     expectedTool: normalizeText(baseDecision?.expectedTool) || null,
+    intentType: normalizeText(baseDecision?.intentType) || null,
+    handling: normalizeText(baseDecision?.handling) || null,
     workflow: normalizeText(baseDecision?.workflow) || null,
     reasonCode: normalizeText(baseDecision?.reasonCode) || 'BASE_TURN_POLICY',
     source: 'base_policy'

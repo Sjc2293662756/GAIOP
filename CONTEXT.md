@@ -13,19 +13,23 @@ The stable `conversationKey` used to group turns and retain a pending clarificat
 _Avoid_: current turn, latest turn id, delivery source
 
 **Run Binding**:
-The immutable association created at `message_received` between the current OpenClaw run/message and one `turnId`. Tool and output hooks resolve the Query Turn only through this binding. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match and a `NAPM_QUERY` route. Missing or mismatched identity/route fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn.
+The immutable association created at `message_received` between the current OpenClaw run/message and one `turnId`. Tool and output hooks resolve the Query Turn only through this binding. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match, a `NAPM_QUERY` route, the run-bound Turn Admission Decision, and the stable digest of the final Hook-authorized parameters. Missing admission or any identity/route/parameter mismatch fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn.
 _Avoid_: mutable conversation turn id, latest-turn lookup
 
 **Turn Admission Decision**:
 The immutable reception-layer decision produced once for the current run/message. It records the route, action, expected Tool, workflow, reason code, and any authoritative source artifact selected for a short follow-up. The public execution gate checks this decision but does not reinterpret domain language. It is not the Query Decision and does not own Query, Alert, Packet, or Report business state.
 _Avoid_: mutable route, prompt-only Tool permission, one global cross-skill state machine
 
+**Structured Turn Intent**:
+The base routing result produced by `TurnIntentResolver` from existing classifier signals. It identifies a single expected Tool or marks a multi-stage flow as domain-orchestrated; it never parses the raw prompt or adds another synonym regex. Summary and inspection reporting remain domain-orchestrated because their valid path contains both a source Tool and report export.
+_Avoid_: nested Hook Tool-selection regex, forcing a multi-stage report into one expected Tool
+
 **Reference Selection**:
-A domain-neutral parse of a short continuation, such as ordinal 1 plus DETAIL, a requested limit of 20, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose.
+A domain-neutral parse of the currently migrated short continuations: ordinal 1 plus DETAIL, an optional requested limit, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose. Pronoun-only selection, generic confirm/cancel, report export, and packet download are target-stage capabilities, not current generic-parser behavior; existing domain-specific flows continue to own them.
 _Avoid_: regex-selected Tool, model-authored internal identifier
 
 **Authoritative Context Candidate**:
-A minimal capability projection exposed by one domain resolver to Turn Admission. Query currently exposes normalized `WebApplication`/`PageFamily` ranking sets and exact-turn `timeValues` context; Alert exposes event ordinals. Freshness selects one source. If the newest successful Skill result is from a domain whose ordinal continuation has not migrated, a Context Boundary requires clarification and prevents fallback to an older Query result.
+A minimal capability projection exposed by one domain resolver to Turn Admission. Query currently exposes normalized `WebApplication`/`PageFamily` ranking sets and exact-turn `timeValues` context; Alert exposes event ordinals. Freshness selects one source only during `message_received`; the selected artifact and source turn are then frozen into the run-bound Decision and Query Turn. Later completion of another result in the same scope cannot replace that source. If the newest successful Skill result is from a domain whose ordinal continuation has not migrated, a Context Boundary requires clarification and prevents fallback to an older Query result.
 _Avoid_: latest chat text, stale-domain fallback, shared mutable result object
 
 **Query Draft**:

@@ -234,7 +234,9 @@ describe('NAPM plugin in-process Skill execution contract', () => {
         installedPlugin,
         installedHarness,
         `minimal-extension-${objectType}`,
-        `列出${objectName}`,
+        objectType === 'WebApplication'
+          ? '现在系统中有哪些业务？'
+          : '现在系统中有哪些应用？',
         {
           service: 'groups',
           queryModeKey: 'metadata',

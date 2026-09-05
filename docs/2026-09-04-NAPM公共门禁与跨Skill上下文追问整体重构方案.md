@@ -2,7 +2,7 @@
 
 日期：2026-09-04
 
-状态：阶段 0–2 已实施，Alert 序号详情已完成第一个迁移切片；Packet/Report 等保留原领域状态并由保守边界防止错误回退
+状态：阶段 0–2 已实施并完成准入授权复审加固；Alert 序号详情已完成第一个迁移切片；Packet/Report 等保留原领域状态并由保守边界防止错误回退
 
 适用范围：NAPM OpenClaw Plugin、7 个生产 Tool、Query Turn、告警引用、报告来源、数据包确认和最终交付
 
@@ -372,7 +372,7 @@ Turn Admission Decision 选择 napm-skill-query
 
 ### 优先级 3：权威结果追问
 
-先解析通用选择表达：
+以下是目标架构最终要覆盖的通用选择表达：
 
 - 第一个、第一名、排名第一；
 - 第二个、第三条；
@@ -380,6 +380,8 @@ Turn Admission Decision 选择 napm-skill-query
 - 前 20 个、详细查看；
 - 导出上面结果；
 - 下载第一条。
+
+截至当前实施阶段，公共 `ReferenceSelectionParser` 只支持“第 N 个 + 详情”、可选“前 N 条”和上下文时间变更。代词单独选择（“这个/它”）、通用确认/取消、报告导出和数据包下载尚未迁入公共解析器，仍由既有领域专用流程处理或保守澄清。本文列出它们是后续阶段范围，不表示已经全部实现。
 
 然后结合权威结果类型决定交给哪个 Skill。
 
@@ -594,12 +596,14 @@ Plugin 从权威结果取得 `pageFamilyId`，继承可信时间范围并执行�
 
 ### 14.2 `plugin/ReferenceSelectionParser.js`
 
-职责：
+目标职责：
 
 - 解析序号、代词、数量、确认、取消和导出等通用选择表达；
 - 输出结构化选择；
 - 不决定目标 Skill；
 - 不读取业务结果。
+
+当前落地切片只实现序号详情、请求条数和时间变更。`确认/取消/导出/下载/这个/它` 未在通用解析器中实现，避免在对应领域 pending、风险确认和 artifact 契约迁移前误放行。
 
 ### 14.3 `plugin/context-resolvers/`
 
@@ -1029,6 +1033,7 @@ OpenClaw 管聊天会话和 Run
 
 - 新增 `ReferenceSelectionParser`，只识别序号、详情动作、请求条数和时间变更，不选择 Skill。
 - 新增 `TurnAdmissionCoordinator`，在 `message_received` 生成不可变、run-bound 的 route、action、`expectedTool`、来源 artifact 和 reasonCode。
+- 新增 `TurnIntentResolver`，只消费既有 Alert、Packet、Report、Fault 和 Query workflow 分类信号，输出单 Tool 或领域编排；它不读取原始 prompt、不新增一套业务正则。故障诊断获得明确 `expectedTool`，Summary/Inspection 因为是“来源 Tool + export”的多阶段链而继续标记为领域编排。
 - `before_tool_call` 优先校验准入澄清、`expectedTool` 和可信轮次身份；错误 Tool 不会进入领域解析或南向调用。
 - 新增准入、权威 artifact 保存/解析/失败及门禁阻断审计事件，日志只保存最小摘要。
 
@@ -1037,21 +1042,31 @@ OpenClaw 管聊天会话和 Run
 - 真实三轮链路的第二、三轮只需传原始 prompt；Plugin 从权威结果构建 `WebApplication -> PageFamily` 和 `PageFamily -> pageViews` 续查 Draft。
 - “看第一个的详情”已纳入生产原文回放，不再依赖 `WorkflowClassifierService` 对这个短句单独命中。
 - `timeValues` 的“那最近 7 天的呢”不再使用旧的 model-owned 特殊放行。准入时冻结来源 turn，Tool 执行时按 `conversationKey + sourceTurnId` 取原查询上下文，重叠 run 不会改读更新的 Query。
+- 排行序号追问也在 `message_received` 冻结当时选中的 `resultSetId/sourceTurnId`。新增生命周期回归覆盖：追问消息到达后，即使同 scope 又完成一份更新排行，原追问仍解析旧的冻结第一名，不读取新的 scope-latest 结果。
 - 无上下文、跨 scope、过期、序号越界或参数修改超出准入范围时都在 Query Skill、`NapmClient` 和南向接口之前停止。
 
-### 27.3 跨 Skill 已实施的保护
+### 27.3 Query execute 准入加固
+
+- `before_tool_call` 在 Result Reference 解析、Query Decision 和参数规范化完成后，才把 Turn Admission Decision 与最终参数稳定摘要绑定到可信 `traceId`。
+- `napm-skill-query.execute()` 必须重新校验该准入授权。只有 trace、scope、turn、可信 toolName、Query route、Decision 和参数摘要同时一致才可进入执行。
+- 同一 trace 下替换对象、指标、时间、Query Draft 或结果引用会返回 `QUERY_TOOL_PARAMETERS_MISMATCH`；缺少准入授权会返回 `TURN_ADMISSION_AUTHORIZATION_REQUIRED`。两类失败的 Query Skill、`NapmClient` 和南向调用均为 0。
+- 参数摘要递归按对象键排序，避免 JSON 键顺序变化产生无意义的不一致；数组顺序保留，因为 groups/path 本身有序。
+- 已处于 `EXECUTING` 或 `TERMINAL` 的同一授权重放仍优先返回执行中/既有权威结果，保持 exactly-once，不因重放参数损坏产生第二次调用。
+
+### 27.4 跨 Skill 已实施的保护
 
 - Alert 列表的“看第 N 个的详情”由 Alert Context Resolver 从权威事件投影构建 `napm-alert-query` detail 参数，不进入 Query。
 - 如果最近成功结果来自 Packet、Report、Inspection、Summary 或 Fault，但该领域尚未对通用序号下钻暴露安全续操作，Context Boundary 会要求澄清。它不会回退选择更早的 Query 第一名。
 - Packet 下载确认、Report 来源、Inspection/Summary/Fault 阶段结果仍由现有专用状态与门禁管理；本阶段没有把它们迁入一个全局大状态机。
 
-### 27.4 回滚点
+### 27.5 回滚点
 
 实施前已创建备份分支 `codex/backup-napm-turn-admission-prechange-20260904-2058`，对应 HEAD `a5dd3fb48be7ae3455840faaa17f75b0bf525556`；同时保留了包含未提交文档的完整工作树快照。
 
-### 27.5 验证结果与当前边界
+### 27.6 验证结果与当前边界
 
-- `npm test -- --runInBand`：114 个测试套件、1013 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、重叠 run、错误 Tool 和无上下文零执行回归。
+- `npm test -- --runInBand`：115 个测试套件、1034 项测试全部通过；覆盖 Query、Alert、Packet、Report、Inspection、Summary、Fault 等既有流程及新增准入生命周期、重叠 run、错误 Tool、参数篡改和无上下文零执行回归。
 - `npm run lint`、`npm run verify:runtime-contract`、`git diff --check` 和新增运行时文件语法检查全部通过。
 - 当前不是“所有 Skill 的序号续操作均已迁移完成”。Query 已完成本阶段迁移，Alert 完成事件序号详情切片；Packet、Report、Inspection、Summary、Fault 继续使用现有领域状态。对于这些尚未迁移的结果，公共层只做保守澄清，禁止错误回退到更早的 Query 排行。
+- 当前公共解析器也不是完整自然语言指代系统；`这个/它/确认/取消/导出/下载` 的通用化仍属于阶段 3–5，必须随领域 pending、风险确认和 artifact 契约一起迁移，不能只加关键词。
 - 本阶段没有修改版本号、制作发布包、部署、连接或修改服务器，也没有重启服务。

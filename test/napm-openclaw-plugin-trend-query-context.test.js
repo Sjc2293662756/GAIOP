@@ -106,7 +106,16 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       toolName: 'napm-skill-query',
       params: { ...args }
     };
-    plugin.__test__.bindTrustedToolContext(event, ctx);
+    const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    const conversationKey = plugin.__test__.getTrustedConversationKey(event.params);
+    const turnId = plugin.__test__.getTrustedTurnId(event.params);
+    expect(plugin.__test__.authorizeTrustedToolContext(traceId, event.params, {
+      conversationKey,
+      turnId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query'
+    })).toBe(true);
     return tools.get('napm-skill-query').execute(toolCallId, event.params);
   }
 
