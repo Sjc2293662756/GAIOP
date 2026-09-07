@@ -2,8 +2,10 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 function parseArgs(argv = []) {
   const args = {};
@@ -27,9 +29,24 @@ async function main() {
   const extensionRoot = path.resolve(args.extensionRoot || '');
   const skillsRoot = path.resolve(args.skillsRoot || '');
   const extensionEntry = path.join(extensionRoot, 'index.js');
+  const extensionRemoteEntry = path.join(extensionRoot, 'napm-openclaw-plugin.remote.js');
+  const extensionModuleEntry = path.join(extensionRoot, 'index.mjs');
 
-  if (!args.extensionRoot || !fs.existsSync(extensionEntry)) {
-    throw new Error(`Installed extension entry is missing: ${extensionEntry}`);
+  if (!args.extensionRoot || !fs.existsSync(extensionEntry) || !fs.existsSync(extensionRemoteEntry)) {
+    throw new Error(`Installed extension entry pair is incomplete: ${extensionEntry}`);
+  }
+  if (!fs.existsSync(extensionModuleEntry)) {
+    throw new Error(`Installed extension module entry is missing: ${extensionModuleEntry}`);
+  }
+  const hashFile = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  const indexHash = hashFile(extensionEntry);
+  const remoteHash = hashFile(extensionRemoteEntry);
+  if (indexHash !== remoteHash) {
+    throw new Error(`Installed extension entrypoint mismatch: index.js=${indexHash} remote.js=${remoteHash}`);
+  }
+  const moduleSource = fs.readFileSync(extensionModuleEntry, 'utf8');
+  if (!/new URL\('\.\/index\.js'/.test(moduleSource)) {
+    throw new Error('Installed extension index.mjs does not load ./index.js.');
   }
   if (!args.skillsRoot || !fs.existsSync(skillsRoot)) {
     throw new Error(`Workspace Skills root is missing: ${skillsRoot}`);
@@ -43,7 +60,8 @@ async function main() {
   process.env.NAPM_TRUSTED_CONTEXT_DIR = path.join(stateDir, 'trusted-contexts');
 
   try {
-    const plugin = require(extensionEntry);
+    const extensionModule = await import(`${pathToFileURL(extensionModuleEntry).href}?runtimeSmoke=${Date.now()}`);
+    const plugin = extensionModule.default || extensionModule;
     if (!plugin.__test__?.hasCompleteNapmSkillRuntime(skillsRoot)) {
       throw new Error('Workspace Skills runtime is missing one or more plugin-required modules.');
     }

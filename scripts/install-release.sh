@@ -89,6 +89,7 @@ for required_path in \
   "$RELEASE_ROOT/package-lock.json" \
   "$RELEASE_ROOT/openclaw.plugin.json" \
   "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" \
+  "$RELEASE_ROOT/index.js" \
   "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" \
   "$RELEASE_ROOT/napm-openclaw-plugin.package.json" \
   "$RELEASE_ROOT/plugin" \
@@ -114,10 +115,39 @@ read_manifest_field() {
   ' "$MANIFEST_PATH" "$1"
 }
 
+verify_release_entrypoints() {
+  local index_hash remote_hash
+  index_hash="$(sha256sum "$RELEASE_ROOT/index.js" | awk '{print $1}')"
+  remote_hash="$(sha256sum "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" | awk '{print $1}')"
+  [[ "$index_hash" == "$remote_hash" ]] || {
+    echo "Release entrypoint mismatch: index.js=$index_hash remote.js=$remote_hash" >&2
+    exit 1
+  }
+  grep -Eq "new URL\\('./index\\.js'" "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" || {
+    echo "Release index.mjs does not load ./index.js" >&2
+    exit 1
+  }
+}
+
+verify_active_entrypoints() {
+  local index_hash remote_hash
+  index_hash="$(sha256sum "$EXTENSION_DIR/index.js" | awk '{print $1}')"
+  remote_hash="$(sha256sum "$EXTENSION_DIR/napm-openclaw-plugin.remote.js" | awk '{print $1}')"
+  [[ "$index_hash" == "$remote_hash" ]] || {
+    echo "Active extension entrypoint mismatch: index.js=$index_hash remote.js=$remote_hash" >&2
+    exit 1
+  }
+  grep -Eq "new URL\\('./index\\.js'" "$EXTENSION_DIR/index.mjs" || {
+    echo "Active extension index.mjs does not load ./index.js" >&2
+    exit 1
+  }
+}
+
 VERSION="$(read_manifest_field version)"
 COMMIT="$(read_manifest_field commit)"
 SHORT_COMMIT="${COMMIT:0:8}"
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release commit: $COMMIT" >&2; exit 1; }
+verify_release_entrypoints
 
 ACTIVE_MANIFEST_ARGS=()
 for active_manifest in \
@@ -423,6 +453,7 @@ EXTENSION_STAGE=""
 
 (cd "$WORKSPACE_DIR" && npm ci --omit=dev)
 node --check "$EXTENSION_DIR/index.js"
+verify_active_entrypoints
 OPENCLAW_SKILLS_ROOT="$WORKSPACE_DIR/skills" \
   node "$RELEASE_ROOT/scripts/verify-napm-skill-runtime-contract.js"
 node "$VERIFY_EXTENSION_RUNTIME_SCRIPT" \

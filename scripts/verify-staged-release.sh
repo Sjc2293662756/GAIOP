@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command_name in bash find grep install mktemp node npm realpath rsync; do
+for command_name in bash find grep install mktemp node npm realpath rsync sha256sum; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -54,6 +54,7 @@ for required_path in \
   "$RELEASE_ROOT/package.json" \
   "$RELEASE_ROOT/package-lock.json" \
   "$RELEASE_ROOT/openclaw.plugin.json" \
+  "$RELEASE_ROOT/index.js" \
   "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" \
   "$RELEASE_ROOT/plugin" \
   "$RELEASE_ROOT/skills" \
@@ -64,6 +65,17 @@ for required_path in \
     exit 1
   }
 done
+
+INDEX_HASH="$(sha256sum "$RELEASE_ROOT/index.js" | awk '{print $1}')"
+REMOTE_HASH="$(sha256sum "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" | awk '{print $1}')"
+[[ "$INDEX_HASH" == "$REMOTE_HASH" ]] || {
+  echo "Release entrypoint mismatch: index.js=$INDEX_HASH remote.js=$REMOTE_HASH" >&2
+  exit 1
+}
+grep -Eq "new URL\\('./index\\.js'" "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" || {
+  echo "Release index.mjs does not load ./index.js" >&2
+  exit 1
+}
 [[ -f "$RELEASE_ROOT/scripts/stage-openclaw-extension.sh" ]] || {
   echo "Release package is missing extension staging script" >&2
   exit 1

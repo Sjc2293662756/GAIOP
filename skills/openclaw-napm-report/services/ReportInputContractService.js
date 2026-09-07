@@ -577,6 +577,16 @@ function normalizeReportInput(input = {}, options = {}) {
     )
     || buildFaultDiagnosisReportData(sourceResult, reportInputOptions)
     || buildPacketReportData(sourceResult, reportInputOptions);
+  const sourceOwnership = {
+    sourceUserId: String(payload.sourceUserId || options.sourceUserId || '').trim() || undefined,
+    sourceSessionId: String(payload.sourceSessionId || options.sourceSessionId || '').trim() || undefined,
+    sourceChannel: String(payload.sourceChannel || options.sourceChannel || '').trim() || undefined,
+    sourceChannelUserId: String(payload.sourceChannelUserId || options.sourceChannelUserId || '').trim() || undefined,
+    sourceChannelUserName: String(payload.sourceChannelUserName || options.sourceChannelUserName || '').trim() || undefined,
+    sourceMessageId: String(payload.sourceMessageId || options.sourceMessageId || '').trim() || undefined,
+    sourceMessagePreview: String(payload.sourceMessagePreview || options.sourceMessagePreview || '').trim() || undefined,
+    dataSourceId: String(payload.dataSourceId || options.dataSourceId || '').trim() || undefined
+  };
 
   if (!sourceReportData) {
     return normalizeRegistration({
@@ -585,6 +595,7 @@ function normalizeReportInput(input = {}, options = {}) {
       format: normalizeFormat(payload.format || options.format),
       systemName: String(payload.systemName || options.systemName || '').trim() || undefined,
       faultName: String(payload.faultName || options.faultName || '').trim() || undefined,
+      ...sourceOwnership,
       sections: Array.isArray(payload.sections) ? payload.sections : []
     });
   }
@@ -609,6 +620,7 @@ function normalizeReportInput(input = {}, options = {}) {
     systemName: systemName || sourceReportData.systemName,
     faultName: faultName || sourceReportData.faultName,
     title: String(payload.title || options.title || sourceReportData.title || '').trim() || sourceReportData.title,
+    ...sourceOwnership,
     sourceQuestion: String(
       payload.sourceQuestion
       || options.sourceQuestion

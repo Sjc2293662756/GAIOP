@@ -67,6 +67,14 @@ describe('installed extension smoke contract', () => {
       path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
       path.join(extensionRoot, 'index.js')
     );
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
+      path.join(extensionRoot, 'napm-openclaw-plugin.remote.js')
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.index.mjs'),
+      path.join(extensionRoot, 'index.mjs')
+    );
     copyDirectorySync(
       path.resolve(__dirname, '..', 'plugin'),
       path.join(extensionRoot, 'plugin')

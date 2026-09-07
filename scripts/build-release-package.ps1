@@ -135,6 +135,20 @@ try {
     throw 'Git archive did not contain the expected package root.'
   }
 
+  $sourceRemotePath = Join-Path $packageRoot 'napm-openclaw-plugin.remote.js'
+  $derivedIndexPath = Join-Path $packageRoot 'index.js'
+  if (-not (Test-Path -LiteralPath $sourceRemotePath -PathType Leaf)) {
+    throw 'Git archive did not contain napm-openclaw-plugin.remote.js.'
+  }
+  if (-not (Test-Path -LiteralPath $derivedIndexPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $sourceRemotePath -Destination $derivedIndexPath
+  }
+  $derivedIndexHash = (Get-FileHash -LiteralPath $derivedIndexPath -Algorithm SHA256).Hash
+  $sourceRemoteHash = (Get-FileHash -LiteralPath $sourceRemotePath -Algorithm SHA256).Hash
+  if ($derivedIndexHash -ne $sourceRemoteHash) {
+    throw "Release entrypoint mismatch: index.js=$derivedIndexHash remote.js=$sourceRemoteHash"
+  }
+
   $archivedPackageJsonPath = Join-Path $packageRoot 'package.json'
   if (-not (Test-Path -LiteralPath $archivedPackageJsonPath -PathType Leaf)) {
     throw 'Git archive did not contain package.json.'
@@ -175,6 +189,7 @@ try {
     'package.json',
     'package-lock.json',
     'openclaw.plugin.json',
+    'index.js',
     'napm-openclaw-plugin.remote.js',
     'plugin/AlertReferenceStore.js',
     'plugin/AlertReferenceService.js',

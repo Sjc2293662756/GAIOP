@@ -120,7 +120,7 @@ class ReportGenerationService {
         generatedAt
       };
       const reportId = this.storage.createReportId(reportWithMeta);
-      const paths = this.storage.buildPaths(reportId, normalized.format);
+      const paths = this.storage.buildPaths(reportId, normalized.format, reportWithMeta);
 
       let buffer;
       if (normalized.format === 'docx') {
@@ -134,6 +134,8 @@ class ReportGenerationService {
         ...reportWithMeta,
         reportId,
         filePath: paths.filePath,
+        relativeFilePath: paths.relativeFilePath,
+        relativeAuditPath: paths.relativeAuditPath,
         downloadUrl: paths.downloadUrl
       });
 
@@ -145,6 +147,8 @@ class ReportGenerationService {
         fileName: paths.fileName,
         filePath: paths.filePath,
         auditPath: paths.auditPath,
+        relativeFilePath: paths.relativeFilePath,
+        relativeAuditPath: paths.relativeAuditPath,
         downloadUrl: paths.downloadUrl,
         generatedAt,
         systemName: reportWithMeta.systemName || undefined,
