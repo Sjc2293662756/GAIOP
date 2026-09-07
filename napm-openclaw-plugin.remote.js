@@ -42,7 +42,6 @@ const {
   resolveTurnIntent
 } = require('./plugin/TurnIntentResolver');
 
-const NAPM_DIRECT_SKILL_MODE = true;
 const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
   isPlatformIdentityPrompt,
   isOverviewPrompt,
