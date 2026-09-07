@@ -83,6 +83,46 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
     expect(resolved.task.criteria.ipRanges).toEqual([]);
   });
 
+  test.each([
+    {
+      label: 'infers an untyped workgroup name from the packet prompt',
+      criteria: {}
+    },
+    {
+      label: 'repairs an untyped workgroup name misplaced in ipRanges',
+      criteria: { ipRanges: ['服务器网段'] }
+    }
+  ])('$label without requiring a prior workgroup inventory query', ({ criteria }) => {
+    const resolved = packet.resolveQuery({
+      prompt: '看一下最近一分钟服务器网段的数据包情况！',
+      mode: 'preview_only',
+      host: 'http://netinside.example.test',
+      criteria
+    });
+
+    expect(resolved.ok).toBe(true);
+    expect(resolved.task.needsBusinessGroupResolution).toBe(true);
+    expect(resolved.task.criteria).toMatchObject({
+      businessGroupName: '服务器网段',
+      groupType: 'BusinessGroup',
+      groupArgument: '服务器网段',
+      ips: [],
+      ipRanges: []
+    });
+  });
+
+  test('keeps malformed IPv4 as a target validation error instead of treating it as a group name', () => {
+    const resolved = packet.resolveQuery({
+      prompt: '分析 999.999.999.999 最近一分钟的数据包情况',
+      mode: 'preview_only',
+      host: 'http://netinside.example.test',
+      criteria: { ips: ['999.999.999.999'] }
+    });
+
+    expect(resolved.ok).toBe(false);
+    expect(resolved.error.code).toBe('PACKET_TARGET_INVALID');
+  });
+
   test('injects the active packet prompt before tool execution', async () => {
     const hooks = new Map();
     plugin.register({
@@ -197,6 +237,51 @@ describe('openclaw-napm-packet-analysis workgroup and time resolution', () => {
       path: ['businessGroups', 'IpMembers'],
       memberIpRanges: ['10.0.0.0-10.0.0.255'],
       invalidMembers: []
+    });
+    expect(result.preview.overview.packetCount).toBe(2);
+    expect(calls).toEqual(['businessGroups', 'packetsPreview']);
+  });
+
+  test('discovers an untyped workgroup name before preview without a prior inventory query', async () => {
+    const calls = [];
+    const server = http.createServer((request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      const type = url.searchParams.get('type');
+      calls.push(type);
+      if (type === 'businessGroups') {
+        response.setHeader('content-type', 'text/csv; charset=utf-8');
+        response.end('Name,IpMembers\n服务器网段,"10.0.0.8-10.0.0.9"\n');
+        return;
+      }
+      if (type === 'packetsPreview') {
+        expect(url.searchParams.getAll('ips')).toEqual([]);
+        expect(url.searchParams.getAll('ipRanges')).toEqual(['10.0.0.8-10.0.0.9']);
+        response.end(JSON.stringify({ packetCount: 2, totalBytes: 2048 }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const result = await packet.handleSkillCall({
+      prompt: '看一下最近一分钟服务器网段的数据包情况！',
+      mode: 'preview_only',
+      host: `http://127.0.0.1:${address.port}`,
+      criteria: {}
+    });
+    await new Promise((resolve) => server.close(resolve));
+
+    expect(result.ok).toBe(true);
+    expect(result.criteria).toMatchObject({
+      businessGroupName: '服务器网段',
+      ipRanges: ['10.0.0.8-10.0.0.9']
+    });
+    expect(result.businessGroupResolution).toMatchObject({
+      ok: true,
+      businessGroupName: '服务器网段',
+      memberIpRangeCount: 1
     });
     expect(result.preview.overview.packetCount).toBe(2);
     expect(calls).toEqual(['businessGroups', 'packetsPreview']);

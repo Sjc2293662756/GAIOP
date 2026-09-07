@@ -2893,14 +2893,22 @@ function normalizePacketToolParams(activePrompt = '', toolParams = {}) {
 function stripUntrustedPacketPreviewConfirmation(toolParams = {}) {
   const nextParams = isPlainObject(toolParams) ? cloneJsonObject(toolParams) : {};
   delete nextParams.previewRiskAccepted;
+  // This marker is plugin-owned and may only be reintroduced by
+  // buildConfirmedPacketToolParams from a trusted preview record. A model
+  // supplied marker must never cause the runtime to trust arbitrary member
+  // arrays on an initial request.
+  delete nextParams.__businessGroupMembersResolved;
 
   if (isPlainObject(nextParams.criteria)) {
     delete nextParams.criteria.previewRiskAccepted;
+    delete nextParams.criteria.__businessGroupMembersResolved;
   }
   if (isPlainObject(nextParams.packetQuery)) {
     delete nextParams.packetQuery.previewRiskAccepted;
+    delete nextParams.packetQuery.__businessGroupMembersResolved;
     if (isPlainObject(nextParams.packetQuery.criteria)) {
       delete nextParams.packetQuery.criteria.previewRiskAccepted;
+      delete nextParams.packetQuery.criteria.__businessGroupMembersResolved;
     }
   }
   return nextParams;
@@ -2913,13 +2921,27 @@ function buildConfirmedPacketToolParams(activePrompt = '', toolParams = {}, conf
   }
 
   delete nextParams.packetQuery;
+  const restoredCriteria = cloneJsonObject(confirmationContext.criteria);
+  if (
+    String(restoredCriteria.businessGroupName || '').trim()
+    && (
+      (Array.isArray(restoredCriteria.ips) && restoredCriteria.ips.length > 0)
+      || (Array.isArray(restoredCriteria.ipRanges) && restoredCriteria.ipRanges.length > 0)
+    )
+  ) {
+    // This marker is created only from the trusted preview record. The packet
+    // runtime consumes it while normalizing criteria, then removes it. It
+    // prevents a confirmed group download from re-resolving or clearing the
+    // exact member IPs captured by the preview.
+    restoredCriteria.__businessGroupMembersResolved = true;
+  }
   return {
     ...nextParams,
     prompt: String(activePrompt || '').trim(),
     userQuery: String(activePrompt || '').trim(),
     mode: confirmationContext.mode || 'preview_download_analyze',
     downloadType: confirmationContext.downloadType || 'packetsDown',
-    criteria: cloneJsonObject(confirmationContext.criteria),
+    criteria: restoredCriteria,
     previewRiskAccepted: true
   };
 }
@@ -7902,7 +7924,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, BusinessGroup member-IP discovery, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests when the target IPs are already known OR a BusinessGroup/workgroup name is supplied, and the request is not tied to an alert event. Pass the original prompt or a concrete criteria.timeRange.key such as last5minutes; the runtime resolves relative time against its server clock and fills start/end. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, BusinessGroup member-IP discovery, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests when the target IPs are already known OR a BusinessGroup/workgroup name is supplied, and the request is not tied to an alert event. A named workgroup does not require a separate inventory turn: if the prompt supplies an untyped non-IP name such as 服务器网段, the runtime can repair it to BusinessGroup and resolve businessGroups→IpMembers; explicit groupType/groupArgument remains preferred. Pass the original prompt or a concrete criteria.timeRange.key such as last5minutes; the runtime resolves relative time against its server clock and fills start/end. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
     parameters: {
       type: 'object',
       properties: {
@@ -8255,7 +8277,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
-      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests must pass groupType="BusinessGroup" plus groupArgument/businessGroupName; the skill queries businessGroups?csv=true, matches Name exactly, splits IpMembers into repeated ips/ipRanges, then calls packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests should pass groupType="BusinessGroup" plus groupArgument/businessGroupName when known; a named non-IP target such as 服务器网段 may be supplied without a prior inventory query and the runtime will repair it to BusinessGroup, query businessGroups?csv=true, match Name exactly, split IpMembers into repeated ips/ipRanges, then call packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
       'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );

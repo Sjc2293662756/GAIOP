@@ -240,6 +240,102 @@ describe('NAPM packet deterministic final reply', () => {
     expect(outgoing.content).toContain('TLS SNI：example.test（1 次）');
   });
 
+  test('continues an untyped business-group preview without a prior inventory turn', async () => {
+    const hooks = createHarness();
+    const previewCtx = createContext();
+    previewCtx.conversationId = 'packet-untyped-group-conversation';
+    previewCtx.sessionKey = 'packet-untyped-group-session';
+    previewCtx.sessionId = 'packet-untyped-group-session';
+    previewCtx.runId = 'packet-untyped-group-preview-run';
+    const previewPrompt = '看一下最近一分钟服务器网段的数据包情况！';
+
+    hooks.get('message_received')({ content: previewPrompt }, previewCtx);
+    await hooks.get('before_prompt_build')({ prompt: previewPrompt }, previewCtx);
+    const previewBound = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-untyped-group-preview',
+      params: {
+        prompt: previewPrompt,
+        mode: 'preview_download_analyze',
+        criteria: { timeRange: { key: 'last1minutes' } }
+      }
+    }, previewCtx);
+
+    expect(previewBound.block).not.toBe(true);
+    expect(previewBound.params.criteria).toMatchObject({
+      businessGroupName: '服务器网段',
+      groupType: 'BusinessGroup',
+      groupArgument: '服务器网段',
+      ips: [],
+      ipRanges: []
+    });
+
+    const scope = plugin.__test__.getTrustedConversationKey(previewBound.params);
+    const previewTurnId = plugin.__test__.getTrustedTurnId(previewBound.params);
+    plugin.__test__.rememberSkillResult(previewPrompt, {
+      ok: false,
+      mode: 'preview_download_analyze',
+      criteria: {
+        businessGroupName: '服务器网段',
+        groupType: 'BusinessGroup',
+        groupArgument: '服务器网段',
+        ips: ['101.254.114.235'],
+        ipRanges: ['101.254.114.235-101.254.114.242'],
+        start: 1788493200,
+        end: 1788493260,
+        timeRange: { key: 'last1minutes', start: 1788493200, end: 1788493260 }
+      },
+      businessGroupResolution: {
+        ok: true,
+        businessGroupName: '服务器网段',
+        memberIpCount: 1,
+        memberIpRangeCount: 1,
+        memberCount: 2
+      },
+      preview: { ok: true, empty: false, overview: { rowCount: 101 } },
+      decision: { next_action: 'CONFIRM_DOWNLOAD' },
+      error: { code: 'PACKET_PREVIEW_REQUIRES_CONFIRMATION' },
+      narrationInput: { schema: 'openclaw_napm_packet_analysis.v1' }
+    }, scope, 'napm-packet-analysis', previewTurnId);
+
+    const followUpCtx = { ...previewCtx, runId: 'packet-untyped-group-confirm-run' };
+    const followUpPrompt = '确认下载，进行分析！';
+    hooks.get('message_received')({ content: followUpPrompt }, followUpCtx);
+    await hooks.get('before_prompt_build')({ prompt: followUpPrompt }, followUpCtx);
+    const confirmed = await hooks.get('before_tool_call')({
+      toolName: 'napm-packet-analysis',
+      toolCallId: 'packet-untyped-group-confirm',
+      params: {
+        prompt: followUpPrompt,
+        mode: 'preview_download_analyze',
+        criteria: {
+          ips: ['203.0.113.99'],
+          timeRange: { key: 'last5minutes' }
+        }
+      }
+    }, followUpCtx);
+
+    expect(confirmed.block).not.toBe(true);
+    expect(confirmed.params).toMatchObject({
+      mode: 'preview_download_analyze',
+      previewRiskAccepted: true,
+      criteria: {
+        businessGroupName: '服务器网段',
+        groupType: 'BusinessGroup',
+        groupArgument: '服务器网段',
+        ips: ['101.254.114.235'],
+        ipRanges: ['101.254.114.235-101.254.114.242'],
+        start: 1788493200,
+        end: 1788493260
+      }
+    });
+    expect(confirmed.params.criteria.timeRange).toBeUndefined();
+    expect(plugin.__test__.queryTurnCoordinator.get(
+      scope,
+      plugin.__test__.getTrustedTurnId(confirmed.params)
+    )).toMatchObject({ route: 'OTHER_SKILL' });
+  });
+
   test('turns raw tshark tables into a concise protocol summary', () => {
     const reply = plugin.__test__.buildPacketFinalReply({
       ok: true,
@@ -349,14 +445,20 @@ describe('NAPM packet deterministic final reply', () => {
         prompt,
         mode: 'preview_download_analyze',
         previewRiskAccepted: true,
+        __businessGroupMembersResolved: true,
         packetQuery: {
           previewRiskAccepted: true,
-          criteria: { previewRiskAccepted: true }
+          __businessGroupMembersResolved: true,
+          criteria: {
+            previewRiskAccepted: true,
+            __businessGroupMembersResolved: true
+          }
         },
         criteria: {
           ips: ['101.254.114.238'],
           timeRange: { key: 'last5minutes' },
-          previewRiskAccepted: true
+          previewRiskAccepted: true,
+          __businessGroupMembersResolved: true
         }
       }
     }, ctx);
@@ -364,8 +466,12 @@ describe('NAPM packet deterministic final reply', () => {
     expect(guarded.block).not.toBe(true);
     expect(guarded.params.previewRiskAccepted).toBeUndefined();
     expect(guarded.params.criteria.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.criteria.__businessGroupMembersResolved).toBeUndefined();
     expect(guarded.params.packetQuery.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.packetQuery.__businessGroupMembersResolved).toBeUndefined();
     expect(guarded.params.packetQuery.criteria.previewRiskAccepted).toBeUndefined();
+    expect(guarded.params.packetQuery.criteria.__businessGroupMembersResolved).toBeUndefined();
+    expect(guarded.params.__businessGroupMembersResolved).toBeUndefined();
   });
 
   test('does not accept confirmation for a preview that requires a narrower time range', async () => {

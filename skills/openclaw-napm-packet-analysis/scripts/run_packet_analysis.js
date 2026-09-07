@@ -538,6 +538,8 @@ function resolvePacketTimeRange(query = {}, criteria = {}) {
 
 function normalizeCriteria(input) {
   const criteria = { ...input };
+  const preserveResolvedBusinessGroupMembers = criteria.__businessGroupMembersResolved === true;
+  delete criteria.__businessGroupMembersResolved;
   delete criteria.UserName;
   delete criteria.userName;
   delete criteria.username;
@@ -573,8 +575,13 @@ function normalizeCriteria(input) {
     ...criteria.ips.filter((value) => !isValidIPv4(value)),
     ...criteria.ipRanges.filter((value) => !isValidIPv4Range(value)),
   ];
+  const unqualifiedPromptBusinessGroupName = extractUnqualifiedBusinessGroupNameFromPacketPrompt(
+    criteria.prompt,
+    invalidDirectTargets
+  );
   const inferredBusinessGroupName = explicitBusinessGroupName
     || promptBusinessGroupName
+    || unqualifiedPromptBusinessGroupName
     || ((/(?:业务组|工作组|业务分组)/i.test(String(criteria.prompt || ''))
       && invalidDirectTargets.length === 1)
       ? invalidDirectTargets[0]
@@ -584,8 +591,13 @@ function normalizeCriteria(input) {
     criteria.businessGroupName = String(inferredBusinessGroupName).trim();
     criteria.groupType = 'BusinessGroup';
     if (!criteria.groupArgument) criteria.groupArgument = criteria.businessGroupName;
-    criteria.ips = [];
-    criteria.ipRanges = [];
+    if (preserveResolvedBusinessGroupMembers) {
+      criteria.ips = criteria.ips.filter(isValidIPv4);
+      criteria.ipRanges = criteria.ipRanges.filter(isValidIPv4Range);
+    } else {
+      criteria.ips = [];
+      criteria.ipRanges = [];
+    }
   }
 
   if (criteria.instanceId && !String(criteria.instanceId).startsWith('PATH1/')) {
@@ -604,6 +616,63 @@ function extractBusinessGroupNameFromPrompt(prompt = '') {
 
   const labelled = text.match(/(?:业务组|工作组|业务分组)\s*[:：]?\s*([^\s，。,。；;！？!?]+)/i);
   return labelled && labelled[1] ? labelled[1].trim() : '';
+}
+
+/**
+ * Infer a named BusinessGroup when the user omits the words "业务组/工作组".
+ *
+ * Users commonly say "看一下最近一分钟服务器网段的数据包情况" after
+ * learning the group name from the UI. The model may then omit groupType or
+ * place the name in ipRanges. Treat only a non-IP target around an explicit
+ * packet noun and relative time as a candidate; the businessGroups lookup
+ * remains the authority and rejects names that do not exist.
+ */
+function extractUnqualifiedBusinessGroupNameFromPacketPrompt(prompt = '', invalidDirectTargets = []) {
+  const text = String(prompt || '').trim();
+  if (!text || !/(?:数据包|报文|抓包|原始包|pcap|packets?|capture)/i.test(text)) {
+    return '';
+  }
+
+  const directCandidate = Array.isArray(invalidDirectTargets) && invalidDirectTargets.length === 1
+    ? String(invalidDirectTargets[0] || '').trim()
+    : '';
+  const looksLikeIpv4Token = /^\d{1,3}(?:\.\d{1,3}){1,3}(?:-\d{1,3}(?:\.\d{1,3}){1,3})?$/;
+  if (
+    directCandidate
+    && !looksLikeIpv4Token.test(directCandidate)
+    && !/(?:数据包|报文|抓包|情况|分析|查看|查询)/i.test(directCandidate)
+  ) {
+    return directCandidate;
+  }
+
+  const duration = '(?:\\d+|[一二两三四五六七八九十百]+)\\s*(?:秒|分钟|小时|天|seconds?|minutes?|hours?|days?)';
+  const packetNoun = '(?:数据包(?:情况|信息|详情)?|报文(?:情况|信息|详情)?|抓包(?:情况|信息|详情)?|(?:pcap|packets?|capture))';
+  const actionPrefix = '(?:请|帮我|麻烦|看一下|看下|查看|分析|查询|检查|了解|统计|获取|关注|please|show|check|analy[sz]e|inspect)';
+
+  // Form: "最近五分钟服务器网段的数据包情况".
+  const afterDuration = text.match(new RegExp(
+    `(?:^|${actionPrefix})\\s*(?:最近|近|过去|last|past)\\s*${duration}\\s*([^，。！？!?；;]+?)\\s*(?:的)?${packetNoun}`,
+    'i'
+  ));
+  // Form: "服务器网段最近五分钟的数据包情况".
+  const beforeDuration = text.match(new RegExp(
+    `(?:^|${actionPrefix})\\s*([^，。！？!?；;]+?)\\s*(?:最近|近|过去|last|past)\\s*${duration}\\s*(?:的)?${packetNoun}`,
+    'i'
+  ));
+  const rawCandidate = afterDuration?.[1] || beforeDuration?.[1] || '';
+  const candidate = String(rawCandidate)
+    .replace(/^(?:请|帮我|麻烦|看一下|看下|查看|分析|查询|检查|了解|统计|获取|关注|please|show|check|analy[sz]e|inspect)\s*/i, '')
+    .replace(/^(?:这个|该|上述|当前)\s*/i, '')
+    .replace(/(?:的|这个|该)\s*$/i, '')
+    .trim();
+
+  if (!candidate || /^(?:数据包|报文|抓包|情况|信息|详情|分析|查看|查询)$/i.test(candidate)) {
+    return '';
+  }
+  if (looksLikeIpv4Token.test(candidate) || isValidIPv4(candidate) || isValidIPv4Range(candidate)) {
+    return '';
+  }
+  return candidate;
 }
 
 function isValidIPv4Range(value = '') {
