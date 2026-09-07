@@ -20,6 +20,20 @@ function Invoke-CheckedCommand {
   }
 }
 
+function Get-Sha256Hex {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
 function Remove-ReleaseTempDirectory {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -143,8 +157,8 @@ try {
   if (-not (Test-Path -LiteralPath $derivedIndexPath -PathType Leaf)) {
     Copy-Item -LiteralPath $sourceRemotePath -Destination $derivedIndexPath
   }
-  $derivedIndexHash = (Get-FileHash -LiteralPath $derivedIndexPath -Algorithm SHA256).Hash
-  $sourceRemoteHash = (Get-FileHash -LiteralPath $sourceRemotePath -Algorithm SHA256).Hash
+  $derivedIndexHash = Get-Sha256Hex -Path $derivedIndexPath
+  $sourceRemoteHash = Get-Sha256Hex -Path $sourceRemotePath
   if ($derivedIndexHash -ne $sourceRemoteHash) {
     throw "Release entrypoint mismatch: index.js=$derivedIndexHash remote.js=$sourceRemoteHash"
   }
