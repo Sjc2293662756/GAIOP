@@ -30,6 +30,36 @@
 | 身份与事实完整性 | 页面有明确身份及失败原因，标准记录保留完整字段、来源和数量限制 | P1/P2 |
 | 跨 Skill 统一 | Fault、Packet 逐步复用 Query 内部服务，分析策略和报告结构保持兼容 | P2，依赖前两项 |
 
+### 1.1 图 1：用户怎样一步步查到访问详情
+
+这张图展示修复后的目标体验。每次追问仍是一个新轮次，但“第一个”从上一轮保存的真实结果中解析，用户不需要填写内部 ID。当前第三轮误拦截仍待阶段 A 修复。
+
+```mermaid
+flowchart TB
+    subgraph FirstTurn["第一轮：找业务"]
+        Q1["哪些业务页面访问量最高？"] --> A1["按页面访问量查询业务排行<br/>topValues · WebApplication"]
+        A1 --> R1["显示业务名称排行<br/>保存业务序号和来源时间"]
+    end
+    subgraph SecondTurn["第二轮：找页面"]
+        Q2["看第一个详情"] --> A2["解析第 1 个业务<br/>查询该业务下的页面排行"]
+        A2 --> R2["显示页面族排行<br/>保存页面序号、身份和来源时间"]
+    end
+    subgraph ThirdTurn["第三轮：看每次访问"]
+        Q3["查看第一个都访问了哪些？"] --> A3["解析第 1 个页面的真实 ID<br/>继承时间，默认取 20 条"]
+        A3 --> R3["pageViews 查询<br/>返回访问时间、客户端、状态码、耗时等"]
+    end
+    R1 -->|下一轮冻结业务排行来源| Q2
+    R2 -->|下一轮冻结页面排行来源| Q3
+    classDef question fill:#eff6ff,stroke:#2563eb,color:#172554;
+    classDef result fill:#ecfdf5,stroke:#059669,color:#064e3b;
+    class Q1,Q2,Q3 question;
+    class R1,R2,R3 result;
+```
+
+读图要点：第一轮统计“哪个业务访问多”，第二轮统计“该业务的哪些页面访问多”，第三轮才查询“某页面的每次访问”。三步不能混为同一种数据。
+
+图示阅读顺序：图 1 看用户体验；第 6 节图 2 看模块分工；第 8 节图 3 看页面 ID 如何取得；第 11 节图 4 看成功、无数据和失败如何区分；第 15 节图 5 看实施顺序。
+
 ## 2. 证据范围与不能混淆的事实
 
 ### 2.1 本地代码与运行环境的关系
@@ -130,16 +160,43 @@ Packet -> run_packet_analysis    -> 独立 HTTP 请求函数
 
 ## 6. 目标职责与边界
 
-```text
-用户查询 -> napm-skill-query -> 可信 Query Turn / 领域续查适配 ─┐
-故障诊断 -> Fault Recipe -> 页面选择策略 ────────────────────┼-> Query 内部事实服务
-数据包分析 -> 页面/访问选择策略 ──────────────────────────────┘       |
-                                              身份解析 + pageViews + 标准化
-                                                                   |
-                                                            Query NapmClient
-                                                                   |
-                                                                 NAPM
+### 6.1 图 2：谁管上下文，谁查数据，谁负责分析
+
+这是 Fault、Packet 完成迁移后的目标结构。当前的三套请求路径见第 3 节。底层读取统一，但数据只返回原调用方，不会把 Query 的结果自动广播给其他 Skill。
+
+```mermaid
+flowchart TB
+    User["用户提出查询、诊断或数据包请求"] --> Admission["OpenClaw 与 Plugin<br/>选择 Tool，绑定轮次，校验可信上下文"]
+    Admission --> Query["普通查询<br/>解析用户选择的业务或页面"]
+    Admission --> Fault["故障诊断<br/>由原有策略选择重点页面"]
+    Admission --> Packet["数据包分析<br/>由原有流程选择页面或访问"]
+
+    subgraph Facts["统一的数据获取能力：现有 Query Skill 内部"]
+        Entry["内部事实服务<br/>接收已确定的对象、时间和条数"]
+        Identity["取得可信页面 ID<br/>已有 ID 直接用，缺失时受控补查"]
+        Request["校验并请求 pageViews<br/>统一使用 Query NapmClient"]
+        Normalize["验证响应并标准化<br/>完整字段、来源、条数与错误"]
+        Entry --> Identity --> Request
+        Normalize --> ReturnToCaller{"按原调用方返回"}
+    end
+
+    Query --> Entry
+    Fault --> Entry
+    Packet --> Entry
+    Request --> NAPM["NAPM 接口"]
+    NAPM -->|真实响应| Normalize
+    ReturnToCaller -->|Query| QueryReply["当前查询轮次生成答复<br/>只交付一次"]
+    ReturnToCaller -->|Fault| FaultResult["关联证据并作诊断<br/>保留原分析规则和报告结构"]
+    ReturnToCaller -->|Packet| PacketResult["预览或选择访问<br/>下载仍按原确认流程执行"]
+    classDef shared fill:#eff6ff,stroke:#2563eb,color:#172554;
+    classDef result fill:#ecfdf5,stroke:#059669,color:#064e3b;
+    class Entry,Identity,Request,Normalize shared;
+    class QueryReply,FaultResult,PacketResult result;
 ```
+
+读图要点：Plugin 负责确认“这轮是谁、允许哪个动作”；内部事实服务负责“取得什么真实数据”；Fault 才负责“这些数据意味着什么”。图中的身份补查也必须经过同一个 Query 客户端，其条件见图 3。
+
+### 6.2 各层保持的职责
 
 职责约束：
 
@@ -227,6 +284,33 @@ Query Decision 不再用一句脱离上下文的原始问句覆盖已确认工�
 当前 Coordinator 只保存可解析 ID 的页面行，缺 ID 的行会被过滤。拟改为保留原始排序后的每一行及原 ordinal，附身份可用性和失败原因。这样用户选到缺 ID 行时应得到“页面身份未取得”，而不是“排名不存在”，更不能切换到下一个可解析页面。
 
 Coordinator 优先消费标准投影；旧 groupPath 的兼容解析通过注入的领域服务过渡，最终协议细节不留在通用状态管理器。
+
+### 8.5 图 3：页面 ID 如何取得，拿不到时怎么处理
+
+这里的“页面 ID”是设备返回的真实身份，不是页面排行序号。只有范围和来源校验通过，才会进入解析或补查。
+
+```mermaid
+flowchart TB
+    Start["收到页面详情请求<br/>包含选择意图或可信内部页面来源"] --> Trust{"当前轮次、来源和查询范围<br/>是否已验证？"}
+    Trust -->|否| Stop["拒绝或要求澄清<br/>停止后续事实服务、Client 和南向调用"]
+    Trust -->|是| Resolve["读取已有结果的结构化 ID<br/>或由领域适配器解析 groupPath"]
+    Resolve --> IdentityState{"页面身份的解析结果"}
+    IdentityState -->|唯一且可信| Ready["绑定所选页面 ID<br/>保持原序号、业务和时间"]
+    IdentityState -->|冲突或多个候选| Ambiguous["返回身份冲突或澄清<br/>不自动选择第一个候选"]
+    IdentityState -->|缺失| CanEnrich{"是否有已验证的补查能力<br/>且本轮预算允许？"}
+    CanEnrich -->|否| Missing["明确记录身份未取得<br/>不执行 pageViews"]
+    CanEnrich -->|是| Enrich["复用 Query 客户端补查一次<br/>限定同设备、业务和时间范围"]
+    Enrich --> Match{"能否与原页面唯一匹配？"}
+    Match -->|否或补查失败| Missing
+    Match -->|是| Ready
+    Ready --> Execute["校验详情参数<br/>进入 pageViews 执行"]
+    classDef blocked fill:#fef2f2,stroke:#dc2626,color:#7f1d1d;
+    classDef ready fill:#ecfdf5,stroke:#059669,color:#064e3b;
+    class Stop,Ambiguous,Missing blocked;
+    class Ready,Execute ready;
+```
+
+读图要点：已有 ID 时不增加 XML 等请求；只有确认设备支持、且有预算时才补查。用户 Query 在准入处失败时，Query Skill、Client 和南向调用均为 0；Fault/Packet 已进入自身 Skill 后才发现身份问题时，停止后续事实服务、Client 和南向调用。身份阶段失败时 `pageViews` 调用为 0，但已经执行的身份补查要单独计数。缺 ID 的排行行保留原序号，不用下一行替代。
 
 ## 9. pageViews 查询与结果契约
 
@@ -350,6 +434,37 @@ HTTP 主状态与子响应计数是不同事实。不能仅因为主状态是 20
 
 Fault 缺身份/请求失败必须通过现有 `ExecutionOutcome` 适配成失败或 partial，保留候选页数量、成功页数量和失败原因；不能继续把“跳过所有页”标为有访问数据。保留阈值和算法，对缺失证据只降低可作出的结论，不推断正常。
 
+### 11.3 图 4：查询成功、没有记录、查询失败如何区分
+
+只有请求执行成功、响应格式合法，才讨论有没有访问记录。页面不存在、身份未取得、网络失败等情况，都不能用“未查到数据”掩盖。
+
+```mermaid
+flowchart TB
+    Params["可信页面 ID、时间、条数"] --> Valid{"参数是否有效？"}
+    Valid -->|否| Invalid["校验失败<br/>pageViews 请求为 0"]
+    Valid -->|是| Call["调用一次 pageViews"]
+    Call --> Upstream{"网络、HTTP 和业务返回<br/>是否成功？"}
+    Upstream -->|否| UpstreamError["执行失败<br/>保留接口或网络错误原因"]
+    Upstream -->|是| Shape{"容器、记录和字段<br/>是否符合响应契约？"}
+    Shape -->|否| ParseError["响应解析失败<br/>不生成空白访问记录"]
+    Shape -->|是| Count{"合法访问记录是否为 0？"}
+    Count -->|是| Empty["NO_DATA<br/>已执行，但该范围没有返回访问实例"]
+    Count -->|否| Data["RESULT<br/>完整字段、真实空值、来源和有限条数说明"]
+    Invalid --> Delivery["交还原调用方处理结果<br/>Query 按当前轮次只交付一次"]
+    UpstreamError --> Delivery
+    ParseError --> Delivery
+    Empty --> Delivery
+    Data --> Delivery
+    classDef failed fill:#fef2f2,stroke:#dc2626,color:#7f1d1d;
+    classDef empty fill:#fffbeb,stroke:#d97706,color:#78350f;
+    classDef success fill:#ecfdf5,stroke:#059669,color:#064e3b;
+    class Invalid,UpstreamError,ParseError failed;
+    class Empty empty;
+    class Data success;
+```
+
+读图要点：红色是失败，黄色是合法空结果，绿色是有效访问记录。返回 20 条只说明本次取得 20 条，不能由此声称整个时间段总共只有 20 次访问。Fault 的失败/partial 映射与报告兼容规则仍按第 11.2、13 节执行。
+
 ## 12. 缓存与结果来源
 
 - 身份补查缓存限定于本次执行上下文，键至少包含设备配置标识、业务/父路径、完整页面标识、时间范围与必要的权限范围。
@@ -426,6 +541,42 @@ Fault 缺身份/请求失败必须通过现有 `ExecutionOutcome` 适配成失�
 | F：整合与交付 | 运行门禁、完整发布依赖、隔离验收、退役条件 | 所有已实施阶段测试通过，未完成能力和证据缺口明确记录 |
 
 建议按 A、B、C、D、E 分别提交可审查的小提交；每个提交包含相应测试和记录。阶段完成不等于已部署。缺 HAR 不阻止 A/B 的确定性修复，但阻止宣布 CSV/XML 兼容和新旧真实设备等价性验收通过。
+
+### 15.1 图 5：按照什么顺序实施和验收
+
+每个阶段先写对应回归测试，修复后验证，再形成独立可审查提交。只在前一阶段退出条件满足后推进；需要真实协议证据的能力，须补齐脱敏 HAR 后验收。本次文档任务只完成方案与图示，不触发图中的代码实施、打包或部署节点。
+
+```mermaid
+flowchart TB
+    Backup["保存基线和文档<br/>确认功能分支与可回退节点"] --> A["A：修复三轮追问<br/>来源类型正确，重放不重复查询"]
+    A --> B["B：补齐访问事实<br/>保留字段，严格区分错误与无数据"]
+    B --> C["C：规范页面身份<br/>唯一匹配，缺失明确，补查受控"]
+    C --> D["D：接入故障诊断<br/>先验证数据和报告兼容，再切换读取路径"]
+    D --> E["E：接入数据包分析<br/>保留预览、选择和下载确认"]
+    E --> F["F：完整回归与整合<br/>验证运行依赖、入口和发布包一致性"]
+    F --> Checks{"全部验收条件通过？"}
+    Checks -->|否| Revise["记录失败证据<br/>回到对应失败阶段修正"]
+    Revise --> Retest["重跑该阶段及受影响的后续阶段"]
+    Retest --> F
+    Checks -->|是| Ready["提交可发布结果<br/>保留测试、备份和回滚说明"]
+    Ready --> Package["后续发布阶段<br/>从获批的清洁提交生成完整发布包"]
+    Package --> Stage["隔离暂存树验证<br/>真实入口加载、清单与哈希一致"]
+    Stage --> DryRun["执行 installer dry-run<br/>确认安装范围和回退资料"]
+    DryRun --> Approved{"是否取得正式部署授权？"}
+    Approved -->|否| Hold["保持本地可发布状态<br/>不安装、不重启服务"]
+    Approved -->|是| Release["正式安装<br/>再做隔离会话验收"]
+    Release --> Passed{"远端验收通过？"}
+    Passed -->|是| Complete["记录实际部署版本和结果<br/>满足条件后再退役旧读取路径"]
+    Passed -->|否| Rollback["按完整发布或迁移配置回退<br/>保留现场证据，继续定位"]
+    classDef phase fill:#eff6ff,stroke:#2563eb,color:#172554;
+    classDef success fill:#ecfdf5,stroke:#059669,color:#064e3b;
+    classDef action fill:#fffbeb,stroke:#d97706,color:#78350f;
+    class A,B,C,D,E,F,Package,Stage,DryRun phase;
+    class Ready,Complete success;
+    class Revise,Retest,Hold,Rollback action;
+```
+
+读图要点：文档完成、代码测试通过、远端验收通过是三个不同节点。任一验收失败都回到对应阶段，并重跑该阶段及受影响的后续阶段后再做完整回归。迁移回退不能关闭引用或错误校验，也不能在一次失败请求内自动换旧接口再查一次。
 
 ## 16. 回归测试矩阵
 
