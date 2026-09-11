@@ -26,7 +26,11 @@ function resolveContractRoots(options = {}) {
     || process.env.OPENCLAW_SKILLS_ROOT
     || path.resolve(__dirname, '..', 'skills')
   );
-  const workspaceRoot = path.resolve(options.workspaceRoot || path.dirname(skillsRoot));
+  const workspaceRoot = path.resolve(
+    options.workspaceRoot
+    || process.env.OPENCLAW_CONTRACT_WORKSPACE_ROOT
+    || process.cwd()
+  );
   return { workspaceRoot, skillsRoot };
 }
 
