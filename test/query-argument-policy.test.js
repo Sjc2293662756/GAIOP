@@ -129,7 +129,7 @@ describe('query argument policy', () => {
     }));
 
     expect(result.error?.code).not.toBe('GROUP_ARGUMENT_REQUIRED');
-    expect(result.error?.code).toBe('RUNTIME_CAPABILITY_REQUIRED');
+    expect(result.error?.code).toBe('RUNTIME_METRIC_UNSUPPORTED');
     expect(client.get).not.toHaveBeenCalled();
   });
 

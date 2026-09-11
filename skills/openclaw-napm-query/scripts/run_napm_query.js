@@ -35,6 +35,7 @@ const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionS
 const ClarificationGateService = require(path.join(skillRoot, 'services/ClarificationGateService'));
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
+const ExecutionOutcomeMapper = require(path.join(skillRoot, 'services/ExecutionOutcomeMapper'));
 const TopValuesResultNormalizerService = require(path.join(skillRoot, 'services/TopValuesResultNormalizerService'));
 const {
   normalizePageViewsMaxLimit
@@ -88,7 +89,7 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
       || ''
     ).trim() || null,
     groups,
-    metric: String(resolvedQuery.topMetric || resolvedQuery.metrics?.[0] || '').trim() || null,
+    metric: String(resolvedQuery.topMetric || resolvedQuery.metrics?.find(Boolean) || '').trim() || null,
     metrics: Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.slice(0, 20) : [],
     topMetric: String(resolvedQuery.topMetric || '').trim() || null,
     topCount: Number.isFinite(Number(resolvedQuery.topCount)) ? Number(resolvedQuery.topCount) : null,
@@ -306,7 +307,9 @@ function buildSensitiveCredentialRefusalText() {
 
 function buildSummary(service, resolvedQuery, data, extra = {}) {
   const rows = Array.isArray(data) ? data : [];
-  const metric = Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '';
+  const metric = Array.isArray(resolvedQuery?.metrics)
+    ? resolvedQuery.metrics.filter(Boolean).toString()
+    : '';
   const topMetric = String(resolvedQuery?.topMetric || '').trim();
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
@@ -451,7 +454,7 @@ function deepClone(value) {
 function resolvePrimaryMetricId(query = {}) {
   return String(
     query?.topMetric
-    || (Array.isArray(query?.metrics) ? query.metrics[0] : '')
+    || (Array.isArray(query?.metrics) ? query.metrics.find(Boolean) : '')
     || ''
   ).trim() || null;
 }
@@ -1235,7 +1238,7 @@ function shouldSkipStaticPathPlanning(query = {}, prompt = '') {
   const metrics = Array.isArray(query?.metrics)
     ? query.metrics.map((item) => String(item || '').trim().toUpperCase()).filter(Boolean)
     : [];
-  const primaryMetric = String(query?.metric || query?.topMetric || metrics[0] || '').trim().toUpperCase();
+  const primaryMetric = String(query?.topMetric || metrics.find(Boolean) || '').trim().toUpperCase();
   const isPacketLossMetric = ['PLI', 'PLO'].includes(primaryMetric) || metrics.some((item) => ['PLI', 'PLO'].includes(item));
   return service === 'topValues'
     && currentTerminalType === 'IPAddress'
@@ -1937,8 +1940,17 @@ function buildSkillExecutionFailureContract(error) {
 
   const failureClassification = ExecutionFailureClassifier.classify(error, {});
   const summary = buildDecisionSummary('Skill execution failed', failureClassification.userMessage, failureClassification.category);
-  return buildOpenClawReplyContract({
+  return buildOpenClawReplyContract(ExecutionOutcomeMapper.mapResult({
     ok: false,
+    outcome: 'EXECUTION_FAILURE',
+    stage: 'execution',
+    reasonCode: error.code || 'SKILL_EXECUTION_ERROR',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     service: null,
     resolvedQuery: null,
     rows: [],
@@ -1952,7 +1964,7 @@ function buildSkillExecutionFailureContract(error) {
     },
     responseType: 'decision_result',
     displayText: failureClassification.userMessage
-  }, {
+  }), {
     forwardDisplayText: false,
     appendRequestUrlToDisplayText,
     includeRequestUrl: false

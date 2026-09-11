@@ -77,6 +77,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-query/services/ResolvedQueryContract.js',
   'openclaw-napm-query/services/LegacyMetricInputAdapter.js',
   'openclaw-napm-query/services/ResolvedQueryTimeRangeService.js',
+  'openclaw-napm-query/services/ExecutionOutcomeContract.js',
+  'openclaw-napm-query/services/ExecutionOutcomeMapper.js',
   'openclaw-napm-query/src/shared/timeResolver.js',
   'openclaw-napm-report/scripts/generate_napm_report.js',
   'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js',
@@ -116,6 +118,10 @@ function resolveOpenClawSkillsRoot(options = {}) {
 }
 
 const OPENCLAW_SKILLS_ROOT = resolveOpenClawSkillsRoot();
+const getExecutionOutcomeMapper = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/ExecutionOutcomeMapper.js'
+));
 const {
   NapmObjectTargetResolver,
   TARGET_RESOLUTION_STATUS
@@ -2468,6 +2474,15 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
   const requiredFields = Array.isArray(serviceSpec?.required) ? serviceSpec.required : [];
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'UPSTREAM_QUERY_DRAFT_INVALID',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_boundary',
     responseType: 'BOUNDARY_VALIDATION_ERROR',
     prompt: normalizePrompt(args),
@@ -2592,6 +2607,15 @@ function buildLifecycleBindingFailureResult() {
   const displayText = buildLifecycleBindingFailureReply();
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'LIFECYCLE_TURN_BINDING_REQUIRED',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: 'LIFECYCLE_BINDING_REQUIRED',
     displayText,
@@ -2619,6 +2643,15 @@ function buildQueryToolAuthorizationFailureResult(code = '') {
     || '当前 Tool 未通过查询执行授权校验，已阻止查询执行。';
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: normalizedCode,
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: normalizedCode,
     displayText,
@@ -2634,6 +2667,15 @@ function buildClarificationContextMissingResult() {
   const displayText = '未找到可继续的查询澄清上下文，请重新发起完整查询。';
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'CLARIFICATION_CONTEXT_MISSING',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: 'CLARIFICATION_CONTEXT_MISSING',
     displayText,
@@ -2648,6 +2690,15 @@ function buildClarificationContextMissingResult() {
 function buildNapmSkillExecutionFailureResult(args = {}) {
   return {
     ok: false,
+    outcome: 'EXECUTION_FAILURE',
+    stage: 'execution',
+    reasonCode: 'NAPM_SKILL_EXECUTION_FAILED',
+    queryExecuted: true,
+    dataRequestAttempted: true,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin',
     responseType: 'SKILL_EXECUTION_ERROR',
     prompt: normalizePrompt(args),
@@ -6662,7 +6713,7 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   const result = record.result;
   const resolvedQuery = record.resolvedQuery || result.resolvedQuery || {};
   const service = String(resolvedQuery.service || result.service || '').trim() || 'unknown';
-  const metric = String(resolvedQuery.topMetric || resolvedQuery.metrics?.[0] || '').trim();
+  const metric = String(resolvedQuery.topMetric || resolvedQuery.metrics?.find(Boolean) || '').trim();
   const groups = Array.isArray(resolvedQuery.groups)
     ? resolvedQuery.groups
       .map((group) => String(group?.argument || group?.type || '').trim())
@@ -7043,16 +7094,38 @@ function makeTextReplyFromSkillResult(result) {
 }
 
 function makeToolResult(result, reportSourceId = '') {
-  const displayText = buildUserFacingSkillText(result);
+  const service = String(result?.service || result?.resolvedQuery?.service || '').trim();
+  const responseType = String(result?.responseType || '').trim();
+  const queryService = new Set([
+    'topValues',
+    'averageValues',
+    'timeValues',
+    'pageViews',
+    'groups',
+    'metrics'
+  ]).has(service);
+  const executionLike = Boolean(
+    result?.outcome
+    || result?.dataRequestAttempted
+    || result?.dataRequestSucceeded
+    || Boolean(result?.executionOutcome)
+    || (queryService && result?.error && responseType !== 'clarification_required')
+  );
+  const normalizedResult = executionLike
+    ? getExecutionOutcomeMapper().mapResult(result, {
+        assumeSuccessfulExecution: false
+      })
+    : result;
+  const displayText = buildUserFacingSkillText(normalizedResult);
   return {
     content: [
       {
         type: 'text',
-        text: appendReportSourceId(displayText || JSON.stringify(result, null, 2), reportSourceId)
+        text: appendReportSourceId(displayText || JSON.stringify(normalizedResult, null, 2), reportSourceId)
       }
     ],
-    isError: Boolean(result?.ok === false || result?.error),
-    details: result,
+    isError: Boolean(normalizedResult?.ok === false || normalizedResult?.error),
+    details: normalizedResult,
     metadata: reportSourceId ? { reportSourceId } : undefined
   };
 }
@@ -7452,6 +7525,7 @@ function createSkillToolDefinition() {
         if (currentQueryTurn?.phase === 'TERMINAL') {
           const failedOutcomes = new Set([
             QUERY_OUTCOMES.VALIDATION_FAILURE,
+            QUERY_OUTCOMES.RUNTIME_CAPABILITY_FAILURE,
             QUERY_OUTCOMES.EXECUTION_FAILURE,
             QUERY_OUTCOMES.CONTRACT_VIOLATION
           ]);
@@ -7773,6 +7847,22 @@ function createSkillToolDefinition() {
             },
             result,
             finalContent: String(result?.displayText || clarifyingQuestion).trim()
+          });
+        } else if (
+          result?.outcome === QUERY_OUTCOMES.VALIDATION_FAILURE
+          || result?.error?.category === 'RUNTIME_CAPABILITY'
+        ) {
+          queryTurnCoordinator.recordExecutionValidationFailure({
+            scope: conversationKey,
+            turnId,
+            result,
+            finalContent: String(
+              result?.displayText
+              || result?.summary?.displayText
+              || result?.error?.userMessage
+              || result?.error?.message
+              || '当前运行时指标能力无法确认，本次查询未执行数据请求。'
+            ).trim()
           });
         } else if (result?.ok === false || result?.error) {
           queryTurnCoordinator.recordFailure({
@@ -8573,7 +8663,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── GENERAL BOUNDARY (always) ──
   rules.push(
     'You handle only system monitoring, NAPM query, anomaly diagnosis, and result interpretation. Non-monitoring (weather/chat/entertainment) → briefly redirect.',
-    'OpenClaw upstream owns Query Draft construction. napm-skill-query evaluates the Query Decision; only EXECUTE_QUERY reaches the Query Skill and southbound API.',
+    'OpenClaw upstream owns Query Draft construction. napm-skill-query evaluates the Query Decision; EXECUTE_QUERY reaches data execution directly, while EXECUTE_WITH_RUNTIME_CONFIRMATION enters the Query Skill runtime capability gate first.',
     'Accepted input: ' + acceptedInputs + ' (Tool adapter uses queryDraft with resolvedQuery as a legacy alias). Every NAPM data query must call napm-skill-query, including queries that need a user clarification. Raw prompt alone is not accepted.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
@@ -10676,6 +10766,7 @@ module.exports.__test__ = {
   buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
   buildPacketAnalysisReply,
+  makeToolResult,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,

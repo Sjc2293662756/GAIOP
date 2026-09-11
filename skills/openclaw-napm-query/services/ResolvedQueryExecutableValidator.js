@@ -141,6 +141,8 @@ function validate(query = {}, options = {}) {
     .forEach(({ item }) => {
       const key = `${canonicalQuery.service}|${groupPathSignature}|${item.metricId}`;
       const existing = runtimeChecks.get(key) || {
+        type: 'METRIC_CAPABILITY',
+        provider: 'METRICS_FOR_GROUP',
         service: canonicalQuery.service,
         groupPathSignature,
         metricId: item.metricId,

@@ -187,7 +187,7 @@ describe('BUG-A Phase 0 metric characterization migrated by Phase 3', () => {
         }
       });
       expect(counter.callsFor('topValues')).toHaveLength(1);
-      expect(counter.snapshot().total).toBe(3);
+      expect(counter.snapshot().total).toBe(2);
     }
   );
 

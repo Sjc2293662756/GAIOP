@@ -294,8 +294,40 @@ Phase 4 executable gate:
 
 - ResolvedQueryExecutableValidator runs before metadata or southbound execution.
 - It validates Metric Catalog existence first, then exact Object × Metric ownership against a trusted product baseline.
-- KNOWN_INCOMPATIBLE and METRIC_UNKNOWN are hard failures. Uncovered capability is RUNTIME_CAPABILITY_REQUIRED and must not be probed by the Skill.
+- KNOWN_INCOMPATIBLE and METRIC_UNKNOWN are hard failures. Uncovered capability without an explicit METRICS_FOR_GROUP provider remains RUNTIME_CAPABILITY_REQUIRED and must not be probed by the Skill.
 - Dynamic metadata still validates object arguments and runtime inventory after the static gate.
+
+Phase 5 runtime capability gate:
+
+- `RuntimeMetricCapabilityService` consumes only Static Validator `UNKNOWN` checks with `type=METRIC_CAPABILITY` and `provider=METRICS_FOR_GROUP`.
+- It calls `metricsForGroup` once per exact canonical group path, using `NapmMetadataService.getMetricsForGroupPathEvidence()` and the canonical group parameter builder.
+- A valid response yields `SUPPORTED` when the metric ID is present and `UNSUPPORTED` when it is absent, including a valid empty list. Fetch, parse, or schema errors yield `INDETERMINATE`.
+- `ResolvedQueryExecutionAdmissionService` allows data execution only for `SUPPORTED`; runtime unsupported or indeterminate capability never falls back to another metric or `NO_DATA`.
+- Static `VALID`, `KNOWN_INCOMPATIBLE`, `METRIC_UNKNOWN`, and `CONTRACT_INVALID` do not call `metricsForGroup`. Runtime evidence is request-scoped and does not mutate static configuration.
+
+Phase 6 atomic repair gate:
+
+- `AtomicQueryRepairService` is the only Query repair applier. It accepts canonical `napm-resolved-query.v1`, allows only deterministic semantic-neutral transforms, and applies a complete plan to a clone with before/after fingerprints.
+- Metadata constraints may emit structured repair suggestions, but the repair service independently validates path, before/after values, reason code, and `semanticImpact=NONE`. Metric/object/service replacement, ranking-metric replacement, dropping requested metrics, and stale plans are rejected.
+- After any repair, the candidate re-enters `ResolvedQueryContract`, `ResolvedQueryExecutableValidator`, and (if still Static `UNKNOWN`) `RuntimeMetricCapabilityService`. Repair metadata never reaches NAPM parameters, and NO_DATA never triggers repair.
+
+Phase 7 serializer/kernel boundary:
+
+- `NapmQuerySerializer` is the sole mapper from admitted canonical Query to NAPM transport params. It explicitly constructs service-specific params, preserves `metrics[]` order, and serializes `topMetric` independently for `topValues`.
+- Serializer and Kernel never read legacy `metric`, derive from `metrics[0]`, choose service from `queryModeKey`, parse natural-language time, repair fields, or add defaults. NapmClient receives transport-ready params only.
+- Internal fields (`schemaVersion`, `queryModeKey`, repair/runtime/proof metadata and semantic diagnostics) are not sent to NAPM. `pageViews` continues using its independent detail contract.
+
+Phase 7.1 boundary audit:
+
+- `GroupBuilder.buildGroupParams()` is the only production group flatten encoder; it only numbers and copies already-resolved group fields and never queries metadata or repairs arguments.
+- `NapmQuerySerializer` is the only production transport comma encoder for `metrics[]`. Kernel and NapmClient do not read legacy `metric`, use `metrics[0]` as execution truth, route by `queryModeKey`, or add defaults.
+- Static-invalid and runtime-unsupported admissions stop before Serializer/Client. Uncalled legacy Query helpers were removed; `LegacyMetricInputAdapter` remains at its explicit compatibility boundary.
+
+Phase 8 unified outcome contract:
+
+- Execution results use only `SUCCESS`, `NO_DATA`, `VALIDATION_FAILURE`, `RUNTIME_CAPABILITY_FAILURE`, `SERIALIZATION_FAILURE`, and `EXECUTION_FAILURE`; Semantic Lifecycle remains separate.
+- `ExecutionOutcomeMapper` is the only cross-layer outcome mapper. `NO_DATA` requires a real successful data request, successful response parsing, and zero rows. Zero-call validation/capability/serialization failures and transport errors must never be rewritten as no data.
+- Query Runtime, Gateway, Direct, Plugin and Narration preserve `outcome/stage/reasonCode` and execution proof fields from the same mapper.
 
 Metadata and ownership:
 

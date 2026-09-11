@@ -13,9 +13,17 @@
 5. Resolver 将已完成语义映射为唯一 `napm-resolved-query.v1`：`requestedMetrics[] -> metrics[]`、`rankingMetric -> topMetric`，不输出 `metric`。`topValues` 的 `topMetric` 与 `metrics[]` 独立；平均值和趋势只使用 `metrics[]`，趋势另带 `granularity`。Plugin、QueryValidator、Resolver 和 legacy Adapter 共同消费 `ResolvedQueryContract`，不各自维护 required/forbidden 字段表。
 6. 旧调用方携带单数 `metric` 时，只在明确的 Tool/Skill 输入边界调用一次 `LegacyMetricInputAdapter`；成功后删除 `metric` 并重新校验 canonical shape，冲突返回稳定 `LEGACY_METRIC_CONFLICT/LEGACY_METRIC_PARTIAL_CONFLICT`。新 Semantic 路径不调用 Adapter。
 7. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
-8. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
+8. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。`EXECUTE_QUERY` 可进入数据执行；Static UNKNOWN 只有在 `EXECUTE_WITH_RUNTIME_CONFIRMATION` 下先经过 Runtime Metric Capability gate，确认支持后才进入南向接口。
 9. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；Query Hook 只给最终规范化参数生成一次授权摘要，execute 不接受同一 trace 下替换过的对象、指标、时间或引用。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
 10. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
+
+11. Phase 6 将执行前所有确定性 Query 修复收口到 `AtomicQueryRepairService`：canonical Query 先生成可审计 plan，再在 clone 上原子应用；修复后必须重新通过 `ResolvedQueryContract`、`ResolvedQueryExecutableValidator`，Static `UNKNOWN` 还要重新经过 Runtime Capability。修复不改变用户指标、对象、service、排行依据或请求指标集合，NO_DATA 不触发修复。
+
+12. Phase 7 将已通过最终准入的 canonical Query 交给唯一 `NapmQuerySerializer` 显式映射为 NAPM transport params。Serializer 不读取 `metric`、不做 repair/admission/语义解析；`MetricExecutionKernel` 只按 `service` dispatch，不按 `queryModeKey` 路由、不从 `metrics[0]` 推导、不补默认值；NapmClient 只处理 transport-ready params。`pageViews` 继续复用独立 detail contract。
+
+13. Phase 7.1 验证并收口最后一米：`GroupBuilder.buildGroupParams()` 是唯一生产 group flatten 编码器，metrics 逗号 transport 编码只有 Serializer 一处；NapmClient 只做 HTTP。Kernel 旧 fallback 和无生产 caller 的旧 helper 已删除。语义/展示层保留的 metrics[0] 仅作提示，不参与执行参数；LegacyMetricInputAdapter 作为显式迁移边界暂保留。
+
+14. Phase 8 统一执行结果契约：`ExecutionOutcomeContract` 只定义 `SUCCESS/NO_DATA/VALIDATION_FAILURE/RUNTIME_CAPABILITY_FAILURE/SERIALIZATION_FAILURE/EXECUTION_FAILURE`，`ExecutionOutcomeMapper` 是跨 Gateway、Direct、Plugin、Narration 的唯一映射入口。`NO_DATA` 必须有真实 data request、成功传输、成功解析和零行证明；任何零调用失败均不得改写为空数据。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。
 
@@ -114,6 +122,22 @@ Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Tur
 ### Phase 4 查询执行门禁
 
 ResolvedQueryExecutableValidator 是 Query 可执行性校验的唯一入口。它先校验 Metric Catalog 存在性，再按可信产品基线检查精确 service、group path、metric ownership。校验失败、指标未知或能力未知时，Gateway、Direct 和 Plugin 都必须在 metadata、Query Skill 和南向调用之前停止。它只校验 canonical Query，不重新解析 prompt。
+
+### Phase 5 Runtime Metric Capability
+
+`ResolvedQueryExecutionAdmissionService` 在 Static Validator 返回 `UNKNOWN` 后调用 `RuntimeMetricCapabilityService`。后者只接受带 `METRICS_FOR_GROUP` provider 的 metric capability check，复用 `NapmMetadataService.getMetricsForGroupPathEvidence()` 和 `GroupBuilder` 构造 `numGroups/groupTypeN/groupArgumentN`。运行时支持才放行数据查询；不支持返回 `RUNTIME_METRIC_UNSUPPORTED`，请求失败或响应异常返回 `RUNTIME_CAPABILITY_FAILURE`，两者数据调用均为 0。
+
+### Phase 6 Atomic Query Repair
+
+`AtomicQueryRepairService` 是 Query 修复的唯一执行者。它只接受 `napm-resolved-query.v1`，使用 reason code allowlist 生成 `path/before/after/source/semanticImpact` 计划，在隔离副本上一次应用并记录 before/after fingerprint。metadata/constraint 只能提供结构化安全建议，不能直接替换 canonical Query；任何语义替换或不一致建议 fail closed。`ResolvedQueryExecutionAdmissionService` 在修复后重新运行 Contract、Static 和必要的 Runtime gate；查询指纹变化会使 prepared proof 失效，运行时 capability 不跨请求缓存。
+
+### Phase 7 NAPM Serializer
+
+`NapmQuerySerializer` 是 canonical Query 到 NAPM transport params 的唯一转换入口。它显式构造不同 service 的参数，保持 `metrics[]` 顺序并独立发送 `topMetric`；不发送 `schemaVersion/queryModeKey/repair/runtime/proof` 等内部字段。Kernel 不再读取 legacy `metric`、默认 `topCount` 或拼接 metrics，NapmClient 不参与查询语义决策。
+
+### Phase 8 Unified Outcome
+
+执行层和对外结果统一携带 `outcome/stage/reasonCode/queryExecuted/dataRequestAttempted/dataRequestSucceeded/responseParseSucceeded/rowCount/issues`。语义生命周期仍独立使用 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`。只有合法 Query 真正执行成功并返回空结果时才为 `NO_DATA`；Runtime、Serializer、南向或解析错误分别归入对应失败状态。
 
 ## 回答规则
 

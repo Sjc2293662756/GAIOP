@@ -224,7 +224,7 @@ class QueryMetadataConstraintService {
         type: this.normalizeLegacyGroupType(group.type || 'IPAddress', index)
       };
 
-      if (group.argument) {
+      if (Object.prototype.hasOwnProperty.call(group || {}, 'argument')) {
         normalized.argument = group.argument;
       }
 
@@ -347,8 +347,8 @@ class QueryMetadataConstraintService {
     }
 
     const metric = query.service === 'topValues'
-      ? (query.topMetric || (Array.isArray(query.metrics) ? query.metrics[0] : null))
-      : (Array.isArray(query.metrics) ? query.metrics[0] : null);
+      ? (query.topMetric || (Array.isArray(query.metrics) ? query.metrics.find(Boolean) : null))
+      : (Array.isArray(query.metrics) ? query.metrics.find(Boolean) : null);
     if (!metric) {
       return null;
     }
@@ -498,8 +498,8 @@ class QueryMetadataConstraintService {
     }
 
     const constrainedMetric = constrained.service === 'topValues'
-      ? (constrained.topMetric || constrained.metrics?.[0])
-      : constrained.metrics?.[0];
+      ? (constrained.topMetric || constrained.metrics?.find(Boolean))
+      : constrained.metrics?.find(Boolean);
     if (Array.isArray(metadataReview.metricsForGroup) && metadataReview.metricsForGroup.length > 0 && constrainedMetric) {
       const currentMetricSupported = metadataReview.metricsForGroup.some(item => item.id === constrainedMetric);
       if (!currentMetricSupported) {

@@ -479,10 +479,11 @@ describe('QueryDecisionPolicy', () => {
     });
 
     expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
-      ok: false,
-      action: 'RUNTIME_CONFIRMATION_REQUIRED',
+      ok: true,
+      action: 'EXECUTE_WITH_RUNTIME_CONFIRMATION',
       reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
-      southboundAllowed: false
+      southboundAllowed: false,
+      skillInvocationAllowed: true
     });
   });
 

@@ -77,7 +77,7 @@ describe('BUG-A Phase 4 static execution gates', () => {
     expect(counter.snapshot().total).toBe(0);
   });
 
-  test('UNKNOWN stops before metadata, Kernel, and metricsForGroup in Phase 4', async () => {
+  test('UNKNOWN confirms runtime capability before data execution in Phase 5', async () => {
     const savedBaseline = process.env.NAPM_VERIFIED_PRODUCT_BASELINE;
     delete process.env.NAPM_VERIFIED_PRODUCT_BASELINE;
     try {
@@ -87,13 +87,13 @@ describe('BUG-A Phase 4 static execution gates', () => {
 
       expect(result).toMatchObject({
         ok: false,
-        error: { code: 'RUNTIME_CAPABILITY_REQUIRED' },
+        error: { code: 'RUNTIME_METRIC_UNSUPPORTED' },
         executableValidation: { status: 'UNKNOWN' }
       });
       expect(metadataReview).not.toHaveBeenCalled();
       expect(kernel).not.toHaveBeenCalled();
-      expect(counter.callsFor('metricsForGroup')).toHaveLength(0);
-      expect(counter.snapshot().total).toBe(0);
+      expect(counter.callsFor('metricsForGroup')).toHaveLength(1);
+      expect(counter.snapshot().data.topValues).toBe(0);
     } finally {
       process.env.NAPM_VERIFIED_PRODUCT_BASELINE = savedBaseline;
     }

@@ -71,7 +71,7 @@ describe('RequirementParserService multilevel groups execution', () => {
     expect(response).toMatchObject({
       ok: false,
       outcome: 'VALIDATION_FAILURE',
-      error: { code: 'RUNTIME_CAPABILITY_REQUIRED' },
+      error: { code: 'RUNTIME_METRIC_UNSUPPORTED' },
       executableValidation: { status: 'UNKNOWN' }
     });
     expect(response.requestParams).toBeNull();

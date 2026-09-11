@@ -46,8 +46,6 @@ function normalizeTopValuesRows(rows = [], query = {}) {
   if (!Array.isArray(rows)) return [];
   const metricId = String(
     query?.topMetric
-    || query?.metric
-    || query?.metrics?.[0]
     || ''
   ).trim();
   const direction = normalizeDirection(query);

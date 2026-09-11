@@ -144,7 +144,7 @@ describe('RequirementParserService multilevel execution fallback', () => {
     expect(result).toMatchObject({
       ok: false,
       outcome: 'VALIDATION_FAILURE',
-      error: { code: 'RUNTIME_CAPABILITY_REQUIRED' },
+      error: { code: 'RUNTIME_METRIC_UNSUPPORTED' },
       executableValidation: { status: 'UNKNOWN' }
     });
     expect(directSpy).not.toHaveBeenCalled();

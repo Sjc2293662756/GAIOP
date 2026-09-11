@@ -13,6 +13,7 @@ const StaticProductBaselineProvider = require('./StaticProductBaselineProvider')
 const QUERY_ACTIONS = Object.freeze({
   ASK_CLARIFYING_QUESTION: 'ASK_CLARIFYING_QUESTION',
   EXECUTE_QUERY: 'EXECUTE_QUERY',
+  EXECUTE_WITH_RUNTIME_CONFIRMATION: 'EXECUTE_WITH_RUNTIME_CONFIRMATION',
   REJECT_QUERY: 'REJECT_QUERY'
 });
 
@@ -415,13 +416,15 @@ function validationFailureDecision(validation = {}, queryDraft = null) {
 
 function runtimeConfirmationDecision(validation = {}, queryDraft = null) {
   return {
-    ok: false,
-    action: 'RUNTIME_CONFIRMATION_REQUIRED',
-    outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+    ok: true,
+    action: QUERY_ACTIONS.EXECUTE_WITH_RUNTIME_CONFIRMATION,
+    outcome: null,
     reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
     reason: 'runtime_capability_required',
     validation,
     southboundAllowed: false,
+    skillInvocationAllowed: true,
+    dataExecutionAllowed: false,
     queryDraft
   };
 }

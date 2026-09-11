@@ -214,7 +214,9 @@ describe('BUG-A Phase 0 execution and southbound characterization baseline', () 
       data: [],
       error: null
     });
-    expect(result.outcome).toBeUndefined();
+    expect(result.outcome).toBe('NO_DATA');
+    expect(result.dataRequestAttempted).toBe(true);
+    expect(result.dataRequestSucceeded).toBe(true);
   });
 
   test.each([

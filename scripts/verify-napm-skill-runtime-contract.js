@@ -472,6 +472,7 @@ function inspectNapmResolvedQueryContracts(options = {}) {
   const baseTopQuery = {
     schemaVersion: 'napm-resolved-query.v1',
     service: 'topValues',
+    queryModeKey: 'topn',
     groups: [{ type: 'IPAddress' }],
     metrics: ['TPI', 'TPO'],
     topMetric: 'TPIO',
@@ -611,7 +612,7 @@ function inspectNapmPhase4ExecutableContracts(options = {}) {
   const validatorSource = readSource(validatorPath);
   const ownershipSource = readSource(ownershipPath);
   const policySource = readSource(policyPath);
-  const requirementParserSource = readSource(requirementParserPath);
+  const requirementParserSource = readSource(requirementParserPath).replace(/\r\n/g, '\n');
   const querySkillSource = readSource(querySkillPath);
   const pluginSource = readSource(pluginPath);
 
@@ -704,18 +705,19 @@ function inspectNapmPhase4ExecutableContracts(options = {}) {
     },
     {
       contract: 'phase4_gateway_and_direct_static_gate',
-      ok: /validateExecutableQueryAtBoundary/.test(requirementParserSource)
+      ok: /evaluateExecutableQueryAdmission/.test(requirementParserSource)
         && /prepareGatewayExecution/.test(requirementParserSource)
         && /executeDirectGatewayRequest/.test(requirementParserSource)
-        && orderedCall(requirementParserSource, 'validateExecutableQueryAtBoundary(normalizedQuery)', 'const metadataReview = await this.reviewGatewayRequestMetadata')
-        && orderedCall(requirementParserSource, 'validateExecutableQueryAtBoundary(passthroughGatewayRequest)', 'const response ='),
+        && orderedCall(requirementParserSource, 'const executionAdmission = await this.evaluateExecutableQueryAdmission(', 'reviewGatewayRequestMetadata(preparedQuery')
+        && orderedCall(requirementParserSource, 'await this.evaluateExecutableQueryAdmission(\n        passthroughGatewayRequest', 'const response ='),
       reason: null
     },
     {
       contract: 'phase4_unknown_capability_fails_closed_before_execution',
       ok: unknownValidation?.status === 'UNKNOWN'
         && unknownValidation?.reasonCode === 'RUNTIME_CAPABILITY_REQUIRED'
-        && unknownDecision?.action === 'RUNTIME_CONFIRMATION_REQUIRED'
+        && unknownDecision?.action === 'EXECUTE_WITH_RUNTIME_CONFIRMATION'
+        && unknownDecision?.skillInvocationAllowed === true
         && unknownDecision?.southboundAllowed === false
         && /executableValidation\.status === 'UNKNOWN'/.test(policySource)
         && /return runtimeConfirmationDecision/.test(policySource)
@@ -724,7 +726,7 @@ function inspectNapmPhase4ExecutableContracts(options = {}) {
       unknownValidation,
       unknownDecision,
       reason: unknownValidation?.status === 'UNKNOWN'
-        && unknownDecision?.action === 'RUNTIME_CONFIRMATION_REQUIRED'
+        && unknownDecision?.action === 'EXECUTE_WITH_RUNTIME_CONFIRMATION'
         ? null
         : 'PHASE4_UNKNOWN_CAPABILITY_GATE_MISSING'
     },
@@ -740,6 +742,592 @@ function inspectNapmPhase4ExecutableContracts(options = {}) {
   ];
 }
 
+function inspectNapmPhase41VerificationContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const requirementParserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const validatorPath = path.join(servicesRoot, 'ResolvedQueryExecutableValidator.js');
+  const policyPath = path.join(servicesRoot, 'QueryDecisionPolicy.js');
+  const overviewExecutionPath = path.join(
+    querySkillRoot,
+    'scripts',
+    'OverviewExecution.js'
+  );
+  const querySkillPath = path.join(querySkillRoot, 'scripts', 'run_napm_query.js');
+  const pluginPath = path.join(workspaceRoot, 'napm-openclaw-plugin.remote.js');
+  const requirementParserSource = readSource(requirementParserPath).replace(/\r\n/g, '\n');
+  const validatorSource = readSource(validatorPath);
+  const policySource = readSource(policyPath);
+  const overviewExecutionSource = readSource(overviewExecutionPath);
+  const querySkillSource = readSource(querySkillPath);
+  const pluginSource = readSource(pluginPath);
+  const executionMarker = pluginSource.indexOf('const timeResolverPath');
+  const executionRegion = executionMarker >= 0
+    ? pluginSource.slice(executionMarker, executionMarker + 8000)
+    : '';
+  const timeMaterializationIndex = executionRegion.indexOf(
+    'applyTimeOverride(preparedArgs.resolvedQuery)'
+  );
+  const executionValidationIndex = executionRegion.indexOf(
+    'validatePreparedResolvedQuery('
+  );
+  const unknownMetricIndex = validatorSource.indexOf('const unknownMetrics');
+  const ownershipClassificationIndex = validatorSource.indexOf('const classified');
+
+  return [
+    {
+      contract: 'phase41_prepared_proof_identity_and_single_use',
+      ok: requirementParserSource.includes('this.executableValidationProofs = new WeakMap()')
+        && requirementParserSource.includes('consumeExecutableValidationProof')
+        && requirementParserSource.includes('this.executableValidationProofs.set(')
+        && requirementParserSource.includes('AtomicQueryRepairService.fingerprint')
+        && requirementParserSource.includes('hasInternalValidationProof')
+        && !requirementParserSource.includes('gatewayRequest.prepared')
+        && !requirementParserSource.includes('gatewayRequest.proof'),
+      reason: null
+    },
+    {
+      contract: 'phase41_plugin_time_materialization_before_execution_validation',
+      ok: executionMarker >= 0
+        && timeMaterializationIndex >= 0
+        && executionValidationIndex >= 0
+        && timeMaterializationIndex < executionValidationIndex
+        && pluginSource.includes("phase: 'construction'")
+        && pluginSource.includes("phase: 'execution'"),
+      reason: null
+    },
+    {
+      contract: 'phase41_metric_existence_precedes_ownership',
+      ok: unknownMetricIndex >= 0
+        && ownershipClassificationIndex > unknownMetricIndex
+        && validatorSource.includes('metricRoles.map')
+        && validatorSource.includes("role: 'RETURN_METRIC'")
+        && validatorSource.includes("role: 'RANKING_METRIC'"),
+      reason: null
+    },
+    {
+      contract: 'phase41_validator_is_pure',
+      ok: !validatorSource.includes('NapmClient')
+        && !validatorSource.includes('Metadata')
+        && !validatorSource.includes('metricsForGroup')
+        && !validatorSource.includes('.getJson('),
+      reason: null
+    },
+    {
+      contract: 'phase41_overview_child_queries_use_gateway_gate',
+      ok: overviewExecutionSource.includes('executeGatewayRequest')
+        && querySkillSource.includes('executeGatewayRequest: RequirementParserService.executeGatewayRequest.bind')
+        && querySkillSource.includes('executeOverviewModule'),
+      reason: null
+    },
+    {
+      contract: 'phase41_policy_does_not_reimplement_ownership',
+      ok: !policySource.includes('classifyObjectMetricCompatibility')
+        && !policySource.includes('objectMetricOwnership')
+        && policySource.includes('ResolvedQueryExecutableValidator.validate'),
+      reason: null
+    }
+  ];
+}
+
+function inspectNapmPhase5RuntimeCapabilityContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const runtimePath = path.join(servicesRoot, 'RuntimeMetricCapabilityService.js');
+  const admissionPath = path.join(servicesRoot, 'ResolvedQueryExecutionAdmissionService.js');
+  const parserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const metadataPath = path.join(servicesRoot, 'NapmMetadataService.js');
+  const policyPath = path.join(servicesRoot, 'QueryDecisionPolicy.js');
+  const pluginPath = path.join(workspaceRoot, 'napm-openclaw-plugin.remote.js');
+  const runtimeSource = readSource(runtimePath);
+  const admissionSource = readSource(admissionPath);
+  const parserSource = readSource(parserPath);
+  const metadataSource = readSource(metadataPath);
+  const policySource = readSource(policyPath);
+  const pluginSource = readSource(pluginPath);
+
+  let runtimeModule = null;
+  let admissionModule = null;
+  let moduleError = null;
+  try {
+    runtimeModule = require(runtimePath);
+    admissionModule = require(admissionPath);
+  } catch (error) {
+    moduleError = error?.message || String(error);
+  }
+
+  return [
+    {
+      contract: 'phase5_runtime_service_single_entry',
+      ok: !moduleError
+        && typeof runtimeModule === 'function'
+        && runtimeSource.includes('METRICS_FOR_GROUP')
+        && runtimeSource.includes("staticValidation?.status !== 'UNKNOWN'")
+        && runtimeSource.includes('getMetricsForGroupPathEvidence')
+        && runtimeSource.includes('metadataCalls'),
+      moduleError,
+      runtimePath,
+      reason: moduleError ? 'PHASE5_RUNTIME_SERVICE_UNAVAILABLE' : null
+    },
+    {
+      contract: 'phase5_runtime_status_and_provider_guard',
+      ok: !moduleError
+        && runtimeModule.RUNTIME_STATUS?.SUPPORTED === 'SUPPORTED'
+        && runtimeModule.RUNTIME_STATUS?.UNSUPPORTED === 'UNSUPPORTED'
+        && runtimeModule.RUNTIME_STATUS?.INDETERMINATE === 'INDETERMINATE'
+        && runtimeSource.includes('RUNTIME_CAPABILITY_PROVIDER_UNRESOLVED')
+        && runtimeSource.includes('RUNTIME_METRIC_UNSUPPORTED'),
+      reason: null
+    },
+    {
+      contract: 'phase5_shared_execution_admission',
+      ok: !moduleError
+        && typeof admissionModule === 'function'
+        && admissionSource.includes('ResolvedQueryExecutableValidator')
+        && admissionSource.includes('RuntimeMetricCapabilityService')
+        && admissionSource.includes('DENY_RUNTIME_UNSUPPORTED')
+        && admissionSource.includes('RUNTIME_CAPABILITY_FAILURE'),
+      reason: null
+    },
+    {
+      contract: 'phase5_gateway_and_direct_runtime_gate',
+      ok: parserSource.includes('evaluateExecutableQueryAdmission')
+        && parserSource.includes('this.executionAdmissionService')
+        && parserSource.includes('skipMetricsForGroup: true')
+        && parserSource.includes('await this.evaluateExecutableQueryAdmission'),
+      reason: null
+    },
+    {
+      contract: 'phase5_canonical_metrics_for_group_provider',
+      ok: metadataSource.includes('getMetricsForGroupPathEvidence')
+        && metadataSource.includes('GroupBuilder.buildGroupParams')
+        && metadataSource.includes('RUNTIME_CAPABILITY_RESPONSE_INVALID')
+        && metadataSource.includes('supportedMetricIds'),
+      reason: null
+    },
+    {
+      contract: 'phase5_plugin_skill_only_runtime_confirmation',
+      ok: policySource.includes('EXECUTE_WITH_RUNTIME_CONFIRMATION')
+        && policySource.includes('skillInvocationAllowed: true')
+        && !pluginSource.includes('NapmClient')
+        && pluginSource.includes('napmQuerySkill().handleSkillCall'),
+      reason: null
+    },
+    {
+      contract: 'phase5_static_gate_precedence_preserved',
+      ok: admissionSource.includes("if (staticValidation.status !== 'UNKNOWN'")
+        && admissionSource.includes('DENY_STATIC')
+        && runtimeSource.includes('check.provider !== PROVIDER'),
+      reason: null
+    }
+  ];
+}
+
+function inspectNapmPhase6AtomicRepairContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const repairPath = path.join(servicesRoot, 'AtomicQueryRepairService.js');
+  const admissionPath = path.join(servicesRoot, 'ResolvedQueryExecutionAdmissionService.js');
+  const parserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const metadataConstraintPath = path.join(servicesRoot, 'QueryMetadataConstraintService.js');
+  const repairSource = readSource(repairPath);
+  const admissionSource = readSource(admissionPath);
+  const parserSource = readSource(parserPath);
+  const metadataConstraintSource = readSource(metadataConstraintPath);
+  let repairModule = null;
+  let moduleError = null;
+  try {
+    repairModule = require(repairPath);
+  } catch (error) {
+    moduleError = error?.message || String(error);
+  }
+
+  const canonicalQuery = {
+    schemaVersion: 'napm-resolved-query.v1',
+    service: 'topValues',
+    queryModeKey: 'topn',
+    groups: [{ type: 'IPAddress' }],
+    metrics: ['TPIO'],
+    topMetric: 'TPIO',
+    topCount: 5,
+    start: 1788937200,
+    end: 1788940800
+  };
+  const plan = repairModule?.plan(canonicalQuery) || null;
+
+  return [
+    {
+      contract: 'phase6_atomic_repair_single_source',
+      ok: !moduleError
+        && typeof repairModule?.plan === 'function'
+        && typeof repairModule?.apply === 'function'
+        && repairSource.includes('SAFE_REPAIR_CODES')
+        && !repairSource.includes('NapmClient')
+        && !repairSource.includes('raw prompt'),
+      repairPath,
+      moduleError,
+      reason: moduleError ? 'PHASE6_REPAIR_UNAVAILABLE' : null
+    },
+    {
+      contract: 'phase6_repair_allowlist_and_semantic_guard',
+      ok: repairSource.includes('UNSAFE_REPAIR_SUGGESTION')
+        && repairSource.includes('REPAIR_CONFLICT')
+        && repairSource.includes('semanticImpact')
+        && repairSource.includes('isCanonicalQuery')
+        && repairSource.includes('REPAIR_PLAN_STALE'),
+      reason: null
+    },
+    {
+      contract: 'phase6_repair_clone_and_audit_fingerprint',
+      ok: repairSource.includes('const candidate = clone(query)')
+        && repairSource.includes('beforeFingerprint')
+        && repairSource.includes('afterFingerprint')
+        && plan?.status === 'NO_REPAIR_NEEDED',
+      reason: null
+    },
+    {
+      contract: 'phase6_post_repair_contract_before_static_gate',
+      ok: admissionSource.includes('postRepairValidation')
+        && admissionSource.includes('ResolvedQueryContract.validateShape(repairCandidate')
+        && admissionSource.indexOf('ResolvedQueryContract.validateShape(repairCandidate')
+          < admissionSource.indexOf('this.validator.validate(candidate'),
+      reason: null
+    },
+    {
+      contract: 'phase6_post_repair_runtime_uses_candidate',
+      ok: admissionSource.includes('query: candidate')
+        && admissionSource.includes('runtimeService.confirm')
+        && parserSource.includes('AtomicQueryRepairService.repairCandidate'),
+      reason: null
+    },
+    {
+      contract: 'phase6_prepared_proof_fingerprint_invalidation',
+      ok: parserSource.includes('this.executableValidationProofs = new WeakMap()')
+        && parserSource.includes('consumeExecutableValidationProof')
+        && parserSource.includes('AtomicQueryRepairService.fingerprint(query)'),
+      reason: null
+    },
+    {
+      contract: 'phase6_metadata_mutation_is_revalidated',
+      ok: parserSource.includes('AtomicQueryRepairService.repairCandidate')
+        && parserSource.includes('dynamicRepair')
+        && metadataConstraintSource.includes('const constrained = this.cloneQuery(query)'),
+      reason: null
+    }
+  ];
+}
+
+function inspectNapmPhase7SerializerContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const serializerPath = path.join(servicesRoot, 'NapmQuerySerializer.js');
+  const kernelPath = path.join(servicesRoot, 'MetricExecutionKernel.js');
+  const detailKernelPath = path.join(servicesRoot, 'PageViewsExecutionKernel.js');
+  const parserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const clientPath = path.join(servicesRoot, 'NapmClient.js');
+  const serializerSource = readSource(serializerPath);
+  const kernelSource = readSource(kernelPath);
+  const detailKernelSource = readSource(detailKernelPath);
+  const parserSource = readSource(parserPath);
+  const clientSource = readSource(clientPath);
+  const serviceFiles = listJavaScriptFiles(servicesRoot);
+  const serializerFiles = serviceFiles.filter((filePath) => (
+    /class\s+NapmQuerySerializer/.test(readSource(filePath))
+  ));
+  let serializerModule = null;
+  let moduleError = null;
+  try {
+    serializerModule = require(serializerPath);
+  } catch (error) {
+    moduleError = error?.message || String(error);
+  }
+  const query = {
+    schemaVersion: 'napm-resolved-query.v1',
+    service: 'topValues',
+    queryModeKey: 'topn',
+    groups: [{ type: 'IPAddress' }],
+    metrics: ['TPO', 'TPI'],
+    topMetric: 'TPIO',
+    topCount: 5,
+    start: 1788937200,
+    end: 1788940800
+  };
+  let serialized = null;
+  try {
+    serialized = serializerModule?.serialize(query) || null;
+  } catch (_error) {
+    serialized = null;
+  }
+
+  return [
+    {
+      contract: 'phase7_single_canonical_serializer',
+      ok: !moduleError
+        && typeof serializerModule?.serialize === 'function'
+        && serializerFiles.length === 1
+        && path.normalize(serializerFiles[0]) === path.normalize(serializerPath)
+        && !serializerSource.includes('NapmClient')
+        && !serializerSource.includes('repairService'),
+      serializerPath,
+      serializerFiles,
+      moduleError,
+      reason: moduleError ? 'PHASE7_SERIALIZER_UNAVAILABLE' : null
+    },
+    {
+      contract: 'phase7_serializer_explicit_allowlist_and_no_legacy_metric',
+      ok: serializerSource.includes('const params = {')
+        && !serializerSource.includes('...query')
+        && serializerSource.includes('query.metrics.join')
+        && serializerSource.includes("Object.prototype.hasOwnProperty.call(query, 'metric')")
+        && !serializerSource.includes('query.metric ||'),
+      reason: null
+    },
+    {
+      contract: 'phase7_kernel_uses_serializer_without_business_fallback',
+      ok: kernelSource.includes('NapmQuerySerializer')
+        && kernelSource.includes('serializer.serialize(queryRequest)')
+        && !kernelSource.includes('queryRequest.metric')
+        && !kernelSource.includes('buildMetricCsv')
+        && !kernelSource.includes('queryRequest.topCount || 20')
+        && !kernelSource.includes('metrics[0]'),
+      reason: null
+    },
+    {
+      contract: 'phase7_pageviews_keeps_independent_serializer_contract',
+      ok: detailKernelSource.includes('serializer.serialize(queryRequest)')
+        && detailKernelSource.includes('normalizePageViewRows')
+        && !detailKernelSource.includes('metrics'),
+      reason: null
+    },
+    {
+      contract: 'phase7_parser_does_not_encode_metric_transport',
+      ok: !parserSource.includes('NapmQuerySerializer')
+        && !/metrics\s*\.join\s*\(/.test(parserSource),
+      reason: null
+    },
+    {
+      contract: 'phase7_napm_client_has_no_query_semantics',
+      ok: !clientSource.includes('topMetric')
+        && !clientSource.includes('metrics[0]')
+        && !clientSource.includes('queryModeKey')
+        && !clientSource.includes('metric ||'),
+      reason: null
+    },
+    {
+      contract: 'phase7_golden_serializer_transport_shape',
+      ok: serialized?.service === 'topValues'
+        && serialized?.params?.metrics === 'TPO,TPI'
+        && serialized?.params?.topMetric === 'TPIO'
+        && serialized?.params?.topCount === 5
+        && !Object.prototype.hasOwnProperty.call(serialized?.params || {}, 'metric')
+        && !Object.prototype.hasOwnProperty.call(serialized?.params || {}, 'queryModeKey'),
+      reason: null
+    }
+  ];
+}
+
+function inspectNapmPhase71TransportBoundaryContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const scriptsRoot = path.join(querySkillRoot, 'scripts');
+  const serializerPath = path.join(servicesRoot, 'NapmQuerySerializer.js');
+  const groupBuilderPath = path.join(servicesRoot, 'GroupBuilder.js');
+  const kernelPath = path.join(servicesRoot, 'MetricExecutionKernel.js');
+  const pageViewsKernelPath = path.join(servicesRoot, 'PageViewsExecutionKernel.js');
+  const clientPath = path.join(servicesRoot, 'NapmClient.js');
+  const parserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const runnerPath = path.join(scriptsRoot, 'run_napm_query.js');
+  const serializerSource = readSource(serializerPath);
+  const groupBuilderSource = readSource(groupBuilderPath);
+  const kernelSource = readSource(kernelPath);
+  const pageViewsKernelSource = readSource(pageViewsKernelPath);
+  const clientSource = readSource(clientPath);
+  const parserSource = readSource(parserPath);
+  const runnerSource = readSource(runnerPath);
+  const productionSources = [serializerSource, groupBuilderSource, kernelSource, pageViewsKernelSource, clientSource, parserSource, runnerSource];
+  const productionMetricJoinCount = productionSources.reduce(
+    (count, source) => count + (source.match(/metrics\s*\.join\s*\(\s*['"]?,['"]?\s*['"]?\s*\)/g) || []).length,
+    0
+  );
+  const productionGroupBuilderDefinitions = productionSources.reduce(
+    (count, source) => count + (source.match(/buildGroupParams\s*\(\s*groups\s*\)/g) || []).length,
+    0
+  );
+
+  return [
+    {
+      contract: 'phase71_group_transport_chain_is_explicit',
+      ok: serializerSource.includes('this.groupBuilder.buildGroupParams(query.groups)')
+        && groupBuilderSource.includes('params.numGroups = groups.length')
+        && groupBuilderSource.includes('params[typeKey] = group.type')
+        && pageViewsKernelSource.includes('serializer.serialize(queryRequest)'),
+      chain: [
+        { file: serializerPath, function: 'NapmQuerySerializer.serialize', responsibility: 'canonical groups[] to group builder' },
+        { file: groupBuilderPath, function: 'GroupBuilder.buildGroupParams', responsibility: 'mechanical numGroups/groupTypeN/groupArgumentN encoding' },
+        { file: clientPath, function: 'NapmClient.get', responsibility: 'HTTP transport' }
+      ],
+      reason: null
+    },
+    {
+      contract: 'phase71_single_production_group_encoder',
+      ok: productionGroupBuilderDefinitions === 1
+        && !clientSource.includes('groupType1')
+        && !clientSource.includes('numGroups'),
+      productionGroupBuilderDefinitions,
+      reason: null
+    },
+    {
+      contract: 'phase71_single_production_metrics_encoder',
+      ok: productionMetricJoinCount === 1
+        && serializerSource.includes("query.metrics.join(',')")
+        && !kernelSource.includes('metrics.join')
+        && !parserSource.includes('metrics.join')
+        && !runnerSource.includes('metrics.join'),
+      productionMetricJoinCount,
+      reason: null
+    },
+    {
+      contract: 'phase71_legacy_and_primary_metric_fallbacks_deleted',
+      ok: !kernelSource.includes('queryRequest.metric')
+        && !kernelSource.includes('queryRequest.topMetric ||')
+        && !kernelSource.includes('queryRequest.topCount ||')
+        && !kernelSource.includes('metrics[0]')
+        && !kernelSource.includes('queryModeKey'),
+      reason: null
+    },
+    {
+      contract: 'phase71_client_is_mechanical_transport_only',
+      ok: !clientSource.includes('queryModeKey')
+        && !clientSource.includes('topMetric')
+        && !clientSource.includes('metrics[0]')
+        && !clientSource.includes('groupType')
+        && !clientSource.includes('groupArgument')
+        && !clientSource.includes('metric ||'),
+      reason: null
+    },
+    {
+      contract: 'phase71_dead_query_helpers_removed',
+      ok: !parserSource.includes('buildMetricCsv')
+        && !parserSource.includes('validateExecutableQueryAtBoundary')
+        && !parserSource.includes('executeTopValuesDetailFallback')
+        && !parserSource.includes('shouldUseTopValuesDetailFallback'),
+      reason: null
+    },
+    {
+      contract: 'phase71_internal_transport_fields_filtered',
+      ok: serializerSource.includes('const params = {')
+        && !serializerSource.includes('...query')
+        && serializerSource.includes('query.schemaVersion')
+        && !serializerSource.includes('queryModeKey')
+        && !serializerSource.includes('runtimeCapability')
+        && !serializerSource.includes('repairAudit'),
+      reason: null
+    }
+  ];
+}
+
+function inspectNapmPhase8OutcomeContracts(options = {}) {
+  const { workspaceRoot, skillsRoot } = resolveContractRoots(options);
+  const querySkillRoot = path.join(skillsRoot, QUERY_SKILL_DIR);
+  const servicesRoot = path.join(querySkillRoot, 'services');
+  const contractPath = path.join(servicesRoot, 'ExecutionOutcomeContract.js');
+  const mapperPath = path.join(servicesRoot, 'ExecutionOutcomeMapper.js');
+  const parserPath = path.join(servicesRoot, 'RequirementParserService.js');
+  const narrationPath = path.join(servicesRoot, 'OpenClawNarrationContractService.js');
+  const pluginPath = path.join(workspaceRoot, 'napm-openclaw-plugin.remote.js');
+  const contractSource = readSource(contractPath);
+  const mapperSource = readSource(mapperPath);
+  const parserSource = readSource(parserPath);
+  const narrationSource = readSource(narrationPath);
+  const pluginSource = readSource(pluginPath);
+  let contractModule = null;
+  let mapperModule = null;
+  let moduleError = null;
+  try {
+    contractModule = require(contractPath);
+    mapperModule = require(mapperPath);
+  } catch (error) {
+    moduleError = error?.message || String(error);
+  }
+  const validRows = mapperModule?.mapResult({
+    ok: true,
+    data: [{ value: 1 }],
+    dataRequestAttempted: true,
+    dataRequestSucceeded: true,
+    responseParseSucceeded: true
+  }) || {};
+  const emptyRows = mapperModule?.mapResult({
+    ok: true,
+    data: [],
+    dataRequestAttempted: true,
+    dataRequestSucceeded: true,
+    responseParseSucceeded: true
+  }) || {};
+  const zeroCallFailure = mapperModule?.mapResult({
+    ok: false,
+    data: [],
+    error: { code: 'METRIC_UNKNOWN' },
+    dataRequestAttempted: false
+  }) || {};
+
+  return [
+    {
+      contract: 'phase8_single_execution_outcome_contract',
+      ok: !moduleError
+        && Array.isArray(Object.values(contractModule?.EXECUTION_OUTCOMES || {}))
+        && Object.values(contractModule?.EXECUTION_OUTCOMES || {}).length === 6
+        && !contractSource.includes('AMBIGUOUS')
+        && !contractSource.includes('UNRESOLVED')
+        && !contractSource.includes('UNSUPPORTED'),
+      moduleError,
+      reason: moduleError ? 'PHASE8_OUTCOME_CONTRACT_UNAVAILABLE' : null
+    },
+    {
+      contract: 'phase8_mapper_is_single_cross_layer_boundary',
+      ok: !moduleError
+        && typeof mapperModule?.mapResult === 'function'
+        && parserSource.includes('ExecutionOutcomeMapper.mapResult')
+        && narrationSource.includes('ExecutionOutcomeMapper.mapResult')
+        && pluginSource.includes('getExecutionOutcomeMapper'),
+      reason: null
+    },
+    {
+      contract: 'phase8_no_data_requires_successful_data_execution',
+      ok: emptyRows.outcome === 'NO_DATA'
+        && emptyRows.dataRequestAttempted === true
+        && emptyRows.dataRequestSucceeded === true
+        && emptyRows.responseParseSucceeded === true
+        && zeroCallFailure.outcome === 'VALIDATION_FAILURE'
+        && zeroCallFailure.dataRequestAttempted === false,
+      emptyRows,
+      zeroCallFailure,
+      reason: null
+    },
+    {
+      contract: 'phase8_failure_outcomes_are_not_no_data',
+      ok: mapperSource.includes('SERIALIZATION_FAILURE')
+        && mapperSource.includes('RUNTIME_CAPABILITY_FAILURE')
+        && mapperSource.includes('EXECUTION_FAILURE')
+        && mapperSource.includes('RUNTIME_METRIC_UNSUPPORTED')
+        && validRows.outcome === 'SUCCESS'
+        && !mapperSource.includes("return { ...result, outcome: 'NO_DATA'"),
+      validRows,
+      reason: null
+    },
+    {
+      contract: 'phase8_plugin_preserves_structured_outcome',
+      ok: pluginSource.includes('details: normalizedResult')
+        && pluginSource.includes('isError: Boolean(normalizedResult?.ok === false'),
+      reason: null
+    }
+  ];
+}
+
 function run() {
   const { workspaceRoot, skillsRoot } = resolveContractRoots();
   const results = inspectNapmSkillRuntimeContracts(skillsRoot, { reload: true });
@@ -747,11 +1335,23 @@ function run() {
   const semanticContractResults = inspectNapmSemanticContracts({ workspaceRoot, skillsRoot });
   const resolvedQueryContractResults = inspectNapmResolvedQueryContracts({ workspaceRoot, skillsRoot });
   const phase4ExecutableContractResults = inspectNapmPhase4ExecutableContracts({ workspaceRoot, skillsRoot });
+  const phase41VerificationContractResults = inspectNapmPhase41VerificationContracts({ workspaceRoot, skillsRoot });
+  const phase5RuntimeCapabilityContractResults = inspectNapmPhase5RuntimeCapabilityContracts({ workspaceRoot, skillsRoot });
+  const phase6AtomicRepairContractResults = inspectNapmPhase6AtomicRepairContracts({ workspaceRoot, skillsRoot });
+  const phase7SerializerContractResults = inspectNapmPhase7SerializerContracts({ workspaceRoot, skillsRoot });
+  const phase71TransportBoundaryContractResults = inspectNapmPhase71TransportBoundaryContracts({ workspaceRoot, skillsRoot });
+  const phase8OutcomeContractResults = inspectNapmPhase8OutcomeContracts({ workspaceRoot, skillsRoot });
   const ok = results.every((result) => result.ok)
     && truthSourceResults.every((result) => result.ok)
     && semanticContractResults.every((result) => result.ok)
     && resolvedQueryContractResults.every((result) => result.ok)
-    && phase4ExecutableContractResults.every((result) => result.ok);
+    && phase4ExecutableContractResults.every((result) => result.ok)
+    && phase41VerificationContractResults.every((result) => result.ok)
+    && phase5RuntimeCapabilityContractResults.every((result) => result.ok)
+    && phase6AtomicRepairContractResults.every((result) => result.ok)
+    && phase7SerializerContractResults.every((result) => result.ok)
+    && phase71TransportBoundaryContractResults.every((result) => result.ok)
+    && phase8OutcomeContractResults.every((result) => result.ok);
 
   process.stdout.write(`${JSON.stringify({
     ok,
@@ -761,7 +1361,13 @@ function run() {
     truthSourceResults,
     semanticContractResults,
     resolvedQueryContractResults,
-    phase4ExecutableContractResults
+    phase4ExecutableContractResults,
+    phase41VerificationContractResults,
+    phase5RuntimeCapabilityContractResults,
+    phase6AtomicRepairContractResults,
+    phase7SerializerContractResults,
+    phase71TransportBoundaryContractResults,
+    phase8OutcomeContractResults
   }, null, 2)}\n`);
 
   if (!ok) {
@@ -779,5 +1385,11 @@ module.exports = {
   inspectNapmSemanticContracts,
   inspectNapmResolvedQueryContracts,
   inspectNapmPhase4ExecutableContracts,
+  inspectNapmPhase41VerificationContracts,
+  inspectNapmPhase5RuntimeCapabilityContracts,
+  inspectNapmPhase6AtomicRepairContracts,
+  inspectNapmPhase7SerializerContracts,
+  inspectNapmPhase71TransportBoundaryContracts,
+  inspectNapmPhase8OutcomeContracts,
   run
 };

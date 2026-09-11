@@ -59,7 +59,27 @@
 
 ## Phase 4 执行门禁
 
-查询执行前必须通过共享 ResolvedQueryExecutableValidator：先确认 Metric Catalog 中存在指标，再依据可信产品基线检查 Object × Metric ownership。证据不足时返回“当前能力需要运行时确认”，不调用 metadata、Skill 或南向接口；Gateway、Direct 和 Plugin 不能各自放宽此门禁。
+查询执行前必须通过共享 ResolvedQueryExecutableValidator：先确认 Metric Catalog 中存在指标，再依据可信产品基线检查 Object × Metric ownership。证据不足时进入 RUNTIME_CAPABILITY_REQUIRED；只有 Phase 5 明确标记为 METRICS_FOR_GROUP 的 UNKNOWN 才能由 RuntimeMetricCapabilityService 确认，其他情况不调用 metadata、Skill 或南向接口。Gateway、Direct 和 Plugin 不能各自放宽此门禁。
+
+## Phase 5 运行时能力确认
+
+当静态执行校验明确返回 `UNKNOWN` 时，系统只可通过 `metricsForGroup` 确认当前设备和 exact group path 的指标能力。支持、明确不支持和无法判定分别映射为 `SUPPORTED`、`UNSUPPORTED`、`INDETERMINATE`；无法判定或不支持时不执行数据查询，也不把结果说成“无数据”。静态已知不兼容、未知指标和契约错误不会再调用运行时能力接口。
+
+## Phase 6 原子修复
+
+执行前允许的规范化由 `AtomicQueryRepairService` 统一规划并审计。修复只能在 clone 上一次性应用，且必须重新通过 canonical Contract、Static Validator 和必要的 Runtime Capability；修复不得替换用户指定的指标、对象、service、排行依据或删除请求指标。Query 变化会使旧 proof 失效，运行时能力证据只在当前请求内有效；NO_DATA 不触发反向修复。
+
+## Phase 7 序列化与执行边界
+
+最终准入后的 canonical Query 由 `NapmQuerySerializer` 显式转换为 NAPM transport 参数。Serializer 只做字段映射，不重新解释、修复或校验业务语义；Kernel 只按 `service` dispatch，NapmClient 只负责 HTTP transport。`metric`、`metrics[0]`、默认 topCount、queryModeKey 路由和 repair/runtime/proof 元数据都不能进入数据请求；pageViews 继续使用独立详情契约。
+
+## Phase 7.1 边界审计
+
+`GroupBuilder.buildGroupParams()` 是唯一生产 group flatten 编码器，`metrics[]` 到逗号字符串的 transport 编码只有 Serializer 一处。Phase 7.1 已删除无生产 caller 的旧 Query helper；语义和展示层保留的 metrics[0] 只用于提示/分类，不是数据执行真相。LegacyMetricInputAdapter 仍是明确的兼容边界。
+
+## Phase 8 统一执行结果
+
+执行结果只使用六种顶层状态：`SUCCESS`、`NO_DATA`、`VALIDATION_FAILURE`、`RUNTIME_CAPABILITY_FAILURE`、`SERIALIZATION_FAILURE`、`EXECUTION_FAILURE`。只有查询真正发出、传输成功、响应解析成功且返回 0 行时才说“未查到数据”；参数、能力、序列化或网络失败必须如实区分。Plugin、Gateway、Direct 和 Narration 使用同一个结构化 outcome，不再根据错误字符串自行猜测。
 
 ## 报告生成原则
 

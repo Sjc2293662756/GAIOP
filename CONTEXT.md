@@ -124,6 +124,16 @@ _Avoid_: business, WebApplication
 
 Canonical queries pass one shared Phase 4 validator before execution. The order is Metric Catalog existence, exact Object × Metric ownership classification, then the Gateway/Direct/Plugin execution gate. Known incompatibility and unknown metrics are deterministic validation failures; an uncovered or untrusted capability is RUNTIME_CAPABILITY_REQUIRED and has zero metadata, Skill, Kernel, and southbound calls. The validator does not infer user intent and does not replace dynamic object-argument validation.
 
+Phase 5 extends this gate without changing the static validator: Static `UNKNOWN` checks marked `METRICS_FOR_GROUP` go through `ResolvedQueryExecutionAdmissionService` and `RuntimeMetricCapabilityService`. The provider calls `metricsForGroup` once per exact canonical path, maps returned metric IDs to `SUPPORTED` or `UNSUPPORTED`, and treats fetch/shape errors as `INDETERMINATE`. Only `SUPPORTED` reaches the data kernel; runtime evidence is request-scoped and never becomes static truth.
+
+Phase 6 closes Query mutation at the execution boundary. `AtomicQueryRepairService` accepts only canonical Queries and an explicit semantic-neutral allowlist, produces an auditable plan, and applies it once to an isolated clone. The repaired candidate must pass `ResolvedQueryContract`, Static Validator, and Runtime Capability again; any semantic replacement, dropped requested metric, stale plan, or unsafe metadata suggestion fails closed. Prepared proof is fingerprinted and one-use; a changed candidate cannot consume it. Runtime capability evidence is never reused across requests, and a `NO_DATA` response cannot trigger repair.
+
+Phase 7 makes transport serialization explicit. `NapmQuerySerializer` is the only mapper from admitted canonical Query to NAPM params and uses an explicit allowlist. It preserves metrics order and independent `topMetric`, never reads legacy `metric`, never repairs or validates semantics, and never emits internal fields. MetricExecutionKernel dispatches by `service` only and NapmClient receives transport-ready params; pageViews remains a separate detail contract.
+
+Phase 7.1 verifies the last transport mile: `GroupBuilder.buildGroupParams()` is the single production mechanical group encoder, and only Serializer joins `metrics[]` for transport. NapmClient has no object/metric/service derivation. Uncalled Query helpers were removed; LegacyMetricInputAdapter remains the only explicit legacy boundary. Metrics[0] references outside data transport are retained only for semantic/presentation compatibility and are not execution truth.
+
+Phase 8 defines one execution outcome layer: `ExecutionOutcomeContract` enumerates `SUCCESS`, `NO_DATA`, `VALIDATION_FAILURE`, `RUNTIME_CAPABILITY_FAILURE`, `SERIALIZATION_FAILURE`, and `EXECUTION_FAILURE`; `ExecutionOutcomeMapper` translates internal stage results. A zero-row answer is `NO_DATA` only with attempted/successful data transport and successful parsing. Plugin, Gateway, Direct, and Narration preserve this structured outcome instead of inferring from error text or empty arrays.
+
 ## Flagged Ambiguities
 
 - Chinese inventory wording such as “有哪些” does not by itself define the operation. An explicit metric comparison, average, or trend in the same Monitoring Question takes precedence.

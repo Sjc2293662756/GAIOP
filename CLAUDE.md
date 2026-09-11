@@ -119,7 +119,27 @@ Do not recreate root copies of these files. Resolution Spec ownership fields and
 
 ### Phase 4 executable gate
 
-ResolvedQueryExecutableValidator is the shared executable gate: Metric Catalog existence is checked first, then exact Object × Metric ownership is classified against a trusted product baseline. Gateway, Direct, and Plugin all stop before metadata, Skill, Kernel, or southbound work when the result is invalid or UNKNOWN. UNKNOWN is RUNTIME_CAPABILITY_REQUIRED, not permission to guess.
+ResolvedQueryExecutableValidator is the shared static executable gate: Metric Catalog existence is checked first, then exact Object × Metric ownership is classified against a trusted product baseline. Invalid static results stop before metadata, Skill, Kernel, or southbound work. Static UNKNOWN is RUNTIME_CAPABILITY_REQUIRED; only the Phase 5 runtime admission may confirm an explicitly supported provider.
+
+### Phase 5 runtime capability
+
+`RuntimeMetricCapabilityService` is the only runtime metric capability provider. It consumes only static `UNKNOWN` checks explicitly marked `METRICS_FOR_GROUP`, reuses the canonical group builder, deduplicates one request by exact path, and returns `SUPPORTED`, `UNSUPPORTED`, or `INDETERMINATE`. `ResolvedQueryExecutionAdmissionService` combines static and runtime results without mutating the canonical query. Runtime failure or unsupported capability fails closed before the data kernel.
+
+### Phase 6 atomic query repair
+
+`AtomicQueryRepairService` is the sole Query repair applier. It accepts only canonical `napm-resolved-query.v1`, plans allowlisted semantic-neutral transformations, applies them atomically to a clone, and records stable before/after fingerprints. Metadata constraints may emit structured suggestions but cannot mutate the executable Query authority. Every applied repair re-enters `ResolvedQueryContract`, the static executable validator, and the runtime capability gate when the result remains `UNKNOWN`; semantic metric/object/service replacement and dropping requested metrics are rejected. A changed query fingerprint invalidates prepared proof, and runtime capability evidence is request-scoped.
+
+### Phase 7 NAPM serializer
+
+`NapmQuerySerializer` is the only canonical-to-transport mapping for admitted metric queries. It explicitly builds NAPM params, preserves `metrics[]` order, and keeps `topMetric` independent. It does not read legacy `metric`, perform repair/admission, parse time, or emit internal repair/runtime/proof fields. `MetricExecutionKernel` dispatches by `service` only; `NapmClient` receives transport-ready params and remains a HTTP transport boundary. `pageViews` keeps its independent detail contract.
+
+### Phase 7.1 transport boundary audit
+
+`GroupBuilder.buildGroupParams()` is the single production group flattener and remains mechanical only. Transport metrics comma encoding exists only in `NapmQuerySerializer`; Kernel and Client do not re-encode. Phase 7.1 removed uncalled Query helpers and verified static-invalid/runtime-unsupported paths stop before Serializer and Client. LegacyMetricInputAdapter remains an explicit migration boundary; non-execution metrics[0] references are classified as presentation or semantic compatibility only.
+
+### Phase 8 unified outcome
+
+`ExecutionOutcomeContract` defines the six execution outcomes: `SUCCESS`, `NO_DATA`, `VALIDATION_FAILURE`, `RUNTIME_CAPABILITY_FAILURE`, `SERIALIZATION_FAILURE`, and `EXECUTION_FAILURE`. `ExecutionOutcomeMapper` is the single cross-layer mapper. `NO_DATA` requires a real attempted and successful data request plus successful response parsing and zero rows; validation, capability, serializer, network, and parse failures cannot be presented as no data.
 
 ### Deploy
 

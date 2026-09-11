@@ -28,8 +28,11 @@ const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
 const LegacyMetricInputAdapter = require('./LegacyMetricInputAdapter');
 const ResolvedQueryContract = require('./ResolvedQueryContract');
-const ResolvedQueryExecutableValidator = require('./ResolvedQueryExecutableValidator');
 const StaticProductBaselineProvider = require('./StaticProductBaselineProvider');
+const RuntimeMetricCapabilityService = require('./RuntimeMetricCapabilityService');
+const ResolvedQueryExecutionAdmissionService = require('./ResolvedQueryExecutionAdmissionService');
+const AtomicQueryRepairService = require('./AtomicQueryRepairService');
+const ExecutionOutcomeMapper = require('./ExecutionOutcomeMapper');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
 const CsvParser = require('../src/utils/CsvParser');
 const TimeUtils = require('../src/utils/TimeUtils');
@@ -72,14 +75,19 @@ class RequirementParserService {
       napmClient: this.napmClient,
       groupBuilder: this.groupBuilder,
       queryValidator: this.queryValidator,
-      buildMetricCsv: this.buildMetricCsv.bind(this),
       parseNapmPayload: this.parseNapmPayload.bind(this)
     });
     this.pageViewsExecutionKernel = new PageViewsExecutionKernel({
       napmClient: this.napmClient,
       queryValidator: this.queryValidator
     });
-    this.executableValidationProofs = new WeakSet();
+    this.runtimeMetricCapabilityService = new RuntimeMetricCapabilityService({
+      metadataService: this.napmMetadataService
+    });
+    this.executionAdmissionService = new ResolvedQueryExecutionAdmissionService({
+      runtimeService: this.runtimeMetricCapabilityService
+    });
+    this.executableValidationProofs = new WeakMap();
     this.assertDependencyContracts();
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
     this.stableQueryTemplates = this.loadStableQueryTemplates();
@@ -310,16 +318,16 @@ class RequirementParserService {
 
     if (
       ownershipObjectType
-      && (bindings.topMetric || bindings.metrics?.[0])
+      && (bindings.topMetric || bindings.metrics?.find(Boolean))
       && !isMetricCompatibleWithGroupPath(
         Array.isArray(bindings.groupPath) ? bindings.groupPath.map((type) => ({ type })) : [],
-        bindings.topMetric || bindings.metrics?.[0],
+        bindings.topMetric || bindings.metrics?.find(Boolean),
         ownershipObjectType
       )
     ) {
       logger.warn('Skip stable template due to metric ownership incompatibility', {
         templateId: normalized.id || null,
-        metric: bindings.topMetric || bindings.metrics?.[0],
+        metric: bindings.topMetric || bindings.metrics?.find(Boolean),
         groupPath: bindings.groupPath || []
       });
       return null;
@@ -397,7 +405,7 @@ class RequirementParserService {
     const pathText = this.formatGroupPathWithArguments(groups);
     const service = String(gatewayRequest?.service || 'unknown');
     const metric = gatewayRequest?.topMetric
-      || (Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics[0] : null);
+      || (Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics.find(Boolean) : null);
     const candidatePaths = this.collectMetadataPathCandidates(gatewayRequest, pathText);
 
     return {
@@ -560,7 +568,7 @@ class RequirementParserService {
       const currentMetric = String(
         request.service === 'topValues'
           ? request.topMetric
-          : request.metrics?.[0]
+          : request.metrics?.find(Boolean)
       ).trim();
       const currentSupported = currentMetric && supportedMetricSet.has(currentMetric);
       if (!currentSupported) {
@@ -803,7 +811,9 @@ class RequirementParserService {
 
     const supportedMetrics = this.buildMetricCandidatesFromMetadataReview(metadataReview, gatewayRequest);
     const selectedMetric = supportedMetrics[0]
-      || String(gatewayRequest?.metrics?.[0] || '').trim();
+      || (gatewayRequest?.service === 'topValues'
+        ? String(gatewayRequest?.topMetric || '').trim()
+        : '');
     if (!selectedMetric) {
       return null;
     }
@@ -818,7 +828,7 @@ class RequirementParserService {
     fallback.executionFallback = {
       strategy: 'multilevel_to_topvalues',
       originalService: service,
-      originalMetric: gatewayRequest?.metrics?.[0] || null,
+      originalMetric: gatewayRequest?.topMetric || null,
       fallbackMetric: selectedMetric
     };
     return fallback;
@@ -828,7 +838,8 @@ class RequirementParserService {
     const groups = this.formatGroupPathWithArguments(gatewayRequest?.groups || []);
     const originalService = String(gatewayRequest?.service || '').trim() || 'unknown';
     const fallbackMetric = String(
-      fallbackQuery?.metrics?.[0]
+      fallbackQuery?.topMetric
+      || fallbackQuery?.metrics?.find(Boolean)
       || fallbackQuery?.topMetric
       || ''
     ).trim();
@@ -842,13 +853,13 @@ class RequirementParserService {
   /**
    * 执行前做一次动态元数据审查，提前发现组对象、指标和路径是否真实可用。
    */
-  async reviewGatewayRequestMetadata(gatewayRequest = {}) {
+  async reviewGatewayRequestMetadata(gatewayRequest = {}, options = {}) {
     if (!gatewayRequest || typeof gatewayRequest !== 'object') {
       return null;
     }
 
     try {
-      return await this.napmMetadataService.reviewQuery(gatewayRequest);
+      return await this.napmMetadataService.reviewQuery(gatewayRequest, options);
     } catch (error) {
       logger.warn('Dynamic metadata review failed before execution', {
         error: error.message
@@ -883,7 +894,7 @@ class RequirementParserService {
       this.buildArgumentPolicyError(validation, gatewayRequest),
       gatewayRequest
     );
-    return {
+    const result = {
       ok: false,
       service: gatewayRequest?.service || null,
       data: [],
@@ -894,6 +905,7 @@ class RequirementParserService {
       requestUrl: null,
       argumentPolicy: validation
     };
+    return ExecutionOutcomeMapper.mapResult(result);
   }
 
   adaptLegacyMetricInputAtBoundary(gatewayRequest = {}) {
@@ -907,7 +919,7 @@ class RequirementParserService {
   }
 
   buildLegacyMetricAdapterFailureResult(gatewayRequest = {}, adaptation = {}) {
-    return {
+    const result = {
       ok: false,
       service: gatewayRequest?.service || null,
       data: [],
@@ -922,37 +934,54 @@ class RequirementParserService {
       requestParamsMasked: null,
       requestUrl: null
     };
+    return ExecutionOutcomeMapper.mapResult(result);
   }
 
-  validateExecutableQueryAtBoundary(gatewayRequest = {}) {
-    if (!ResolvedQueryContract.getServiceContract(gatewayRequest?.service)) {
-      return { ok: true, status: 'VALID', reasonCode: 'EXECUTABLE_QUERY_VALID' };
-    }
-    return ResolvedQueryExecutableValidator.validate(gatewayRequest, {
-      productBaseline: StaticProductBaselineProvider.getVerifiedProductBaseline()
+  async evaluateExecutableQueryAdmission(gatewayRequest = {}, requestContext = null, options = {}) {
+    return this.executionAdmissionService.evaluate(gatewayRequest, {
+      productBaseline: StaticProductBaselineProvider.getVerifiedProductBaseline(),
+      phase: options.phase,
+      metadataService: this.napmMetadataService,
+      requestContext
     });
   }
 
   buildExecutableValidationFailureResult(gatewayRequest = {}, validation = {}) {
-    return {
+    const staticValidation = validation?.staticValidation || validation;
+    const reasonCode = validation?.reasonCode || staticValidation?.reasonCode || 'QUERY_VALIDATION_FAILED';
+    const runtimeFailure = String(reasonCode).startsWith('RUNTIME_');
+    const result = {
       ok: false,
       service: gatewayRequest?.service || null,
       data: [],
       error: {
-        code: validation.reasonCode || 'QUERY_VALIDATION_FAILED',
-        category: 'VALIDATION_FAILURE',
-        message: validation.message || (validation.status === 'UNKNOWN'
+        code: reasonCode,
+        category: runtimeFailure ? 'RUNTIME_CAPABILITY' : 'VALIDATION_FAILURE',
+        message: validation.message
+          || staticValidation?.message
+          || (reasonCode === 'RUNTIME_METRIC_UNSUPPORTED'
+            ? 'The current device or exact group path does not support the requested metric.'
+            : null)
+          || (reasonCode === 'RUNTIME_CAPABILITY_FAILURE'
+            ? 'Runtime metric capability could not be confirmed; data execution was not attempted.'
+            : null)
+          || (validation.status === 'UNKNOWN' || staticValidation?.status === 'UNKNOWN'
           ? 'Runtime capability confirmation is required before this query can execute.'
           : 'Static executable query validation failed.'),
         details: validation
       },
-      outcome: 'VALIDATION_FAILURE',
-      executableValidation: validation,
+      outcome: validation?.finalAdmission === 'RUNTIME_CAPABILITY_FAILURE'
+        ? 'RUNTIME_CAPABILITY_FAILURE'
+        : 'VALIDATION_FAILURE',
+      executableValidation: staticValidation,
+      executionAdmission: validation?.finalAdmission ? validation : null,
+      runtimeCapability: validation?.runtimeCapability || null,
       metadata: null,
       requestParams: null,
       requestParamsMasked: null,
       requestUrl: null
     };
+    return ExecutionOutcomeMapper.mapResult(result);
   }
 
   attachLegacyMetricWarnings(result = {}, legacyBoundary = {}) {
@@ -1006,11 +1035,16 @@ class RequirementParserService {
    */
   async prepareGatewayExecution(gatewayRequest = {}, requestContext = null) {
     const normalizedQuery = this.normalizeTopLevelQueryShape(gatewayRequest);
-    const executableValidation = this.validateExecutableQueryAtBoundary(normalizedQuery);
-    if (!executableValidation.ok) {
+    const executionAdmission = await this.evaluateExecutableQueryAdmission(
+      normalizedQuery,
+      requestContext,
+      { phase: 'execution' }
+    );
+    if (!executionAdmission.ok) {
       return {
         query: normalizedQuery,
-        executableValidation,
+        executableValidation: executionAdmission.staticValidation,
+        executionAdmission,
         metadataReview: null,
         staticConstraint: null,
         dynamicConstraint: null,
@@ -1021,7 +1055,8 @@ class RequirementParserService {
     if (normalizedQuery?.service === 'pageViews') {
       return {
         query: normalizedQuery,
-        executableValidation,
+        executableValidation: executionAdmission.staticValidation,
+        executionAdmission,
         metadataReview: null,
         staticConstraint: null,
         dynamicConstraint: null,
@@ -1029,11 +1064,66 @@ class RequirementParserService {
         serviceFallbackQuery: null
       };
     }
+    const admittedQuery = executionAdmission.query || normalizedQuery;
     const staticConstraint = this.queryMetadataConstraintService.constrain(
-      normalizedQuery,
-      normalizedQuery?.userRequirement || ''
+      admittedQuery,
+      admittedQuery?.userRequirement || ''
     );
-    let preparedQuery = staticConstraint?.query || normalizedQuery;
+    const isCanonicalExecutableQuery = Boolean(
+      ResolvedQueryContract.getServiceContract(admittedQuery?.service)
+    );
+    const staticRepair = isCanonicalExecutableQuery
+      ? AtomicQueryRepairService.repairCandidate(
+        admittedQuery,
+        staticConstraint?.query || admittedQuery
+      )
+      : {
+          status: 'NO_REPAIR_NEEDED',
+          reasonCode: 'NON_QUERY_SERVICE_EXECUTION',
+          query: staticConstraint?.query || admittedQuery,
+          changes: [],
+          repairApplied: false
+        };
+    if (staticRepair.status === 'REPAIR_REJECTED') {
+      return {
+        query: admittedQuery,
+        executableValidation: executionAdmission.staticValidation,
+        executionAdmission: {
+          ...executionAdmission,
+          ok: false,
+          finalAdmission: 'DENY_STATIC',
+          reasonCode: staticRepair.reasonCode,
+          repair: staticRepair,
+          southboundAllowed: false
+        },
+        metadataReview: null,
+        staticConstraint,
+        dynamicConstraint: null,
+        inventoryFallback: null,
+        serviceFallbackQuery: null
+      };
+    }
+    let preparedQuery = staticRepair.query || admittedQuery;
+    let finalExecutionAdmission = executionAdmission;
+    if (staticRepair.repairApplied) {
+      finalExecutionAdmission = await this.evaluateExecutableQueryAdmission(
+        preparedQuery,
+        requestContext,
+        { phase: 'execution' }
+      );
+      if (!finalExecutionAdmission.ok) {
+        return {
+          query: preparedQuery,
+          executableValidation: finalExecutionAdmission.staticValidation,
+          executionAdmission: finalExecutionAdmission,
+          metadataReview: null,
+          staticConstraint,
+          dynamicConstraint: null,
+          inventoryFallback: null,
+          serviceFallbackQuery: null
+        };
+      }
+    }
     const constrainedArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
     if (!constrainedArgumentPolicy.ok) {
       return {
@@ -1046,17 +1136,72 @@ class RequirementParserService {
         argumentPolicyValidation: constrainedArgumentPolicy
       };
     }
-    const metadataReview = await this.reviewGatewayRequestMetadata(preparedQuery);
+    const metadataReview = executionAdmission.runtimeCapability
+      ? null
+      : await this.reviewGatewayRequestMetadata(preparedQuery, {
+        skipMetricsForGroup: true
+      });
     const dynamicConstraint = await this.queryMetadataConstraintService.constrainWithDynamicMetadata(
       preparedQuery,
       metadataReview
     );
-    preparedQuery = this.applyMetadataDrivenFinalization(
+    const dynamicCandidate = this.applyMetadataDrivenFinalization(
       dynamicConstraint?.query || preparedQuery,
       metadataReview,
       preparedQuery,
       preparedQuery?.pathPlanning || null
     );
+    const dynamicRepair = isCanonicalExecutableQuery
+      ? AtomicQueryRepairService.repairCandidate(
+        preparedQuery,
+        dynamicCandidate
+      )
+      : {
+          status: 'NO_REPAIR_NEEDED',
+          reasonCode: 'NON_QUERY_SERVICE_EXECUTION',
+          query: dynamicCandidate || preparedQuery,
+          changes: [],
+          repairApplied: false
+        };
+    if (dynamicRepair.status === 'REPAIR_REJECTED') {
+      return {
+        query: preparedQuery,
+        executableValidation: finalExecutionAdmission.staticValidation,
+        executionAdmission: {
+          ...finalExecutionAdmission,
+          ok: false,
+          finalAdmission: 'DENY_STATIC',
+          reasonCode: dynamicRepair.reasonCode,
+          repair: dynamicRepair,
+          southboundAllowed: false
+        },
+        metadataReview,
+        staticConstraint,
+        dynamicConstraint,
+        inventoryFallback: null,
+        serviceFallbackQuery: null
+      };
+    }
+    preparedQuery = dynamicRepair.query || preparedQuery;
+    if (dynamicRepair.repairApplied) {
+      finalExecutionAdmission = await this.evaluateExecutableQueryAdmission(
+        preparedQuery,
+        requestContext,
+        { phase: 'execution' }
+      );
+      if (!finalExecutionAdmission.ok) {
+        return {
+          query: preparedQuery,
+          executableValidation: finalExecutionAdmission.staticValidation,
+          executionAdmission: finalExecutionAdmission,
+          metadataReview,
+          staticConstraint,
+          dynamicConstraint,
+          inventoryFallback: null,
+          serviceFallbackQuery: null
+        };
+      }
+    }
 
     const finalArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
     if (!finalArgumentPolicy.ok) {
@@ -1089,6 +1234,8 @@ class RequirementParserService {
 
     return {
       query: preparedQuery,
+      executableValidation: finalExecutionAdmission.staticValidation,
+      executionAdmission: finalExecutionAdmission,
       metadataReview,
       staticConstraint,
       dynamicConstraint,
@@ -1113,24 +1260,6 @@ class RequirementParserService {
     return ResolvedQueryContract.normalizeCanonicalShape(query);
   }
 
-  buildMetricCsv(queryRequest = {}, service = '') {
-    const metrics = Array.isArray(queryRequest.metrics)
-      ? queryRequest.metrics.map((metricId) => String(metricId || '').trim()).filter(Boolean)
-      : [];
-    if (metrics.length > 0) {
-      return metrics.join(',');
-    }
-
-    const error = new Error(`Metrics are required for ${service || queryRequest.service || 'query'} execution`);
-    error.code = 'QUERY_SHAPE_INVALID';
-    error.details = {
-      service: service || queryRequest.service || null,
-      topMetric: queryRequest.topMetric || null,
-      metrics: queryRequest.metrics || null
-    };
-    throw error;
-  }
-
   buildExecutionFailureError(error, gatewayRequest = {}) {
     return ExecutionFailureClassifier.normalizeError(error, {
       gatewayRequest,
@@ -1153,22 +1282,38 @@ class RequirementParserService {
     const hasInternalValidationProof = Boolean(
       gatewayRequest
       && typeof gatewayRequest === 'object'
-      && this.executableValidationProofs.delete(gatewayRequest)
+      && this.consumeExecutableValidationProof(gatewayRequest)
     );
     const legacyBoundary = this.adaptLegacyMetricInputAtBoundary(gatewayRequest);
     if (!legacyBoundary.ok) {
       return this.buildLegacyMetricAdapterFailureResult(gatewayRequest, legacyBoundary);
     }
     const passthroughGatewayRequest = legacyBoundary.query;
-    const executableValidation = hasInternalValidationProof
-      ? { ok: true, status: 'VALID', reasonCode: 'EXECUTABLE_QUERY_VALID' }
-      : this.validateExecutableQueryAtBoundary(passthroughGatewayRequest);
-    if (!executableValidation.ok) {
+    const executionAdmission = hasInternalValidationProof
+      ? {
+          ok: true,
+          finalAdmission: 'ALLOW',
+          reasonCode: 'EXECUTABLE_QUERY_VALID',
+          staticValidation: {
+            ok: true,
+            status: 'VALID',
+            reasonCode: 'EXECUTABLE_QUERY_VALID'
+          },
+          runtimeCapability: null,
+          southboundAllowed: true
+        }
+      : await this.evaluateExecutableQueryAdmission(
+        passthroughGatewayRequest,
+        requestContext,
+        { phase: 'execution' }
+      );
+    if (!executionAdmission.ok) {
       return this.buildExecutableValidationFailureResult(
         passthroughGatewayRequest,
-        executableValidation
+        executionAdmission
       );
     }
+    const executionQuery = executionAdmission.query || passthroughGatewayRequest;
     const response = {
       ok: false,
       service: null,
@@ -1185,38 +1330,38 @@ class RequirementParserService {
       logger.info('正在解析网关请求 JSON...');
 
       const queryRequest = {
-        schemaVersion: passthroughGatewayRequest.schemaVersion,
-        service: passthroughGatewayRequest.service,
-        start: passthroughGatewayRequest.start,
-        end: passthroughGatewayRequest.end,
-        ...(passthroughGatewayRequest.metrics !== undefined
-          ? { metrics: passthroughGatewayRequest.metrics }
+        schemaVersion: executionQuery.schemaVersion,
+        service: executionQuery.service,
+        start: executionQuery.start,
+        end: executionQuery.end,
+        ...(executionQuery.metrics !== undefined
+          ? { metrics: executionQuery.metrics }
           : {}),
-        ...(passthroughGatewayRequest.topMetric !== undefined
-          ? { topMetric: passthroughGatewayRequest.topMetric }
+        ...(executionQuery.topMetric !== undefined
+          ? { topMetric: executionQuery.topMetric }
           : {}),
-        ...(passthroughGatewayRequest.topCount !== undefined
-          ? { topCount: passthroughGatewayRequest.topCount }
+        ...(executionQuery.topCount !== undefined
+          ? { topCount: executionQuery.topCount }
           : {}),
-        ...(passthroughGatewayRequest.granularity !== undefined
-          ? { granularity: passthroughGatewayRequest.granularity }
+        ...(executionQuery.granularity !== undefined
+          ? { granularity: executionQuery.granularity }
           : {}),
-        format: passthroughGatewayRequest.format,
-        userRequirement: passthroughGatewayRequest.userRequirement,
-        queryModeKey: passthroughGatewayRequest.queryModeKey,
-        semanticConstraints: passthroughGatewayRequest.semanticConstraints,
-        workflowType: passthroughGatewayRequest.workflowType,
-        ...(passthroughGatewayRequest.pageFamilyId !== undefined
-          ? { pageFamilyId: passthroughGatewayRequest.pageFamilyId }
+        format: executionQuery.format,
+        userRequirement: executionQuery.userRequirement,
+        queryModeKey: executionQuery.queryModeKey,
+        semanticConstraints: executionQuery.semanticConstraints,
+        workflowType: executionQuery.workflowType,
+        ...(executionQuery.pageFamilyId !== undefined
+          ? { pageFamilyId: executionQuery.pageFamilyId }
           : {}),
-        ...(passthroughGatewayRequest.maxLimit !== undefined
-          ? { maxLimit: passthroughGatewayRequest.maxLimit }
+        ...(executionQuery.maxLimit !== undefined
+          ? { maxLimit: executionQuery.maxLimit }
           : {}),
-        resultReference: passthroughGatewayRequest.resultReference,
-        sourceReference: passthroughGatewayRequest.sourceReference,
-        ...(Array.isArray(passthroughGatewayRequest.groups)
+        resultReference: executionQuery.resultReference,
+        sourceReference: executionQuery.sourceReference,
+        ...(Array.isArray(executionQuery.groups)
           ? {
-              groups: passthroughGatewayRequest.groups.map(g => ({
+              groups: executionQuery.groups.map(g => ({
                 type: g.type,
                 ...(g.argument !== undefined ? { argument: g.argument } : {})
               }))
@@ -1269,7 +1414,12 @@ class RequirementParserService {
 
       logger.info('Gateway request executed through split execution kernel.');
       logger.info('========================================\n');
-      return this.attachLegacyMetricWarnings(kernelResult, legacyBoundary);
+      const mappedResult = ExecutionOutcomeMapper.mapResult(kernelResult, {
+        dataRequestAttempted: Boolean(kernelResult?.dataRequestAttempted),
+        dataRequestSucceeded: Boolean(kernelResult?.dataRequestSucceeded),
+        responseParseSucceeded: kernelResult?.responseParseSucceeded
+      });
+      return this.attachLegacyMetricWarnings(mappedResult, legacyBoundary);
     } catch (error) {
       logger.error('网关请求执行失败', {
         errorCode: error.code || error.name || 'QUERY_EXECUTION_FAILED'
@@ -1277,22 +1427,39 @@ class RequirementParserService {
       const upstreamGuard = this.buildUpstreamPathGuard(gatewayRequest, error);
       if (upstreamGuard) {
         response.error = upstreamGuard;
+        const mappedGuardFailure = ExecutionOutcomeMapper.mapResult(response, {
+          dataRequestAttempted: Boolean(response.dataRequestAttempted),
+          dataRequestSucceeded: Boolean(response.dataRequestSucceeded),
+          responseParseSucceeded: response.responseParseSucceeded
+        });
         logAudit('napm_execution_blocked_by_upstream_path_guard', {
           gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest),
-          error: upstreamGuard
+          error: mappedGuardFailure.error
         }, requestContext);
         logger.info('========================================\n');
-        return response;
+        return mappedGuardFailure;
       }
 
       response.error = this.buildExecutionFailureError(error, gatewayRequest);
+      const mappedFailure = ExecutionOutcomeMapper.mapResult(response, {
+        dataRequestAttempted: Boolean(response.dataRequestAttempted),
+        dataRequestSucceeded: Boolean(response.dataRequestSucceeded),
+        responseParseSucceeded: response.responseParseSucceeded
+      });
       logAudit('napm_execution_failed', {
         gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest),
-        error: response.error
+        error: mappedFailure.error
       }, requestContext);
       logger.info('========================================\n');
-      return response;
+      return mappedFailure;
     }
+  }
+
+  consumeExecutableValidationProof(query = {}) {
+    const expected = this.executableValidationProofs.get(query);
+    if (!expected) return false;
+    this.executableValidationProofs.delete(query);
+    return expected === AtomicQueryRepairService.fingerprint(query);
   }
 
   assertMetadataInventoryArgumentContract(objectType = '', argument = '', provider = {}) {
@@ -1338,7 +1505,13 @@ class RequirementParserService {
     }
     const canonicalGatewayRequest = legacyBoundary.query;
     const prepared = await this.prepareGatewayExecution(canonicalGatewayRequest, requestContext);
-    if (prepared?.executableValidation && !prepared.executableValidation.ok) {
+    if (prepared?.executionAdmission && !prepared.executionAdmission.ok) {
+      return this.buildExecutableValidationFailureResult(
+        prepared.query || canonicalGatewayRequest,
+        prepared.executionAdmission
+      );
+    }
+    if (!prepared?.executionAdmission && prepared?.executableValidation && !prepared.executableValidation.ok) {
       return this.buildExecutableValidationFailureResult(
         prepared.query || canonicalGatewayRequest,
         prepared.executableValidation
@@ -1356,7 +1529,10 @@ class RequirementParserService {
 
     const preparedQuery = prepared?.query || canonicalGatewayRequest;
     if (preparedQuery && typeof preparedQuery === 'object') {
-      this.executableValidationProofs.add(preparedQuery);
+      this.executableValidationProofs.set(
+        preparedQuery,
+        AtomicQueryRepairService.fingerprint(preparedQuery)
+      );
     }
     const directResult = await this.executeDirectGatewayRequest(preparedQuery, requestContext);
     if (this.isMultilevelGroupsInventoryQuery(prepared?.query || canonicalGatewayRequest) && directResult?.ok) {
@@ -1390,71 +1566,6 @@ class RequirementParserService {
     return directResult;
   }
 
-  // 仅在 WebApplication 单对象明细查询被 averageValues 拒绝时启用 topValues 行过滤回退。
-  shouldUseTopValuesDetailFallback(gatewayRequest, error) {
-    return Boolean(
-      gatewayRequest?.service === 'averageValues' &&
-      Array.isArray(gatewayRequest?.groups) &&
-      gatewayRequest.groups.length === 1 &&
-      gatewayRequest.groups[0]?.type === 'WebApplication' &&
-      gatewayRequest.groups[0]?.argument &&
-      /status code 400/i.test(String(error?.message || ''))
-    );
-  }
-
-  /**
-   * 用 topValues 拉大样本后在本地做目标对象过滤，兼容部分上游不支持的单对象明细场景。
-   */
-  async executeTopValuesDetailFallback(gatewayRequest, requestContext = null) {
-    const [targetGroup] = gatewayRequest.groups || [];
-    const params = {
-      type: 'topValues',
-      start: gatewayRequest.start,
-      end: gatewayRequest.end,
-      json: 'true',
-      topMetric: gatewayRequest.topMetric,
-      metrics: Array.isArray(gatewayRequest.metrics) ? gatewayRequest.metrics.join(',') : '',
-      topCount: 500,
-      groupType1: targetGroup.type,
-      numGroups: 1
-    };
-
-    const fullParams = {
-      UserName: this.napmClient.username,
-      Password: this.napmClient.password,
-      ...params
-    };
-
-    const requestUrl = buildSafeUrl(this.napmClient.baseUrl, fullParams);
-
-    logAudit('napm_execution_fallback_built', {
-      strategy: 'top_values_detail_filter',
-      gatewayRequest: this.buildGatewayRequestSummary(gatewayRequest),
-      params: maskSensitiveParams(fullParams),
-      url: requestUrl
-    }, requestContext);
-
-    const rawPayload = await this.napmClient.get(params);
-    const data = this.parseNapmPayload(rawPayload);
-    const matchedRows = data.filter(row => this.matchTopValuesFallbackRow(row, targetGroup.argument));
-
-    return {
-      data: matchedRows,
-      requestUrl,
-      requestParams: { ...params },
-      requestParamsMasked: maskSensitiveParams(fullParams)
-    };
-  }
-
-  matchTopValuesFallbackRow(row, targetArgument) {
-    const normalizedTarget = this.normalizeFallbackValue(targetArgument);
-    return Object.values(row || {}).some(value => this.normalizeFallbackValue(value) === normalizedTarget);
-  }
-
-  normalizeFallbackValue(value) {
-    return String(value || '').trim().toLowerCase();
-  }
-
   /**
    * 解析 NAPM 返回载荷。
    * 支持数组 JSON、对象 JSON、以及 CSV 字符串三种常见格式。
@@ -1486,19 +1597,24 @@ class RequirementParserService {
           return [parsed];
         }
       } catch (error) {
-        return CsvParser.parseSync(trimmed);
+        const parsedCsv = CsvParser.parseSync(trimmed);
+        if (parsedCsv.length === 0 && !/[\n,;]/.test(trimmed)) {
+          const parseError = new Error('NAPM response could not be parsed as JSON or CSV.');
+          parseError.code = 'RESPONSE_PARSE_FAILED';
+          parseError.details = { responseType: 'string' };
+          throw parseError;
+        }
+        return parsedCsv;
       }
     }
 
+    if (rawPayload !== null && rawPayload !== undefined) {
+      const parseError = new Error('NAPM response has an unsupported shape.');
+      parseError.code = 'RESPONSE_PARSE_FAILED';
+      parseError.details = { responseType: typeof rawPayload };
+      throw parseError;
+    }
     return [];
-  }
-
-  buildUrl(params) {
-    return buildSafeUrl(this.napmClient.baseUrl, {
-      UserName: this.napmClient.username,
-      Password: this.napmClient.password,
-      ...params
-    });
   }
 
   /**
@@ -1514,7 +1630,7 @@ class RequirementParserService {
     const service = String(query?.service || '').trim() || null;
     const groups = Array.isArray(query?.groups) ? query.groups : [];
     const groupPath = groups.map((item) => String(item?.type || '').trim()).filter(Boolean);
-    const metric = String(query?.topMetric || query?.metrics?.[0] || '').trim() || null;
+    const metric = String(query?.topMetric || query?.metrics?.find(Boolean) || '').trim() || null;
     const candidateGeneration = query?.candidateGeneration || null;
     const intentScore = Number(candidateGeneration?.intentCandidates?.[0]?.score || 0);
     const confidence = Number(Math.min(Math.max(intentScore, 0.45), 0.99).toFixed(2));
@@ -1984,7 +2100,7 @@ class RequirementParserService {
   extractMetricHintFromQueryShape(request = {}) {
     const metric = String(
       request?.topMetric
-      || (Array.isArray(request?.metrics) && request.metrics.length > 0 ? request.metrics[0] : '')
+      || (Array.isArray(request?.metrics) ? request.metrics.find(Boolean) : '')
       || ''
     ).trim();
     return metric || null;
@@ -1995,7 +2111,7 @@ class RequirementParserService {
     const metric = String(
       bindings?.topMetric
       || bindings?.metric
-      || (Array.isArray(bindings?.metrics) && bindings.metrics.length > 0 ? bindings.metrics[0] : '')
+      || (Array.isArray(bindings?.metrics) ? bindings.metrics.find(Boolean) : '')
       || ''
     ).trim();
     return metric || null;
@@ -2221,7 +2337,7 @@ class RequirementParserService {
       return [inbound, outbound];
     };
 
-    const currentMetric = String(gatewayRequest.topMetric || gatewayRequest.metrics?.[0] || '').trim().toUpperCase();
+    const currentMetric = String(gatewayRequest.topMetric || gatewayRequest.metrics?.find(Boolean) || '').trim().toUpperCase();
     const expandedMetrics = deriveBidirectionalPair(currentMetric);
     if (!expandedMetrics) {
       return gatewayRequest;
@@ -3008,7 +3124,7 @@ class RequirementParserService {
     const metric = topMetricHint
       || bindings.topMetric
       || bindings.metric
-      || (Array.isArray(bindings.metrics) ? bindings.metrics[0] : null);
+      || (Array.isArray(bindings.metrics) ? bindings.metrics.find(Boolean) : null);
     const metrics = Array.isArray(bindings.metrics) && bindings.metrics.length > 0
       ? bindings.metrics.slice()
       : (metric ? [metric] : []);

@@ -195,7 +195,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(plugin.__test__.getTrustedTurnId(boundB.params)).toBe(turnB);
     await executeBound('call-a', boundA);
     await executeBound('call-b', boundB);
-    expect(southbound).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(0);
 
     const recordA = plugin.__test__.queryTurnCoordinator.get(scope, turnA);
     const recordB = plugin.__test__.queryTurnCoordinator.get(scope, turnB);
@@ -238,7 +238,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
     await executeBound('identity-call-a', boundA);
     await executeBound('identity-call-b', boundB);
-    expect(southbound).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(0);
 
     const scope = plugin.__test__.getConversationKey(ctxA);
     const turnA = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctxA.runId);
@@ -1466,10 +1466,9 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     );
 
     expect(result.details).toMatchObject({
-      ok: false,
-      decision: { reasonCode: 'RUNTIME_CAPABILITY_REQUIRED' }
+      ok: true
     });
-    expect(southbound).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(1);
   });
 
   test('never treats the latest conversation turn as the active turn without a run guard', () => {
@@ -1576,8 +1575,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const pageRankCall = callBeforeTool(pageRankCtx, 'page-family-rank-call', {
       prompt: pageRankPrompt
     });
-    expect(pageRankCall.hookResult).toMatchObject({ block: true });
-    expect(pageRankCall.hookResult.blockReason).toContain('RUNTIME_CAPABILITY_REQUIRED');
+    expect(pageRankCall.hookResult.block).not.toBe(true);
     expect(southbound).toHaveBeenCalledTimes(1);
   });
 
@@ -1655,8 +1653,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const followUpCall = callBeforeTool(followUpCtx, 'frozen-source-follow-up', {
       prompt: followUpPrompt
     });
-    expect(followUpCall.hookResult).toMatchObject({ block: true });
-    expect(followUpCall.hookResult.blockReason).toContain('RUNTIME_CAPABILITY_REQUIRED');
+    expect(followUpCall.hookResult.block).not.toBe(true);
     expect(frozenSourceResultSetId).toEqual(expect.any(String));
     expect(southbound).toHaveBeenCalledTimes(2);
   });
@@ -1707,10 +1704,9 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const result = await tools.get('napm-skill-query').execute('direct-page-rank', page.params);
 
     expect(result.details).toMatchObject({
-      ok: false,
-      decision: { reasonCode: 'RUNTIME_CAPABILITY_REQUIRED' }
+      ok: true
     });
-    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(southbound).toHaveBeenCalledTimes(2);
   });
 
   test('blocks an invalid WebApplication ordinal in the Hook before every query runtime', async () => {

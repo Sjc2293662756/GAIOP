@@ -11,6 +11,7 @@ const {
 } = require('../src/constants/objectMetricOwnership');
 const AnswerModeRouter = require('./AnswerModeRouter');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
+const ExecutionOutcomeMapper = require('./ExecutionOutcomeMapper');
 const {
   buildMetricInventoryPresentation
 } = require('./MetricInventoryPresentationService');
@@ -276,7 +277,7 @@ function extractMetricId(payload = {}) {
   const summaryMetrics = Array.isArray(payload?.summary?.metrics) ? payload.summary.metrics : [];
   return String(
     summaryMetrics[0]
-    || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
+    || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.find(Boolean) : '')
     || resolvedQuery.topMetric
     || ''
   ).trim() || null;
@@ -288,7 +289,7 @@ function extractSortMetricId(payload = {}) {
   return String(
     resolvedQuery.topMetric
     || summaryTopMetric
-    || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
+    || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.find(Boolean) : '')
     || ''
   ).trim() || null;
 }
@@ -921,6 +922,28 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
     return data;
   }
 
+  const shouldMapExecutionOutcome = Boolean(
+    data.outcome
+    || data.dataRequestAttempted
+    || data.dataRequestSucceeded
+    || Boolean(data.executionOutcome)
+  );
+  if (shouldMapExecutionOutcome) {
+    data = ExecutionOutcomeMapper.mapResult(data, {
+      assumeSuccessfulExecution: false
+    });
+  }
+
+  if (data.outcome === 'VALIDATION_FAILURE' && data.summary?.empty === true) {
+    data = {
+      ...data,
+      summary: {
+        ...(data.summary || {}),
+        empty: false
+      }
+    };
+  }
+
   const service = data.service || data?.resolvedQuery?.service || null;
   const answerMode = AnswerModeRouter.resolveAnswerMode(data, options);
   const failureClassification = data?.error
@@ -942,7 +965,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
   let summary = data.summary && typeof data.summary === 'object'
     ? { ...data.summary }
     : {};
-  if (failureClassification && !summary.displayText) {
+  if (failureClassification && answerMode !== 'debug_trace_mode') {
     summary.displayText = failureClassification.userMessage;
   }
   const timeRange = normalizeTimeRange(data, summary);
@@ -1058,6 +1081,7 @@ function buildOpenClawReplyContract(data = {}, options = {}) {
       type: hasResultData ? 'query_result' : 'decision_result',
       service,
       responseType,
+      outcome: data.outcome || null,
       failureClassification,
       decision: data.assistantDecision || data.decision || null,
       intent: data.intentResult || data.intent || null,

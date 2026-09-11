@@ -104,6 +104,26 @@ tail -f /home/netinside/.openclaw/workspace/skills/openclaw-napm-query/logs/audi
 
 运行时契约检查会验证 ResolvedQueryExecutableValidator 的唯一入口、Metric Catalog 存在性优先顺序、Object × Metric coverage，以及 Gateway/Direct/Plugin 的执行前阻断。RUNTIME_CAPABILITY_REQUIRED 表示缺少可信静态能力证据；不要通过手工 metadata 查询或直接 NetInside 调用绕过该结果。
 
+### Query Phase 5 能力确认
+
+Phase 5 仅对 Static `UNKNOWN` 且 provider 为 `METRICS_FOR_GROUP` 的查询调用一次 `metricsForGroup`。`SUPPORTED` 继续现有数据路径；`UNSUPPORTED` 或 `INDETERMINATE` 在 Kernel 前 fail closed。Plugin 只允许 Query Skill 进入 runtime gate，不直接访问 NAPM metadata。
+
+### Query Phase 6 原子修复
+
+`AtomicQueryRepairService` 只处理 canonical Query 的确定性、等价规范化：指标 ID 大小写、重复指标去重、group argument trim、由 service 派生缺失 `queryModeKey`、可证明等价的时间数字格式。它在 clone 上生成并应用完整 plan，保留 before/after fingerprint；service、对象类型、指标语义、`topMetric`、`topCount` 或请求指标集合不能被自动替换或删除。修复后由共享 admission 重新做 Contract、Static 和必要的 Runtime 校验，metadata suggestion 不能绕过该链路。
+
+### Query Phase 7 Serializer
+
+`NapmQuerySerializer` 是 admitted canonical Query 到 NAPM transport params 的唯一转换入口。它显式映射 `service/groups/metrics/topMetric/topCount/granularity/start/end`，保持 `metrics[]` 顺序，不发送 `schemaVersion/queryModeKey` 及 repair/runtime/proof 元数据。MetricExecutionKernel 只按 canonical `service` 调 Serializer 和 Client，不读取 legacy `metric`、不使用 `metrics[0]`、不补默认值；pageViews 继续走独立 detail contract。
+
+### Query Phase 7.1 Boundary Audit
+
+`GroupBuilder.buildGroupParams()` 是唯一生产 group transport encoder；Serializer、metadata capability 和 metadata kernel 复用同一机械 helper。metrics comma transport encoder 只有 `NapmQuerySerializer`，Kernel/Client 不再拼接。Phase 7.1 删除了无生产调用的旧 Query helper；`LegacyMetricInputAdapter` 仍保留为明确迁移边界，语义/展示层的 metrics[0] 不参与数据执行。
+
+### Query Phase 8 Unified Outcome
+
+执行结果使用 `ExecutionOutcomeContract` 的六种状态，并由 `ExecutionOutcomeMapper` 统一映射。`NO_DATA` 只有在真实数据请求成功、响应解析成功且 rowCount=0 时成立；校验失败、运行时能力失败、序列化失败和南向失败不能返回空数据语义。Plugin、Gateway、Direct、Narration 必须消费同一结构化 outcome。
+
 ## 报告模板
 
 - 巡检：`skills/openclaw-napm-report/templates/inspection/`

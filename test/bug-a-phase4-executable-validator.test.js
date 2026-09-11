@@ -66,6 +66,8 @@ describe('BUG-A Phase 4 shared executable validator', () => {
       status: 'UNKNOWN',
       reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
       requiredRuntimeChecks: [{
+        type: 'METRIC_CAPABILITY',
+        provider: 'METRICS_FOR_GROUP',
         service: 'topValues',
         groupPathSignature: 'WebApplication',
         metricId: 'PGTME',
@@ -102,10 +104,11 @@ describe('BUG-A Phase 4 shared executable validator', () => {
       queryDraft: query({ metrics: ['PGTME'], topMetric: 'PGTME' }),
       executableValidationContext: { productBaseline: '' }
     })).toMatchObject({
-      action: 'RUNTIME_CONFIRMATION_REQUIRED',
-      outcome: 'VALIDATION_FAILURE',
+      action: 'EXECUTE_WITH_RUNTIME_CONFIRMATION',
+      outcome: null,
       reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
-      southboundAllowed: false
+      southboundAllowed: false,
+      skillInvocationAllowed: true
     });
   });
 
@@ -151,6 +154,40 @@ describe('BUG-A Phase 4 shared executable validator', () => {
     });
     expect(result.issues).toEqual([]);
     expect(result.requiredRuntimeChecks).toEqual([]);
+  });
+
+  test('returns METRIC_UNKNOWN for an unknown middle return metric before ownership', () => {
+    const result = Validator.validate(query({
+      metrics: ['PGTME', 'PGSUPERFAST'],
+      topMetric: 'PGTME'
+    }), { productBaseline: DOCUMENTED_PRODUCT_BASELINE });
+
+    expect(result).toMatchObject({
+      status: 'METRIC_UNKNOWN',
+      reasonCode: 'METRIC_UNKNOWN',
+      issues: [expect.objectContaining({
+        field: 'metrics[1]',
+        metricId: 'PGSUPERFAST',
+        role: 'RETURN_METRIC'
+      })]
+    });
+  });
+
+  test('returns METRIC_UNKNOWN for an unknown independent ranking metric', () => {
+    const result = Validator.validate(query({
+      metrics: ['PGTME'],
+      topMetric: 'PGSUPERFAST'
+    }), { productBaseline: DOCUMENTED_PRODUCT_BASELINE });
+
+    expect(result).toMatchObject({
+      status: 'METRIC_UNKNOWN',
+      reasonCode: 'METRIC_UNKNOWN',
+      issues: [expect.objectContaining({
+        field: 'topMetric',
+        metricId: 'PGSUPERFAST',
+        role: 'RANKING_METRIC'
+      })]
+    });
   });
 
   test('valid pageViews bypasses metric existence and ownership checks', () => {
