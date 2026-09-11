@@ -49,7 +49,7 @@ describe('RequirementParserService multilevel groups execution', () => {
     });
   });
 
-  test('should not append ConnectedIP when explicit IP application path disables planning', async () => {
+  test('should reject an unverified explicit IP multilevel path before metadata or southbound execution', async () => {
     const response = await RequirementParserService.executeGatewayRequest({
       service: 'topValues',
       start: 1779282180,
@@ -68,14 +68,12 @@ describe('RequirementParserService multilevel groups execution', () => {
       ]
     });
 
-    expect(response.requestParams).toMatchObject({
-      type: 'topValues',
-      groupType1: 'IPAddress',
-      groupArgument1: '101.254.114.237',
-      groupType2: 'Applications',
-      groupType3: 'DefinedApp',
-      numGroups: 3
+    expect(response).toMatchObject({
+      ok: false,
+      outcome: 'VALIDATION_FAILURE',
+      error: { code: 'RUNTIME_CAPABILITY_REQUIRED' },
+      executableValidation: { status: 'UNKNOWN' }
     });
-    expect(response.requestParams.groupType4).toBeUndefined();
+    expect(response.requestParams).toBeNull();
   });
 });

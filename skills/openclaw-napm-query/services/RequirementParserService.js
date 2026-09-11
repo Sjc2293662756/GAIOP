@@ -26,6 +26,10 @@ const MetricExecutionKernel = require('./MetricExecutionKernel');
 const PageViewsExecutionKernel = require('./PageViewsExecutionKernel');
 const ExecutionKernelPolicy = require('./ExecutionKernelPolicy');
 const ExecutionFailureClassifier = require('./ExecutionFailureClassifier');
+const LegacyMetricInputAdapter = require('./LegacyMetricInputAdapter');
+const ResolvedQueryContract = require('./ResolvedQueryContract');
+const ResolvedQueryExecutableValidator = require('./ResolvedQueryExecutableValidator');
+const StaticProductBaselineProvider = require('./StaticProductBaselineProvider');
 // const ScopedDescentProbeService = require('./ScopedDescentProbeService');
 const CsvParser = require('../src/utils/CsvParser');
 const TimeUtils = require('../src/utils/TimeUtils');
@@ -75,6 +79,7 @@ class RequirementParserService {
       napmClient: this.napmClient,
       queryValidator: this.queryValidator
     });
+    this.executableValidationProofs = new WeakSet();
     this.assertDependencyContracts();
     this.gatewayTemplatesDisabled = this.resolveGatewayTemplateDisableFlag();
     this.stableQueryTemplates = this.loadStableQueryTemplates();
@@ -274,6 +279,7 @@ class RequirementParserService {
     const metricList = [
       ...(Array.isArray(bindings.primaryMetrics) ? bindings.primaryMetrics : []),
       ...(Array.isArray(bindings.metrics) ? bindings.metrics : []),
+      ...(bindings.topMetric ? [bindings.topMetric] : []),
       ...(bindings.metric ? [bindings.metric] : []),
       ...(Array.isArray(bindings.auxMetrics) ? bindings.auxMetrics : [])
     ]
@@ -292,7 +298,10 @@ class RequirementParserService {
 
     if (rankedMetrics.length > 0) {
       bindings.metrics = rankedMetrics.slice();
-      bindings.metric = rankedMetrics[0];
+      if (String(bindings.service || '').trim() === 'topValues') {
+        bindings.topMetric = String(bindings.topMetric || bindings.metric || rankedMetrics[0]).trim();
+      }
+      delete bindings.metric;
       bindings.primaryMetrics = Array.isArray(bindings.primaryMetrics) && bindings.primaryMetrics.length > 0
         ? rankedMetrics.filter((metricId) => bindings.primaryMetrics.includes(metricId))
         : [rankedMetrics[0]];
@@ -301,16 +310,16 @@ class RequirementParserService {
 
     if (
       ownershipObjectType
-      && bindings.metric
+      && (bindings.topMetric || bindings.metrics?.[0])
       && !isMetricCompatibleWithGroupPath(
         Array.isArray(bindings.groupPath) ? bindings.groupPath.map((type) => ({ type })) : [],
-        bindings.metric,
+        bindings.topMetric || bindings.metrics?.[0],
         ownershipObjectType
       )
     ) {
       logger.warn('Skip stable template due to metric ownership incompatibility', {
         templateId: normalized.id || null,
-        metric: bindings.metric,
+        metric: bindings.topMetric || bindings.metrics?.[0],
         groupPath: bindings.groupPath || []
       });
       return null;
@@ -338,7 +347,6 @@ class RequirementParserService {
       service: gatewayRequest.service,
       start: gatewayRequest.start,
       end: gatewayRequest.end,
-      metric: gatewayRequest.metric,
       topMetric: gatewayRequest.topMetric || null,
       metrics: gatewayRequest.metrics,
       metricFilter: gatewayRequest.metricFilter || null,
@@ -388,7 +396,8 @@ class RequirementParserService {
 
     const pathText = this.formatGroupPathWithArguments(groups);
     const service = String(gatewayRequest?.service || 'unknown');
-    const metric = gatewayRequest?.metric || (Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics[0] : null);
+    const metric = gatewayRequest?.topMetric
+      || (Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics[0] : null);
     const candidatePaths = this.collectMetadataPathCandidates(gatewayRequest, pathText);
 
     return {
@@ -548,15 +557,22 @@ class RequirementParserService {
         .map((item) => String(item?.id || item || '').trim())
         .filter(Boolean);
 
-      const currentMetric = String(request.metric || '').trim();
+      const currentMetric = String(
+        request.service === 'topValues'
+          ? request.topMetric
+          : request.metrics?.[0]
+      ).trim();
       const currentSupported = currentMetric && supportedMetricSet.has(currentMetric);
       if (!currentSupported) {
         const matchedMetric = metricCandidates.find((metricId) => supportedMetricSet.has(metricId))
           || String(supportedMetrics[0]?.id || '').trim()
           || null;
         if (matchedMetric && this.shouldAllowMetadataRepair(request)) {
-          request.metric = matchedMetric;
-          request.metrics = [matchedMetric];
+          if (request.service === 'topValues') {
+            request.topMetric = matchedMetric;
+          } else {
+            request.metrics = [matchedMetric];
+          }
         }
       }
     }
@@ -610,7 +626,6 @@ class RequirementParserService {
 
     const preferredIds = [
       gatewayRequest?.topMetric,
-      gatewayRequest?.metric,
       ...(Array.isArray(gatewayRequest?.metrics) ? gatewayRequest.metrics : []),
       ...supportedMetrics.map((item) => item?.id)
     ]
@@ -734,8 +749,9 @@ class RequirementParserService {
     for (const metricId of metricCandidates.slice(0, 6)) {
       const fallbackRequest = {
         ...JSON.parse(JSON.stringify(gatewayRequest)),
+        schemaVersion: ResolvedQueryContract.RESOLVED_QUERY_SCHEMA_VERSION,
         service: 'topValues',
-        metric: metricId,
+        queryModeKey: 'topn',
         metrics: [metricId],
         topMetric: metricId,
         topCount: gatewayRequest?.topCount || 200
@@ -787,21 +803,22 @@ class RequirementParserService {
 
     const supportedMetrics = this.buildMetricCandidatesFromMetadataReview(metadataReview, gatewayRequest);
     const selectedMetric = supportedMetrics[0]
-      || String(gatewayRequest?.metric || gatewayRequest?.metrics?.[0] || '').trim();
+      || String(gatewayRequest?.metrics?.[0] || '').trim();
     if (!selectedMetric) {
       return null;
     }
 
     const fallback = JSON.parse(JSON.stringify(gatewayRequest));
+    fallback.schemaVersion = ResolvedQueryContract.RESOLVED_QUERY_SCHEMA_VERSION;
     fallback.service = 'topValues';
-    fallback.metric = selectedMetric;
+    fallback.queryModeKey = 'topn';
     fallback.metrics = [selectedMetric];
     fallback.topMetric = selectedMetric;
     fallback.topCount = gatewayRequest?.topCount || 20;
     fallback.executionFallback = {
       strategy: 'multilevel_to_topvalues',
       originalService: service,
-      originalMetric: gatewayRequest?.metric || gatewayRequest?.metrics?.[0] || null,
+      originalMetric: gatewayRequest?.metrics?.[0] || null,
       fallbackMetric: selectedMetric
     };
     return fallback;
@@ -811,8 +828,7 @@ class RequirementParserService {
     const groups = this.formatGroupPathWithArguments(gatewayRequest?.groups || []);
     const originalService = String(gatewayRequest?.service || '').trim() || 'unknown';
     const fallbackMetric = String(
-      fallbackQuery?.metric
-      || fallbackQuery?.metrics?.[0]
+      fallbackQuery?.metrics?.[0]
       || fallbackQuery?.topMetric
       || ''
     ).trim();
@@ -880,6 +896,78 @@ class RequirementParserService {
     };
   }
 
+  adaptLegacyMetricInputAtBoundary(gatewayRequest = {}) {
+    const query = gatewayRequest && typeof gatewayRequest === 'object'
+      ? JSON.parse(JSON.stringify(gatewayRequest))
+      : {};
+    if (!Object.prototype.hasOwnProperty.call(query, 'metric')) {
+      return { ok: true, adapted: false, warnings: [], query };
+    }
+    return LegacyMetricInputAdapter.adapt(query);
+  }
+
+  buildLegacyMetricAdapterFailureResult(gatewayRequest = {}, adaptation = {}) {
+    return {
+      ok: false,
+      service: gatewayRequest?.service || null,
+      data: [],
+      error: {
+        code: adaptation.reasonCode || 'QUERY_CONTRACT_INVALID',
+        category: 'QUERY_SHAPE_INVALID',
+        message: adaptation.message || 'Legacy metric migration failed.',
+        details: adaptation.details || null
+      },
+      metadata: null,
+      requestParams: null,
+      requestParamsMasked: null,
+      requestUrl: null
+    };
+  }
+
+  validateExecutableQueryAtBoundary(gatewayRequest = {}) {
+    if (!ResolvedQueryContract.getServiceContract(gatewayRequest?.service)) {
+      return { ok: true, status: 'VALID', reasonCode: 'EXECUTABLE_QUERY_VALID' };
+    }
+    return ResolvedQueryExecutableValidator.validate(gatewayRequest, {
+      productBaseline: StaticProductBaselineProvider.getVerifiedProductBaseline()
+    });
+  }
+
+  buildExecutableValidationFailureResult(gatewayRequest = {}, validation = {}) {
+    return {
+      ok: false,
+      service: gatewayRequest?.service || null,
+      data: [],
+      error: {
+        code: validation.reasonCode || 'QUERY_VALIDATION_FAILED',
+        category: 'VALIDATION_FAILURE',
+        message: validation.message || (validation.status === 'UNKNOWN'
+          ? 'Runtime capability confirmation is required before this query can execute.'
+          : 'Static executable query validation failed.'),
+        details: validation
+      },
+      outcome: 'VALIDATION_FAILURE',
+      executableValidation: validation,
+      metadata: null,
+      requestParams: null,
+      requestParamsMasked: null,
+      requestUrl: null
+    };
+  }
+
+  attachLegacyMetricWarnings(result = {}, legacyBoundary = {}) {
+    if (!legacyBoundary.adapted || !Array.isArray(legacyBoundary.warnings) || legacyBoundary.warnings.length === 0) {
+      return result;
+    }
+    return {
+      ...result,
+      warnings: [
+        ...(Array.isArray(result?.warnings) ? result.warnings : []),
+        ...legacyBoundary.warnings
+      ]
+    };
+  }
+
   validateMetadataGroupArgument(gatewayRequest = {}, metadataReview = null) {
     const issues = Array.isArray(metadataReview?.issues) ? metadataReview.issues : [];
     const issue = issues.find((item) => String(item || '').startsWith('group_argument_not_found:'));
@@ -918,9 +1006,22 @@ class RequirementParserService {
    */
   async prepareGatewayExecution(gatewayRequest = {}, requestContext = null) {
     const normalizedQuery = this.normalizeTopLevelQueryShape(gatewayRequest);
+    const executableValidation = this.validateExecutableQueryAtBoundary(normalizedQuery);
+    if (!executableValidation.ok) {
+      return {
+        query: normalizedQuery,
+        executableValidation,
+        metadataReview: null,
+        staticConstraint: null,
+        dynamicConstraint: null,
+        inventoryFallback: null,
+        serviceFallbackQuery: null
+      };
+    }
     if (normalizedQuery?.service === 'pageViews') {
       return {
         query: normalizedQuery,
+        executableValidation,
         metadataReview: null,
         staticConstraint: null,
         dynamicConstraint: null,
@@ -933,8 +1034,8 @@ class RequirementParserService {
       normalizedQuery?.userRequirement || ''
     );
     let preparedQuery = staticConstraint?.query || normalizedQuery;
-    const initialArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
-    if (!initialArgumentPolicy.ok) {
+    const constrainedArgumentPolicy = this.evaluateQueryArgumentPolicy(preparedQuery);
+    if (!constrainedArgumentPolicy.ok) {
       return {
         query: preparedQuery,
         metadataReview: null,
@@ -942,7 +1043,7 @@ class RequirementParserService {
         dynamicConstraint: null,
         inventoryFallback: null,
         serviceFallbackQuery: null,
-        argumentPolicyValidation: initialArgumentPolicy
+        argumentPolicyValidation: constrainedArgumentPolicy
       };
     }
     const metadataReview = await this.reviewGatewayRequestMetadata(preparedQuery);
@@ -1008,46 +1109,8 @@ class RequirementParserService {
       return query;
     }
 
-    const metricCandidates = [
-      ...(Array.isArray(query.metrics) ? query.metrics : []),
-      query.metric,
-      query.topMetric
-    ].map((metricId) => String(metricId || '').trim()).filter(Boolean);
-
-    const seen = new Set();
-    const normalizedMetrics = [];
-    metricCandidates.forEach((metricId) => {
-      const normalizedMetric = metricId.toUpperCase();
-      if (seen.has(normalizedMetric)) {
-        return;
-      }
-      seen.add(normalizedMetric);
-      normalizedMetrics.push(normalizedMetric);
-    });
-
-    if (normalizedMetrics.length > 0) {
-      query.metrics = normalizedMetrics;
-    } else {
-      delete query.metrics;
-    }
-
-    if (query.metric) {
-      query.metric = String(query.metric).trim().toUpperCase();
-    } else if (normalizedMetrics.length > 0) {
-      query.metric = normalizedMetrics[0];
-    }
-
-    if (query.service === 'topValues') {
-      if (query.topMetric) {
-        query.topMetric = String(query.topMetric).trim().toUpperCase();
-      } else if (query.metric) {
-        query.topMetric = query.metric;
-      } else if (normalizedMetrics.length > 0) {
-        query.topMetric = normalizedMetrics[0];
-      }
-    }
-
-    return query;
+    delete query.metric;
+    return ResolvedQueryContract.normalizeCanonicalShape(query);
   }
 
   buildMetricCsv(queryRequest = {}, service = '') {
@@ -1058,20 +1121,10 @@ class RequirementParserService {
       return metrics.join(',');
     }
 
-    const fallbackMetric = String(
-      queryRequest.metric
-      || (service === 'topValues' ? queryRequest.topMetric : '')
-      || ''
-    ).trim();
-    if (fallbackMetric) {
-      return fallbackMetric;
-    }
-
     const error = new Error(`Metrics are required for ${service || queryRequest.service || 'query'} execution`);
     error.code = 'QUERY_SHAPE_INVALID';
     error.details = {
       service: service || queryRequest.service || null,
-      metric: queryRequest.metric || null,
       topMetric: queryRequest.topMetric || null,
       metrics: queryRequest.metrics || null
     };
@@ -1097,9 +1150,25 @@ class RequirementParserService {
    */
   async executeDirectGatewayRequest(gatewayRequest, requestContext = null) {
     // 网关仅负责按上游结构化参数执行查询，不在本地改写查询语义或执行策略。
-    const passthroughGatewayRequest = gatewayRequest && typeof gatewayRequest === 'object'
-      ? JSON.parse(JSON.stringify(gatewayRequest))
-      : {};
+    const hasInternalValidationProof = Boolean(
+      gatewayRequest
+      && typeof gatewayRequest === 'object'
+      && this.executableValidationProofs.delete(gatewayRequest)
+    );
+    const legacyBoundary = this.adaptLegacyMetricInputAtBoundary(gatewayRequest);
+    if (!legacyBoundary.ok) {
+      return this.buildLegacyMetricAdapterFailureResult(gatewayRequest, legacyBoundary);
+    }
+    const passthroughGatewayRequest = legacyBoundary.query;
+    const executableValidation = hasInternalValidationProof
+      ? { ok: true, status: 'VALID', reasonCode: 'EXECUTABLE_QUERY_VALID' }
+      : this.validateExecutableQueryAtBoundary(passthroughGatewayRequest);
+    if (!executableValidation.ok) {
+      return this.buildExecutableValidationFailureResult(
+        passthroughGatewayRequest,
+        executableValidation
+      );
+    }
     const response = {
       ok: false,
       service: null,
@@ -1116,27 +1185,43 @@ class RequirementParserService {
       logger.info('正在解析网关请求 JSON...');
 
       const queryRequest = {
+        schemaVersion: passthroughGatewayRequest.schemaVersion,
         service: passthroughGatewayRequest.service,
         start: passthroughGatewayRequest.start,
         end: passthroughGatewayRequest.end,
-        metric: passthroughGatewayRequest.metric,
-        topMetric: passthroughGatewayRequest.topMetric || null,
-        metrics: passthroughGatewayRequest.metrics,
-        topCount: passthroughGatewayRequest.topCount,
-        granularity: passthroughGatewayRequest.granularity,
+        ...(passthroughGatewayRequest.metrics !== undefined
+          ? { metrics: passthroughGatewayRequest.metrics }
+          : {}),
+        ...(passthroughGatewayRequest.topMetric !== undefined
+          ? { topMetric: passthroughGatewayRequest.topMetric }
+          : {}),
+        ...(passthroughGatewayRequest.topCount !== undefined
+          ? { topCount: passthroughGatewayRequest.topCount }
+          : {}),
+        ...(passthroughGatewayRequest.granularity !== undefined
+          ? { granularity: passthroughGatewayRequest.granularity }
+          : {}),
         format: passthroughGatewayRequest.format,
         userRequirement: passthroughGatewayRequest.userRequirement,
         queryModeKey: passthroughGatewayRequest.queryModeKey,
         semanticConstraints: passthroughGatewayRequest.semanticConstraints,
         workflowType: passthroughGatewayRequest.workflowType,
-        pageFamilyId: passthroughGatewayRequest.pageFamilyId,
-        maxLimit: passthroughGatewayRequest.maxLimit,
+        ...(passthroughGatewayRequest.pageFamilyId !== undefined
+          ? { pageFamilyId: passthroughGatewayRequest.pageFamilyId }
+          : {}),
+        ...(passthroughGatewayRequest.maxLimit !== undefined
+          ? { maxLimit: passthroughGatewayRequest.maxLimit }
+          : {}),
         resultReference: passthroughGatewayRequest.resultReference,
         sourceReference: passthroughGatewayRequest.sourceReference,
-        groups: passthroughGatewayRequest.groups ? passthroughGatewayRequest.groups.map(g => ({
-          type: g.type,
-          argument: g.argument
-        })) : []
+        ...(Array.isArray(passthroughGatewayRequest.groups)
+          ? {
+              groups: passthroughGatewayRequest.groups.map(g => ({
+                type: g.type,
+                ...(g.argument !== undefined ? { argument: g.argument } : {})
+              }))
+            }
+          : {})
       };
 
       const argumentPolicyValidation = this.evaluateQueryArgumentPolicy(queryRequest);
@@ -1184,7 +1269,7 @@ class RequirementParserService {
 
       logger.info('Gateway request executed through split execution kernel.');
       logger.info('========================================\n');
-      return kernelResult;
+      return this.attachLegacyMetricWarnings(kernelResult, legacyBoundary);
     } catch (error) {
       logger.error('网关请求执行失败', {
         errorCode: error.code || error.name || 'QUERY_EXECUTION_FAILED'
@@ -1247,10 +1332,21 @@ class RequirementParserService {
    * 先跑准备阶段，再尝试直接执行，必要时启用库存兜底或 service 级回退。
    */
   async executeGatewayRequest(gatewayRequest, requestContext = null) {
-    const prepared = await this.prepareGatewayExecution(gatewayRequest, requestContext);
+    const legacyBoundary = this.adaptLegacyMetricInputAtBoundary(gatewayRequest);
+    if (!legacyBoundary.ok) {
+      return this.buildLegacyMetricAdapterFailureResult(gatewayRequest, legacyBoundary);
+    }
+    const canonicalGatewayRequest = legacyBoundary.query;
+    const prepared = await this.prepareGatewayExecution(canonicalGatewayRequest, requestContext);
+    if (prepared?.executableValidation && !prepared.executableValidation.ok) {
+      return this.buildExecutableValidationFailureResult(
+        prepared.query || canonicalGatewayRequest,
+        prepared.executableValidation
+      );
+    }
     if (prepared?.argumentPolicyValidation && !prepared.argumentPolicyValidation.ok) {
       return this.buildArgumentPolicyFailureResult(
-        prepared.query || gatewayRequest,
+        prepared.query || canonicalGatewayRequest,
         prepared.argumentPolicyValidation
       );
     }
@@ -1258,26 +1354,30 @@ class RequirementParserService {
       return prepared.inventoryFallback;
     }
 
-    const directResult = await this.executeDirectGatewayRequest(prepared?.query || gatewayRequest, requestContext);
-    if (this.isMultilevelGroupsInventoryQuery(prepared?.query || gatewayRequest) && directResult?.ok) {
+    const preparedQuery = prepared?.query || canonicalGatewayRequest;
+    if (preparedQuery && typeof preparedQuery === 'object') {
+      this.executableValidationProofs.add(preparedQuery);
+    }
+    const directResult = await this.executeDirectGatewayRequest(preparedQuery, requestContext);
+    if (this.isMultilevelGroupsInventoryQuery(prepared?.query || canonicalGatewayRequest) && directResult?.ok) {
       return {
         ...directResult,
         ok: false,
         error: {
           code: 'MULTILEVEL_GROUPS_INVENTORY_NOT_EXECUTABLE',
-          message: `The multilevel path ${this.formatGroupPathWithArguments((prepared?.query || gatewayRequest)?.groups || [])} exists structurally, but upstream could not return a stable child-object inventory for it.`
+          message: `The multilevel path ${this.formatGroupPathWithArguments((prepared?.query || canonicalGatewayRequest)?.groups || [])} exists structurally, but upstream could not return a stable child-object inventory for it.`
         }
       };
     }
     if (directResult?.ok) {
-      return directResult;
+      return this.attachLegacyMetricWarnings(directResult, legacyBoundary);
     }
 
     if (prepared?.serviceFallbackQuery) {
       const fallbackResult = await this.executeDirectGatewayRequest(prepared.serviceFallbackQuery, requestContext);
       if (fallbackResult?.ok) {
         const warning = this.buildMultiLevelServiceCompatibilityWarning(
-          prepared?.query || gatewayRequest,
+          prepared?.query || canonicalGatewayRequest,
           prepared.serviceFallbackQuery
         );
         return {
@@ -1312,8 +1412,8 @@ class RequirementParserService {
       start: gatewayRequest.start,
       end: gatewayRequest.end,
       json: 'true',
-      topMetric: gatewayRequest.topMetric || gatewayRequest.metric,
-      metrics: Array.isArray(gatewayRequest.metrics) ? gatewayRequest.metrics.join(',') : gatewayRequest.metric,
+      topMetric: gatewayRequest.topMetric,
+      metrics: Array.isArray(gatewayRequest.metrics) ? gatewayRequest.metrics.join(',') : '',
       topCount: 500,
       groupType1: targetGroup.type,
       numGroups: 1
@@ -1414,7 +1514,7 @@ class RequirementParserService {
     const service = String(query?.service || '').trim() || null;
     const groups = Array.isArray(query?.groups) ? query.groups : [];
     const groupPath = groups.map((item) => String(item?.type || '').trim()).filter(Boolean);
-    const metric = String(query?.metric || query?.metrics?.[0] || '').trim() || null;
+    const metric = String(query?.topMetric || query?.metrics?.[0] || '').trim() || null;
     const candidateGeneration = query?.candidateGeneration || null;
     const intentScore = Number(candidateGeneration?.intentCandidates?.[0]?.score || 0);
     const confidence = Number(Math.min(Math.max(intentScore, 0.45), 0.99).toFixed(2));
@@ -1469,8 +1569,9 @@ class RequirementParserService {
         }
         : null,
       groupPath: groups.map((item) => item?.type).filter(Boolean),
-      metric: query?.metric || query?.metrics?.[0] || null,
-      metrics: Array.isArray(query?.metrics) ? query.metrics.slice() : [],
+      primaryMetric: query?.metricSemantic?.primaryMetric || null,
+      requestedMetrics: Array.isArray(query?.metrics) ? query.metrics.slice() : [],
+      rankingMetric: query?.topMetric || null,
       metricDomain: query?.metricSemantic?.metricDomain || query?.metricDomain || null,
       timeRange: {
         start: query?.start || null,
@@ -1882,7 +1983,7 @@ class RequirementParserService {
 
   extractMetricHintFromQueryShape(request = {}) {
     const metric = String(
-      request?.metric
+      request?.topMetric
       || (Array.isArray(request?.metrics) && request.metrics.length > 0 ? request.metrics[0] : '')
       || ''
     ).trim();
@@ -1892,7 +1993,8 @@ class RequirementParserService {
   extractMetricHintFromTemplate(template = {}) {
     const bindings = template?.bindings || {};
     const metric = String(
-      bindings?.metric
+      bindings?.topMetric
+      || bindings?.metric
       || (Array.isArray(bindings?.metrics) && bindings.metrics.length > 0 ? bindings.metrics[0] : '')
       || ''
     ).trim();
@@ -1937,22 +2039,23 @@ class RequirementParserService {
       request.service = bindings.service;
     }
 
-    if (bindings.metric && !shouldPreserveMappedMetric) {
-      request.metric = bindings.metric;
-    }
-
     if (!shouldPreserveMappedMetric && Array.isArray(bindings.metrics) && bindings.metrics.length > 0) {
       request.metrics = bindings.metrics.slice();
-      request.metric = request.metric || request.metrics[0];
     } else if (!shouldPreserveMappedMetric && bindings.metric) {
       request.metrics = [bindings.metric];
     }
 
+    if (!shouldPreserveMappedMetric && request.service === 'topValues') {
+      request.topMetric = bindings.topMetric || templateMetric || request.topMetric;
+    }
+
     if (shouldPreserveMappedMetric) {
-      request.metric = mappedMetric;
       request.metrics = Array.isArray(request.metrics) && request.metrics.length > 0
         ? request.metrics.slice()
         : [mappedMetric];
+      if (request.service === 'topValues') {
+        request.topMetric = request.topMetric || mappedMetric;
+      }
     }
 
     if (Number.isFinite(bindings.topCount)) {
@@ -2118,7 +2221,7 @@ class RequirementParserService {
       return [inbound, outbound];
     };
 
-    const currentMetric = String(gatewayRequest.metric || gatewayRequest.metrics?.[0] || '').trim().toUpperCase();
+    const currentMetric = String(gatewayRequest.topMetric || gatewayRequest.metrics?.[0] || '').trim().toUpperCase();
     const expandedMetrics = deriveBidirectionalPair(currentMetric);
     if (!expandedMetrics) {
       return gatewayRequest;
@@ -2126,7 +2229,6 @@ class RequirementParserService {
 
     return {
       ...gatewayRequest,
-      metric: expandedMetrics[0],
       metrics: expandedMetrics
     };
   }
@@ -2451,7 +2553,6 @@ class RequirementParserService {
 
     const groups = Array.isArray(resolvedQuery.groups) ? resolvedQuery.groups.filter(Boolean) : [];
     const hasMetric = Boolean(
-      resolvedQuery.metric ||
       (Array.isArray(resolvedQuery.metrics) && resolvedQuery.metrics.length > 0)
     );
     const metadataIssues = [
@@ -2524,13 +2625,14 @@ class RequirementParserService {
     );
 
     return {
+      schemaVersion: request.schemaVersion || mapped.schemaVersion,
       service: request.service || mapped.service,
       start: request.start || mapped.start,
       end: request.end || mapped.end,
-      metric: request.metric || mapped.metric,
       metrics: Array.isArray(request.metrics) && request.metrics.length > 0
         ? request.metrics
         : (Array.isArray(mapped.metrics) ? mapped.metrics : []),
+      topMetric: request.topMetric || mapped.topMetric || null,
       groups: (preferMappedGroups || preferMappedMetadataGroups)
         ? mapped.groups
         : (Array.isArray(request.groups) && request.groups.length > 0
@@ -2714,17 +2816,6 @@ class RequirementParserService {
     return validMetrics;
   }
 
-  validateMetric(metric, metrics) {
-    if (!this.metricMappingService.isValidMetricCode(metric) || !metrics.includes(metric)) {
-      if (metrics.length > 0) {
-        const newMetric = metrics[0];
-        logger.info('topMetric 无效，使用 metrics 中的第一个指标:', newMetric);
-        return newMetric;
-      }
-    }
-    return metric;
-  }
-
   hasExplicitRankingMetricInText(text = '') {
     const raw = String(text || '').trim();
     if (!raw) {
@@ -2763,32 +2854,32 @@ class RequirementParserService {
     }
 
     const embedded = {
-      'ip-retransmission-topn-v1': { description: 'IPAddress retransmission ranking fallback', metric: 'RTXI', metrics: ['RTXI'], groupPath: ['IPAddress'] },
-      'ip-retransmission-delay-topn-v1': { description: 'IPAddress retransmission delay ranking fallback', metric: 'RDTO', metrics: ['RDTO'], groupPath: ['IPAddress'] },
-      'ip-connection-setup-topn-v1': { description: 'IPAddress connection setup ranking fallback', metric: 'CSTI', metrics: ['CSTI'], groupPath: ['IPAddress'] },
-      'ip-connection-failure-rate-topn-v1': { description: 'IPAddress connection failure rate ranking fallback', metric: 'RFRI', metrics: ['RFRI'], groupPath: ['IPAddress'] },
-      'ip-connection-failures-topn-v1': { description: 'IPAddress connection failure count ranking fallback', metric: 'RFCI', metrics: ['RFCI'], groupPath: ['IPAddress'] },
-      'ip-connection-requests-topn-v1': { description: 'IPAddress connection request ranking fallback', metric: 'CONI', metrics: ['CONI'], groupPath: ['IPAddress'] },
-      'ipconversation-retransmission-topn-v1': { description: 'IPConversation retransmission ranking fallback', metric: 'RTXI', metrics: ['RTXI'], groupPath: ['IPConversation'] },
-      'ipconversation-retransmission-delay-topn-v1': { description: 'IPConversation retransmission delay ranking fallback', metric: 'RDTO', metrics: ['RDTO'], groupPath: ['IPConversation'] },
-      'ipconversation-connection-setup-topn-v1': { description: 'IPConversation connection setup ranking fallback', metric: 'CSTI', metrics: ['CSTI'], groupPath: ['IPConversation'] },
-      'ipconversation-connection-failure-rate-topn-v1': { description: 'IPConversation connection failure rate ranking fallback', metric: 'RFRI', metrics: ['RFRI'], groupPath: ['IPConversation'] },
-      'ipconversation-connection-failures-topn-v1': { description: 'IPConversation connection failure count ranking fallback', metric: 'RFCI', metrics: ['RFCI'], groupPath: ['IPConversation'] },
-      'ipconversation-connection-requests-topn-v1': { description: 'IPConversation connection request ranking fallback', metric: 'CONI', metrics: ['CONI'], groupPath: ['IPConversation'] },
-      'prefix24-retransmission-topn-v1': { description: 'Prefix24 retransmission ranking fallback', metric: 'RTXI', metrics: ['RTXI'], groupPath: ['Prefix24'] },
-      'prefix24-retransmission-delay-topn-v1': { description: 'Prefix24 retransmission delay ranking fallback', metric: 'RDTO', metrics: ['RDTO'], groupPath: ['Prefix24'] },
-      'businessgroup-connection-setup-topn-v1': { description: 'BusinessGroup connection setup ranking fallback', metric: 'CSTI', metrics: ['CSTI'], groupPath: ['BusinessGroup'] },
-      'businessgroup-connection-failure-rate-topn-v1': { description: 'BusinessGroup connection failure rate ranking fallback', metric: 'RFRI', metrics: ['RFRI'], groupPath: ['BusinessGroup'] },
-      'businessgroup-connection-failures-topn-v1': { description: 'BusinessGroup connection failure count ranking fallback', metric: 'RFCI', metrics: ['RFCI'], groupPath: ['BusinessGroup'] },
-      'businessgroup-connection-requests-topn-v1': { description: 'BusinessGroup connection request ranking fallback', metric: 'CONI', metrics: ['CONI'], groupPath: ['BusinessGroup'] },
-      'webapp-http-500-count-topn-v1': { description: 'WebApplication HTTP 500 count ranking fallback', metric: 'PGHTTP500', metrics: ['PGHTTP500'], groupPath: ['WebApplication'] },
-      'webapp-http-500-ratio-topn-v1': { description: 'WebApplication HTTP 500 ratio ranking fallback', metric: 'PGHTTP500PCT', metrics: ['PGHTTP500PCT'], groupPath: ['WebApplication'] },
-      'webapp-http-400-count-topn-v1': { description: 'WebApplication HTTP 400 count ranking fallback', metric: 'PGHTTP400', metrics: ['PGHTTP400'], groupPath: ['WebApplication'] },
-      'webapp-http-400-ratio-topn-v1': { description: 'WebApplication HTTP 400 ratio ranking fallback', metric: 'PGHTTP400PCT', metrics: ['PGHTTP400PCT'], groupPath: ['WebApplication'] },
-      'businessgroup-http-500-count-topn-v1': { description: 'BusinessGroup HTTP 500 count ranking fallback', metric: 'PGHTTP500', metrics: ['PGHTTP500'], groupPath: ['BusinessGroup'] },
-      'businessgroup-http-500-ratio-topn-v1': { description: 'BusinessGroup HTTP 500 ratio ranking fallback', metric: 'PGHTTP500PCT', metrics: ['PGHTTP500PCT'], groupPath: ['BusinessGroup'] },
-      'businessgroup-http-400-count-topn-v1': { description: 'BusinessGroup HTTP 400 count ranking fallback', metric: 'PGHTTP400', metrics: ['PGHTTP400'], groupPath: ['BusinessGroup'] },
-      'businessgroup-http-400-ratio-topn-v1': { description: 'BusinessGroup HTTP 400 ratio ranking fallback', metric: 'PGHTTP400PCT', metrics: ['PGHTTP400PCT'], groupPath: ['BusinessGroup'] }
+      'ip-retransmission-topn-v1': { description: 'IPAddress retransmission ranking fallback', topMetric: 'RTXI', metrics: ['RTXI'], groupPath: ['IPAddress'] },
+      'ip-retransmission-delay-topn-v1': { description: 'IPAddress retransmission delay ranking fallback', topMetric: 'RDTO', metrics: ['RDTO'], groupPath: ['IPAddress'] },
+      'ip-connection-setup-topn-v1': { description: 'IPAddress connection setup ranking fallback', topMetric: 'CSTI', metrics: ['CSTI'], groupPath: ['IPAddress'] },
+      'ip-connection-failure-rate-topn-v1': { description: 'IPAddress connection failure rate ranking fallback', topMetric: 'RFRI', metrics: ['RFRI'], groupPath: ['IPAddress'] },
+      'ip-connection-failures-topn-v1': { description: 'IPAddress connection failure count ranking fallback', topMetric: 'RFCI', metrics: ['RFCI'], groupPath: ['IPAddress'] },
+      'ip-connection-requests-topn-v1': { description: 'IPAddress connection request ranking fallback', topMetric: 'CONI', metrics: ['CONI'], groupPath: ['IPAddress'] },
+      'ipconversation-retransmission-topn-v1': { description: 'IPConversation retransmission ranking fallback', topMetric: 'RTXI', metrics: ['RTXI'], groupPath: ['IPConversation'] },
+      'ipconversation-retransmission-delay-topn-v1': { description: 'IPConversation retransmission delay ranking fallback', topMetric: 'RDTO', metrics: ['RDTO'], groupPath: ['IPConversation'] },
+      'ipconversation-connection-setup-topn-v1': { description: 'IPConversation connection setup ranking fallback', topMetric: 'CSTI', metrics: ['CSTI'], groupPath: ['IPConversation'] },
+      'ipconversation-connection-failure-rate-topn-v1': { description: 'IPConversation connection failure rate ranking fallback', topMetric: 'RFRI', metrics: ['RFRI'], groupPath: ['IPConversation'] },
+      'ipconversation-connection-failures-topn-v1': { description: 'IPConversation connection failure count ranking fallback', topMetric: 'RFCI', metrics: ['RFCI'], groupPath: ['IPConversation'] },
+      'ipconversation-connection-requests-topn-v1': { description: 'IPConversation connection request ranking fallback', topMetric: 'CONI', metrics: ['CONI'], groupPath: ['IPConversation'] },
+      'prefix24-retransmission-topn-v1': { description: 'Prefix24 retransmission ranking fallback', topMetric: 'RTXI', metrics: ['RTXI'], groupPath: ['Prefix24'] },
+      'prefix24-retransmission-delay-topn-v1': { description: 'Prefix24 retransmission delay ranking fallback', topMetric: 'RDTO', metrics: ['RDTO'], groupPath: ['Prefix24'] },
+      'businessgroup-connection-setup-topn-v1': { description: 'BusinessGroup connection setup ranking fallback', topMetric: 'CSTI', metrics: ['CSTI'], groupPath: ['BusinessGroup'] },
+      'businessgroup-connection-failure-rate-topn-v1': { description: 'BusinessGroup connection failure rate ranking fallback', topMetric: 'RFRI', metrics: ['RFRI'], groupPath: ['BusinessGroup'] },
+      'businessgroup-connection-failures-topn-v1': { description: 'BusinessGroup connection failure count ranking fallback', topMetric: 'RFCI', metrics: ['RFCI'], groupPath: ['BusinessGroup'] },
+      'businessgroup-connection-requests-topn-v1': { description: 'BusinessGroup connection request ranking fallback', topMetric: 'CONI', metrics: ['CONI'], groupPath: ['BusinessGroup'] },
+      'webapp-http-500-count-topn-v1': { description: 'WebApplication HTTP 500 count ranking fallback', topMetric: 'PGHTTP500', metrics: ['PGHTTP500'], groupPath: ['WebApplication'] },
+      'webapp-http-500-ratio-topn-v1': { description: 'WebApplication HTTP 500 ratio ranking fallback', topMetric: 'PGHTTP500PCT', metrics: ['PGHTTP500PCT'], groupPath: ['WebApplication'] },
+      'webapp-http-400-count-topn-v1': { description: 'WebApplication HTTP 400 count ranking fallback', topMetric: 'PGHTTP400', metrics: ['PGHTTP400'], groupPath: ['WebApplication'] },
+      'webapp-http-400-ratio-topn-v1': { description: 'WebApplication HTTP 400 ratio ranking fallback', topMetric: 'PGHTTP400PCT', metrics: ['PGHTTP400PCT'], groupPath: ['WebApplication'] },
+      'businessgroup-http-500-count-topn-v1': { description: 'BusinessGroup HTTP 500 count ranking fallback', topMetric: 'PGHTTP500', metrics: ['PGHTTP500'], groupPath: ['BusinessGroup'] },
+      'businessgroup-http-500-ratio-topn-v1': { description: 'BusinessGroup HTTP 500 ratio ranking fallback', topMetric: 'PGHTTP500PCT', metrics: ['PGHTTP500PCT'], groupPath: ['BusinessGroup'] },
+      'businessgroup-http-400-count-topn-v1': { description: 'BusinessGroup HTTP 400 count ranking fallback', topMetric: 'PGHTTP400', metrics: ['PGHTTP400'], groupPath: ['BusinessGroup'] },
+      'businessgroup-http-400-ratio-topn-v1': { description: 'BusinessGroup HTTP 400 ratio ranking fallback', topMetric: 'PGHTTP400PCT', metrics: ['PGHTTP400PCT'], groupPath: ['BusinessGroup'] }
     };
 
     const item = embedded[key];
@@ -2796,10 +2887,10 @@ class RequirementParserService {
       return null;
     }
 
-    if (!isMetricCompatibleWithGroupPath(item.groupPath, item.metric, item.groupPath[0])) {
+    if (!isMetricCompatibleWithGroupPath(item.groupPath, item.topMetric, item.groupPath[0])) {
       logger.warn('Skip embedded topn template due to metric ownership incompatibility', {
         templateId: key,
-        metric: item.metric,
+        metric: item.topMetric,
         groupPath: item.groupPath
       });
       return null;
@@ -2811,7 +2902,7 @@ class RequirementParserService {
       intent: 'topn',
       bindings: {
         service: 'topValues',
-        metric: item.metric,
+        topMetric: item.topMetric,
         metrics: item.metrics.slice(),
         topCount: 5,
         timeRangeKey: 'last1hour',
@@ -2829,14 +2920,15 @@ class RequirementParserService {
     const start = this.roundToNearestMinute(TimeUtils.getYesterdayStart());
     const end = this.roundToNearestMinute(TimeUtils.getYesterdayEnd());
     return {
+      schemaVersion: ResolvedQueryContract.RESOLVED_QUERY_SCHEMA_VERSION,
       service: 'topValues',
+      queryModeKey: 'topn',
       start: start,
       end: end,
-      metric: 'TPIO',
       metrics: ['TPIO'],
+      topMetric: 'TPIO',
       groups: [{ type: 'IPAddress' }],
       topCount: 10,
-      granularity: null,
       format: 'json',
       userRequirement: userRequirement
     };
@@ -2859,7 +2951,7 @@ class RequirementParserService {
       intent: 'topn',
       bindings: {
         service: 'topValues',
-        metric,
+        topMetric: metric,
         metrics: [metric],
         topCount: 5,
         timeRangeKey: 'last1hour',
@@ -2913,7 +3005,10 @@ class RequirementParserService {
     const dynamicTimeRange = partialQuery?.dynamicTimeRange || null;
     const timeRangeKey = String(partialQuery?.timeRangeKey || bindings.timeRangeKey || (dynamicTimeRange ? '' : 'last1hour')).trim() || '';
     const range = TimeUtils.parseTimeRange(dynamicTimeRange || timeRangeKey || 'last1hour');
-    const metric = topMetricHint || bindings.metric || (Array.isArray(bindings.metrics) ? bindings.metrics[0] : null);
+    const metric = topMetricHint
+      || bindings.topMetric
+      || bindings.metric
+      || (Array.isArray(bindings.metrics) ? bindings.metrics[0] : null);
     const metrics = Array.isArray(bindings.metrics) && bindings.metrics.length > 0
       ? bindings.metrics.slice()
       : (metric ? [metric] : []);
@@ -2923,11 +3018,13 @@ class RequirementParserService {
     const groups = groupPath.map((type) => ({ type }));
 
     return {
+      schemaVersion: ResolvedQueryContract.RESOLVED_QUERY_SCHEMA_VERSION,
       service: 'topValues',
+      queryModeKey: 'topn',
       start: this.roundToNearestMinute(range.start),
       end: this.roundToNearestMinute(range.end),
-      metric,
       metrics,
+      topMetric: metric,
       groups,
       topCount,
       format: 'json',
@@ -2939,7 +3036,7 @@ class RequirementParserService {
         applied: true,
         bindings: {
           service: 'topValues',
-          metric,
+          topMetric: metric,
           metrics: metrics.slice(),
           groupPath: groupPath.slice(),
           topCount,

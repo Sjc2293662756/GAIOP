@@ -8,12 +8,14 @@ const {
 
 function buildQuery(overrides = {}) {
   return {
+    schemaVersion: 'napm-resolved-query.v1',
     service: 'timeValues',
     queryModeKey: 'timeseries',
     groups: [{ type: 'DefinedApp' }],
-    metric: 'TPIO',
     metrics: ['TPIO'],
     granularity: 3600,
+    start: 1788937200,
+    end: 1788940800,
     timeRange: { key: 'last7days' },
     ...overrides
   };
@@ -107,14 +109,16 @@ describe('QueryDecisionPolicy', () => {
       queryModeKey: 'topn',
       groups: [{ type: 'DefinedApp' }],
       topMetric: 'TPIO',
-      topCount: 10
+      topCount: 10,
+      granularity: undefined
     })]
-  ])('executes a complete %s', (_label, queryDraft) => {
+  ])('executes a complete statically covered %s in Phase 4', (_label, queryDraft) => {
     expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
       ok: true,
-      action: QUERY_ACTIONS.EXECUTE_QUERY,
-      southboundAllowed: true,
-      resolvedQuery: queryDraft
+      action: 'EXECUTE_QUERY',
+      outcome: null,
+      reasonCode: 'QUERY_READY',
+      southboundAllowed: true
     });
   });
 
@@ -154,6 +158,7 @@ describe('QueryDecisionPolicy', () => {
   test('rejects a structurally incomplete draft even without plugin pre-validation', () => {
     expect(evaluateQueryDecision({
       queryDraft: {
+        schemaVersion: 'napm-resolved-query.v1',
         service: 'timeValues',
         queryModeKey: 'timeseries',
         metrics: ['TPIO'],
@@ -164,14 +169,14 @@ describe('QueryDecisionPolicy', () => {
       ok: false,
       action: QUERY_ACTIONS.REJECT_QUERY,
       outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
-      reasonCode: 'INCOMPLETE_QUERY_DRAFT'
+      reasonCode: 'GROUPS_REQUIRED'
     });
   });
 
   test('does not hide technical omissions behind an application-name clarification', () => {
     const decision = evaluateQueryDecision({
       prompt: '最近 7 天应用流量趋势如何？',
-      queryDraft: buildQuery({ metrics: [], metric: undefined }),
+      queryDraft: buildQuery({ metrics: [] }),
       validation: {
         ok: false,
         reason: 'incomplete_resolved_query',
@@ -183,7 +188,7 @@ describe('QueryDecisionPolicy', () => {
       ok: false,
       action: QUERY_ACTIONS.REJECT_QUERY,
       outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
-      reasonCode: 'INCOMPLETE_RESOLVED_QUERY',
+      reasonCode: 'METRICS_REQUIRED',
       southboundAllowed: false
     });
   });
@@ -449,7 +454,7 @@ describe('QueryDecisionPolicy', () => {
     });
   });
 
-  test('allows an explicit multilevel drilldown path validated against the groups tree', () => {
+  test('holds a statically valid but non-exhaustive multilevel path for Phase 5', () => {
     const groups = [
       { type: 'BusinessGroup', argument: 'server-segment' },
       { type: 'Applications', argument: null },
@@ -474,10 +479,10 @@ describe('QueryDecisionPolicy', () => {
     });
 
     expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
-      ok: true,
-      action: QUERY_ACTIONS.EXECUTE_QUERY,
-      southboundAllowed: true,
-      resolvedQuery: queryDraft
+      ok: false,
+      action: 'RUNTIME_CONFIRMATION_REQUIRED',
+      reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
+      southboundAllowed: false
     });
   });
 
@@ -500,25 +505,28 @@ describe('QueryDecisionPolicy', () => {
     });
   });
 
-  test('keeps an ordinary single-group query executable without path planning', () => {
+  test('executes a covered ordinary single-group query in Phase 4', () => {
     const queryDraft = buildQuery({
       groups: [{ type: 'DefinedApp', argument: 'HTTP' }]
     });
 
     expect(evaluateQueryDecision({ queryDraft })).toMatchObject({
       ok: true,
-      action: QUERY_ACTIONS.EXECUTE_QUERY,
-      southboundAllowed: true,
-      resolvedQuery: queryDraft
+      action: 'EXECUTE_QUERY',
+      reasonCode: 'QUERY_READY',
+      southboundAllowed: true
     });
   });
 
   test('executes a complete pageViews detail query without metric or group fields', () => {
     const queryDraft = {
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'pageViews',
       queryModeKey: 'detail',
       pageFamilyId: '8573007',
       maxLimit: 20,
+      start: 1788937200,
+      end: 1788940800,
       timeRange: { key: 'today' },
       semanticConstraints: {
         workflowType: 'page_view_detail',

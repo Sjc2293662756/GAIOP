@@ -8,25 +8,27 @@ const { __test__ } = require('../skills/openclaw-napm-query/scripts/run_napm_que
 const { buildOpenClawReplyContract } = require('../skills/openclaw-napm-query/services/OpenClawNarrationContractService');
 
 describe('packet loss ranking default sort metric', () => {
-  test('should keep packet-loss topValues resolvedQuery topMetric aligned with metric by default', () => {
+  test('should keep an explicitly declared packet-loss topMetric', () => {
     const normalized = __test__.normalizeResolvedQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
+      topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       userRequirement: '现在丢包最多的客户端是谁？'
     });
 
-    expect(normalized.metric).toBe('PLI');
+    expect(normalized.metric).toBeUndefined();
     expect(normalized.metrics).toEqual(['PLI']);
     expect(normalized.topMetric).toBe('PLI');
   });
 
   test('should preserve explicit ranking metric from user text', () => {
     const normalized = __test__.normalizeResolvedQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
+      topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       userRequirement: '现在按丢包率排序看丢包最多的客户端是谁？'
     });
@@ -36,8 +38,8 @@ describe('packet loss ranking default sort metric', () => {
 
   test('should preserve explicit non-loss topMetric already provided', () => {
     const request = RequirementParserService.normalizeTopLevelQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
       topMetric: 'BYTIO',
       groups: [{ type: 'IPAddress' }],
@@ -49,15 +51,15 @@ describe('packet loss ranking default sort metric', () => {
 
   test('should keep mirrored loss topMetric when it already matches the semantic metric', () => {
     const request = RequirementParserService.normalizeTopLevelQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLO',
       metrics: ['PLO'],
       topMetric: 'PLO',
       groups: [{ type: 'IPAddress' }],
       userRequirement: '出方向丢包最多的客户端是谁？'
     });
 
-    expect(request.metric).toBe('PLO');
+    expect(request.metric).toBeUndefined();
     expect(request.topMetric).toBe('PLO');
   });
 
@@ -72,11 +74,12 @@ describe('packet loss ranking default sort metric', () => {
     });
   });
 
-  test('display should show default sort metric equal to packet-loss metric when user did not specify ranking metric', () => {
+  test('display should show the explicit packet-loss sort metric', () => {
     const normalized = __test__.normalizeResolvedQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
+      topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       userRequirement: '现在丢包最多的客户端是谁？'
     });
@@ -87,7 +90,7 @@ describe('packet loss ranking default sort metric', () => {
       summary: {
         title: '排行结果',
         highlights: [
-          `指标：${normalized.metric}`,
+          `指标：${normalized.metrics[0]}`,
           `排序指标：${normalized.topMetric}`
         ],
         rowCount: 1,
@@ -107,9 +110,10 @@ describe('packet loss ranking default sort metric', () => {
 
   test('display should show explicit ranking metric when user specified it', () => {
     const normalized = __test__.normalizeResolvedQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
+      topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       userRequirement: '现在按丢包率排序看丢包最多的客户端是谁？'
     });
@@ -120,7 +124,7 @@ describe('packet loss ranking default sort metric', () => {
       summary: {
         title: '排行结果',
         highlights: [
-          `指标：${normalized.metric}`,
+          `指标：${normalized.metrics[0]}`,
           `排序指标：${normalized.topMetric}`
         ],
         rowCount: 1,

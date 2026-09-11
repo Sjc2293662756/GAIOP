@@ -1,5 +1,4 @@
 const MetricSemanticNormalizerService = require('../skills/openclaw-napm-query/services/MetricSemanticNormalizerService');
-const ResolutionSpecService = require('../skills/openclaw-napm-query/services/ResolutionSpecService');
 
 describe('MetricSemanticNormalizerService', () => {
   test.each([
@@ -17,35 +16,35 @@ describe('MetricSemanticNormalizerService', () => {
 
     expect(result).toMatchObject({
       metric: expectedMetric,
-      source: 'metric_semantic_normalizer'
+      source: {
+        type: 'resolution_spec_metric_semantic_rules'
+      }
     });
   });
 
-  test('should map the reported total-traffic trend wording with the real spec aliases', () => {
-    const metricSpec = ResolutionSpecService.getMetricSpec();
+  test('should map the reported total-traffic trend wording with canonical machine rules', () => {
     const result = MetricSemanticNormalizerService.resolveMetricSemantic(
-      '最近一天的总流量的趋势怎么样？',
-      { specMetricAliases: metricSpec.aliases }
+      '最近一天的总流量的趋势怎么样？'
     );
 
     expect(result).toMatchObject({
       metric: 'TPIO',
-      source: 'resolution_spec_alias',
+      source: { type: 'resolution_spec_metric_semantic_rules' },
       matchedAlias: '流量的趋势'
     });
   });
 
-  test('should prefer resolution spec aliases when provided', () => {
-    const result = MetricSemanticNormalizerService.resolveMetricSemantic('页面访问数最多', {
+  test('should ignore deprecated caller-provided metric aliases', () => {
+    const result = MetricSemanticNormalizerService.resolveMetricSemantic('仅旧别名', {
       specMetricAliases: {
-        PGNPGE: ['页面访问数']
+        PGNPGE: ['仅旧别名']
       }
     });
 
     expect(result).toMatchObject({
-      metric: 'PGNPGE',
-      source: 'resolution_spec_alias',
-      matchedAlias: '页面访问数'
+      status: 'unresolved',
+      primaryMetric: null,
+      requestedMetrics: []
     });
   });
 
@@ -54,17 +53,12 @@ describe('MetricSemanticNormalizerService', () => {
     ['总流量速率', 'TPIO'],
     ['累计流量', 'BYTIO'],
     ['流量大小', 'BYTIO']
-  ])('should use longest spec aliases for traffic semantics: %s', (prompt, expectedMetric) => {
-    const result = MetricSemanticNormalizerService.resolveMetricSemantic(prompt, {
-      specMetricAliases: {
-        TPIO: ['流量趋势', '流量速率', '吞吐', '带宽'],
-        BYTIO: ['累计流量', '流量大小', '流量', '字节数']
-      }
-    });
+  ])('should use the most specific canonical rule for traffic semantics: %s', (prompt, expectedMetric) => {
+    const result = MetricSemanticNormalizerService.resolveMetricSemantic(prompt);
 
     expect(result).toMatchObject({
       metric: expectedMetric,
-      source: 'resolution_spec_alias'
+      source: { type: 'resolution_spec_metric_semantic_rules' }
     });
   });
 

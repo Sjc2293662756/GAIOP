@@ -105,39 +105,22 @@ class QueryMetadataConstraintService {
     if (query.service === 'metrics' || query.service === 'groups') {
       delete query.metric;
       delete query.metrics;
+      delete query.topMetric;
       return;
     }
 
     const allowMetadataRepair = this.shouldAllowMetadataRepair(query);
-
-    if (query.metric && !MetricMappingService.isValidMetricCode(query.metric)) {
-      if (!allowMetadataRepair) {
-        corrections.push({
-          field: 'metric',
-          action: 'preserve_invalid_metric_without_repair',
-          from: query.metric
-        });
-        return;
-      }
-
+    if (Object.prototype.hasOwnProperty.call(query, 'metric')) {
       corrections.push({
         field: 'metric',
-        action: 'fallback_to_default_metric',
-        from: query.metric,
-        to: 'TPIO'
+        action: 'remove_noncanonical_legacy_field',
+        from: query.metric
       });
-      query.metric = 'TPIO';
+      delete query.metric;
     }
 
     if (!Array.isArray(query.metrics) || query.metrics.length === 0) {
-      if (query.metric) {
-        query.metrics = [query.metric];
-        corrections.push({
-          field: 'metrics',
-          action: 'mirror_metric_field',
-          to: query.metrics
-        });
-      } else if (allowMetadataRepair) {
+      if (allowMetadataRepair) {
         query.metrics = ['TPIO'];
         corrections.push({
           field: 'metrics',
@@ -176,14 +159,27 @@ class QueryMetadataConstraintService {
       })
       .filter(Boolean);
 
-    if (!query.metric && query.service === 'topValues') {
-      query.metric = query.metrics[0];
-      corrections.push({
-        field: 'metric',
-        action: 'derive_from_metrics',
-        to: query.metric
-      });
+    if (query.service === 'topValues' && query.topMetric) {
+      const normalizedTopMetric = String(query.topMetric || '').trim().toUpperCase();
+      if (MetricMappingService.isValidMetricCode(normalizedTopMetric)) {
+        query.topMetric = normalizedTopMetric;
+      } else if (allowMetadataRepair) {
+        corrections.push({
+          field: 'topMetric',
+          action: 'fallback_invalid_metric_to_default',
+          from: query.topMetric,
+          to: 'TPIO'
+        });
+        query.topMetric = 'TPIO';
+      } else {
+        corrections.push({
+          field: 'topMetric',
+          action: 'preserve_invalid_metric_without_repair',
+          from: query.topMetric
+        });
+      }
     }
+
   }
 
   /**
@@ -350,7 +346,9 @@ class QueryMetadataConstraintService {
       return null;
     }
 
-    const metric = query.metric || (Array.isArray(query.metrics) ? query.metrics[0] : null);
+    const metric = query.service === 'topValues'
+      ? (query.topMetric || (Array.isArray(query.metrics) ? query.metrics[0] : null))
+      : (Array.isArray(query.metrics) ? query.metrics[0] : null);
     if (!metric) {
       return null;
     }
@@ -499,10 +497,13 @@ class QueryMetadataConstraintService {
       }
     }
 
-    if (Array.isArray(metadataReview.metricsForGroup) && metadataReview.metricsForGroup.length > 0 && constrained.metric) {
-      const currentMetricSupported = metadataReview.metricsForGroup.some(item => item.id === constrained.metric);
+    const constrainedMetric = constrained.service === 'topValues'
+      ? (constrained.topMetric || constrained.metrics?.[0])
+      : constrained.metrics?.[0];
+    if (Array.isArray(metadataReview.metricsForGroup) && metadataReview.metricsForGroup.length > 0 && constrainedMetric) {
+      const currentMetricSupported = metadataReview.metricsForGroup.some(item => item.id === constrainedMetric);
       if (!currentMetricSupported) {
-        warnings.push(`metric_not_in_dynamic_metrics_for_group:${constrained.metric}`);
+        warnings.push(`metric_not_in_dynamic_metrics_for_group:${constrainedMetric}`);
       }
     }
 

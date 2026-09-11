@@ -48,7 +48,6 @@ function normalizeMetrics(context = {}) {
   const resolvedQuery = context.resolvedQuery || {};
   return compact([
     ...(Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics : []),
-    resolvedQuery.metric,
     resolvedQuery.topMetric,
     context?.narrationStructure?.metric
   ]).filter((value, index, array) => array.indexOf(value) === index);

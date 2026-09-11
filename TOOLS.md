@@ -33,9 +33,10 @@
 - 当最近 Skill 结果尚未接入通用序号下钻时，Context Boundary 会覆盖更早的 Query 候选并要求用户澄清。这是分阶段迁移的保守边界，不代表 Plugin 接管 Packet、Report、Inspection、Summary 或 Fault 的领域状态。
 - Query Turn route 在创建后不可变。普通 `NAPM_QUERY` 只接受 `napm-skill-query`；错误的其他生产 NAPM Tool 会被阻断，不会执行南向调用或把轮次改成 `OTHER_SKILL`。开发诊断 resolver Tool 仍仅受显式开关控制。
 - `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 必须携带插件签发的可信 `traceId`，解析出 scope/turn，并确认可信 `toolName=napm-skill-query`、Query Turn `route=NAPM_QUERY`、本轮 Turn Admission 授权和 Hook 密封的稳定参数摘要，否则在 pending 恢复、时间物化和校验前 fail-closed；同一 trace 下替换对象、指标、时间或引用会返回 `QUERY_TOOL_PARAMETERS_MISMATCH`。它同样执行应用/`TotalTraffic` 范围、对象清单和普通查询多 group 等高风险检查。多 group 只有在 planner proof、plannedGroups、selectedPath、anchor 与静态 groups tree 一致、终端对象符合结构化意图且可信引用明确授权下钻时可执行，否则 Query Skill、NapmClient 和南向调用均为 0。
-- 应用流量检查使用 `WorkflowClassifierService` 的结构化 workflow/object/metric 意图；对象范围由 Object Ontology 统一识别，指标语义由 Metric Semantic Normalizer 统一识别，插件与 Policy 不维护平行正则。
+- 应用流量检查使用 `WorkflowClassifierService` 组合出的 `napm-query-semantic.v1`。对象范围只由 Object Ontology 识别，指标语义只由 Resolution Spec `metricSemanticRules` 驱动的 Metric Semantic Normalizer 识别，排行操作/方向/数量只由同一 Spec `rankingGrammar` 驱动的 Ranking Intent Parser 识别；生命周期只允许 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`，只有 `RESOLVED` 可交给 Resolver 组装 Query Draft。Resolver、插件与 Policy 不维护平行词表、再次解释 raw prompt 或用默认对象补槽。
+- 指标查询的 canonical 执行结构由 `services/ResolvedQueryContract.js` 唯一定义，schema 为 `napm-resolved-query.v1`。`services/LegacyMetricInputAdapter.js` 只处理旧单数 `metric`，正常 Semantic→Resolver 路径调用次数必须为 0；旧输入边界恰好调用一次。检查日志时分别看 `metrics[]` 和 `topMetric`，不要再寻找 canonical `metric`。
 - 业务页面访问量先按 `WebApplication` 排行。后续“排名第 N 的业务访问了什么”传 `resultReference={objectType:"WebApplication",ordinal:N}`，插件从冻结结果集中补入业务名后才允许下钻到 `PageFamily`。页面访问实例详情使用 `pageViews/detail`，不使用 `PageFamilyDetail` group；“详细查看排名第 N 个页面”传 `resultReference={objectType:"PageFamily",ordinal:N}`，插件解析 `pageFamilyId` 并继承时间。两类引用缺失、过期、跨 scope、类型错误或越界时均在 Skill 和南向调用前失败。
-- TopN 结果在进入 Query Turn 和叙述前按 `topMetric` 数值及结构化方向排序并重排 rank，空白或缺失指标值置于末尾。叙述对象类型取实际终端 group，确保首轮显示业务、第二轮才显示页面族。
+- `rank_top/desc` 结果在进入 Query Turn 和叙述前按 `topMetric` 数值降序排序并重排 rank，空白或缺失指标值置于末尾。语义完整的 `rank_bottom/asc` 返回 `RANK_BOTTOM_UNSUPPORTED`，缺排行指标时为 `UNRESOLVED`；Normalizer 不倒序伪造 BottomN。叙述对象类型取实际终端 group，确保首轮显示业务、第二轮才显示页面族。
 - `pageViews` 请求只包含时间、可信 `pageFamilyId` 和受校验的 `maxLimit`；缺省 20，本地保护上限 200。共享契约位于 `skills/shared/NapmPageViewsContract.js`，Query、Fault Diagnosis 和 Packet Analysis 必须复用，禁止发送字符串 `undefined`。插件侧 Coordinator 通过依赖注入使用该契约，不能相对引用 extension 目录外的 Skill 文件。
 - 缺对象名的澄清会保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。用户下一轮只回复名称时，模型传 `clarificationAnswer`。只有 `resumePending()` 成功才会把新 run/message 的 Decision 重建为 `EXECUTE_TOOL + napm-skill-query`，恢复 Draft、补入声明的 `groups[n].argument` 并重新执行完整策略；不依赖名称是否包含 NAPM 关键词，无 pending 时保持 `MODEL_OWNED` 并在 Skill/Client/南向之前阻断。
 - Query Turn Coordinator 是普通查询 Draft、Attempts、一次修复预算、pending、`WebApplication`/`PageFamily` 最小排行投影、终态 `finalContent` 和 delivery claim 的唯一权威源。旧 `ConversationOperationState` 不再提供普通查询修复或结果交付。
@@ -98,6 +99,10 @@ tail -f /home/netinside/.openclaw/workspace/skills/openclaw-napm-query/logs/audi
 - SSH 使用密钥或交互式认证，不把密码写进命令、文档或 Git。
 
 完整命令和新手步骤见 `docs/版本管理与统一部署-新手指南.md`。仅文档变更无需部署或重启；运行时代码变更必须使用完整发布包并完成生产验收。
+
+### Query Phase 4 静态门禁
+
+运行时契约检查会验证 ResolvedQueryExecutableValidator 的唯一入口、Metric Catalog 存在性优先顺序、Object × Metric coverage，以及 Gateway/Direct/Plugin 的执行前阻断。RUNTIME_CAPABILITY_REQUIRED 表示缺少可信静态能力证据；不要通过手工 metadata 查询或直接 NetInside 调用绕过该结果。
 
 ## 报告模板
 

@@ -18,6 +18,7 @@ const RequirementParserService = require('../skills/openclaw-napm-query/services
 
 function buildQuery(overrides = {}) {
   return {
+    schemaVersion: 'napm-resolved-query.v1',
     service: 'pageViews',
     queryModeKey: 'detail',
     start: 1785310980,

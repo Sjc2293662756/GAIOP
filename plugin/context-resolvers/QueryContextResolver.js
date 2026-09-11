@@ -13,6 +13,10 @@ function isPlainObject(value) {
 }
 
 class QueryContextResolver {
+  constructor(options = {}) {
+    this.resolvedQuerySchemaVersion = normalizeText(options.resolvedQuerySchemaVersion);
+  }
+
   getAdmissionCandidates({ resultSet = null } = {}) {
     if (!isPlainObject(resultSet) || !QUERY_RESULT_OBJECT_TYPES.has(resultSet.objectType)) {
       return [];
@@ -87,11 +91,11 @@ class QueryContextResolver {
 
     if (resultReference.objectType === 'WebApplication') {
       return {
+        schemaVersion: this.resolvedQuerySchemaVersion,
         service: 'topValues',
         queryModeKey: 'topn',
         groups: [{ type: 'PageFamily' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         resultReference,
@@ -106,6 +110,7 @@ class QueryContextResolver {
 
     const requestedLimit = Number(decision.selection.limit);
     return {
+      schemaVersion: this.resolvedQuerySchemaVersion,
       service: 'pageViews',
       queryModeKey: 'detail',
       resultReference,

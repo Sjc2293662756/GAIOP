@@ -657,10 +657,11 @@ class NapmMetadataService {
       }
     }
 
-    if (query.metric && result.metricsForGroup && result.metricsForGroup.length > 0) {
-      const matchedMetric = result.metricsForGroup.some(item => item.id === query.metric);
+    const queryMetric = query.topMetric || query.metrics?.[0] || null;
+    if (queryMetric && result.metricsForGroup && result.metricsForGroup.length > 0) {
+      const matchedMetric = result.metricsForGroup.some(item => item.id === queryMetric);
       if (!matchedMetric) {
-        issues.push(`metric_not_supported_for_group:${query.metric}`);
+        issues.push(`metric_not_supported_for_group:${queryMetric}`);
         suggestions.push({
           type: 'metrics_for_group',
           values: result.metricsForGroup.slice(0, 30)
@@ -1131,6 +1132,5 @@ class NapmMetadataService {
 }
 
 module.exports = new NapmMetadataService();
-
 
 

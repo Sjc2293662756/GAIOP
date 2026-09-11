@@ -88,7 +88,7 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
       || ''
     ).trim() || null,
     groups,
-    metric: String(resolvedQuery.metric || '').trim() || null,
+    metric: String(resolvedQuery.topMetric || resolvedQuery.metrics?.[0] || '').trim() || null,
     metrics: Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics.slice(0, 20) : [],
     topMetric: String(resolvedQuery.topMetric || '').trim() || null,
     topCount: Number.isFinite(Number(resolvedQuery.topCount)) ? Number(resolvedQuery.topCount) : null,
@@ -306,7 +306,7 @@ function buildSensitiveCredentialRefusalText() {
 
 function buildSummary(service, resolvedQuery, data, extra = {}) {
   const rows = Array.isArray(data) ? data : [];
-  const metric = resolvedQuery?.metric || (Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '');
+  const metric = Array.isArray(resolvedQuery?.metrics) ? resolvedQuery.metrics.join(',') : '';
   const topMetric = String(resolvedQuery?.topMetric || '').trim();
   const groupPath = Array.isArray(resolvedQuery?.groups)
     ? resolvedQuery.groups.map((item) => String(item?.type || '').trim()).filter(Boolean).join(' > ')
@@ -450,8 +450,7 @@ function deepClone(value) {
 
 function resolvePrimaryMetricId(query = {}) {
   return String(
-    query?.metric
-    || query?.topMetric
+    query?.topMetric
     || (Array.isArray(query?.metrics) ? query.metrics[0] : '')
     || ''
   ).trim() || null;
@@ -579,14 +578,11 @@ function buildDiscoveryQuery(baseResolvedQuery = {}, prompt = '') {
     query.start = Number(baseResolvedQuery.start);
     query.end = Number(baseResolvedQuery.end);
   }
-  if ((!query.metric && !Array.isArray(query.metrics)) && baseResolvedQuery?.metric) {
-    query.metric = baseResolvedQuery.metric;
-  }
   if ((!Array.isArray(query.metrics) || query.metrics.length === 0) && Array.isArray(baseResolvedQuery?.metrics) && baseResolvedQuery.metrics.length > 0) {
     query.metrics = baseResolvedQuery.metrics.slice();
   }
   if (query.service === 'topValues' && !query.topMetric) {
-    query.topMetric = query.metric || query.metrics?.[0] || baseResolvedQuery?.topMetric || null;
+    query.topMetric = baseResolvedQuery?.topMetric || null;
   }
   return normalizeResolvedQueryTimeRange(query);
 }
@@ -599,7 +595,6 @@ function deriveDiscoveryFocusSelection(analysisPipeline = {}, discoveryQuery = {
 
   const rows = Array.isArray(discoveryResult?.data) ? discoveryResult.data : [];
   const metricHints = [
-    discoveryQuery?.metric,
     discoveryQuery?.topMetric,
     ...(Array.isArray(discoveryQuery?.metrics) ? discoveryQuery.metrics : [])
   ].filter(Boolean);
@@ -669,7 +664,6 @@ function buildFocusedOverviewResolvedQuery(baseResolvedQuery = {}, focusSelectio
 
   const metricId = resolvePrimaryMetricId(discoveryQuery || next);
   if (metricId) {
-    next.metric = next.metric || metricId;
     if (!Array.isArray(next.metrics) || next.metrics.length === 0) {
       next.metrics = [metricId];
     }
@@ -989,24 +983,16 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
   query.userRequirement = query.userRequirement || prompt || '';
   query.format = query.format || 'json';
 
-  if (!Array.isArray(query.metrics) || query.metrics.length === 0) {
-    if (query.metric) {
-      query.metrics = [query.metric];
+  if (query.service === 'topValues') {
+    if (query.topCount !== undefined && Number.isFinite(Number(query.topCount))) {
+      query.topCount = Number(query.topCount);
     }
   }
 
-  if (query.service === 'topValues') {
-    query.topCount = Number.isFinite(Number(query.topCount)) && Number(query.topCount) > 0
-      ? Number(query.topCount)
-      : 10;
-    query.topMetric = query.topMetric || query.metric || query.metrics?.[0] || null;
-
-  }
-
   if (query.service === 'timeValues') {
-    query.granularity = Number.isFinite(Number(query.granularity)) && Number(query.granularity) > 0
-      ? Number(query.granularity)
-      : 3600;
+    if (query.granularity !== undefined && Number.isFinite(Number(query.granularity))) {
+      query.granularity = Number(query.granularity);
+    }
   }
 
   if (query.service === 'pageViews') {
@@ -1313,10 +1299,12 @@ function applySessionContinuationToResolvedQuery(resolvedQuery = {}, prompt = ''
   }
 
   if (continuationInstruction.inheritMetric && sessionState.last_metric) {
-    query.metric = sessionState.last_metric;
-  }
-  if ((!Array.isArray(query.metrics) || query.metrics.length === 0) && query.metric) {
-    query.metrics = [query.metric];
+    if (!Array.isArray(query.metrics) || query.metrics.length === 0) {
+      query.metrics = [sessionState.last_metric];
+    }
+    if (query.service === 'topValues' && !query.topMetric) {
+      query.topMetric = sessionState.last_metric;
+    }
   }
 
   if (

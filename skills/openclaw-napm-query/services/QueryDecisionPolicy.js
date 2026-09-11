@@ -6,6 +6,9 @@ const {
   validatePageViewsQuery
 } = require('../../shared/NapmPageViewsContract');
 const WorkflowClassifierService = require('./WorkflowClassifierService');
+const ResolvedQueryContract = require('./ResolvedQueryContract');
+const ResolvedQueryExecutableValidator = require('./ResolvedQueryExecutableValidator');
+const StaticProductBaselineProvider = require('./StaticProductBaselineProvider');
 
 const QUERY_ACTIONS = Object.freeze({
   ASK_CLARIFYING_QUESTION: 'ASK_CLARIFYING_QUESTION',
@@ -402,7 +405,7 @@ function validationFailureDecision(validation = {}, queryDraft = null) {
     ok: false,
     action: QUERY_ACTIONS.REJECT_QUERY,
     outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
-    reasonCode: toReasonCode(validation?.reason),
+    reasonCode: validation?.reasonCode || validation?.code || toReasonCode(validation?.reason),
     reason: String(validation?.reason || 'query_validation_failed'),
     validation,
     southboundAllowed: false,
@@ -410,7 +413,25 @@ function validationFailureDecision(validation = {}, queryDraft = null) {
   };
 }
 
-function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = undefined } = {}) {
+function runtimeConfirmationDecision(validation = {}, queryDraft = null) {
+  return {
+    ok: false,
+    action: 'RUNTIME_CONFIRMATION_REQUIRED',
+    outcome: QUERY_OUTCOMES.VALIDATION_FAILURE,
+    reasonCode: 'RUNTIME_CAPABILITY_REQUIRED',
+    reason: 'runtime_capability_required',
+    validation,
+    southboundAllowed: false,
+    queryDraft
+  };
+}
+
+function evaluateQueryDecision({
+  prompt = '',
+  queryDraft = null,
+  validation = undefined,
+  executableValidationContext = {}
+} = {}) {
   const basicValidation = validation === undefined
     ? buildBasicValidation(queryDraft)
     : validation;
@@ -435,6 +456,45 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
     return validationFailureDecision(semanticValidation, queryDraft);
   }
 
+  if (ResolvedQueryContract.getServiceContract(queryDraft?.service)) {
+    const hasExplicitProductBaseline = Object.prototype.hasOwnProperty.call(
+      executableValidationContext,
+      'productBaseline'
+    );
+    const executableValidation = ResolvedQueryExecutableValidator.validate(queryDraft, {
+      productBaseline: hasExplicitProductBaseline
+        ? executableValidationContext.productBaseline
+        : StaticProductBaselineProvider.getVerifiedProductBaseline(),
+      phase: executableValidationContext.phase
+    });
+    if (executableValidation.reasonCode === 'GROUP_ARGUMENT_REQUIRED') {
+      const argumentPolicy = ResolutionSpecService.evaluateQueryArgumentPolicy(queryDraft);
+      return clarificationDecision({
+        reasonCode: executableValidation.reasonCode,
+        details: argumentPolicy.details,
+        queryDraft
+      });
+    }
+    if (executableValidation.reasonCode === 'GROUP_ARGUMENT_FORBIDDEN') {
+      return {
+        ok: true,
+        action: QUERY_ACTIONS.REJECT_QUERY,
+        outcome: QUERY_OUTCOMES.REJECTION,
+        reasonCode: executableValidation.reasonCode,
+        reason: 'group_argument_forbidden',
+        rejectionMessage: '当前查询对象不接受名称参数，请移除该参数后重新查询。',
+        southboundAllowed: false,
+        queryDraft
+      };
+    }
+    if (executableValidation.status === 'UNKNOWN') {
+      return runtimeConfirmationDecision(executableValidation, queryDraft);
+    }
+    if (!executableValidation.ok) {
+      return validationFailureDecision(executableValidation, queryDraft);
+    }
+  }
+
   const validationReason = String(basicValidation?.reason || '').trim();
   const argumentPolicyFailure = [
     'group_argument_required',
@@ -443,29 +503,6 @@ function evaluateQueryDecision({ prompt = '', queryDraft = null, validation = un
 
   if (!basicValidation?.ok && !argumentPolicyFailure) {
     return validationFailureDecision(basicValidation, queryDraft);
-  }
-
-  if (isPlainObject(queryDraft)) {
-    const argumentPolicy = ResolutionSpecService.evaluateQueryArgumentPolicy(queryDraft);
-    if (!argumentPolicy.ok && argumentPolicy.code === 'GROUP_ARGUMENT_REQUIRED') {
-      return clarificationDecision({
-        reasonCode: argumentPolicy.code,
-        details: argumentPolicy.details,
-        queryDraft
-      });
-    }
-    if (!argumentPolicy.ok && argumentPolicy.code === 'GROUP_ARGUMENT_FORBIDDEN') {
-      return {
-        ok: true,
-        action: QUERY_ACTIONS.REJECT_QUERY,
-        outcome: QUERY_OUTCOMES.REJECTION,
-        reasonCode: argumentPolicy.code,
-        reason: argumentPolicy.reason,
-        rejectionMessage: '当前查询对象不接受名称参数，请移除该参数后重新查询。',
-        southboundAllowed: false,
-        queryDraft
-      };
-    }
   }
 
   if (!basicValidation?.ok) return validationFailureDecision(basicValidation, queryDraft);

@@ -35,8 +35,11 @@ Skill-local resources are authoritative:
 
 - `scripts/run_napm_query.js`: CLI and execution entry.
 - `services/`: metadata, validation, mapping, execution, and narration contract services.
-- `config/`: metrics, hierarchy, ontology, and resolution spec.
-- `src/`: runtime constants and utilities.
+- `config/metrics-config.yml`: the only legal Metric ID catalog; missing, unreadable, invalid, or unparseable content fails closed.
+- `config/object-ontology.v1.json`: the only Object Ontology source.
+- `config/napm-resolution-spec.v1.json`: the only Resolution Spec authoring source, including the only machine-readable `metricSemanticRules` and `rankingGrammar`. Its legacy execution-ownership fields and old `metrics.aliases` production matching are deprecated.
+- `src/constants/objectMetricOwnership.js`: the only Object × Metric ownership source. Its Phase 1 tri-state API is not yet wired into Query Decision or execution admission.
+- Other `config/` and `src/` files: hierarchy and runtime utilities.
 - `references/`: progressively loaded domain notes.
 
 Do not depend on root-level plugin files, root `src/`, root `config/`, removed gateway routes, or old gateway approval flow when deploying this as a standalone skill.
@@ -207,7 +210,8 @@ Object argument policy:
 - `topValues` discovery and `groups` inventory queries may omit the argument because they discover or enumerate objects.
 - An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
 - Ordinary `topValues`, `averageValues`, `timeValues`, `groups`, and `metrics` queries with multiple groups fail Query Decision validation by default. They are executable only when `pathPlanning` contains planner proof and its anchor, `plannedGroups`, and `selectedPath` match a queryable path in `groups-tree.static.json`. The presence of multiple groups or an unverified `pathPlanning` object never authorizes execution.
-- Application-traffic scope checks consume the structured workflow/object/metric intent from `WorkflowClassifierService`; do not duplicate application-traffic prompt regexes in routing, plugin, or Query Decision code.
+- `WorkflowClassifierService` only composes Object Ontology, Resolution-Spec metric rules, Resolution-Spec ranking grammar, and the shared time parser into immutable `napm-query-semantic.v1`. The contract lifecycle is exactly `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED` and formally includes `ambiguities[]`, `unresolvedSlots[]`, and `reasonCode`; only `RESOLVED` may enter Query Draft assembly. The Resolver consumes this contract and must not infer metric, object, ranking, count, or direction again from raw prompt, including through a default object. Application-traffic scope checks consume this structured contract; do not duplicate prompt regexes in routing, plugin, Resolver, or Query Decision code.
+- Metric execution Query Drafts use `schemaVersion=napm-resolved-query.v1` and are validated by `ResolvedQueryContract`. `metrics[]` selects returned metrics; `topMetric` is only the independent `topValues` sort metric and may be absent from `metrics[]`. `averageValues/timeValues` must not carry ranking fields; `timeValues` requires granularity. `queryModeKey` is derived from service. A singular `metric` is accepted only as deprecated legacy input: call `LegacyMetricInputAdapter` exactly once at the legacy boundary, remove it, then validate the complete canonical query. Never run the Adapter on Resolver output.
 - “今天哪些业务页面访问量最高” is `topValues + WebApplication + PGNPGE`; page access is the metric, not permission to replace the result object with `PageFamily`.
 - A follow-up such as “排名第一的都访问了什么” uses `resultReference={objectType:"WebApplication",ordinal:1}`. The plugin resolves the business argument from the frozen normalized result, inherits time, and constructs the validated `WebApplication > PageFamilies > PageFamily` path. Caller-supplied `sourceReference` or validation flags never authorize the path.
 - A page ranking follow-up such as “详细查看第一名的前 20 个” uses `resultReference={objectType:"PageFamily",ordinal:1}`. The plugin resolves the ID from the frozen result and inherits time; the model must not infer `pageFamilyId` from a URL or ordinal.
@@ -266,6 +270,7 @@ Object mapping:
 
 Metric mapping:
 
+- The machine authority for all mappings below is `metricSemanticRules` in the canonical Resolution Spec. This list is explanatory only and must not be parsed or copied into another runtime table.
 - Packet count / packet volume means `PKIO`.
 - Throughput / bandwidth / traffic rate usually means `TPIO`.
 - Byte traffic / byte volume means `BYTIO`.
@@ -281,9 +286,16 @@ Ranking rules:
 
 - Singular "who / which one / highest" ranking usually uses `topCount=1`.
 - Keep `topMetric` aligned with the user's selection condition.
-- Normalize every `topValues` result numerically by `topMetric`; use structured `direction=asc` only for bottom/lowest requests, otherwise descending. Replace upstream ranks, preserve stable tie order, and keep blank/missing values last.
+- `rank_top` uses `direction=desc`; normalize returned rows numerically by `topMetric`, replace upstream ranks, preserve stable tie order, and keep blank/missing values last. A complete `rank_bottom/direction=asc` is `UNSUPPORTED/RANK_BOTTOM_UNSUPPORTED`; a BottomN request missing `rankingMetric` is `UNRESOLVED`. Neither may produce a Query Draft, and an upstream TopN result must never be reversed and presented as BottomN.
 - Build narration labels from the effective terminal group. A first-turn business ranking is `WebApplication`; only an explicitly authorized business drilldown is narrated as `PageFamily`.
 - Do not rewrite packet-loss ranking into throughput ranking unless the user explicitly asks for throughput sorting.
+
+Phase 4 executable gate:
+
+- ResolvedQueryExecutableValidator runs before metadata or southbound execution.
+- It validates Metric Catalog existence first, then exact Object × Metric ownership against a trusted product baseline.
+- KNOWN_INCOMPATIBLE and METRIC_UNKNOWN are hard failures. Uncovered capability is RUNTIME_CAPABILITY_REQUIRED and must not be probed by the Skill.
+- Dynamic metadata still validates object arguments and runtime inventory after the static gate.
 
 Metadata and ownership:
 

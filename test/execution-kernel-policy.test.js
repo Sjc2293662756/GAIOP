@@ -51,6 +51,7 @@ describe('execution kernel policy', () => {
 
   test('should reject a metric workflow drifting to pageViews', async () => {
     const result = await RequirementParserService.executeDirectGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'pageViews',
       queryModeKey: 'detail',
       start: 1779413040,
@@ -78,16 +79,19 @@ describe('execution kernel policy', () => {
 
   test('should reject object inventory drift to topValues', async () => {
     const result = await RequirementParserService.executeDirectGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
+      queryModeKey: 'topn',
       start: 1779413040,
       end: 1779499440,
-      metric: 'TPIO',
-      topMetric: 'TPIO',
-      groups: [{ type: 'BusinessGroup' }],
+      metrics: ['PGTME'],
+      topMetric: 'PGTME',
+      topCount: 10,
+      groups: [{ type: 'WebApplication' }],
       semanticConstraints: {
         workflowType: 'object_inventory',
         operation: 'metadata_list',
-        targetObjectType: 'BusinessGroup'
+        targetObjectType: 'WebApplication'
       }
     });
 

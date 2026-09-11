@@ -20,6 +20,26 @@
       "description": "NAPM 中的业务组/工作组对象。"
     },
     {
+      "objectType": "IPAddress",
+      "inventoryProvider": "groupArguments",
+      "apiType": "groupArguments",
+      "executionGroupType": "IPAddress",
+      "cnAliases": [
+        "IP地址",
+        "客户端IP",
+        "服务端IP",
+        "主机",
+        "IP"
+      ],
+      "enAliases": [
+        "IPAddress",
+        "IP address",
+        "client IP",
+        "server IP"
+      ],
+      "description": "NAPM 中的 IP 地址查询对象。"
+    },
+    {
       "objectType": "WebApplication",
       "inventoryProvider": "applications",
       "apiType": "applications",
@@ -100,6 +120,7 @@
       "description": "客户端业务组对象。"
     }
   ],
+  "defaultMetricQueryObjectType": "IPAddress",
   "plainApplicationDefault": "DefinedApp",
   "plainApplicationCandidates": [
     "WebApplication",

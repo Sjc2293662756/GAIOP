@@ -40,9 +40,17 @@ _Avoid_: incomplete Resolved Query, executable query
 The authoritative evaluation of a Query Draft. It selects exactly one action: ask a clarifying question, execute a validated Resolved Query, or reject an unsupported query. A clarification is a normal terminal outcome and does not imply Skill or southbound failure.
 _Avoid_: model prose, hook-local guess, validation error for missing user input
 
-**Structured Query Intent**:
-The shared classification of workflow operation, target object type, and metric semantic. `WorkflowClassifierService` composes object ontology and metric normalization into this structure, and Query Decision consumes it for application-traffic scope checks. Prompt routing, plugin hooks, and Query Decision must not maintain independent application-traffic regexes.
-_Avoid_: duplicated prompt regex, hook-local application scope guess
+**Canonical Query Semantic Contract**:
+The immutable `napm-query-semantic.v1` interpretation produced before Query Draft construction. It carries `status`, `operation`, nullable `direction`, nullable `targetObjectType`, optional `primaryMetric`, `requestedMetrics[]`, nullable `rankingMetric`, nullable `topCount`, `timeIntent`, `confidence`, `ambiguities[]`, `unresolvedSlots[]`, `reasonCode`, and source records. The only lifecycle states are `RESOLVED`, `AMBIGUOUS`, `UNRESOLVED`, and `UNSUPPORTED`; only `RESOLVED` may enter Query Draft assembly. Object Ontology owns objects, Resolution Spec `metricSemanticRules` owns metric language, Resolution Spec `rankingGrammar` owns ranking operation/direction/count, and the shared time parser owns time. `WorkflowClassifierService` alone derives lifecycle after computing operation-specific required slots; the Resolver only consumes the contract, rejects unknown schemas/statuses, and never supplies a default object.
+_Avoid_: duplicated prompt regex, `primaryMetric=requestedMetrics[0]`, deriving `topMetric` from the first return metric, Resolver reinterpretation of raw prompt, treating semantic `RESOLVED` as Query validity or runtime capability
+
+**Canonical ResolvedQuery Contract**:
+The single executable query shape `napm-resolved-query.v1`, owned by `ResolvedQueryContract`. `metrics[]` is the returned metric set, `topMetric` is the independent ordering metric used only by `topValues`, and `queryModeKey` is derived from `service`. `metric` is forbidden in canonical queries and is accepted only at a legacy input boundary where `LegacyMetricInputAdapter` removes it before validation. Semantic Resolver output and internal real child queries do not pass through that Adapter.
+_Avoid_: `metric=metrics[0]=topMetric`, requiring `topMetric ∈ metrics[]`, service/queryMode conflicts, running the legacy Adapter after canonical assembly
+
+**Query Knowledge Sources**:
+The only maintained Resolution Spec, Object Ontology, Metric Catalog, and Object × Metric ownership sources live under `skills/openclaw-napm-query/`. The Resolution Spec is also the only machine source for Metric Semantic Rules and Ranking Grammar; old `metrics.aliases` is deprecated and forbidden for production matching. Root configuration copies are forbidden; the retained root ownership entry is only a thin compatibility re-export. Metric Catalog load failure is fatal, and every semantic-rule metric ID must exist in it. The ownership tri-state requires an exact service, exact group-path signature, exhaustive coverage, and an explicitly matching trusted product baseline; no baseline means `UNKNOWN`. During Phase 2 this API remains deliberately disconnected from Query Decision and execution admission.
+_Avoid_: root configuration mirror, second semantic/ranking table, built-in legal-ID fallback, object-only exhaustive claim, implicit runtime baseline
 
 **Validated Group Path**:
 An explicit multi-level `pathPlanning` record whose planner proof, `plannedGroups`, `selectedPath`, anchor, and terminal queryability all agree with the static groups tree. Ordinary queries with multiple groups default to `VALIDATION_FAILURE`; merely supplying two groups or an unverified `pathPlanning` object is not sufficient.
@@ -93,8 +101,8 @@ The lightweight successful `timeValues` context stored both as scope-latest for 
 _Avoid_: validating an admitted follow-up against the newest query in the conversation
 
 **TopN Normalization**:
-The deterministic ordering applied to every `topValues` result before narration or ranking-result storage. Values are parsed numerically using `topMetric`, structured ascending/descending intent determines direction, source ranks are replaced, ties remain stable, and blank/missing values stay last. The narration object type is the effective terminal group.
-_Avoid_: string sorting, trusting upstream row order, treating blank values as zero, labeling a terminal PageFamily result as WebApplication
+The deterministic descending ordering applied to supported `rank_top` results before narration or ranking-result storage. Values are parsed numerically using `topMetric`, source ranks are replaced, ties remain stable, and blank/missing values stay last. A semantically complete `rank_bottom` is `UNSUPPORTED/RANK_BOTTOM_UNSUPPORTED`; an incomplete BottomN remains `UNRESOLVED`. Ascending local reordering is not a BottomN implementation. The narration object type is the effective terminal group.
+_Avoid_: string sorting, trusting upstream row order, treating blank values as zero, reversing TopN to fabricate BottomN, labeling a terminal PageFamily result as WebApplication
 
 **Contract Violation**:
 The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call, or after the Tool call was accepted but before its adapter started execution. It produces a safe final response and never fabricates data or starts a southbound request. If adapter execution already started but no result exists at final output, the distinct terminal outcome is `EXECUTION_FAILURE`.
@@ -111,6 +119,10 @@ _Avoid_: business, WebApplication
 **Business Group**:
 The monitoring grouping represented by `BusinessGroup` in NAPM queries.
 _Avoid_: business, WebApplication
+
+## Executable Query Gate
+
+Canonical queries pass one shared Phase 4 validator before execution. The order is Metric Catalog existence, exact Object × Metric ownership classification, then the Gateway/Direct/Plugin execution gate. Known incompatibility and unknown metrics are deterministic validation failures; an uncovered or untrusted capability is RUNTIME_CAPABILITY_REQUIRED and has zero metadata, Skill, Kernel, and southbound calls. The validator does not infer user intent and does not replace dynamic object-argument validation.
 
 ## Flagged Ambiguities
 

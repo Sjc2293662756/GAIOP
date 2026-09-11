@@ -47,7 +47,8 @@ describe('OpenClawNarrationContractService', () => {
       service: 'topValues',
       resolvedQuery: {
         service: 'topValues',
-        metric: 'TPIO',
+        metrics: ['TPIO'],
+        topMetric: 'TPIO',
         groups: [{ type: 'DefinedApp' }]
       },
       summary: {
@@ -90,7 +91,6 @@ describe('OpenClawNarrationContractService', () => {
       service: 'topValues',
       resolvedQuery: {
         service: 'topValues',
-        metric: 'PLI',
         metrics: ['PLI'],
         topMetric: 'TPIO',
         groups: [{ type: 'IPAddress' }]

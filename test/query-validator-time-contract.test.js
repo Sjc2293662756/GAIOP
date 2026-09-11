@@ -2,8 +2,11 @@ const QueryValidator = require('../skills/openclaw-napm-query/services/QueryVali
 
 function makeQuery(start, end) {
   return {
+    schemaVersion: 'napm-resolved-query.v1',
     service: 'topValues',
-    metric: 'BYTIO',
+    groups: [{ type: 'IPAddress' }],
+    metrics: ['BYTIO'],
+    topMetric: 'BYTIO',
     topCount: 5,
     start,
     end
@@ -42,12 +45,13 @@ describe('QueryValidator execution-time contract', () => {
           service: 'topValues'
         }
       });
-      expect(error.details.errors).toContain('Start and end timestamps must be positive integer Unix seconds');
+      expect(error.details.reasonCodes).toContain('START_REQUIRED');
     }
   });
 
   test('accepts pageViews without metric or group fields and applies the default limit', () => {
     expect(QueryValidator.validate({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'pageViews',
       queryModeKey: 'detail',
       start: 1785310980,
@@ -61,6 +65,7 @@ describe('QueryValidator execution-time contract', () => {
 
   test('rejects PageFamilyDetail as a synthetic group for pageViews', () => {
     expect(() => QueryValidator.validate({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'pageViews',
       queryModeKey: 'detail',
       start: 1785310980,

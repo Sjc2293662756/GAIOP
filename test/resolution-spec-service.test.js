@@ -16,6 +16,8 @@ describe('ResolutionSpecService extended getters', () => {
     const runtimeContracts = ResolutionSpecService.getRuntimeMetadataContracts();
     const argumentPolicies = ResolutionSpecService.getQueryArgumentPolicies();
     const queryPolicy = ResolutionSpecService.getQueryConstructionPolicy();
+    const metricSemanticRules = ResolutionSpecService.getMetricSemanticRules();
+    const rankingGrammar = ResolutionSpecService.getRankingGrammar();
 
     expect(serviceProfiles.topValues.requiredExecutionFields).toContain('start');
     const topValuesServiceSpec = ResolutionSpecService.getServiceSpec('topValues');
@@ -53,6 +55,18 @@ describe('ResolutionSpecService extended getters', () => {
       })
     ]));
     expect(queryPolicy.constructionOrder).toContain('template_binding');
+    expect(metricSemanticRules).toMatchObject({
+      schemaVersion: 'napm-metric-semantic-rules.v1',
+      explicitMetricIdsFromCatalog: true,
+      rules: expect.arrayContaining([
+        expect.objectContaining({ id: 'web-page-delay', metricId: 'PGTME' }),
+        expect.objectContaining({ id: 'web-slow-page-count', metricId: 'PGNSLPGE' })
+      ])
+    });
+    expect(rankingGrammar).toMatchObject({
+      schemaVersion: 'napm-ranking-grammar.v1',
+      defaults: { topCount: 10 }
+    });
   });
 });
 

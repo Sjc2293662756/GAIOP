@@ -74,6 +74,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-query/services/PromptRoutingService.js',
   'openclaw-napm-query/services/QueryDecisionPolicy.js',
   'openclaw-napm-query/services/ResolutionSpecService.js',
+  'openclaw-napm-query/services/ResolvedQueryContract.js',
+  'openclaw-napm-query/services/LegacyMetricInputAdapter.js',
   'openclaw-napm-query/services/ResolvedQueryTimeRangeService.js',
   'openclaw-napm-query/src/shared/timeResolver.js',
   'openclaw-napm-report/scripts/generate_napm_report.js',
@@ -141,6 +143,14 @@ const napmPageViewsContract = () => require(path.join(
   OPENCLAW_SKILLS_ROOT,
   'shared/NapmPageViewsContract.js'
 ));
+const napmResolvedQueryContract = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/ResolvedQueryContract.js'
+));
+const napmLegacyMetricInputAdapter = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/LegacyMetricInputAdapter.js'
+));
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
 const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
@@ -198,7 +208,9 @@ const queryTurnCoordinator = new QueryTurnCoordinator({
   extractPageFamilyId: (row) => napmPageViewsContract().extractPageFamilyId(row)
 });
 const turnAdmissionCoordinator = new TurnAdmissionCoordinator();
-const queryContextResolver = new QueryContextResolver();
+const queryContextResolver = new QueryContextResolver({
+  resolvedQuerySchemaVersion: napmResolvedQueryContract().RESOLVED_QUERY_SCHEMA_VERSION
+});
 const alertContextResolver = new AlertContextResolver();
 const contextBoundaryResolver = new ContextBoundaryResolver();
 const assistantOutputLedger = new AssistantOutputLedger({
@@ -1726,7 +1738,7 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     return resolvedQuery;
   }
 
-  const next = cloneJsonObject(resolvedQuery);
+  let next = cloneJsonObject(resolvedQuery);
   const serviceName = String(next.service || '').trim();
   if (serviceName) {
     next.service = serviceName;
@@ -1801,24 +1813,16 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     ? next.metrics
     : (typeof next.metrics === 'string' ? next.metrics.split(',') : []);
   const normalizedMetrics = [...new Set(metricList
-    .map((metric) => String(metric || '').trim())
+    .map((metric) => String(metric || '').trim().toUpperCase())
     .filter(Boolean))];
   if (normalizedMetrics.length > 0) {
     next.metrics = normalizedMetrics;
-  } else if (String(next.metric || '').trim()) {
-    next.metrics = [String(next.metric).trim()];
+  } else {
+    delete next.metrics;
   }
 
   if (String(next.topMetric || '').trim()) {
-    next.topMetric = String(next.topMetric).trim();
-  }
-  if (!String(next.metric || '').trim()) {
-    next.metric = next.topMetric || next.metrics?.[0] || next.metric;
-  } else {
-    next.metric = String(next.metric).trim();
-  }
-  if (serviceName === 'topValues' && !next.topMetric) {
-    next.topMetric = next.metric || next.metrics?.[0];
+    next.topMetric = String(next.topMetric).trim().toUpperCase();
   }
 
   if (serviceName === 'pageViews') {
@@ -1868,6 +1872,13 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
       delete next[key];
     }
   });
+
+  const canonicalContract = napmResolvedQueryContract();
+  if (canonicalContract.getServiceContract(serviceName)) {
+    next.schemaVersion = String(next.schemaVersion || '').trim()
+      || canonicalContract.RESOLVED_QUERY_SCHEMA_VERSION;
+    next = canonicalContract.normalizeCanonicalShape(next);
+  }
 
   return next;
 }
@@ -2174,6 +2185,39 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
+  const earlyDeclaredTimeKey = getRelativeTimeRangeKey(normalizedResolvedQuery);
+  if (
+    earlyDeclaredTimeKey
+    && earlyDeclaredTimeKey !== 'custom'
+    && !isSupportedRelativeTimeRangeKey(earlyDeclaredTimeKey)
+  ) {
+    return {
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      message: `Unsupported queryDraft timeRange.key=${earlyDeclaredTimeKey}; provide a concrete key such as last60minutes.`,
+      details: { timeRangeKey: earlyDeclaredTimeKey }
+    };
+  }
+
+  const canonicalContract = napmResolvedQueryContract();
+  const canonicalServiceContract = canonicalContract.getServiceContract(serviceName);
+  if (canonicalServiceContract) {
+    const canonicalValidation = canonicalContract.validateShape(normalizedResolvedQuery, {
+      phase: options?.phase
+    });
+    if (!canonicalValidation.ok) {
+      return {
+        ok: false,
+        reason: canonicalValidation.reason,
+        reasonCode: canonicalValidation.reasonCode,
+        message: canonicalValidation.message,
+        details: canonicalValidation.details || null,
+        resolvedQuery: canonicalValidation.query || normalizedResolvedQuery
+      };
+    }
+    normalizedResolvedQuery = canonicalValidation.query;
+  }
+
   const service = getResolutionSpecService();
   const serviceSpec = service && typeof service.getServiceSpec === 'function'
     ? service.getServiceSpec(serviceName)
@@ -2186,7 +2230,9 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  const requiredFields = Array.isArray(serviceSpec.required) ? serviceSpec.required : [];
+  const requiredFields = canonicalServiceContract
+    ? []
+    : (Array.isArray(serviceSpec.required) ? serviceSpec.required : []);
   const requiresRootStart = requiredFields.includes('start');
   const requiresRootEnd = requiredFields.includes('end');
   const rootStart = Number(normalizedResolvedQuery.start);
@@ -2214,7 +2260,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  if (serviceName === 'pageViews') {
+  if (serviceName === 'pageViews' && !canonicalServiceContract) {
     const pageViewsValidation = napmPageViewsContract().validatePageViewsQuery(
       normalizedResolvedQuery,
       { phase: options?.phase }
@@ -2291,25 +2337,13 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  if (serviceName === 'topValues') {
+  if (serviceName === 'topValues' && !canonicalServiceContract) {
     const topCount = normalizedResolvedQuery.topCount;
     if (topCount != null && (!Number.isInteger(Number(topCount)) || Number(topCount) <= 0)) {
       return {
         ok: false,
         reason: 'invalid_top_count',
         message: `queryDraft.topCount must be a positive integer; received ${topCount}.`
-      };
-    }
-    const metrics = Array.isArray(normalizedResolvedQuery.metrics)
-      ? normalizedResolvedQuery.metrics.map((metric) => String(metric || '').trim())
-      : [];
-    const topMetric = String(normalizedResolvedQuery.topMetric || '').trim();
-    if (topMetric && !metrics.includes(topMetric)) {
-      return {
-        ok: false,
-        reason: 'top_metric_not_in_metrics',
-        message: `queryDraft.topMetric=${topMetric} must also be present in queryDraft.metrics.`,
-        details: { topMetric, metrics }
       };
     }
   }
@@ -2336,7 +2370,12 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 
   const queryModeKey = String(normalizedResolvedQuery.queryModeKey || '').trim();
   const allowedQueryModes = Array.isArray(serviceSpec.queryModes) ? serviceSpec.queryModes : [];
-  if (queryModeKey && allowedQueryModes.length > 0 && !allowedQueryModes.includes(queryModeKey)) {
+  if (
+    !canonicalServiceContract
+    && queryModeKey
+    && allowedQueryModes.length > 0
+    && !allowedQueryModes.includes(queryModeKey)
+  ) {
     return {
       ok: false,
       reason: 'invalid_query_mode',
@@ -2376,9 +2415,12 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 
 function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
   const validationReason = String(validation?.reason || '').trim();
+  const validationReasonCode = String(validation?.reasonCode || '').trim();
+  const stableValidationReason = validationReason
+    || validationReasonCode.toLowerCase();
   const validationDetails = isPlainObject(validation.details) ? validation.details : {};
   const clarificationQuestion = buildQueryScopeClarificationQuestion(
-    validationReason,
+    stableValidationReason,
     validationDetails
   );
   if (clarificationQuestion) {
@@ -2400,13 +2442,13 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
       },
       decision: {
         next_action: 'ASK_CLARIFYING_QUESTION',
-        reason: validationReason || 'query_scope_incomplete',
+        reason: stableValidationReason || 'query_scope_incomplete',
         clarifying_question: clarificationQuestion,
         message: clarificationQuestion
       },
       error: {
         code: validation?.code || 'QUERY_SCOPE_INCOMPLETE',
-        reason: validationReason || 'query_scope_incomplete',
+        reason: stableValidationReason || 'query_scope_incomplete',
         message: clarificationQuestion,
         retryable: false
       },
@@ -2431,12 +2473,12 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
     prompt: normalizePrompt(args),
     decision: {
       next_action: 'REPAIR_QUERY_DRAFT',
-      reason: validation.reason || 'invalid_resolved_query',
+      reason: stableValidationReason || 'invalid_resolved_query',
       message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     error: {
       code: 'UPSTREAM_QUERY_DRAFT_INVALID',
-      reason: validation.reason || 'invalid_resolved_query',
+      reason: stableValidationReason || 'invalid_resolved_query',
       message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     allowedServices,
@@ -2470,11 +2512,14 @@ function buildQueryScopeClarificationQuestion(reason = '', details = {}) {
   return '';
 }
 
-function evaluatePluginQueryDecision(prompt = '', queryDraft = null, validation = undefined) {
+function evaluatePluginQueryDecision(prompt = '', queryDraft = null, validation = undefined, options = {}) {
   return napmQueryDecisionPolicy().evaluateQueryDecision({
     prompt,
     queryDraft,
-    validation
+    validation,
+    executableValidationContext: {
+      phase: options.phase || null
+    }
   });
 }
 
@@ -3129,7 +3174,9 @@ function rememberSkillExecutionFailureForTurn(
 }
 
 function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
-  const message = validation.message || 'queryDraft failed plugin validation.';
+  const validationCode = String(validation?.reasonCode || validation?.code || '').trim();
+  const rawMessage = validation.message || 'queryDraft failed plugin validation.';
+  const message = validationCode ? `${validationCode}: ${rawMessage}` : rawMessage;
   if (String(validation?.reason || '').trim() === 'application_scope_mismatch') {
     if (String(validation?.details?.service || '').trim() === 'topValues') {
       if (failureRecord?.terminal || failureRecord?.phase === 'TERMINAL') {
@@ -3160,11 +3207,41 @@ function prepareSkillExecutionArgs(args = {}) {
   }
 
   if (isPlainObject(prepared.resolvedQuery)) {
+    if (Object.prototype.hasOwnProperty.call(prepared.resolvedQuery, 'metric')) {
+      const adaptation = napmLegacyMetricInputAdapter().adapt(prepared.resolvedQuery, {
+        phase: 'construction'
+      });
+      if (!adaptation.ok) {
+        prepared.legacyMetricAdaptation = adaptation;
+      } else {
+        prepared.resolvedQuery = adaptation.query;
+        appendPluginAuditEvent('napm_legacy_metric_input_adapted', {
+          traceId: normalizeTraceId(prepared?.traceId) || null,
+          service: adaptation.query?.service || null,
+          warnings: adaptation.warnings || []
+        });
+      }
+    }
     prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
     prepared.queryDraft = prepared.resolvedQuery;
   }
 
   return applyPathPreflightToSkillArgs(prepared);
+}
+
+function validatePreparedResolvedQuery(preparedArgs = {}, options = {}) {
+  const adaptation = preparedArgs?.legacyMetricAdaptation;
+  if (adaptation && adaptation.ok === false) {
+    return {
+      ok: false,
+      reason: adaptation.reason,
+      reasonCode: adaptation.reasonCode,
+      message: adaptation.message,
+      details: adaptation.details || null,
+      resolvedQuery: null
+    };
+  }
+  return validateResolvedQueryAgainstSpec(preparedArgs?.resolvedQuery, options);
 }
 
 function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
@@ -6585,7 +6662,7 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   const result = record.result;
   const resolvedQuery = record.resolvedQuery || result.resolvedQuery || {};
   const service = String(resolvedQuery.service || result.service || '').trim() || 'unknown';
-  const metric = String(resolvedQuery.topMetric || resolvedQuery.metric || '').trim();
+  const metric = String(resolvedQuery.topMetric || resolvedQuery.metrics?.[0] || '').trim();
   const groups = Array.isArray(resolvedQuery.groups)
     ? resolvedQuery.groups
       .map((group) => String(group?.argument || group?.type || '').trim())
@@ -7084,9 +7161,11 @@ function createSkillToolDefinition() {
   const resolutionSpecService = getResolutionSpecService();
   const requiredFieldsByService = allowedServices
     .map((serviceName) => {
-      const required = resolutionSpecService?.getServiceSpec
-        ? resolutionSpecService.getServiceSpec(serviceName)?.required
-        : null;
+      const canonicalServiceContract = napmResolvedQueryContract().getServiceContract(serviceName);
+      const required = canonicalServiceContract?.required
+        || (resolutionSpecService?.getServiceSpec
+          ? resolutionSpecService.getServiceSpec(serviceName)?.required
+          : null);
       return Array.isArray(required) && required.length > 0
         ? `${serviceName} requires ${required.join(', ')}`
         : '';
@@ -7113,8 +7192,19 @@ function createSkillToolDefinition() {
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
         queryDraft: {
           type: 'object',
-          description: 'Structured query interpretation evaluated by QueryDecisionPolicy. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to a Resolved Query.',
+          description: 'Canonical structured query interpretation evaluated by QueryDecisionPolicy. Metric services use schemaVersion=napm-resolved-query.v1, metrics[], and topMetric only for topValues. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to execution.',
           properties: {
+            schemaVersion: { type: 'string', enum: ['napm-resolved-query.v1'] },
+            service: { type: 'string', enum: allowedServices },
+            queryModeKey: { type: 'string' },
+            metrics: { type: 'array', items: { type: 'string' } },
+            topMetric: { type: 'string' },
+            groups: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            topCount: { type: 'number' },
+            granularity: { type: 'number' },
+            start: { type: 'number' },
+            end: { type: 'number' },
+            timeRange: { type: 'object', additionalProperties: true },
             resultReference: resultReferenceSchema
           },
           additionalProperties: true
@@ -7129,8 +7219,9 @@ function createSkillToolDefinition() {
               description: 'Service declared by napm-resolution-spec.v1.json. Use timeValues for trends, not timeseries/trend/series.'
             },
             queryModeKey: { type: 'string' },
+            schemaVersion: { type: 'string' },
             metrics: { type: 'array', items: { type: 'string' } },
-            metric: { type: 'string' },
+            metric: { type: 'string', description: 'Deprecated legacy compatibility input. The boundary adapter removes it before canonical validation.' },
             topMetric: { type: 'string' },
             groups: {
               type: 'array',
@@ -7528,8 +7619,8 @@ function createSkillToolDefinition() {
         );
         const { applyTimeOverride } = require(timeResolverPath);
         applyTimeOverride(preparedArgs.resolvedQuery);
-        const validation = validateResolvedQueryAgainstSpec(
-          preparedArgs?.resolvedQuery,
+        const validation = validatePreparedResolvedQuery(
+          preparedArgs,
           getResolvedQueryValidationOptions(preparedArgs)
         );
         if (isPlainObject(validation.resolvedQuery)) {
@@ -7545,7 +7636,8 @@ function createSkillToolDefinition() {
         const queryDecision = evaluatePluginQueryDecision(
           semanticPrompt,
           preparedArgs?.resolvedQuery,
-          validation
+          validation,
+          { phase: 'execution' }
         );
         appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
           traceId,
@@ -9530,8 +9622,8 @@ const plugin = {
           const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const resolvedQueryValidation = resultReferenceResolution.ok
-            ? validateResolvedQueryAgainstSpec(
-                canonicalSkillParams?.resolvedQuery,
+            ? validatePreparedResolvedQuery(
+                canonicalSkillParams,
                 { phase: 'construction' }
               )
             : resultReferenceResolution;
@@ -9573,7 +9665,8 @@ const plugin = {
           const constructionQueryDecision = evaluatePluginQueryDecision(
             querySemanticPrompt,
             canonicalSkillParams?.resolvedQuery,
-            resolvedQueryValidation
+            resolvedQueryValidation,
+            { phase: 'construction' }
           );
           appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
             traceId,
@@ -10546,6 +10639,7 @@ module.exports.__test__ = {
   resolveQueryResultReference,
   resolvePageViewsResultReference,
   validateResolvedQueryAgainstSpec,
+  validatePreparedResolvedQuery,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,

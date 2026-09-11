@@ -5,6 +5,9 @@
  * 这个阶段会补齐时间范围、groups、slot 参数、child query 预算分配，
  * 让执行器拿到的是一份已经可以直接跑的执行清单。
  */
+const LegacyMetricInputAdapter = require('../services/LegacyMetricInputAdapter');
+const ResolvedQueryContract = require('../services/ResolvedQueryContract');
+
 function deepClone(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value;
 }
@@ -95,8 +98,11 @@ function applyMetadataAdjustments(query, candidateReview = {}) {
 function buildBaseQueryFromCandidate(candidate, range, seedGroups = [], slots = {}, candidateReview = null) {
   const request = candidate?.request || {};
   const metrics = Array.isArray(request.metrics) ? request.metrics.filter(Boolean) : [];
-  const metric = request.metric || metrics[0] || null;
+  const legacyMetric = request.metric || null;
   const query = {
+    ...(ResolvedQueryContract.getServiceContract(request.service)
+      ? { schemaVersion: ResolvedQueryContract.RESOLVED_QUERY_SCHEMA_VERSION }
+      : {}),
     service: request.service,
     start: range.start,
     end: range.end,
@@ -106,17 +112,15 @@ function buildBaseQueryFromCandidate(candidate, range, seedGroups = [], slots = 
   if (metrics.length > 0) {
     query.metrics = metrics;
   }
-  if (metric) {
-    query.metric = metric;
-  }
-
   const groups = buildGroupsFromCandidate(candidate, slots);
   if (groups.length > 0) {
     query.groups = groups;
   }
 
   if (request.service === 'topValues') {
-    query.topMetric = request.topMetric || metric;
+    if (request.topMetric) {
+      query.topMetric = request.topMetric;
+    }
     const requestedTopCount = toFiniteNumber(slots?.requestedTopCount);
     const fallbackTopCount = toFiniteNumber(request.topCount) || 5;
     query.topCount = requestedTopCount && requestedTopCount > 0
@@ -129,7 +133,15 @@ function buildBaseQueryFromCandidate(candidate, range, seedGroups = [], slots = 
   }
 
   const anchoredQuery = applySeedAnchorIfNeeded(query, seedGroups);
-  return applyMetadataAdjustments(anchoredQuery, candidateReview);
+  const adjustedQuery = applyMetadataAdjustments(anchoredQuery, candidateReview);
+  if (legacyMetric) {
+    const adaptation = LegacyMetricInputAdapter.adapt({
+      ...adjustedQuery,
+      metric: legacyMetric
+    });
+    return adaptation.ok ? adaptation.query : adjustedQuery;
+  }
+  return ResolvedQueryContract.normalizeCanonicalShape(adjustedQuery);
 }
 
 // 根据总 child 预算，给编译后的 child plans 做尽量均衡的名额分配。

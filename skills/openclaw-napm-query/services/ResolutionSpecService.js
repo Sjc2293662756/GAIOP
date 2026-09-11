@@ -108,6 +108,18 @@ function getMetricSpec() {
   return cloneJson(spec?.metrics || {});
 }
 
+// 读取唯一的机器指标语义规则；旧 metrics.aliases 不参与生产语义匹配。
+function getMetricSemanticRules() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.metricSemanticRules || null);
+}
+
+// 读取唯一的排行语法定义；所有排行方向与数量解析都必须消费该配置。
+function getRankingGrammar() {
+  const spec = loadResolutionSpec();
+  return cloneJson(spec?.rankingGrammar || null);
+}
+
 // 读取澄清策略配置，用于在语义信息不足时指导追问流程。
 function getClarificationSpec() {
   const spec = loadResolutionSpec();
@@ -330,6 +342,8 @@ module.exports = {
   getObjectNormalizationRules,
   getGroupSpec,
   getMetricSpec,
+  getMetricSemanticRules,
+  getRankingGrammar,
   getClarificationSpec,
   getTimeSpec,
   getTemplateSpec,

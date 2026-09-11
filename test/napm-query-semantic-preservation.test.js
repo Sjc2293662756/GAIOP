@@ -26,9 +26,9 @@ describe('NAPM query semantic preservation', () => {
     applyTimeOverride(prepared.resolvedQuery, 1785316800000);
 
     expect(prepared.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
-      metric: 'BYTIO',
       metrics: ['BYTIO'],
       topMetric: 'BYTIO',
       groups: [{ type: 'IPAddress' }],
@@ -39,6 +39,7 @@ describe('NAPM query semantic preservation', () => {
       format: 'json',
       executionOptions: { timeMode: 'relative' }
     });
+    expect(prepared.resolvedQuery.metric).toBeUndefined();
   });
 
   test.each([
@@ -100,9 +101,9 @@ describe('NAPM query semantic preservation', () => {
     });
 
     expect(prepared.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
-      metric: 'BYTIO',
       metrics: ['BYTI', 'BYTO', 'BYTIO'],
       topMetric: 'BYTIO',
       groups: [{ type: 'IPAddress' }],
@@ -112,10 +113,11 @@ describe('NAPM query semantic preservation', () => {
       format: 'json',
       executionOptions: { timeMode: 'fixed' }
     });
+    expect(prepared.resolvedQuery.metric).toBeUndefined();
     expect(prepared.resolvedQuery.timeRange?.key).not.toBe('last1hour');
   });
 
-  test('rejects a sort metric that is absent from the requested metric set', () => {
+  test('accepts a sort metric that is absent from the requested metric set', () => {
     const validation = plugin.__test__.validateResolvedQueryAgainstSpec({
       service: 'topValues',
       queryModeKey: 'topn',
@@ -128,8 +130,11 @@ describe('NAPM query semantic preservation', () => {
     });
 
     expect(validation).toMatchObject({
-      ok: false,
-      reason: 'top_metric_not_in_metrics'
+      ok: true,
+      resolvedQuery: {
+        metrics: ['BYTI', 'BYTO'],
+        topMetric: 'BYTIO'
+      }
     });
   });
 

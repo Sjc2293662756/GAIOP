@@ -275,10 +275,9 @@ function extractMetricId(payload = {}) {
   const resolvedQuery = payload?.resolvedQuery || {};
   const summaryMetrics = Array.isArray(payload?.summary?.metrics) ? payload.summary.metrics : [];
   return String(
-    resolvedQuery.metric
-    || summaryMetrics[0]
-    || resolvedQuery.topMetric
+    summaryMetrics[0]
     || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
+    || resolvedQuery.topMetric
     || ''
   ).trim() || null;
 }
@@ -289,7 +288,6 @@ function extractSortMetricId(payload = {}) {
   return String(
     resolvedQuery.topMetric
     || summaryTopMetric
-    || resolvedQuery.metric
     || (Array.isArray(resolvedQuery.metrics) ? resolvedQuery.metrics[0] : '')
     || ''
   ).trim() || null;

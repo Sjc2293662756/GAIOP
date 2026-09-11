@@ -13,7 +13,9 @@ function decision(sourceObjectType, selection = { action: 'DETAIL', ordinal: 1 }
 }
 
 describe('QueryContextResolver', () => {
-  const resolver = new QueryContextResolver();
+  const resolver = new QueryContextResolver({
+    resolvedQuerySchemaVersion: 'napm-resolved-query.v1'
+  });
 
   test.each(['WebApplication', 'PageFamily']) (
     'exposes a Query admission candidate for a %s ranking',
@@ -65,11 +67,11 @@ describe('QueryContextResolver', () => {
 
   test('maps a selected business to an authoritative PageFamily drilldown draft', () => {
     expect(resolver.buildContinuationQueryDraft(decision('WebApplication'))).toEqual({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
       groups: [{ type: 'PageFamily' }],
       metrics: ['PGNPGE'],
-      metric: 'PGNPGE',
       topMetric: 'PGNPGE',
       topCount: 10,
       resultReference: {

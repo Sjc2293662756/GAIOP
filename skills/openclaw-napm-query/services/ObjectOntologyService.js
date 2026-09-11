@@ -30,6 +30,7 @@ function loadOntology() {
     version: parsed.version || 'unknown',
     objects,
     byType: new Map(objects.map(item => [item.objectType, item])),
+    defaultMetricQueryObjectType: normalizeText(parsed.defaultMetricQueryObjectType) || null,
     plainApplicationDefault: normalizeText(parsed.plainApplicationDefault) || 'DefinedApp',
     plainApplicationCandidates: Array.isArray(parsed.plainApplicationCandidates)
       ? parsed.plainApplicationCandidates.slice()
@@ -61,6 +62,10 @@ function getPlainApplicationCandidates() {
 
 function getPlainApplicationDefault() {
   return loadOntology().plainApplicationDefault;
+}
+
+function getDefaultMetricQueryObjectType() {
+  return loadOntology().defaultMetricQueryObjectType;
 }
 
 function getAliases(objectType = '') {
@@ -146,6 +151,7 @@ module.exports = {
   getObjectDefinition,
   getAliases,
   getPlainApplicationDefault,
+  getDefaultMetricQueryObjectType,
   getPlainApplicationCandidates,
   classifyObjectText,
   resolveObjectInstanceProvider

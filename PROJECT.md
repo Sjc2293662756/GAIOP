@@ -9,11 +9,13 @@
 1. 用户在企业微信提出 NAPM / 网络运维问题。
 2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定，并为每轮生成一份不可变 Turn Admission Decision。平台身份/能力等模型回答轮也必须生成明确 `MODEL_OWNED` Decision，不能走无 Decision 的快路径。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId` 和 Hook 密封的准入/参数授权。缺少生命周期身份、准入授权或参数一致性时在时间物化、校验和 Skill 调用之前 fail-closed。
 3. `DomainIntentClassificationAdapter` 作为唯一 prompt-facing 领域分类边界，把既有分类器结果投影成带版本和来源的不可变结构；`TurnIntentResolver` 只消费同一进程 Adapter 实际签发且 schema/source/冻结结构验证通过的对象，复制或临时构造的 classification 不会选择 Tool。Turn Admission Coordinator 再把通用序号/详情/数量/时间追问与 Query、Alert 等领域权威结果匹配，固化 route、`expectedTool`、分类来源、来源 artifact 和原因码。准入发现候选后立即冻结来源，后续同 scope 新结果不会替换它。公共门禁只消费该决定做身份与 Tool 一致性检查；无权威上下文或最近结果尚未支持序号下钻时正式澄清，不回退到旧 Query 结果。
-4. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围、可选下钻路径或权威排行结果引用的 Query Draft，澄清续答则只传 `clarificationAnswer`。
-5. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
-6. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
-7. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；Query Hook 只给最终规范化参数生成一次授权摘要，execute 不接受同一 trace 下替换过的对象、指标、时间或引用。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
-8. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
+4. `WorkflowClassifierService` 只组合 Object Ontology、配置驱动的 Metric Semantic Normalizer、Ranking Intent Parser 和统一时间解析结果，产出不可变 `napm-query-semantic.v1`。契约生命周期唯一枚举为 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`，顶层同时保存 `ambiguities[]`、`unresolvedSlots[]` 和 `reasonCode`；只有 `RESOLVED` 可进入 Query Draft assembly。`requestedMetrics[]` 与 `rankingMetric` 分开表达返回指标和排行依据，`primaryMetric` 可空；Resolver 只消费该契约，不从 raw prompt 重猜，也不提供默认对象补位。澄清续答只传 `clarificationAnswer`。
+5. Resolver 将已完成语义映射为唯一 `napm-resolved-query.v1`：`requestedMetrics[] -> metrics[]`、`rankingMetric -> topMetric`，不输出 `metric`。`topValues` 的 `topMetric` 与 `metrics[]` 独立；平均值和趋势只使用 `metrics[]`，趋势另带 `granularity`。Plugin、QueryValidator、Resolver 和 legacy Adapter 共同消费 `ResolvedQueryContract`，不各自维护 required/forbidden 字段表。
+6. 旧调用方携带单数 `metric` 时，只在明确的 Tool/Skill 输入边界调用一次 `LegacyMetricInputAdapter`；成功后删除 `metric` 并重新校验 canonical shape，冲突返回稳定 `LEGACY_METRIC_CONFLICT/LEGACY_METRIC_PARTIAL_CONFLICT`。新 Semantic 路径不调用 Adapter。
+7. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
+8. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
+9. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；Query Hook 只给最终规范化参数生成一次授权摘要，execute 不接受同一 trace 下替换过的对象、指标、时间或引用。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
+10. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。
 
@@ -101,11 +103,17 @@ Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Tur
 
 ## 关键配置文件
 
-- `config/napm-resolution-spec.v1.json` — 查询服务/模式/必填字段契约
+- `skills/openclaw-napm-query/config/napm-resolution-spec.v1.json` — 查询服务/模式/必填字段的唯一规范源；其中旧 execution ownership 字段已标记 deprecated
 - `config/inspection-report-rules.v1.json` — 巡检报告规则
 - `config/inspection-report-field-map.v1.json` — 巡检字段映射
-- `config/object-ontology.v1.json` — 对象本体定义
+- `skills/openclaw-napm-query/config/object-ontology.v1.json` — 对象本体唯一规范源
+- `skills/openclaw-napm-query/config/metrics-config.yml` — 合法 Metric ID 唯一目录；缺失、损坏或不可读时启动失败，不加载内置合法 ID 兜底
+- `skills/openclaw-napm-query/src/constants/objectMetricOwnership.js` — Object × Metric ownership 唯一运行时源；根目录同名文件仅为兼容薄转发
 - `openclaw.plugin.json` — 插件配置与工具契约
+
+### Phase 4 查询执行门禁
+
+ResolvedQueryExecutableValidator 是 Query 可执行性校验的唯一入口。它先校验 Metric Catalog 存在性，再按可信产品基线检查精确 service、group path、metric ownership。校验失败、指标未知或能力未知时，Gateway、Direct 和 Plugin 都必须在 metadata、Query Skill 和南向调用之前停止。它只校验 canonical Query，不重新解析 prompt。
 
 ## 回答规则
 

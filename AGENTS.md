@@ -22,10 +22,12 @@
 - 澄清后用户只回复对象名时，模型必须用 `clarificationAnswer` 再次调用 `napm-skill-query`；只有 `QueryTurnCoordinator.resumePending()` 成功恢复正式 pending Query 后，插件才把本轮 Turn Admission Decision 重建为 `EXECUTE_TOOL + napm-skill-query`，绑定新的 run/message，补入对象参数并执行。对象名是否命中 NAPM 关键词不能决定准入；没有正式 pending 的同名短句仍为 `MODEL_OWNED` 且零南向调用，不由模型重建完整查询。
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Query Turn 生成权威 `finalContent` 并 exactly-once 交付。普通查询到达非流式最终输出时不得停留在非终态：`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行，终结为契约违规；`REPAIR_PENDING` 终结为校验失败；`EXECUTING` 无结果终结为执行失败。不得由模型猜测数据。
 - 直接调用 Tool execute 也必须经过统一高风险语义策略，包括应用趋势/平均值/排行与 `TotalTraffic` 范围错配、`CompositeApplication`/一般对象清单以及普通查询多 group 契约；无 prompt 的 `overview/auto_apps` 也不得绕过清单契约。普通查询包含多个 groups 时默认 `VALIDATION_FAILURE`，只有 `pathPlanning` 与静态 groups tree 验证一致、终端对象与结构化语义一致且获得可信下钻引用授权的显式多级路径可执行。未获 `EXECUTE_QUERY` 不得调用 Query Skill 或南向接口。
-- 应用流量高风险判断必须消费 `WorkflowClassifierService` 输出的结构化操作、对象和指标语义；对象别名来自 Object Ontology，指标语义来自 Metric Semantic Normalizer。不得在 `PromptRoutingService`、插件或 `QueryDecisionPolicy` 中另建同义正则。
+- `WorkflowClassifierService` 只组合统一解析结果并产出不可变 `napm-query-semantic.v1`：对象来自 Object Ontology，指标来自 Resolution Spec 的 `metricSemanticRules`，排行操作/方向/数量来自同一 Spec 的 `rankingGrammar`，时间沿用统一时间解析器。契约生命周期只允许 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`，并正式携带 `ambiguities[]`、`unresolvedSlots[]`、`reasonCode`；只有 `RESOLVED` 可进入 Query Draft assembly。`primaryMetric` 始终可空，`requestedMetrics[]` 表示返回指标，`rankingMetric` 是排行依据。Resolver 只消费该契约且不得用默认对象补槽；raw prompt 兼容入口也只能先走这条统一语义链。不得在 Resolver、`PromptRoutingService`、插件或 `QueryDecisionPolicy` 中另建指标/排行同义正则。
+- 可执行指标查询统一使用 `schemaVersion=napm-resolved-query.v1`。`metrics[]` 是返回指标，`topMetric` 只用于 `topValues` 排序且不要求属于 `metrics[]`；`averageValues/timeValues` 禁止 `topMetric/topCount`，`timeValues` 必须有 `granularity`。`queryModeKey` 只能由 service 派生并校验一致，不能成为第二个操作真源。单数 `metric` 不是 canonical/NAPM API 字段，只能在 legacy 输入边界由 `LegacyMetricInputAdapter` 运行一次后删除；Resolver、新 Semantic 路径、QueryMetadataConstraint 和实际子查询不得生成 `metric`。
+- Query 的 Resolution Spec、Object Ontology、Metric Catalog 和 Object × Metric ownership 唯一维护源均位于 `skills/openclaw-napm-query/` 内；根目录不得保留前三类配置副本，根 `src/constants/objectMetricOwnership.js` 只能薄转发。Metric Catalog 加载失败必须 fail closed。新 ownership 三态 API 需要精确 service、group path 和可信产品基线，本阶段尚未接入 QueryDecisionPolicy 或南向准入。
 - 页面访问实例详情使用 `service=pageViews`、`queryModeKey=detail`，输入为分钟对齐的 `start/end`、可信 `pageFamilyId` 和正整数 `maxLimit`（本地缺省 20、保护上限 200；该上限不是已确认的上游限制）。`PageFamilyDetail` 不是 group，metrics、groups、topMetric 和 granularity 不得出现在详情请求中。
 - “哪些业务页面访问量最高”先执行 `topValues + WebApplication + PGNPGE`，不得因“页面访问量”自动扩展到 `PageFamily`。只有“排名第 N 的业务访问了什么”等明确追问，才可用权威 `WebApplication` 结果引用补入业务名并执行 `WebApplication > PageFamilies > PageFamily`。
-- Query Turn 对 `WebApplication` 和 `PageFamily` TopN 都保存最小权威结果投影。TopN 行必须先按结构化排序方向和 `topMetric` 数值归一化、重排 rank，空白或缺失值保持在末尾，再保存序号引用和生成叙述。
+- Query Turn 对 `WebApplication` 和 `PageFamily` TopN 都保存最小权威结果投影。当前仅支持 `rank_top/desc`：TopN 行按 `topMetric` 数值降序归一化、重排 rank，空白或缺失值保持在末尾，再保存序号引用和生成叙述。完整且唯一理解的 `rank_bottom/asc` 为 `UNSUPPORTED/RANK_BOTTOM_UNSUPPORTED`；缺排行指标的 BottomN 仍为 `UNRESOLVED`。两者都不得生成 Query Draft，也不得靠本地反转 TopN 伪造 BottomN。
 - “排名第 N 的业务”与“详细查看排名第 N 个页面”等追问必须通过当前 Query Turn 冻结的对应对象结果投影解析 `resultReference`；结果集按 conversation scope 隔离并单独保留 30 分钟。缺失、过期、跨 scope、对象类型错误或序号越界均在时间物化和 Skill 调用前失败，Query Skill、`NapmClient` 和南向调用次数必须为 0。
 - 报告类请求走 `napm-report-export`（巡检/故障诊断/综述/Word/PDF）。
 - 告警查询走 `napm-alert-query`（摘要/时间线/详情/通知字段）。
@@ -39,6 +41,12 @@
 - 对外回答默认中文、简洁、运维导向。
 - 不主动泄露内部路径、服务参数、公网地址、密钥、token、secret。
 - 做维护操作前确认任务确实需要；修改文件前先备份或归档。
+
+## Phase 4 执行门禁
+
+- ResolvedQueryExecutableValidator 统一处理 Metric Catalog 存在性和 Object × Metric 三态 ownership。
+- KNOWN_INCOMPATIBLE、METRIC_UNKNOWN 立即失败；UNKNOWN 只返回 RUNTIME_CAPABILITY_REQUIRED，不进入 metadata、Query Skill、Kernel 或南向接口。
+- Gateway、Direct、Plugin 必须共用该门禁；Plugin 只消费确定性结果。
 
 ## 当前工具清单（7 个生产 Tool，另有 2 个可选诊断 Tool Contract；底层 9 个 Skill）
 

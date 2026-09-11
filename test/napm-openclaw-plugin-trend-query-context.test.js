@@ -58,11 +58,10 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
 
   function buildTrendQuery(timeRangeKey = 'last24hours', granularity = 3600, options = {}) {
     const query = {
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'timeValues',
       queryModeKey: 'timeseries',
       metrics: ['TPIO'],
-      metric: 'TPIO',
-      topMetric: 'TPIO',
       groups: [{ type: 'TotalTraffic' }],
       timeRange: { key: timeRangeKey },
       granularity
@@ -146,7 +145,8 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
 
     expect(validation).toMatchObject({
       ok: false,
-      reason: 'incomplete_resolved_query'
+      reason: 'groups_required',
+      reasonCode: 'GROUPS_REQUIRED'
     });
     expect(validation.message).toContain('groups');
   });

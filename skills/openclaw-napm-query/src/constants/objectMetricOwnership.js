@@ -186,6 +186,128 @@ const NON_BUSINESS_METRIC_IDS = Array.from(new Set(
   NON_BUSINESS_METRIC_CATEGORIES.flatMap((category) => METRIC_CATEGORY_TO_IDS[category] || [])
 ));
 
+const OBJECT_METRIC_COMPATIBILITY = Object.freeze({
+  KNOWN_COMPATIBLE: 'KNOWN_COMPATIBLE',
+  KNOWN_INCOMPATIBLE: 'KNOWN_INCOMPATIBLE',
+  UNKNOWN: 'UNKNOWN'
+});
+
+// 该标识对应项目当前持有并已人工核验的两份本地接口材料，不表示运行环境
+// 已自动确认属于该基线。生产调用方未提供可信基线时，新 API 必须返回 UNKNOWN。
+const DOCUMENTED_PRODUCT_BASELINE = 'netinside-napm-web-services-20201218+api-construction-rules-0725';
+const DOCUMENTED_OWNERSHIP_SOURCE = [
+  'NetInside NAPM Web Services接口描述20201218.pdf',
+  'API构造规则手册-0725.pdf',
+  'objectMetricOwnership legacy table audit'
+].join(' + ');
+
+const OBJECT_METRIC_COVERAGE = Object.freeze([
+  Object.freeze({
+    service: 'topValues',
+    groupPathSignature: 'WebApplication',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'topValues',
+    groupPathSignature: 'IPAddress',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'topValues',
+    groupPathSignature: 'TotalTraffic',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'topValues',
+    groupPathSignature: 'DefinedApp',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'averageValues',
+    groupPathSignature: 'WebApplication',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'averageValues',
+    groupPathSignature: 'IPAddress',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'averageValues',
+    groupPathSignature: 'TotalTraffic',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'averageValues',
+    groupPathSignature: 'DefinedApp',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'timeValues',
+    groupPathSignature: 'WebApplication',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'timeValues',
+    groupPathSignature: 'IPAddress',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'timeValues',
+    groupPathSignature: 'TotalTraffic',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'timeValues',
+    groupPathSignature: 'DefinedApp',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: true,
+    allowedMetricIds: Object.freeze(NON_BUSINESS_METRIC_IDS.slice()),
+    source: DOCUMENTED_OWNERSHIP_SOURCE
+  }),
+  Object.freeze({
+    service: 'topValues',
+    groupPathSignature: 'WebApplication>PageFamily',
+    supportedProductBaseline: DOCUMENTED_PRODUCT_BASELINE,
+    exhaustive: false,
+    allowedMetricIds: Object.freeze(BUSINESS_METRIC_IDS.slice()),
+    source: `${DOCUMENTED_OWNERSHIP_SOURCE} (non-exhaustive multi-level projection)`
+  })
+]);
+
 const DEFAULT_BUSINESS_METRIC_PRIORITY = [
   'PGNPGE',
   'PGRT',
@@ -310,6 +432,60 @@ function normalizeMetricId(metricId = '') {
 
 function normalizeObjectType(objectType = '') {
   return String(objectType || '').trim();
+}
+
+function normalizeGroupPathSignature(groupPath = []) {
+  const items = Array.isArray(groupPath)
+    ? groupPath
+    : String(groupPath || '').split('>');
+
+  return items
+    .map((item) => (typeof item === 'string' ? item : item?.type))
+    .map((item) => normalizeObjectType(item))
+    .filter(Boolean)
+    .join('>');
+}
+
+/**
+ * 对精确 service + group path + 产品基线进行三态 ownership 分类。
+ *
+ * 该 API 不读取 Metric Catalog，也不判断 metricId 是否存在。调用方必须先由
+ * Metric Catalog 完成 existence 校验；ResolvedQueryExecutableValidator 在执行边界统一
+ * 先做 existence，再调用本 API 做 ownership 三态判定。
+ */
+function classifyObjectMetricCompatibility({
+  service = '',
+  groupPath = [],
+  metricId = '',
+  productBaseline = ''
+} = {}) {
+  const normalizedService = String(service || '').trim();
+  const groupPathSignature = normalizeGroupPathSignature(groupPath);
+  const normalizedMetricId = normalizeMetricId(metricId);
+  const normalizedProductBaseline = String(productBaseline || '').trim();
+
+  if (
+    !normalizedService
+    || !groupPathSignature
+    || !normalizedMetricId
+    || !normalizedProductBaseline
+  ) {
+    return OBJECT_METRIC_COMPATIBILITY.UNKNOWN;
+  }
+
+  const coverage = OBJECT_METRIC_COVERAGE.find((entry) => (
+    entry.service === normalizedService
+    && entry.groupPathSignature === groupPathSignature
+    && entry.supportedProductBaseline === normalizedProductBaseline
+  ));
+
+  if (!coverage || coverage.exhaustive !== true) {
+    return OBJECT_METRIC_COMPATIBILITY.UNKNOWN;
+  }
+
+  return coverage.allowedMetricIds.includes(normalizedMetricId)
+    ? OBJECT_METRIC_COMPATIBILITY.KNOWN_COMPATIBLE
+    : OBJECT_METRIC_COMPATIBILITY.KNOWN_INCOMPATIBLE;
 }
 
 function isBusinessObjectType(objectType = '') {
@@ -455,6 +631,11 @@ module.exports = {
   METRIC_CATEGORY_TO_IDS,
   BUSINESS_METRIC_IDS,
   NON_BUSINESS_METRIC_IDS,
+  OBJECT_METRIC_COMPATIBILITY,
+  DOCUMENTED_PRODUCT_BASELINE,
+  OBJECT_METRIC_COVERAGE,
+  normalizeGroupPathSignature,
+  classifyObjectMetricCompatibility,
   isBusinessObjectType,
   isNonBusinessObjectType,
   hasKnownMetricOwnership,

@@ -68,8 +68,9 @@ describe('run_napm_query drilldown continuation', () => {
       }
     );
 
-    expect(resolvedQuery.metric).toBe('RFCI');
     expect(resolvedQuery.metrics).toEqual(['RFCI']);
+    expect(resolvedQuery.topMetric).toBe('RFCI');
+    expect(resolvedQuery.metric).toBeUndefined();
     expect(resolvedQuery.start).toBe(1777982400);
     expect(resolvedQuery.end).toBe(1777986000);
     expect(resolvedQuery.groups).toEqual([
@@ -80,9 +81,10 @@ describe('run_napm_query drilldown continuation', () => {
   test('should preserve explicit groups when not drilling down', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
+        schemaVersion: 'napm-resolved-query.v1',
         service: 'topValues',
-        metric: 'TPIO',
         metrics: ['TPIO'],
+        topMetric: 'TPIO',
         groups: [{ type: 'DefinedApp', argument: 'HTTPS' }],
         executionHints: {
           inheritTimeRange: true
@@ -106,7 +108,9 @@ describe('run_napm_query drilldown continuation', () => {
     expect(resolvedQuery.groups).toEqual([
       { type: 'DefinedApp', argument: 'HTTPS' }
     ]);
-    expect(resolvedQuery.metric).toBe('TPIO');
+    expect(resolvedQuery.metrics).toEqual(['TPIO']);
+    expect(resolvedQuery.topMetric).toBe('TPIO');
+    expect(resolvedQuery.metric).toBeUndefined();
     expect(resolvedQuery.start).toBe(1777982400);
     expect(resolvedQuery.end).toBe(1777986000);
   });
@@ -148,7 +152,9 @@ describe('run_napm_query drilldown continuation', () => {
       { type: 'ClientIPs', argument: null },
       { type: 'IPAddress', argument: null }
     ]);
-    expect(resolvedQuery.metric).toBe('RFCI');
+    expect(resolvedQuery.metrics).toEqual(['RFCI']);
+    expect(resolvedQuery.topMetric).toBe('RFCI');
+    expect(resolvedQuery.metric).toBeUndefined();
     expect(resolvedQuery.start).toBe(1777982400);
     expect(resolvedQuery.end).toBe(1777986000);
   });
@@ -156,9 +162,10 @@ describe('run_napm_query drilldown continuation', () => {
   test('should preserve explicit multilevel path by default', () => {
     const resolvedQuery = __test__.applySessionContinuationToResolvedQuery(
       {
+        schemaVersion: 'napm-resolved-query.v1',
         service: 'topValues',
-        metric: 'TPIO',
         metrics: ['TPIO'],
+        topMetric: 'TPIO',
         groups: [
           { type: 'IPAddress', argument: '192.0.2.10' },
           { type: 'Applications' },

@@ -142,16 +142,19 @@ describe('execution failure classifier and answer mode router', () => {
 
   test('RequirementParserService should return normalized failure classification', async () => {
     const result = await RequirementParserService.executeDirectGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
+      queryModeKey: 'topn',
       start: 1779413040,
       end: 1779499440,
-      metric: 'TPIO',
-      topMetric: 'TPIO',
-      groups: [{ type: 'BusinessGroup' }],
+      metrics: ['PGTME'],
+      topMetric: 'PGTME',
+      topCount: 10,
+      groups: [{ type: 'WebApplication' }],
       semanticConstraints: {
         workflowType: 'object_inventory',
         operation: 'metadata_list',
-        targetObjectType: 'BusinessGroup'
+        targetObjectType: 'WebApplication'
       }
     });
 

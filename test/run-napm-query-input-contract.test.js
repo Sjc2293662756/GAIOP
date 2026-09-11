@@ -185,8 +185,8 @@ describe('run_napm_query input contract', () => {
       prompt: 'top ip by packet loss'
     }, {
       resolvedQuery: {
+        schemaVersion: 'napm-resolved-query.v1',
         service: 'topValues',
-        metric: 'PLI',
         metrics: ['PLI'],
         topMetric: 'PLI',
         groups: [{ type: 'IPAddress' }],
@@ -270,15 +270,15 @@ describe('run_napm_query input contract', () => {
 
   test('should reject non-minute-aligned gateway requests at validation boundary', () => {
     expect(() => QueryValidator.validateGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
       topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
       topCount: 10,
       start: 1779413047,
       end: 1779499449
-    })).toThrow('60-second minute boundaries');
+    })).toThrow('minute boundaries');
   });
 
   test('should support payload.sessionState as session continuation source', async () => {
@@ -306,7 +306,9 @@ describe('run_napm_query input contract', () => {
       }
     });
 
-    expect(input.resolvedQuery.metric).toBe('RFCI');
+    expect(input.resolvedQuery.metrics).toEqual(['RFCI']);
+    expect(input.resolvedQuery.topMetric).toBe('RFCI');
+    expect(input.resolvedQuery.metric).toBeUndefined();
     expect(input.resolvedQuery.start).toBe(1777982400);
     expect(input.resolvedQuery.end).toBe(1777986000);
     expect(input.resolvedQuery.groups).toEqual([
@@ -472,13 +474,13 @@ describe('run_napm_query input contract', () => {
           },
           start: 1779410400,
           end: 1779414000,
-          metric: 'TPIO',
           metrics: ['TPIO'],
           topMetric: 'TPIO',
           topCount: 10,
           format: 'json',
           userRequirement: '????????',
           protocolQueries: ['TCP', 'UDP'].map((protocol) => ({
+            schemaVersion: 'napm-resolved-query.v1',
             service: 'topValues',
             queryModeKey: 'topn',
             semanticConstraints: {
@@ -489,7 +491,6 @@ describe('run_napm_query input contract', () => {
             },
             start: 1779410400,
             end: 1779414000,
-            metric: 'TPIO',
             metrics: ['TPIO'],
             topMetric: 'TPIO',
             topCount: 10,

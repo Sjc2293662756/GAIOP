@@ -52,15 +52,23 @@ function normalizeTopValuesRows(rows = [], query = {}) {
   ).trim();
   const direction = normalizeDirection(query);
 
+  // NAPM only provides a verified TopN result. Reversing those rows locally
+  // would not produce BottomN, so ascending semantics must remain unsupported
+  // and the returned server order is preserved for defensive compatibility.
+  if (direction === 'asc') {
+    return rows.map((row, index) => ({
+      ...row,
+      rank: index + 1
+    }));
+  }
+
   return rows
     .map((row, index) => ({ row, index, value: extractMetricValue(row, metricId) }))
     .sort((left, right) => {
       if (left.value === null && right.value === null) return left.index - right.index;
       if (left.value === null) return 1;
       if (right.value === null) return -1;
-      const difference = direction === 'asc'
-        ? left.value - right.value
-        : right.value - left.value;
+      const difference = right.value - left.value;
       return difference || left.index - right.index;
     })
     .map((item, index) => ({
