@@ -59,7 +59,7 @@ describe('openclaw-napm-packet-analysis business DownServlet flow', () => {
     expect(pageViewsUrl.searchParams.get('type')).toBe('pageViews');
     expect(pageViewsUrl.searchParams.get('json')).toBe('true');
     expect(pageViewsUrl.searchParams.get('pageFamilyId')).toBe('8573007');
-    expect(pageViewsUrl.searchParams.get('maxLimit')).toBe('undefined');
+    expect(pageViewsUrl.searchParams.get('maxLimit')).toBe('20');
   });
 
   test('should build pageViews preview rows for business packet selection', () => {

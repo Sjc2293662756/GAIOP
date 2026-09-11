@@ -106,7 +106,16 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       toolName: 'napm-skill-query',
       params: { ...args }
     };
-    plugin.__test__.bindTrustedToolContext(event, ctx);
+    const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    const conversationKey = plugin.__test__.getTrustedConversationKey(event.params);
+    const turnId = plugin.__test__.getTrustedTurnId(event.params);
+    expect(plugin.__test__.authorizeTrustedToolContext(traceId, event.params, {
+      conversationKey,
+      turnId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query'
+    })).toBe(true);
     return tools.get('napm-skill-query').execute(toolCallId, event.params);
   }
 
@@ -450,7 +459,8 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
 
     const prompt = '那最近7天的呢？';
     const promptContext = await startTurn(ctx, prompt);
-    expect(promptContext.appendSystemContext).toContain('MODEL-OWNED');
+    expect(promptContext.appendSystemContext).toContain('AUTHORITATIVE CONTEXT FOLLOW-UP');
+    expect(promptContext.appendSystemContext).toContain('time_values_followup');
 
     const followUp = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
 
@@ -462,7 +472,7 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
       granularity: 86400
     });
     const audit = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8');
-    expect(audit).toContain('napm_plugin_contextual_query_followup_allowed');
+    expect(audit).toContain('napm_turn_admission_context_followup_allowed');
     expect(audit).toContain(initial.turnId);
   });
 
@@ -483,6 +493,34 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     expect(followUp.result).toMatchObject({ block: true });
     expect(followUp.result.blockReason).toContain('groups');
     expect(followUp.result.blockReason).not.toContain('模型直接回答');
+  });
+
+  test('keeps an admitted time follow-up bound to its original source turn during overlap', async () => {
+    const ctx = createCtx('overlapping-trend-followup');
+    const initial = await rememberEmptyInitialTrend(ctx);
+    jest.advanceTimersByTime(7 * 60 * 1000);
+    ctx.runId = 'run-overlapping-trend-followup-2';
+
+    const prompt = '那最近7天的呢？';
+    await startTurn(ctx, prompt);
+
+    const newerQuery = {
+      ...buildTrendQuery('last30days', 86400),
+      metrics: ['BYTIO'],
+      metric: 'BYTIO',
+      topMetric: 'BYTIO'
+    };
+    plugin.__test__.rememberSkillResult('concurrent newer query', {
+      ok: true,
+      service: 'timeValues',
+      resolvedQuery: newerQuery,
+      data: []
+    }, initial.scope, 'napm-skill-query', 'turn-concurrent-newer');
+
+    const followUp = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
+
+    expect(followUp.result?.block).not.toBe(true);
+    expect(followUp.params.resolvedQuery.metrics).toEqual(['TPIO']);
   });
 
   test('does not authorize an identity follow-up that does not change the prior query time', async () => {
@@ -510,7 +548,7 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const attemptedQuery = callQueryTool(otherCtx, prompt, buildTrendQuery('last7days', 86400));
 
     expect(attemptedQuery.result).toMatchObject({ block: true });
-    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+    expect(attemptedQuery.result.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
   });
 
   test.each([
@@ -541,7 +579,7 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const attemptedQuery = callQueryTool(ctx, prompt, buildQuery());
 
     expect(attemptedQuery.result).toMatchObject({ block: true });
-    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+    expect(attemptedQuery.result.blockReason).toContain('TURN_ADMISSION_QUERY_CONTEXT_MISMATCH');
   });
 
   test('does not authorize a contextual follow-up after query context expires', async () => {
@@ -555,6 +593,6 @@ describe('NAPM plugin trend query contract and contextual follow-up', () => {
     const attemptedQuery = callQueryTool(ctx, prompt, buildTrendQuery('last7days', 86400));
 
     expect(attemptedQuery.result).toMatchObject({ block: true });
-    expect(attemptedQuery.result.blockReason).toContain('模型直接回答');
+    expect(attemptedQuery.result.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
   });
 });

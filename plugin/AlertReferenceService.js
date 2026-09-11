@@ -3,7 +3,6 @@
 const AlertReferenceStore = require('./AlertReferenceStore');
 const {
   buildAnalysisContext,
-  normalizeTriggerMetrics,
 } = require('../skills/openclaw-napm-alert-packet-analysis/services/AlertMetricProfileService');
 
 const DEFAULT_PACKET_BUFFER_SECONDS = 120;

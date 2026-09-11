@@ -8,6 +8,7 @@
 const DimensionMappingService = require('./DimensionMappingService');
 const MetricMappingService = require('./MetricMappingService');
 const { SUPPORTED_GRANULARITIES } = require('../src/constants/metricDomains');
+const { selectGranularityForRange } = require('../../shared/TimeGranularityPolicy');
 const {
   isBusinessObjectType,
   getOwnedMetricIdsForObjectType
@@ -316,17 +317,7 @@ class QueryMetadataConstraintService {
       return;
     }
 
-    const span = Number(query.end) - Number(query.start);
-    let target = 3600;
-    if (span <= 6 * 3600) {
-      target = 60;
-    } else if (span <= 3 * 24 * 3600) {
-      target = 300;
-    } else if (span <= 30 * 24 * 3600) {
-      target = 3600;
-    } else {
-      target = 86400;
-    }
+    const target = selectGranularityForRange(query.start, query.end);
 
     corrections.push({
       field: 'granularity',

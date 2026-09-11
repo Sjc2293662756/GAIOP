@@ -30,6 +30,9 @@ const METRIC_WORKFLOWS = new Set([
   'composite_analysis'
 ]);
 
+const DETAIL_SERVICES = new Set(['pageViews']);
+const DETAIL_WORKFLOWS = new Set(['page_view_detail']);
+
 function normalizeText(value = '') {
   return String(value || '').trim();
 }
@@ -57,6 +60,9 @@ function inferDomain(context = {}) {
   }
   if (METRIC_WORKFLOWS.has(workflowType) || METRIC_SERVICES.has(service)) {
     return 'metric';
+  }
+  if (DETAIL_WORKFLOWS.has(workflowType) || DETAIL_SERVICES.has(service)) {
+    return 'detail';
   }
   return 'unknown';
 }
@@ -102,17 +108,24 @@ function classifyCode(error = {}, context = {}) {
   if (rawCode === 'QUERY_SHAPE_INVALID') {
     return 'QUERY_SHAPE_INVALID';
   }
+  if (rawCode.startsWith('PAGE_VIEWS_') || rawCode.startsWith('PAGE_FAMILY_')) {
+    return rawCode;
+  }
   if (rawCode === 'DEPENDENCY_CONTRACT_MISMATCH') {
     return 'DEPENDENCY_CONTRACT_MISMATCH';
   }
   if (status === 403 || /\b403\b|forbidden|permission denied/i.test(message)) {
-    return domain === 'metadata' ? 'METADATA_UPSTREAM_403' : 'NAPM_UPSTREAM_403';
+    return domain === 'metadata'
+      ? 'METADATA_UPSTREAM_403'
+      : (domain === 'detail' ? 'PAGE_VIEWS_UPSTREAM_403' : 'NAPM_UPSTREAM_403');
   }
   if (status === 400 || /\b400\b|bad request/i.test(message)) {
-    return domain === 'metadata' ? 'METADATA_UPSTREAM_400' : 'NAPM_UPSTREAM_400';
+    return domain === 'metadata'
+      ? 'METADATA_UPSTREAM_400'
+      : (domain === 'detail' ? 'PAGE_VIEWS_UPSTREAM_400' : 'NAPM_UPSTREAM_400');
   }
   if (/empty|no data|not found|未查到|没有数据/i.test(message)) {
-    return domain === 'metadata' ? 'METADATA_EMPTY' : 'METRIC_EMPTY';
+    return domain === 'metadata' ? 'METADATA_EMPTY' : (domain === 'detail' ? 'PAGE_VIEWS_EMPTY' : 'METRIC_EMPTY');
   }
   return 'NAPM_UPSTREAM_ERROR';
 }
@@ -143,6 +156,24 @@ function buildUserMessage(category = '', context = {}) {
       return '指标查询执行成功，但当前时间范围和对象条件下没有返回数据。';
     case 'QUERY_SHAPE_INVALID':
       return '查询结构不合法，缺少必要字段或字段位置不符合执行契约。';
+    case 'PAGE_FAMILY_ID_REQUIRED':
+      return '页面访问详情缺少可信 pageFamilyId，未调用南向接口；请先查询页面排行后再选择具体页面。';
+    case 'PAGE_FAMILY_ID_INVALID':
+    case 'PAGE_FAMILY_DETAIL_GROUP_FORBIDDEN':
+    case 'PAGE_VIEWS_QUERY_FIELDS_FORBIDDEN':
+    case 'PAGE_VIEWS_QUERY_MODE_INVALID':
+    case 'PAGE_VIEWS_MAX_LIMIT_INVALID':
+    case 'PAGE_VIEWS_MAX_LIMIT_EXCEEDED':
+    case 'PAGE_VIEWS_TIME_RANGE_INVALID':
+      return '页面访问详情查询结构不合法，查询未进入南向执行。';
+    case 'PAGE_VIEWS_RESPONSE_INVALID':
+      return '页面访问详情接口返回了无法解析的结果。';
+    case 'PAGE_VIEWS_EMPTY':
+      return '页面访问详情查询执行成功，但当前时间范围内没有返回访问实例。';
+    case 'PAGE_VIEWS_UPSTREAM_400':
+      return '页面访问详情查询被南向接口拒绝，通常表示页面族、时间或条数参数不被支持。';
+    case 'PAGE_VIEWS_UPSTREAM_403':
+      return '页面访问详情查询被南向接口拒绝，当前账号或接口权限不足。';
     case 'DEPENDENCY_CONTRACT_MISMATCH':
       return '运行时代码依赖契约不匹配，查询未进入正常执行。';
     case 'NAPM_UPSTREAM_400':
@@ -169,6 +200,8 @@ function classify(error = {}, context = {}) {
     retryable: [
       'METADATA_UPSTREAM_400',
       'METADATA_UPSTREAM_403',
+      'PAGE_VIEWS_UPSTREAM_400',
+      'PAGE_VIEWS_UPSTREAM_403',
       'NAPM_UPSTREAM_400',
       'NAPM_UPSTREAM_403',
       'NAPM_UPSTREAM_ERROR'

@@ -1,6 +1,6 @@
 ---
 name: openclaw-napm-query
-description: Standalone OpenClaw skill for NetInside / NAPM structured queries. Use when OpenClaw needs NAPM top/ranking queries, trend/time-series queries, average/value queries, overview analysis, drilldown path questions, metadata object lists, metric inventory, metric ownership/scope checks, metric compatibility validation, or Chinese narration input for NAPM results.
+description: Standalone OpenClaw skill for NetInside / NAPM structured queries. Use when OpenClaw needs NAPM top/ranking queries, trend/time-series queries, average/value queries, page visit instance details, overview analysis, drilldown path questions, metadata object lists, metric inventory, metric ownership/scope checks, metric compatibility validation, or Chinese narration input for NAPM results.
 ---
 
 # OpenClaw NAPM Query Skill
@@ -46,7 +46,7 @@ Do not depend on root-level plugin files, root `src/`, root `config/`, removed g
 OpenClaw owns:
 
 - Natural-language understanding and domain boundary judgment.
-- Multi-turn follow-up understanding.
+- Creating one run-bound Turn Admission Decision for a short follow-up by combining a domain-neutral selection with authoritative Plugin context.
 - `queryDraft` construction.
 - Restoring user-supplied follow-up values into a new Query Draft.
 - Final Chinese user-facing narration.
@@ -56,7 +56,9 @@ The `napm-skill-query` adapter owns:
 - Applying the static `QueryDecisionPolicy` to a Query Draft.
 - Returning missing user parameters as a normal clarification (`ok=true`, no `error`).
 - Promoting only `EXECUTE_QUERY` drafts to complete Resolved Queries.
+- Resolving ordinal `WebApplication` references into a validated PageFamily drilldown and ordinal `PageFamily` references into `pageViews`, within the bound Query Turn and before time materialization.
 - Recording the current Query Turn and preventing duplicate final delivery.
+- Building trusted continuation drafts for admitted `WebApplication` and `PageFamily` ordinals. A time-change continuation is validated against the exact source Query Turn frozen at admission, not the conversation's latest query context.
 
 This skill owns:
 
@@ -64,7 +66,8 @@ This skill owns:
 - Query validation and execution guardrails.
 - Metadata and metric compatibility checks.
 - NAPM API request construction and execution.
-- Top, trend, average, overview, drilldown, metadata, and metric inventory execution.
+- Top, trend, average, page visit detail, overview, drilldown, metadata, and metric inventory execution.
+- Numeric TopN normalization by `topMetric` and structured direction before narration and Query Turn storage.
 - Machine-readable narration contract output.
 
 The skill remains stateless. It does not read Query Turn records or restore pending clarification state. If `resolvedQuery` is missing or incomplete in standalone mode, return the built-in boundary failure. Do not invent a live query from raw prompt text.
@@ -110,6 +113,12 @@ Accepted inputs:
 - `--payloadFile <path>`: file form of `--payload`.
 - `--session '<json>'`: optional continuation state.
 - `--raw`: include raw upstream response when debugging locally.
+
+The OpenClaw adapter may accept a `resultReference` for an ordinal business or page follow-up. Standalone execution has no Query Turn store, so its executable `resolvedQuery` must already contain the concrete business path or trusted `pageFamilyId` and concrete time range.
+
+Inside the OpenClaw Plugin, `execute()` is not an independent authorization entry point. The preceding Query Hook must bind the current Turn Admission Decision and a stable digest of the final normalized Tool parameters to the plugin-issued `traceId`. A missing admission or changed object, metric, time, or result reference is rejected before pending restoration, time materialization, validation, Skill loading, or southbound access. For a name-only clarification answer, only a successful pending Query restoration may rebuild the new run's admission as `EXECUTE_TOOL + napm-skill-query`; a keyword match or caller-provided `clarificationAnswer` alone grants no authority. This does not apply to the standalone CLI contract, which has no Plugin Query Turn.
+
+The model must not reconstruct an ordinal continuation from prior answer text. The Plugin's common admission layer selects the authoritative Query artifact and overwrites caller-supplied continuation fields with a trusted draft. If a newer artifact belongs to another domain, Query must not fall back to an older ranking; the reception layer clarifies or delegates to that domain.
 
 The output is JSON. Prefer `narrationInput.result.narrationStructure`, `narrationInput.result.timeRange`, `summary`, and returned rows when writing the final Chinese answer.
 
@@ -167,6 +176,27 @@ Use `averageValues` for interval average/value queries:
 }
 ```
 
+Use `pageViews` for per-visit details under one trusted page family:
+
+```json
+{
+  "service": "pageViews",
+  "queryModeKey": "detail",
+  "pageFamilyId": "8573007",
+  "maxLimit": 20,
+  "start": 1779410400,
+  "end": 1779414000,
+  "format": "json",
+  "semanticConstraints": {
+    "workflowType": "page_view_detail",
+    "operation": "detail_list",
+    "targetObjectType": "PageFamily"
+  }
+}
+```
+
+`pageViews` does not accept `groups`, `metrics`, `metric`, `topMetric`, or `granularity`. `PageFamilyDetail` is not a group. `maxLimit` defaults to 20 and is capped locally at 200 as a client protection rule; the upstream product's formal maximum and pagination behavior remain unverified.
+
 Object argument policy:
 
 - A single-object `DefinedApp` or `WebApplication` `timeValues`/`averageValues` query must include the concrete object name in `groups[0].argument`.
@@ -178,6 +208,10 @@ Object argument policy:
 - An explicit but unknown object argument must fail metadata validation and may include runtime candidates; never silently select the first candidate.
 - Ordinary `topValues`, `averageValues`, `timeValues`, `groups`, and `metrics` queries with multiple groups fail Query Decision validation by default. They are executable only when `pathPlanning` contains planner proof and its anchor, `plannedGroups`, and `selectedPath` match a queryable path in `groups-tree.static.json`. The presence of multiple groups or an unverified `pathPlanning` object never authorizes execution.
 - Application-traffic scope checks consume the structured workflow/object/metric intent from `WorkflowClassifierService`; do not duplicate application-traffic prompt regexes in routing, plugin, or Query Decision code.
+- “今天哪些业务页面访问量最高” is `topValues + WebApplication + PGNPGE`; page access is the metric, not permission to replace the result object with `PageFamily`.
+- A follow-up such as “排名第一的都访问了什么” uses `resultReference={objectType:"WebApplication",ordinal:1}`. The plugin resolves the business argument from the frozen normalized result, inherits time, and constructs the validated `WebApplication > PageFamilies > PageFamily` path. Caller-supplied `sourceReference` or validation flags never authorize the path.
+- A page ranking follow-up such as “详细查看第一名的前 20 个” uses `resultReference={objectType:"PageFamily",ordinal:1}`. The plugin resolves the ID from the frozen result and inherits time; the model must not infer `pageFamilyId` from a URL or ordinal.
+- Missing, expired, cross-scope, wrong-type, or out-of-range business/page references fail before Skill or southbound execution. A successful zero-row `pageViews` response is `NO_DATA`, not a validation failure.
 
 Use `drilldownCatalog` for drilldown path questions:
 
@@ -247,6 +281,8 @@ Ranking rules:
 
 - Singular "who / which one / highest" ranking usually uses `topCount=1`.
 - Keep `topMetric` aligned with the user's selection condition.
+- Normalize every `topValues` result numerically by `topMetric`; use structured `direction=asc` only for bottom/lowest requests, otherwise descending. Replace upstream ranks, preserve stable tie order, and keep blank/missing values last.
+- Build narration labels from the effective terminal group. A first-turn business ranking is `WebApplication`; only an explicitly authorized business drilldown is narrated as `PageFamily`.
 - Do not rewrite packet-loss ranking into throughput ranking unless the user explicitly asks for throughput sorting.
 
 Metadata and ownership:
@@ -262,7 +298,7 @@ Metadata and ownership:
 Load references only when needed:
 
 - `references/standalone-skill-runtime.md`: standalone deployment and CLI examples.
-- `references/service-modes.md`: Top, average, trend, metadata, overview, and composite-analysis semantics.
+- `references/service-modes.md`: Top, average, trend, page visit detail, metadata, overview, and composite-analysis semantics.
 - `references/query-construction.md`: required query fields and group path construction.
 - `references/group-hierarchy.md`: object scope and drilldown hierarchy.
 - `references/metric-definitions.md`: metric meanings and aliases.

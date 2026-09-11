@@ -55,6 +55,69 @@ describe('openclaw-napm-packet-analysis preview risk assessment', () => {
     ]);
   });
 
+  test('should parse NetInside dashboard datasets instead of counting the four outer widgets', () => {
+    const overview = packet.normalizePreviewOverview([
+      {
+        columnIds: ['TA', 'TB', 'Data', 'MIFG'],
+        rows: [
+          {
+            id: 'TPROW 1',
+            values: { TA: '10.0.0.1', TB: '8.8.8.8', Data: '2.00 kB' },
+            comparableValues: { Data: 2048 },
+          },
+          {
+            id: 'TPROW 2',
+            values: { TA: '9.9.9.9', TB: '10.0.0.2', Data: '1.00 kB' },
+            comparableValues: { Data: 1024 },
+          },
+          {
+            id: 'TPROW 3',
+            values: { TA: '10.0.0.1', TB: '10.0.0.2', Data: '512 B' },
+            comparableValues: { Data: 512 },
+          },
+        ],
+      },
+      {
+        columnIds: ['TN', 'Data', 'IPConv', 'MIFG'],
+        rows: [
+          { values: { TN: '10.0.0.1', Data: '2.50 kB', IPConv: '2' }, comparableValues: { Data: 2560, IPConv: 2 } },
+          { values: { TN: '10.0.0.2', Data: '1.50 kB', IPConv: '2' }, comparableValues: { Data: 1536, IPConv: 2 } },
+          { values: { TN: '8.8.8.8', Data: '2.00 kB', IPConv: '1' }, comparableValues: { Data: 2048, IPConv: 1 } },
+          { values: { TN: '9.9.9.9', Data: '1.00 kB', IPConv: '1' }, comparableValues: { Data: 1024, IPConv: 1 } },
+        ],
+      },
+      { edges: [], nodes: [] },
+      { xValues: [], yValues: [] },
+    ], {
+      start: 1000,
+      end: 1300,
+      ipRanges: ['10.0.0.1-10.0.0.2'],
+    });
+
+    expect(overview.rowCount).toBe(3);
+    expect(overview.trafficSummary).toMatchObject({
+      conversationCount: 3,
+      endpointCount: 4,
+      trafficBytes: 3584,
+      trafficSizeText: '3.50 KB',
+      directions: {
+        outbound: { conversationCount: 1, bytes: 2048 },
+        inbound: { conversationCount: 1, bytes: 1024 },
+        internal: { conversationCount: 1, bytes: 512 },
+      },
+    });
+    expect(overview.trafficSummary.topGroupMembers).toEqual([
+      { ip: '10.0.0.1', bytes: 2560, sizeText: '2.50 KB', conversationCount: 2 },
+      { ip: '10.0.0.2', bytes: 1536, sizeText: '1.50 KB', conversationCount: 2 },
+    ]);
+    expect(overview.trafficSummary.topConversations[0]).toMatchObject({
+      sourceIp: '10.0.0.1',
+      destinationIp: '8.8.8.8',
+      bytes: 2048,
+      direction: 'outbound',
+    });
+  });
+
   test('should not treat preview HTTP response bytes as estimated pcap size', () => {
     const overview = packet.normalizePreviewOverview({}, {
       start: 1000,

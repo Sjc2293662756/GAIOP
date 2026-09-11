@@ -20,6 +20,20 @@ function Invoke-CheckedCommand {
   }
 }
 
+function Get-Sha256Hex {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
 function Remove-ReleaseTempDirectory {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -135,6 +149,20 @@ try {
     throw 'Git archive did not contain the expected package root.'
   }
 
+  $sourceRemotePath = Join-Path $packageRoot 'napm-openclaw-plugin.remote.js'
+  $derivedIndexPath = Join-Path $packageRoot 'index.js'
+  if (-not (Test-Path -LiteralPath $sourceRemotePath -PathType Leaf)) {
+    throw 'Git archive did not contain napm-openclaw-plugin.remote.js.'
+  }
+  if (-not (Test-Path -LiteralPath $derivedIndexPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $sourceRemotePath -Destination $derivedIndexPath
+  }
+  $derivedIndexHash = Get-Sha256Hex -Path $derivedIndexPath
+  $sourceRemoteHash = Get-Sha256Hex -Path $sourceRemotePath
+  if ($derivedIndexHash -ne $sourceRemoteHash) {
+    throw "Release entrypoint mismatch: index.js=$derivedIndexHash remote.js=$sourceRemoteHash"
+  }
+
   $archivedPackageJsonPath = Join-Path $packageRoot 'package.json'
   if (-not (Test-Path -LiteralPath $archivedPackageJsonPath -PathType Leaf)) {
     throw 'Git archive did not contain package.json.'
@@ -175,14 +203,23 @@ try {
     'package.json',
     'package-lock.json',
     'openclaw.plugin.json',
+    'index.js',
     'napm-openclaw-plugin.remote.js',
     'plugin/AlertReferenceStore.js',
     'plugin/AlertReferenceService.js',
     'plugin/AlertPacketFinalReplyService.js',
+    'plugin/DomainIntentClassificationAdapter.js',
     'plugin/QueryTurnCoordinator.js',
+    'plugin/ReferenceSelectionParser.js',
     'plugin/ReportIntentClassifier.js',
+    'plugin/TurnAdmissionCoordinator.js',
+    'plugin/TurnIntentResolver.js',
+    'plugin/context-resolvers/AlertContextResolver.js',
+    'plugin/context-resolvers/ContextBoundaryResolver.js',
+    'plugin/context-resolvers/QueryContextResolver.js',
     'plugin/TrustedToolContextStore.js',
     'skills/shared/NapmObjectTargetResolver.js',
+    'skills/shared/NapmPageViewsContract.js',
     'scripts/install-release.sh',
     'scripts/rollback-release.sh',
     'scripts/verify-staged-release.sh',

@@ -585,6 +585,8 @@ module.exports = {
   buildLast1HourTimeRange,
   buildLast24HoursTimeRange,
   resolveTimeRange: TimeRangeService.resolveTimeRange,
+  resolvePromptTimeRange: TimeRangeService.resolvePromptTimeRange,
+  hasExplicitTimeRangeExpression: TimeRangeService.hasExplicitTimeRangeExpression,
   alignToMinute,
   normalizeResolvedQueryTimeRange,
   validateResolvedQueryTimeContract

@@ -35,8 +35,13 @@ const ResolutionSpecService = require(path.join(skillRoot, 'services/ResolutionS
 const ClarificationGateService = require(path.join(skillRoot, 'services/ClarificationGateService'));
 const { buildOpenClawReplyContract } = require(path.join(skillRoot, 'services/OpenClawNarrationContractService'));
 const ExecutionFailureClassifier = require(path.join(skillRoot, 'services/ExecutionFailureClassifier'));
+const TopValuesResultNormalizerService = require(path.join(skillRoot, 'services/TopValuesResultNormalizerService'));
+const {
+  normalizePageViewsMaxLimit
+} = require(path.join(skillRoot, '..', 'shared', 'NapmPageViewsContract'));
 const { executeOverviewModule, extractTopGroupValues } = require(path.join(__dirname, 'overview-module'));
 const { logAudit } = require(path.join(skillRoot, 'src/utils/auditLogger'));
+const { selectGranularityForRange } = require(path.join(skillRoot, '..', 'shared', 'TimeGranularityPolicy'));
 
 const SKILL_FORWARD_DISPLAY_TEXT = ['1', 'true', 'yes', 'on'].includes(String(process.env.SKILL_FORWARD_DISPLAY_TEXT || '').trim().toLowerCase());
 
@@ -341,6 +346,19 @@ function buildSummary(service, resolvedQuery, data, extra = {}) {
       mode: extra.mode || 'GO_DIRECT_QUERY',
       title: '\u6307\u6807\u5217\u8868',
       highlights: [],
+      rowCount: rows.length,
+      empty: rows.length === 0
+    };
+  }
+
+  if (service === 'pageViews') {
+    return {
+      mode: extra.mode || 'GO_DIRECT_QUERY',
+      title: rows.length > 0 ? '页面访问详情' : '未查到页面访问详情',
+      highlights: [
+        resolvedQuery?.pageFamilyId ? `页面族 ID：${resolvedQuery.pageFamilyId}` : null,
+        `返回访问实例：${rows.length} 条`
+      ].filter(Boolean),
       rowCount: rows.length,
       empty: rows.length === 0
     };
@@ -986,13 +1004,23 @@ function normalizeResolvedQueryShape(resolvedQuery = {}, prompt = '') {
 
   }
 
-  if (query.service === 'timeValues') {
-    query.granularity = Number.isFinite(Number(query.granularity)) && Number(query.granularity) > 0
-      ? Number(query.granularity)
-      : 3600;
+  const normalizedQuery = normalizeResolvedQueryTimeRange(query);
+  if (normalizedQuery.service === 'timeValues') {
+    normalizedQuery.granularity = Number.isFinite(Number(normalizedQuery.granularity))
+      && Number(normalizedQuery.granularity) > 0
+      ? Number(normalizedQuery.granularity)
+      : selectGranularityForRange(normalizedQuery.start, normalizedQuery.end);
   }
 
-  return normalizeResolvedQueryTimeRange(query);
+  if (normalizedQuery.service === 'pageViews') {
+    try {
+      normalizedQuery.maxLimit = normalizePageViewsMaxLimit(normalizedQuery.maxLimit);
+    } catch (_error) {
+      // Preserve invalid input so the validator can return the stable contract error.
+    }
+  }
+
+  return normalizedQuery;
 }
 
 function cloneGroups(groups = []) {
@@ -1858,8 +1886,11 @@ async function executeSkillCall(args = {}, payload = {}) {
   }
 
   const executionResult = await executeResolvedQuery(prompt, resolvedQuery, payload, intentResult);
-  const rows = Array.isArray(executionResult?.data) ? executionResult.data : [];
   const service = executionResult?.service || resolvedQuery?.service || null;
+  const executionRows = Array.isArray(executionResult?.data) ? executionResult.data : [];
+  const rows = service === 'topValues'
+    ? TopValuesResultNormalizerService.normalizeTopValuesRows(executionRows, resolvedQuery)
+    : executionRows;
   const summary = executionResult?.summary || buildSummary(service, resolvedQuery, rows);
   const output = buildOpenClawReplyContract({
     ok: Boolean(executionResult?.ok),

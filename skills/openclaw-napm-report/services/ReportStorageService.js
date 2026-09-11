@@ -42,6 +42,13 @@ function sanitizeFileSegment(value = '') {
     .slice(0, 80);
 }
 
+function sanitizeDirectorySegment(value = '', fallback = '_unattributed') {
+  const segment = String(value || '').trim();
+  if (!segment) return fallback;
+  if (segment === '.' || segment === '..' || /[\\/\x00-\x1f]/.test(segment)) return fallback;
+  return segment.replace(/[^\p{L}\p{N}._-]/gu, '_').slice(0, 160) || fallback;
+}
+
 function resolveSystemName(report = {}) {
   return sanitizeFileSegment(
     report.systemName
@@ -63,6 +70,7 @@ class ReportStorageService {
     const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
     this.outputDir = path.resolve(
       options.outputDir
+      || process.env.GAIOP_REPORTS_DIR
       || process.env.NAPM_REPORT_OUTPUT_DIR
       || path.join(workspaceRoot, 'skills/openclaw-napm-report/output')
     );
@@ -117,24 +125,32 @@ class ReportStorageService {
     return `${systemName}_${typeCN}_${timestamp}`;
   }
 
-  buildPaths(reportId, format) {
+  buildPaths(reportId, format, report = {}) {
     const normalizedFormat = String(format || '').trim().toLowerCase();
     const fileName = `${reportId}.${normalizedFormat}`;
+    const sourceUserId = sanitizeDirectorySegment(report.sourceUserId, '_unattributed');
+    const reportType = sanitizeDirectorySegment(report.reportType, 'report');
+    const relativeDirectory = path.posix.join(sourceUserId, reportType);
+    const outputDirectory = path.join(this.outputDir, sourceUserId, reportType);
+    const relativeFilePath = path.posix.join(relativeDirectory, fileName);
+    const relativeAuditPath = path.posix.join(relativeDirectory, `${reportId}.json`);
     return {
       fileName,
-      filePath: path.join(this.outputDir, fileName),
-      auditPath: path.join(this.outputDir, `${reportId}.json`),
+      filePath: path.join(outputDirectory, fileName),
+      auditPath: path.join(outputDirectory, `${reportId}.json`),
+      relativeFilePath,
+      relativeAuditPath,
       downloadUrl: `${this.downloadBaseUrl}/${encodeURIComponent(fileName)}`
     };
   }
 
   writeBuffer(filePath, buffer) {
-    this.ensureOutputDir();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, buffer);
   }
 
   writeAuditJson(filePath, payload) {
-    this.ensureOutputDir();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   }
 }
@@ -143,6 +159,7 @@ module.exports = ReportStorageService;
 module.exports.__test__ = {
   formatTimestampForId,
   sanitizeFileSegment,
+  sanitizeDirectorySegment,
   REPORT_TYPE_CN,
   resolveSystemName,
   resolveFaultName

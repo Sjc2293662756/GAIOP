@@ -469,6 +469,13 @@ describe('napm-openclaw-plugin alert query integration', () => {
             ]
           },
           {
+            category: 'networkIssueAlerts',
+            categoryLabel: '网络异常告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          },
+          {
             category: 'appAlerts',
             categoryLabel: '应用性能告警',
             total: 1,
@@ -500,6 +507,8 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('🟠 重大 1 条');
     expect(text).toContain('🔴 吞吐过高 — 192.168.1.16（紧急，持续 2 分钟）');
     expect(text).toContain('🟠 外部应用性能下降 — HTTPS（重大，持续 1 分钟）');
+    expect(text).not.toContain('网络异常告警 — 0 条');
+    expect(text).not.toContain('无告警记录');
   });
 
   test('should keep global alert table when an alert type is specified', () => {
@@ -531,6 +540,42 @@ describe('napm-openclaw-plugin alert query integration', () => {
     expect(text).toContain('| 级别 | 类型 | 对象 | 描述 |');
     expect(text).toContain('| 🟠 重大 | 应用性能 | HTTPS | 外部应用性能下降 |');
     expect(text).not.toContain('应用性能告警：');
+  });
+
+  test('should render a single no-data message for an all-zero grouped summary fallback', () => {
+    const text = plugin.__test__.buildAlertQueryReply({
+      ok: true,
+      mode: 'summary',
+      criteria: { categories: [] },
+      timeRange: { displayText: '最近一小时' },
+      summary: {
+        total: 0,
+        bySeverity: { critical: 0, major: 0, minor: 0 },
+        byCategoryDetail: [
+          {
+            category: 'networkAlerts',
+            categoryLabel: '网络性能告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          },
+          {
+            category: 'appAlerts',
+            categoryLabel: '应用性能告警',
+            total: 0,
+            bySeverity: { critical: 0, major: 0, minor: 0 },
+            overviewEvents: []
+          }
+        ]
+      },
+      events: []
+    });
+
+    expect(text).toContain('告警总数：0 条');
+    expect(text).toContain('本时间范围内未查询到告警事件。');
+    expect(text).not.toContain('网络性能告警 — 0 条');
+    expect(text).not.toContain('应用性能告警 — 0 条');
+    expect(text).not.toContain('无告警记录');
   });
 
   test('should classify alert event questions separately from broad overview prompts', () => {
@@ -581,6 +626,70 @@ describe('napm-openclaw-plugin alert query integration', () => {
       block: true
     });
     expect(result.blockReason).toContain('napm-alert-query');
+  });
+
+  test('should route a generic ordinal detail follow-up to the latest authoritative alert result', async () => {
+    const { hooks } = createApiHarness();
+    const firstCtx = createWeComCtx('alert-ordinal-source');
+    const firstPrompt = '最近一小时有哪些严重告警？';
+    hooks.get('message_received')({ content: firstPrompt }, firstCtx);
+    await hooks.get('before_prompt_build')({ prompt: firstPrompt }, firstCtx);
+    const firstTurnId = plugin.__test__.getActiveTurnId(null, plugin.__test__.getGuardState(firstCtx));
+    const conversationKey = plugin.__test__.getConversationKey(firstCtx);
+    plugin.__test__.rememberSkillResult(firstPrompt, {
+      ok: true,
+      mode: 'summary',
+      service: 'alertsSummary',
+      events: [
+        { id: '369652', start: 1781488800, end: 1781492400, group: 'HTTPS' },
+        { id: '369653', start: 1781488800, end: 1781492400, group: 'HTTP' }
+      ]
+    }, conversationKey, 'napm-alert-query', firstTurnId);
+
+    const followCtx = {
+      ...firstCtx,
+      runId: 'run-alert-ordinal-follow-up'
+    };
+    const followPrompt = '看第一个的详情';
+    hooks.get('message_received')({ content: followPrompt }, followCtx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt: followPrompt }, followCtx);
+    const wrongTool = hooks.get('before_tool_call')({
+      toolName: 'napm-skill-query',
+      toolCallId: 'alert-ordinal-wrong-tool-call',
+      params: { prompt: followPrompt }
+    }, followCtx);
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-query',
+      toolCallId: 'alert-ordinal-detail-call',
+      params: { prompt: followPrompt }
+    }, followCtx);
+
+    expect(promptHook.appendSystemContext).toContain('AUTHORITATIVE CONTEXT FOLLOW-UP');
+    expect(promptHook.appendSystemContext).toContain('来源对象=AlertEvent');
+    expect(wrongTool).toMatchObject({ block: true });
+    expect(wrongTool.blockReason).toContain('EXPECTED_TOOL_MISMATCH');
+    expect(wrongTool.blockReason).toContain('napm-alert-query');
+    expect(result?.block).not.toBe(true);
+    expect(result.params).toMatchObject({
+      prompt: followPrompt,
+      mode: 'detail',
+      criteria: {
+        eventIds: ['369652'],
+        start: 1781488800,
+        end: 1781492400
+      },
+      alertQuery: {
+        mode: 'detail',
+        criteria: { eventIds: ['369652'] }
+      }
+    });
+    const followTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+      conversationKey,
+      followCtx.runId
+    );
+    expect(plugin.__test__.queryTurnCoordinator.get(conversationKey, followTurnId)).toMatchObject({
+      route: 'OTHER_SKILL'
+    });
   });
 
   test('should answer alert skill meta follow-up only from alert skill record', async () => {

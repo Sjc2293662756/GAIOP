@@ -109,9 +109,67 @@ function buildCanonicalRelativeTimeKey(amountValue, unitValue = '') {
   return '';
 }
 
+function buildCanonicalRollingMonthKey(amountValue) {
+  const months = Number(amountValue);
+  if (!Number.isInteger(months) || months <= 0 || months > 33) return '';
+  if (months === 12) return 'last365days';
+  return buildCanonicalRelativeTimeKey(months * 30, '\u5929');
+}
+
+function parseQuarterNumber(value = '') {
+  const normalized = normalizeText(value);
+  const quarterMap = {
+    '\u4e00': 1,
+    '\u4e8c': 2,
+    '\u4e09': 3,
+    '\u56db': 4
+  };
+  const numeric = Object.prototype.hasOwnProperty.call(quarterMap, normalized)
+    ? quarterMap[normalized]
+    : Number(normalized);
+  return Number.isInteger(numeric) && numeric >= 1 && numeric <= 4 ? numeric : null;
+}
+
 function parseExplicitTimeRangePrompt(prompt = '') {
   const text = normalizeText(prompt);
   if (!text) return null;
+
+  const explicitQuarterMatch = text.match(/((?:19|20)\d{2})\s*\u5e74\s*(?:\u7b2c)?\s*([0-9]+|[\u4e00\u4e8c\u4e09\u56db])\s*\u5b63\u5ea6/i);
+  if (explicitQuarterMatch) {
+    const year = Number(explicitQuarterMatch[1]);
+    const quarter = parseQuarterNumber(explicitQuarterMatch[2]);
+    if (!quarter) return null;
+    return {
+      key: 'custom',
+      mode: 'custom',
+      displayText: `${year}\u5e74\u7b2c${quarter}\u5b63\u5ea6\uff08\u81ea\u7136\u5b63\u5ea6\uff09`,
+      calendarPeriod: { period: 'quarter', year, quarter }
+    };
+  }
+
+  const explicitMonthMatch = text.match(/((?:19|20)\d{2})\s*\u5e74\s*([0-9]{1,2}|[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u6708/i);
+  if (explicitMonthMatch) {
+    const year = Number(explicitMonthMatch[1]);
+    const month = parseDurationAmount(explicitMonthMatch[2]);
+    if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+    return {
+      key: 'custom',
+      mode: 'custom',
+      displayText: `${year}\u5e74${month}\u6708`,
+      calendarPeriod: { period: 'month', year, month }
+    };
+  }
+
+  const explicitYearMatch = text.match(/((?:19|20)\d{2})\s*\u5e74(?:\u5ea6|\u5168\u5e74)?/i);
+  if (explicitYearMatch) {
+    const year = Number(explicitYearMatch[1]);
+    return {
+      key: 'custom',
+      mode: 'custom',
+      displayText: `${year}\u5e74\uff08\u81ea\u7136\u5e74\uff09`,
+      calendarPeriod: { period: 'year', year }
+    };
+  }
 
   if (/(?:\u672c\u5b63\u5ea6|\u5f53\u524d\u5b63\u5ea6|\u8fd9\u4e2a\u5b63\u5ea6|\u672c\u5b63|\bcurrent\s+quarter\b)/i.test(text)) {
     return { key: 'currentQuarter', displayText: '\u5f53\u524d\u81ea\u7136\u5b63\u5ea6' };
@@ -130,6 +188,19 @@ function parseExplicitTimeRangePrompt(prompt = '') {
   }
   if (/(?:\u6700\u8fd1\u4e00\u5e74|\u8fc7\u53bb\u4e00\u5e74|\u8fd1\u4e00\u5e74|\blast\s+365\s+days?\b)/i.test(text)) {
     return { key: 'last365days', displayText: '\u6700\u8fd1\u4e00\u5e74' };
+  }
+  if (/(?:\u672c\u6708|\u5f53\u524d\u6708|\u8fd9\u4e2a\u6708|\bcurrent\s+month\b)/i.test(text)) {
+    return { key: 'currentMonth', mode: 'calendar', displayText: '\u5f53\u524d\u81ea\u7136\u6708' };
+  }
+  if (/(?:\u4e0a\u4e2a\u6708|\u4e0a\u6708|\bprevious\s+month\b|\blast\s+month\b)/i.test(text)) {
+    return { key: 'previousMonth', mode: 'calendar', displayText: '\u4e0a\u4e00\u4e2a\u81ea\u7136\u6708' };
+  }
+
+  const chineseMonthMatch = text.match(/(?:\u6700\u8fd1|\u8fd1|\u8fc7\u53bb)\s*([0-9]+|[\u96f6\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)?\s*(?:\u4e2a)?\s*\u6708/i);
+  if (chineseMonthMatch) {
+    const months = chineseMonthMatch[1] ? parseDurationAmount(chineseMonthMatch[1]) : 1;
+    const key = buildCanonicalRollingMonthKey(months);
+    return key ? { key, displayText: `\u6700\u8fd1${months}\u4e2a\u6708` } : null;
   }
 
   const todayMatch = text.match(/(\u4eca\u5929|\u4eca\u65e5|\u5f53\u5929|\btoday\b)/i);
@@ -184,9 +255,11 @@ function hasExplicitTimeRangeExpression(prompt = '') {
     /(\u4eca\u5929|\u4eca\u65e5|\u5f53\u5929|\u6628\u5929|\u6628\u65e5|\btoday\b|\byesterday\b)/i.test(text)
     || /(?:\u6700\u8fd1|\u8fd1|\u8fc7\u53bb|\u524d)\s*[^\uff0c\u3002\uff01\uff1f\n]{1,16}\s*(?:\u5206\u949f|\u5206|\u5c0f\u65f6|\u65f6|\u5929|\u65e5)/i.test(text)
     || /(?:\u6700\u8fd1|\u8fd1|\u8fc7\u53bb|\u524d)\s*[^\uff0c\u3002\uff01\uff1f\n]{0,12}\s*(?:\u5468|\u661f\u671f)/i.test(text)
+    || /(?:\u6700\u8fd1|\u8fd1|\u8fc7\u53bb|\u672c|\u5f53\u524d|\u8fd9\u4e2a|\u4e0a)\s*[^\uff0c\u3002\uff01\uff1f\n]{0,12}\s*\u6708/i.test(text)
     || /(?:last|past)\s*[^,.;!?\n]{0,16}\s*(?:minutes?|mins?|hours?|hrs?|days?)/i.test(text)
     || /(?:\u5f53\u524d\u5c0f\u65f6|\u8fd9\u4e2a\u5c0f\u65f6)/.test(text)
     || /(?:\u5b63\u5ea6|\u5e74\u5ea6|\u672c\u5e74|\u4eca\u5e74|\u53bb\u5e74|\b(?:current|previous|last)\s+(?:quarter|year)\b)/i.test(text)
+    || /(?:19|20)\d{2}\s*\u5e74/i.test(text)
   );
 }
 
@@ -254,8 +327,10 @@ function buildCalendarPeriodTimeRange(key, period, offset = 0, nowSeconds = DEFA
   let monthIndex = Number(parts.month) - 1;
   if (period === 'quarter') {
     monthIndex = Math.floor(monthIndex / 3) * 3 + Number(offset || 0) * 3;
-  } else {
+  } else if (period === 'year') {
     monthIndex = Number(offset || 0) * 12;
+  } else {
+    monthIndex += Number(offset || 0);
   }
   year += Math.floor(monthIndex / 12);
   monthIndex %= 12;
@@ -265,7 +340,9 @@ function buildCalendarPeriodTimeRange(key, period, offset = 0, nowSeconds = DEFA
   }
 
   const start = alignToMinute(shanghaiLocalStartSeconds(year, monthIndex, 1));
-  const nextMonthIndex = period === 'quarter' ? monthIndex + 3 : monthIndex + 12;
+  const nextMonthIndex = period === 'quarter'
+    ? monthIndex + 3
+    : (period === 'month' ? monthIndex + 1 : monthIndex + 12);
   const nextYear = year + Math.floor(nextMonthIndex / 12);
   const nextStart = shanghaiLocalStartSeconds(nextYear, nextMonthIndex % 12, 1);
   const end = Number(offset || 0) === 0
@@ -278,7 +355,45 @@ function buildCalendarPeriodTimeRange(key, period, offset = 0, nowSeconds = DEFA
     end,
     source: 'time_range_resolver',
     alignment: 'minute_floor',
-    boundary: period === 'quarter' ? 'local_quarter' : 'local_year'
+    boundary: `local_${period}`
+  };
+}
+
+function buildExplicitCalendarTimeRange(calendarPeriod = {}, nowSeconds = DEFAULT_NOW_SECONDS(), displayText = '') {
+  const period = normalizeLower(calendarPeriod.period);
+  const year = Number(calendarPeriod.year);
+  if (!Number.isInteger(year) || !['month', 'quarter', 'year'].includes(period)) return null;
+
+  let monthIndex = 0;
+  if (period === 'month') {
+    const month = Number(calendarPeriod.month);
+    if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+    monthIndex = month - 1;
+  } else if (period === 'quarter') {
+    const quarter = Number(calendarPeriod.quarter);
+    if (!Number.isInteger(quarter) || quarter < 1 || quarter > 4) return null;
+    monthIndex = (quarter - 1) * 3;
+  }
+
+  const start = alignToMinute(shanghaiLocalStartSeconds(year, monthIndex, 1));
+  const monthsInPeriod = period === 'month' ? 1 : (period === 'quarter' ? 3 : 12);
+  const nextMonthIndex = monthIndex + monthsInPeriod;
+  const nextYear = year + Math.floor(nextMonthIndex / 12);
+  const nextStart = alignToMinute(shanghaiLocalStartSeconds(nextYear, nextMonthIndex % 12, 1));
+  const alignedNow = alignToMinute(nowSeconds);
+  if (start > alignedNow) return null;
+
+  return {
+    key: 'custom',
+    requestedKey: 'custom',
+    mode: 'custom',
+    displayText: displayText || 'custom',
+    start,
+    end: Math.min(alignedNow, nextStart - 60),
+    timezone: 'Asia/Shanghai',
+    source: 'time_range_resolver',
+    alignment: 'minute_floor',
+    boundary: `local_${period}`
   };
 }
 
@@ -306,6 +421,14 @@ function buildPreviousQuarterTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
   return buildCalendarPeriodTimeRange('previousQuarter', 'quarter', -1, nowSeconds, '\u4e0a\u4e00\u4e2a\u81ea\u7136\u5b63\u5ea6');
 }
 
+function buildCurrentMonthTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('currentMonth', 'month', 0, nowSeconds, '\u5f53\u524d\u81ea\u7136\u6708');
+}
+
+function buildPreviousMonthTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
+  return buildCalendarPeriodTimeRange('previousMonth', 'month', -1, nowSeconds, '\u4e0a\u4e00\u4e2a\u81ea\u7136\u6708');
+}
+
 function buildCurrentYearTimeRange(nowSeconds = DEFAULT_NOW_SECONDS()) {
   return buildCalendarPeriodTimeRange('currentYear', 'year', 0, nowSeconds, '\u5f53\u524d\u81ea\u7136\u5e74');
 }
@@ -328,6 +451,10 @@ function resolveKnownTimeRangeKey(key = '', nowSeconds = DEFAULT_NOW_SECONDS()) 
     case 'last24hour':
     case 'last1day':
       return buildLast24HoursTimeRange(nowSeconds);
+    case 'currentmonth':
+      return buildCurrentMonthTimeRange(nowSeconds);
+    case 'previousmonth':
+      return buildPreviousMonthTimeRange(nowSeconds);
     case 'currentquarter':
       return buildCurrentQuarterTimeRange(nowSeconds);
     case 'previousquarter':
@@ -384,13 +511,16 @@ function resolvePromptTimeRange(prompt = '', options = {}) {
   if (!parsed) return null;
 
   const nowSeconds = options.nowSeconds || DEFAULT_NOW_SECONDS();
-  const resolved = resolveKnownTimeRangeKey(parsed.key, nowSeconds);
+  const resolved = parsed.calendarPeriod
+    ? buildExplicitCalendarTimeRange(parsed.calendarPeriod, nowSeconds, parsed.displayText)
+    : resolveKnownTimeRangeKey(parsed.key, nowSeconds);
   if (!resolved) return null;
 
   return {
     ...resolved,
     key: parsed.key,
     requestedKey: parsed.key,
+    mode: parsed.mode || resolved.mode,
     displayText: parsed.displayText || resolved.displayText,
     prompt: normalizeText(prompt)
   };
@@ -405,7 +535,18 @@ function resolveTimeRange(input = '', options = {}) {
     ? normalizeText(input.prompt || input.userRequirement || input.userQuery)
     : normalizeText(input);
 
-  const key = explicitKey || inferTimeRangeKeyFromPrompt(prompt);
+  if (!explicitKey) {
+    const promptRange = resolvePromptTimeRange(prompt, { nowSeconds });
+    if (promptRange) {
+      const canonicalRange = resolveKnownTimeRangeKey(promptRange.key, nowSeconds);
+      return {
+        ...promptRange,
+        displayText: canonicalRange?.displayText || promptRange.displayText
+      };
+    }
+  }
+
+  const key = explicitKey || 'last1hour';
   const resolved = resolveKnownTimeRangeKey(key, nowSeconds) || buildLast1HourTimeRange(nowSeconds);
   return {
     ...resolved,
@@ -423,12 +564,16 @@ module.exports = {
   buildLast24HoursTimeRange,
   buildTodayTimeRange,
   buildYesterdayTimeRange,
+  buildCurrentMonthTimeRange,
+  buildPreviousMonthTimeRange,
   buildCurrentQuarterTimeRange,
   buildPreviousQuarterTimeRange,
   buildCurrentYearTimeRange,
   buildPreviousYearTimeRange,
   parseDurationAmount,
   buildCanonicalRelativeTimeKey,
+  buildCanonicalRollingMonthKey,
+  buildExplicitCalendarTimeRange,
   parseExplicitTimeRangePrompt,
   inferExplicitTimeRangeKeyFromPrompt,
   hasExplicitTimeRangeExpression,

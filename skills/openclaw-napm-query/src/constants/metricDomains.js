@@ -9,6 +9,7 @@ const {
   isNonBusinessObjectType,
   isOwnedMetricForObjectType
 } = require('./objectMetricOwnership');
+const { SUPPORTED_GRANULARITIES } = require('../../../shared/TimeGranularityPolicy');
 
 const METRIC_DOMAINS = [
   {
@@ -273,8 +274,6 @@ const METRIC_META = {
   FSO_P: { label: 'Payload Packets Server', unit: '#' },
   FSI_P: { label: 'Payload Packets Client', unit: '#' }
 };
-
-const SUPPORTED_GRANULARITIES = [60, 300, 3600, 86400];
 
 const SEMANTIC_METRIC_DOMAIN_ALIASES = {
   NetworkQuality: ['network', 'loss', 'experience'],

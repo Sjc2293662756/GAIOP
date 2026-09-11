@@ -4,8 +4,14 @@ const { __test__ } = require('../skills/openclaw-napm-inspection/services/Inspec
 describe('InspectionTrafficAnalysisService', () => {
   test.each([
     [3600, 60],
-    [86400, 3600],
-    [604800, 86400]
+    [6 * 3600, 60],
+    [(6 * 3600) + 1, 300],
+    [86400, 300],
+    [3 * 86400, 300],
+    [(3 * 86400) + 1, 3600],
+    [604800, 3600],
+    [3599999, 3600],
+    [3600000, 86400]
   ])('selects a supported granularity from the window duration (%s seconds)', (duration, expected) => {
     expect(__test__.selectGranularity(duration)).toBe(expected);
   });
@@ -62,7 +68,7 @@ describe('InspectionTrafficAnalysisService', () => {
       groupType1: 'TotalTraffic',
       granularity: 60
     });
-    expect(calls[1].granularity).toBe(3600);
+    expect(calls[1].granularity).toBe(300);
     expect(result.status).toBe('ok');
     expect(result.recentHour.queryEvidence).toMatchObject({
       service: 'timeValues',
@@ -129,17 +135,16 @@ describe('InspectionTrafficAnalysisService', () => {
     expect(request).toMatchObject({
       start: 1709992800,
       end: 1710003600,
-      granularity: 300
+      granularity: 60
     });
-    expect(window.dataset.requestedGranularity).toBe(300);
+    expect(window.dataset.requestedGranularity).toBe(60);
   });
 
-  test('aggregates oversized daily windows by Shanghai calendar week', async () => {
+  test('keeps annual traffic at the actual daily granularity', async () => {
     const start = 1750003200;
     const end = start + 365 * 86400;
     const service = new InspectionTrafficAnalysisService({
       nowSeconds: end,
-      maxPoints: 120,
       client: {
         async getTimeValues(params) {
           return {
@@ -166,19 +171,52 @@ describe('InspectionTrafficAnalysisService', () => {
       durationSeconds: end - start
     });
 
-    expect(result.dataset.points.length).toBeLessThanOrEqual(53);
-    expect(result.dataset.effectiveGranularity).toBe(604800);
-    expect(result.dataset.aggregation).toMatchObject({
-      method: 'calendar_week_average',
-      sourceGranularity: 86400,
-      effectiveGranularity: 604800,
-      status: 'applied'
-    });
+    expect(result.dataset.points).toHaveLength(365);
+    expect(result.dataset.effectiveGranularity).toBe(86400);
+    expect(result.dataset.aggregation).toBeNull();
     expect(result.queryEvidence).toMatchObject({
+      requestedGranularity: 86400,
       actualGranularity: 86400,
-      effectiveGranularity: 604800,
-      aggregation: expect.objectContaining({ method: 'calendar_week_average' })
+      effectiveGranularity: 86400,
+      aggregation: null
     });
+  });
+
+  test('keeps seven-day traffic at the actual hourly granularity', async () => {
+    const start = 1750003200;
+    const end = start + 7 * 86400;
+    const service = new InspectionTrafficAnalysisService({
+      nowSeconds: end,
+      client: {
+        async getTimeValues(params) {
+          return {
+            data: {
+              interval: { start: params.start, end: params.end },
+              granularity: 3600,
+              rows: Array.from({ length: 168 }, (_value, index) => ({
+                timestamp: start + index * 3600,
+                TPIO: index + 1,
+                TPI: index,
+                TPO: 1
+              }))
+            }
+          };
+        }
+      }
+    });
+
+    const result = await service.queryWindow({
+      id: 'traffic-seven-days',
+      title: '最近7天流量分布趋势',
+      start,
+      end,
+      durationSeconds: end - start
+    });
+
+    expect(result.queryEvidence.requestedGranularity).toBe(3600);
+    expect(result.dataset.points).toHaveLength(168);
+    expect(result.dataset.effectiveGranularity).toBe(3600);
+    expect(result.dataset.aggregation).toBeNull();
   });
 
   test('collects the selected primary window plus explicit context windows', async () => {
@@ -207,7 +245,7 @@ describe('InspectionTrafficAnalysisService', () => {
       ]
     });
 
-    expect(calls.map((item) => item.granularity)).toEqual([86400, 3600, 60]);
+    expect(calls.map((item) => item.granularity)).toEqual([3600, 300, 60]);
     expect(result.primary).toMatchObject({ key: 'last7days', durationSeconds: 604800, title: '最近7天流量分布趋势' });
     expect(result.contextDay).toMatchObject({ key: 'last1day' });
     expect(result.contextHour).toMatchObject({ key: 'last1hour' });

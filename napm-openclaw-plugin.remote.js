@@ -6,12 +6,12 @@ const ConversationOperationState = require('./plugin/ConversationOperationState'
 const {
   QUERY_ACTIONS,
   QUERY_OUTCOMES,
+  QUERY_PHASES,
   QUERY_ROUTES,
   QueryTurnCoordinator
 } = require('./plugin/QueryTurnCoordinator');
 const {
-  buildDeterministicFinalReply: buildAlertPacketFinalReply,
-  prepareModelFinalContent: prepareAlertPacketModelFinalContent
+  buildDeterministicFinalReply: buildAlertPacketFinalReply
 } = require('./plugin/AlertPacketFinalReplyService');
 const { ConversationScopeRegistry } = require('./plugin/ConversationScopeResolver');
 const {
@@ -23,8 +23,48 @@ const {
 const ReportSourceStore = require('./plugin/ReportSourceStore');
 const TrustedToolContextStore = require('./plugin/TrustedToolContextStore');
 const AlertReferenceStore = require('./plugin/AlertReferenceStore');
+const {
+  TURN_ADMISSION_ACTIONS,
+  TURN_ADMISSION_ROUTES,
+  TurnAdmissionCoordinator
+} = require('./plugin/TurnAdmissionCoordinator');
+const QueryContextResolver = require('./plugin/context-resolvers/QueryContextResolver');
+const AlertContextResolver = require('./plugin/context-resolvers/AlertContextResolver');
+const ContextBoundaryResolver = require('./plugin/context-resolvers/ContextBoundaryResolver');
+const {
+  CLASSIFICATION_SCHEMA_VERSION,
+  CLASSIFICATION_SOURCE,
+  createDomainIntentClassificationAdapter
+} = require('./plugin/DomainIntentClassificationAdapter');
+const {
+  TURN_INTENT_HANDLING,
+  TURN_INTENT_TYPES,
+  resolveTurnIntent
+} = require('./plugin/TurnIntentResolver');
 
-const NAPM_DIRECT_SKILL_MODE = true;
+const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
+  isPlatformIdentityPrompt,
+  isOverviewPrompt,
+  isAlertEventPrompt,
+  isAlertSkillMetaFollowUpPrompt,
+  isMetricInventoryPrompt,
+  isMetricInventoryDetailPrompt,
+  inferMetricInventoryGroup,
+  isNapmMetaFollowUpPrompt,
+  isResultDeliveryFollowUpPrompt,
+  classifyNapmWorkflow,
+  isAlertPacketAnalysisPrompt,
+  isPacketCapturePrompt,
+  isReportExportPrompt,
+  isReportWorkflowPrompt,
+  isSystemDomainPrompt,
+  isNapmRelatedPrompt,
+  isContinuationPrompt,
+  isOutOfScopeNapmRequest,
+  classifyReportPrompt,
+  hasSpecificFaultDiagnosisTarget,
+  isFaultDiagnosisPrompt
+});
 const LOCAL_SKILLS_ROOT = path.join(__dirname, 'skills');
 const DEPLOYED_SKILLS_ROOT = path.join(process.env.HOME || '/home/netinside', '.openclaw/workspace/skills');
 const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
@@ -41,7 +81,8 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-inspection/scripts/run_inspection_snapshot.js',
   'openclaw-napm-summary/scripts/run_summary.js',
   'openclaw-napm-fault-diagnosis/scripts/run_fault_diagnosis.js',
-  'shared/NapmObjectTargetResolver.js'
+  'shared/NapmObjectTargetResolver.js',
+  'shared/NapmPageViewsContract.js'
 ]);
 
 function hasCompleteNapmSkillRuntime(skillsRoot = '', existsSync = fs.existsSync) {
@@ -100,6 +141,10 @@ const napmQueryDecisionPolicy = () => require(path.join(
   OPENCLAW_SKILLS_ROOT,
   'openclaw-napm-query/services/QueryDecisionPolicy.js'
 ));
+const napmPageViewsContract = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'shared/NapmPageViewsContract.js'
+));
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
 const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
@@ -116,8 +161,6 @@ const napmGuardState = new Map();
 const napmConversationState = new Map();
 const napmSentMediaByConversation = new Map();
 const nativeCommandByScope = new Map();
-let cachedGroupPathPlannerService = null;
-let groupPathPlannerLookupComplete = false;
 let cachedPromptRoutingService = null;
 let promptRoutingLookupComplete = false;
 let cachedWorkflowClassifierService = null;
@@ -153,8 +196,13 @@ const napmOperationState = new ConversationOperationState({
   queryContextMaxAgeMs: QUERY_CONTEXT_MAX_AGE_MS
 });
 const queryTurnCoordinator = new QueryTurnCoordinator({
-  maxAgeMs: RESULT_CACHE_MAX_AGE_MS
+  maxAgeMs: RESULT_CACHE_MAX_AGE_MS,
+  extractPageFamilyId: (row) => napmPageViewsContract().extractPageFamilyId(row)
 });
+const turnAdmissionCoordinator = new TurnAdmissionCoordinator();
+const queryContextResolver = new QueryContextResolver();
+const alertContextResolver = new AlertContextResolver();
+const contextBoundaryResolver = new ContextBoundaryResolver();
 const assistantOutputLedger = new AssistantOutputLedger({
   maxAgeMs: RESULT_CACHE_MAX_AGE_MS
 });
@@ -182,7 +230,9 @@ function getNapmAlertReferenceStore() {
 }
 const napmTrustedToolContextByTraceId = new Map();
 const napmAutomaticReportByTurn = new Map();
+const napmPacketExecutionByTurn = new Map();
 const AUTOMATIC_REPORT_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
+const PACKET_EXECUTION_OPERATION_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
 const AUDIT_LOG_PATH = process.env.NAPM_AUDIT_LOG_PATH || '/home/netinside/.openclaw/logs/audit.log';
 const SAFE_NAPM_TOOL_NAMES = new Set(['napm-skill-query', 'napm-report-export', 'napm-packet-analysis', 'napm-alert-query', 'napm-alert-packet-analysis', 'napm-inspection-snapshot', 'napm-summary', 'napm-fault-diagnosis']);
 const ALERT_CATEGORY_LABELS = {
@@ -198,85 +248,6 @@ const DEV_RESOLVER_TOOL_NAMES = new Set([
   'napm-resolve-query',
   'napm-mainflow-query'
 ]);
-const NAPM_OBJECT_PATTERNS = [
-  /napm/i,
-  /netinside/i,
-  /239web/i,
-  /\bhis\b/i,
-  /观枢/,
-  /智维/
-];
-const NAPM_DOMAIN_PATTERNS = [
-  /系统/,
-  /网络/,
-  /应用/,
-  /业务/,
-  /web\s*application/i,
-  /webapp/i,
-  /网站/,
-  /页面/,
-  /流量/,
-  /吞吐/,
-  /响应/,
-  /时延/,
-  /延迟/,
-  /异常/,
-  /告警/,
-  /丢包/,
-  /重传/,
-  /性能/,
-  /监控/,
-  /http/i,
-  /[45]xx/i
-];
-const SYSTEM_DOMAIN_HINT_PATTERNS = [
-  /服务/,
-  /结果/,
-  /分析/,
-  /排查/,
-  /趋势/,
-  /排行/,
-  /排名/,
-  /情况/,
-  /状态/
-];
-
-const fetchImpl = (...args) => {
-  if (typeof fetch === 'function') {
-    return fetch(...args);
-  }
-  return import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
-};
-
-function getBaseUrl(api) {
-  const baseUrl =
-    api?.config?.gatewayBaseUrl ||
-    process.env.NAPM_GATEWAY_BASE_URL ||
-    NAPM_GATEWAY_BASE_URL;
-  return String(baseUrl).replace(/\/+$/, '');
-}
-
-async function postJson(url, body) {
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-
-  try {
-    return JSON.parse(text);
-  } catch (_error) {
-    return { raw: text };
-  }
-}
-
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -566,8 +537,75 @@ function isAlertPacketConfirmationPrompt(prompt = '', previousState = null) {
 function normalizeAlertPacketCommand(prompt = '') {
   return String(prompt || '')
     .trim()
-    .replace(/[!！。．.]+$/u, '')
+    // WeChat users often append Chinese punctuation to a short confirmation
+    // (for example: "确认下载并分析；"). Strip only trailing punctuation so
+    // the exact confirmation vocabulary remains fail-closed.
+    .replace(/[!！。．.;；,，、…]+$/u, '')
+    // Treat punctuation used as a separator (for example the comma in
+    // "确认下载，进行分析") as whitespace; the confirmation grammar below
+    // still requires the complete command vocabulary.
+    .replace(/[;；,，、:：]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
     .trim();
+}
+
+/**
+ * Interpret a possible packet-download continuation as an action, not as a
+ * fixed phrase. This function deliberately does not authorize anything on
+ * its own: buildPendingPacketDownloadContext() still requires a fresh,
+ * same-scope preview whose decision is CONFIRM_DOWNLOAD. The result here is
+ * only a conservative semantic signal for that context gate.
+ */
+function parsePacketDownloadConfirmationIntent(prompt = '') {
+  const text = normalizeAlertPacketCommand(prompt);
+  if (!text) {
+    return { accepted: false, reason: 'empty' };
+  }
+
+  const hasDownloadAction = /(?:下载|导出|获取|保存|抓取|拉取|提取|落盘|download|export|fetch|save|retrieve)/i.test(text);
+  const hasAnalysisAction = /(?:分析|解析|解码|检查|查看|研判|协议|抓包分析|analy[sz]e|decode|inspect|pcap|tshark)/i.test(text);
+  const hasApprovalAction = /(?:确认|同意|允许|批准|开始|继续|执行|进行|直接|请|帮我|麻烦|可以|能否|能够|好的?|好吧|行|没问题|收到|是的|按(?:照|着)|依照|处理|proceed|go\s*ahead|continue|start|please|yes|ok(?:ay)?|sure)/i.test(text);
+  const hasContinuationAction = /(?:确认|同意|允许|批准|开始|继续|执行|进行|直接|可以|能否|能够|proceed|go\s*ahead|continue|start|please)/i.test(text);
+  const refersPreviousPreview = /(?:刚才|刚刚|上一轮|上一条|之前|前面|预览|预览结果|已预览|这个|该|上述|对应的|上一份|previous|last|prior|preview|above|it)/i.test(text);
+  const hasExplicitNewScope = /(?:\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:start|end)\s*[:=]|最近\s*(?:\d+\s*(?:分钟|小时|天)|一小时|半小时)|从[^，。；;]+到[^，。；;]+|时间范围|换成|改查|另查|另一个|另一个目标|new\s+ip|another\s+ip|different\s+target)/i.test(text);
+  const hasNegativeAction = /(?:不要|别|无需|不用|不需要|暂不|先不|取消|停止|拒绝|免得|只(?:看|做)分析|仅分析|不下载|不做分析|without|don't|do\s+not|not\s+download|cancel|stop)/i.test(text);
+  const hasDiagnosticCue = /(?:为什么|为何|原因|失败|报错|错误|异常|无法|问题|排查|故障|why|failure|failed|error|unable|problem|diagnos)/i.test(text);
+  const hasStatusOnlyQuestion = /(?:下载了吗|分析了吗|完成了吗|是否已经|有没有下载|有没有分析|什么结果|什么状态|进展如何|status|finished|done)/i.test(text)
+    && !hasApprovalAction
+    && !(hasDownloadAction && hasAnalysisAction);
+  const hasRetryOrReplacementCue = /(?:重新|重试|另一个|另一条|新的|换一个|改为|改查|retry|again|another|new\s+query|different)/i.test(text);
+  const isBareAcknowledgement = /^(?:确认|继续|开始|执行|同意|好的?|好吧|行|可以|没问题|收到|明白|是的|yes|ok(?:ay)?|sure)$/i.test(text);
+
+  if (hasNegativeAction) {
+    return { accepted: false, reason: 'negative_action', text };
+  }
+  if (hasExplicitNewScope) {
+    return { accepted: false, reason: 'new_scope', text };
+  }
+  if (hasRetryOrReplacementCue && !refersPreviousPreview) {
+    return { accepted: false, reason: 'new_or_retry_request', text };
+  }
+  if (hasStatusOnlyQuestion) {
+    return { accepted: false, reason: 'status_question', text };
+  }
+  if (hasDiagnosticCue && !hasContinuationAction) {
+    return { accepted: false, reason: 'diagnostic_request', text };
+  }
+
+  const combinedDownloadAnalysis = hasDownloadAction && hasAnalysisAction;
+  const contextualAction = refersPreviousPreview && (hasDownloadAction || hasAnalysisAction || hasApprovalAction);
+  const explicitAction = hasApprovalAction && (hasDownloadAction || hasAnalysisAction || refersPreviousPreview || hasContinuationAction);
+  const accepted = isBareAcknowledgement || combinedDownloadAnalysis || contextualAction || explicitAction;
+
+  return {
+    accepted,
+    reason: accepted ? 'action_intent' : 'no_action_intent',
+    text,
+    hasDownloadAction,
+    hasAnalysisAction,
+    hasApprovalAction,
+    refersPreviousPreview
+  };
 }
 
 function isAlertPacketBatchPrompt(prompt = '', previousState = null) {
@@ -602,6 +640,79 @@ function buildAlertPacketContinuationPrompt(prompt = '', previousState = null) {
   if (!reference) return '';
   const candidateId = String(previousState?.alertPacketCandidateId || '').trim();
   return candidateId ? `分析 ${candidateId}` : `分析告警 ${reference}`;
+}
+
+function isPacketDownloadConfirmationPrompt(prompt = '') {
+  return parsePacketDownloadConfirmationIntent(prompt).accepted;
+}
+
+function buildPendingPacketDownloadContext(prompt = '', conversationKey = '') {
+  if (!conversationKey || !isPacketDownloadConfirmationPrompt(prompt)) {
+    return null;
+  }
+
+  const record = getRecentRememberedSkillResult(conversationKey);
+  if (!isFreshRememberedRecord(record) || !isPacketSkillResultRecord(record)) {
+    return null;
+  }
+
+  const result = record.result;
+  if (
+    result?.preview?.ok !== true
+    || result?.preview?.empty !== false
+    || result?.decision?.next_action !== 'CONFIRM_DOWNLOAD'
+  ) {
+    return null;
+  }
+
+  const sourceCriteria = isPlainObject(result.criteria)
+    ? cloneJsonObject(result.criteria)
+    : null;
+  const start = Number(sourceCriteria?.start);
+  const end = Number(sourceCriteria?.end);
+  if (
+    !sourceCriteria
+    || !Number.isFinite(start)
+    || !Number.isFinite(end)
+    || start <= 0
+    || end <= start
+    || start > 9999999999
+    || end > 9999999999
+  ) {
+    return null;
+  }
+
+  delete sourceCriteria.prompt;
+  delete sourceCriteria.userQuery;
+  delete sourceCriteria.timeRange;
+  delete sourceCriteria.timeRangeKey;
+  delete sourceCriteria.previewRiskAccepted;
+  sourceCriteria.start = Math.floor(start);
+  sourceCriteria.end = Math.floor(end);
+
+  const hasTarget = Boolean(
+    (Array.isArray(sourceCriteria.ips) && sourceCriteria.ips.some(Boolean))
+    || (Array.isArray(sourceCriteria.ipRanges) && sourceCriteria.ipRanges.some(Boolean))
+    || String(sourceCriteria.id || '').trim()
+    || String(sourceCriteria.instanceId || '').trim()
+    || String(sourceCriteria.pageFamilyDetailId || '').trim()
+    || (isPlainObject(sourceCriteria.top) && Object.keys(sourceCriteria.top).length > 0)
+  );
+  if (!hasTarget) {
+    return null;
+  }
+
+  return {
+    sourceTurnId: normalizeTurnId(record.turnId),
+    mode: 'preview_download_analyze',
+    downloadType: String(result.downloadType || 'packetsDown').trim() || 'packetsDown',
+    criteria: sourceCriteria
+  };
+}
+
+function buildPacketDownloadContinuationPrompt(context = null) {
+  if (!isPlainObject(context?.criteria)) return '';
+  return '确认下载并分析上一轮已预览的数据包（沿用固定目标和时间窗口）';
 }
 
 const ALERT_REFERENCE_PATTERN = /\bGJ-[A-Z2-9]{6,16}(?:-P\d{1,3})?\b/i;
@@ -1067,6 +1178,23 @@ function resolveQueryCoordinatorRoute(prompt = '', state = null) {
   if (state?.pendingQueryDraft) {
     return QUERY_ROUTES.NAPM_QUERY;
   }
+  if (state?.queryResultFollowUpPrompt) {
+    return QUERY_ROUTES.NAPM_QUERY;
+  }
+  const admittedTool = String(state?.turnAdmissionDecision?.expectedTool || '').trim();
+  if (
+    admittedTool
+    && admittedTool !== 'napm-skill-query'
+    && isSafeNapmToolName(admittedTool)
+  ) {
+    return QUERY_ROUTES.OTHER_SKILL;
+  }
+  if (
+    state?.turnAdmissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+    && state.turnAdmissionDecision.sourceDomain !== 'QUERY'
+  ) {
+    return QUERY_ROUTES.OTHER_SKILL;
+  }
 
   const text = String(prompt || '').trim();
   const otherSkillTurn = Boolean(
@@ -1091,7 +1219,7 @@ function normalizePromptKey(prompt) {
   return String(prompt || '')
     .trim()
     .toLowerCase()
-    .replace(/[\s　]+/g, '')
+    .replace(/[\s\u3000]+/g, '')
     .replace(/[?？!！。；;，,、：:]+$/g, '');
 }
 
@@ -1294,19 +1422,6 @@ function summarizeResolvedQueryForAudit(resolvedQuery = null) {
   };
 }
 
-function normalizeGroupsForPlanning(groups = []) {
-  if (!Array.isArray(groups)) {
-    return [];
-  }
-
-  return groups
-    .map((item) => ({
-      type: typeof item?.type === 'string' ? item.type.trim() : item?.type || null,
-      argument: item?.argument ?? null
-    }))
-    .filter((item) => item.type);
-}
-
 function getSkillWorkspaceRootFromExecutor() {
   const executorPath = path.join(OPENCLAW_SKILLS_ROOT, 'openclaw-napm-query/scripts/run_napm_query.js');
   if (!executorPath) {
@@ -1317,33 +1432,6 @@ function getSkillWorkspaceRootFromExecutor() {
     ? executorPath
     : path.resolve(process.cwd(), executorPath);
   return path.resolve(path.dirname(absoluteExecutorPath), '..', '..', '..');
-}
-
-function collectGroupPathPlannerModuleCandidates() {
-  const candidates = [];
-  const pushCandidate = (candidatePath) => {
-    const normalized = String(candidatePath || '').trim();
-    if (!normalized) {
-      return;
-    }
-
-    const resolved = path.resolve(normalized);
-    if (!candidates.includes(resolved)) {
-      candidates.push(resolved);
-    }
-  };
-
-  pushCandidate(path.resolve(__dirname, 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  pushCandidate(path.resolve(__dirname, '..', 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  pushCandidate(path.resolve(__dirname, '..', '..', 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-
-  const workspaceRoot = getSkillWorkspaceRootFromExecutor();
-  if (workspaceRoot) {
-    pushCandidate(path.join(workspaceRoot, 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  }
-
-  pushCandidate(path.resolve(process.cwd(), 'skills', 'openclaw-napm-query', 'services', 'GroupPathPlannerService.js'));
-  return candidates;
 }
 
 function collectPromptRoutingModuleCandidates() {
@@ -1454,32 +1542,6 @@ function loadSkillDotenvIfAvailable() {
   }
 }
 
-function getGroupPathPlannerService() {
-  if (groupPathPlannerLookupComplete) {
-    return cachedGroupPathPlannerService;
-  }
-
-  loadSkillDotenvIfAvailable();
-  groupPathPlannerLookupComplete = true;
-  for (const candidatePath of collectGroupPathPlannerModuleCandidates()) {
-    try {
-      if (!fs.existsSync(candidatePath)) {
-        continue;
-      }
-
-      const service = require(candidatePath);
-      if (service && typeof service.planPath === 'function') {
-        cachedGroupPathPlannerService = service;
-        break;
-      }
-    } catch (_error) {
-      // Try the next candidate.
-    }
-  }
-
-  return cachedGroupPathPlannerService;
-}
-
 function getPromptRoutingService() {
   if (promptRoutingLookupComplete) {
     return cachedPromptRoutingService;
@@ -1582,32 +1644,12 @@ function getResolutionSpecQueryContract() {
   return null;
 }
 
-function getResolutionSpecObjectAliases() {
-  const service = getResolutionSpecService();
-  if (service && typeof service.getObjectAliases === 'function') {
-    return service.getObjectAliases() || {};
-  }
-  return {};
-}
-
 function getResolutionSpecRoutingRules() {
   const service = getResolutionSpecService();
   if (service && typeof service.getRoutingRules === 'function') {
     return service.getRoutingRules() || {};
   }
   return {};
-}
-
-function getResolutionSpecMetadataRules() {
-  const service = getResolutionSpecService();
-  if (service && typeof service.getMetadataRules === 'function') {
-    return service.getMetadataRules() || {};
-  }
-  return {};
-}
-
-function hasExplicitResolvedQuery(args = {}) {
-  return isPlainObject(args?.resolvedQuery);
 }
 
 function normalizeQueryModeKeyForService(serviceName = '', queryModeKey = '') {
@@ -1649,6 +1691,12 @@ function normalizeQueryModeKeyForService(serviceName = '', queryModeKey = '') {
       trend: 'timeseries',
       trends: 'timeseries',
       data: 'timeseries'
+    },
+    pageViews: {
+      detail: 'detail',
+      pageviews: 'detail',
+      details: 'detail',
+      list: 'detail'
     },
     overview: {
       overview: 'overview',
@@ -1703,6 +1751,7 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     topValues_multi_protocol: 'topn',
     averageValues: 'average',
     timeValues: 'timeseries',
+    pageViews: 'detail',
     overview: 'overview',
     groups: 'metadata',
     metrics: 'metadata',
@@ -1786,7 +1835,15 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     next.topMetric = next.metric || next.metrics?.[0];
   }
 
-  ['start', 'end', 'topCount', 'granularity'].forEach((field) => {
+  if (serviceName === 'pageViews') {
+    try {
+      next.maxLimit = napmPageViewsContract().normalizePageViewsMaxLimit(next.maxLimit);
+    } catch (_error) {
+      // Keep invalid input for deterministic validation below.
+    }
+  }
+
+  ['start', 'end', 'topCount', 'granularity', 'maxLimit'].forEach((field) => {
     if (next[field] == null || next[field] === '') return;
     const numeric = Number(next[field]);
     if (Number.isFinite(numeric)) {
@@ -1828,6 +1885,181 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
 
   return next;
 }
+
+function resolveQueryResultReference(resolvedQuery, scope = '', turnId = '', prompt = '') {
+  const normalized = normalizeResolvedQueryForPlugin(resolvedQuery);
+  if (!isPlainObject(normalized)) {
+    return { ok: true, resolvedQuery: normalized };
+  }
+
+  delete normalized.sourceReference;
+  if (isPlainObject(normalized.executionBinding)) {
+    delete normalized.executionBinding.resultReferenceValidated;
+    delete normalized.executionBinding.resultReferenceObjectType;
+    if (Object.keys(normalized.executionBinding).length === 0) {
+      delete normalized.executionBinding;
+    }
+  }
+
+  const reference = isPlainObject(normalized.resultReference)
+    ? normalized.resultReference
+    : null;
+  if (!reference) {
+    return { ok: true, resolvedQuery: normalized };
+  }
+
+  const referenceObjectType = String(reference.objectType || '').trim();
+  const supportsPageViewReference = normalized.service === 'pageViews'
+    && referenceObjectType === 'PageFamily';
+  const workflow = classifyNapmWorkflow(prompt || normalized.userRequirement || '');
+  const groups = Array.isArray(normalized.groups) ? normalized.groups.filter(Boolean) : [];
+  const terminalGroupType = String(groups[groups.length - 1]?.type || '').trim();
+  const semanticConstraints = isPlainObject(normalized.semanticConstraints)
+    ? normalized.semanticConstraints
+    : {};
+  const currentTurn = scope && turnId
+    ? queryTurnCoordinator.get(scope, turnId)
+    : null;
+  const hasFrozenAuthoritativeSource = Boolean(
+    String(currentTurn?.sourceResultSetId || '').trim()
+  );
+  const declaredBusinessPageDrilldown = semanticConstraints.workflowType === 'metric_topn'
+    && semanticConstraints.operation === 'drilldown'
+    && semanticConstraints.drilldownRequested === true
+    && semanticConstraints.targetObjectType === 'PageFamily';
+  const supportsBusinessPageDrilldown = normalized.service === 'topValues'
+    && referenceObjectType === 'WebApplication'
+    && terminalGroupType === 'PageFamily'
+    && (
+      (
+        workflow.workflowType === 'metric_topn'
+        && workflow.operation === 'drilldown'
+        && workflow.drilldownRequested === true
+      )
+      || (declaredBusinessPageDrilldown && hasFrozenAuthoritativeSource)
+    );
+  if (!supportsPageViewReference && !supportsBusinessPageDrilldown) {
+    return {
+      ok: false,
+      code: 'RESULT_REFERENCE_WORKFLOW_MISMATCH',
+      reason: 'result_reference_workflow_mismatch',
+      message: 'resultReference is not valid for the requested query workflow.'
+    };
+  }
+
+  const resolution = queryTurnCoordinator.resolveResultReference({
+    scope,
+    turnId,
+    reference
+  });
+  if (!resolution?.ok) return resolution;
+
+  const hasExplicitTime = ['start', 'end'].some((field) => (
+    normalized[field] !== undefined
+    && normalized[field] !== null
+    && normalized[field] !== ''
+  )) || Boolean(String(normalized?.timeRange?.key || '').trim());
+  const inheritedQuery = isPlainObject(resolution.inheritedQuery) ? resolution.inheritedQuery : {};
+
+  if (supportsBusinessPageDrilldown) {
+    const selectedBusiness = String(resolution.argument || '').trim();
+    if (!selectedBusiness) {
+      return {
+        ok: false,
+        code: 'RESULT_REFERENCE_OBJECT_ARGUMENT_MISSING',
+        reason: 'result_reference_object_argument_missing',
+        message: 'The selected WebApplication result does not contain a usable object argument.'
+      };
+    }
+    const plannedGroups = [
+      { type: 'WebApplication', argument: selectedBusiness },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const next = {
+      ...normalized,
+      groups: plannedGroups,
+      sourceReference: resolution.sourceReference,
+      semanticConstraints: {
+        ...(isPlainObject(normalized.semanticConstraints) ? normalized.semanticConstraints : {}),
+        workflowType: 'metric_topn',
+        operation: 'drilldown',
+        drilldownRequested: true,
+        targetObjectType: 'PageFamily'
+      },
+      pathPlanning: {
+        applied: true,
+        shouldApply: true,
+        strategy: 'static_groups_tree',
+        followUpAction: 'drilldown',
+        anchorType: 'WebApplication',
+        plannedGroups,
+        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily'],
+        reason: 'authoritative_result_reference'
+      },
+      executionBinding: {
+        ...(isPlainObject(normalized.executionBinding) ? normalized.executionBinding : {}),
+        resultReferenceValidated: true,
+        resultReferenceObjectType: 'WebApplication',
+        effectiveTerminalGroupType: 'PageFamily'
+      }
+    };
+    if (!hasExplicitTime) {
+      next.start = inheritedQuery.start;
+      next.end = inheritedQuery.end;
+      if (isPlainObject(inheritedQuery.timeRange)) {
+        next.timeRange = { ...inheritedQuery.timeRange };
+      }
+      next.executionOptions = {
+        ...(isPlainObject(next.executionOptions) ? next.executionOptions : {}),
+        timeMode: 'fixed'
+      };
+    }
+    return {
+      ok: true,
+      resolvedQuery: normalizeResolvedQueryForPlugin(next)
+    };
+  }
+
+  const explicitPageFamilyId = String(normalized.pageFamilyId || '').trim();
+  if (explicitPageFamilyId && explicitPageFamilyId !== resolution.pageFamilyId) {
+    return {
+      ok: false,
+      code: 'RESULT_REFERENCE_PAGE_FAMILY_ID_MISMATCH',
+      reason: 'result_reference_page_family_id_mismatch',
+      message: 'queryDraft.pageFamilyId does not match the authoritative resultReference selection.'
+    };
+  }
+
+  const next = {
+    ...normalized,
+    pageFamilyId: resolution.pageFamilyId,
+    sourceReference: resolution.sourceReference,
+    executionBinding: {
+      ...(isPlainObject(normalized.executionBinding) ? normalized.executionBinding : {}),
+      resultReferenceValidated: true,
+      resultReferenceObjectType: 'PageFamily'
+    }
+  };
+  if (!hasExplicitTime) {
+    next.start = inheritedQuery.start;
+    next.end = inheritedQuery.end;
+    if (isPlainObject(inheritedQuery.timeRange)) {
+      next.timeRange = { ...inheritedQuery.timeRange };
+    }
+    next.executionOptions = {
+      ...(isPlainObject(next.executionOptions) ? next.executionOptions : {}),
+      timeMode: 'fixed'
+    };
+  }
+
+  return {
+    ok: true,
+    resolvedQuery: normalizeResolvedQueryForPlugin(next)
+  };
+}
+
+const resolvePageViewsResultReference = resolveQueryResultReference;
 
 function getResolutionSpecServiceNames() {
   const service = getResolutionSpecService();
@@ -1946,7 +2178,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  const normalizedResolvedQuery = normalizeResolvedQueryForPlugin(resolvedQuery);
+  let normalizedResolvedQuery = normalizeResolvedQueryForPlugin(resolvedQuery);
   const serviceName = String(normalizedResolvedQuery.service || '').trim();
   if (!serviceName) {
     return {
@@ -1994,6 +2226,17 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
       message: `Unsupported queryDraft timeRange.key=${declaredTimeKey}; provide a concrete key such as last60minutes.`,
       details: { timeRangeKey: declaredTimeKey }
     };
+  }
+
+  if (serviceName === 'pageViews') {
+    const pageViewsValidation = napmPageViewsContract().validatePageViewsQuery(
+      normalizedResolvedQuery,
+      { phase: options?.phase }
+    );
+    if (!pageViewsValidation.ok) {
+      return pageViewsValidation;
+    }
+    normalizedResolvedQuery = pageViewsValidation.query;
   }
 
   if ((requiresRootStart || requiresRootEnd) && (!hasValidRootStart || !hasValidRootEnd) && (hasNestedStart || hasNestedEnd)) {
@@ -2331,9 +2574,18 @@ function buildLifecycleBindingFailureResult() {
 
 function buildQueryToolAuthorizationFailureResult(code = '') {
   const normalizedCode = String(code || '').trim() || 'QUERY_TOOL_AUTHORIZATION_FAILED';
-  const displayText = normalizedCode === 'QUERY_TURN_ROUTE_MISMATCH'
-    ? '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。'
-    : '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。';
+  const displayTextByCode = {
+    QUERY_TURN_ROUTE_MISMATCH: '当前轮次不属于普通 NAPM 查询路由，已阻止查询执行。',
+    QUERY_TOOL_IDENTITY_MISMATCH: '当前 Tool 的可信身份与 napm-skill-query 不一致，已阻止查询执行。',
+    TURN_ADMISSION_AUTHORIZATION_REQUIRED: '当前 Tool 缺少本轮准入授权，已阻止查询执行。',
+    TURN_ADMISSION_TOOL_MISMATCH: '当前轮准入决定不允许执行 napm-skill-query，已阻止查询执行。',
+    TURN_ADMISSION_TURN_MISMATCH: '当前 Tool 的准入轮次与可信轮次不一致，已阻止查询执行。',
+    TURN_ADMISSION_QUERY_CONTEXT_MISMATCH: '当前查询与准入决定冻结的来源查询不一致，已阻止查询执行。',
+    TURN_ADMISSION_RESULT_SOURCE_MISMATCH: '当前查询引用的权威结果与准入决定不一致，已阻止查询执行。',
+    QUERY_TOOL_PARAMETERS_MISMATCH: '当前 Tool 参数与 Hook 授权的查询不一致，已阻止查询执行。'
+  };
+  const displayText = displayTextByCode[normalizedCode]
+    || '当前 Tool 未通过查询执行授权校验，已阻止查询执行。';
   return {
     ok: false,
     source: 'napm_openclaw_plugin_query_turn',
@@ -2382,155 +2634,12 @@ function buildNapmSkillExecutionFailureResult(args = {}) {
   };
 }
 
-function shouldSkipPathPreflight(resolvedQuery = {}) {
-  const service = String(resolvedQuery?.service || '').trim();
-  return service === 'overview'
-    || service === 'drilldownCatalog'
-    || service === 'query_explanation'
-    || service === 'security_refusal';
-}
-
-function resolvePathPlanningSeedGroups(resolvedQuery = {}, sessionState = null, prompt = '') {
-  const explicitGroups = normalizeGroupsForPlanning(resolvedQuery?.groups);
-  if (explicitGroups.length > 0) {
-    return explicitGroups;
-  }
-
-  if (!sessionState || typeof sessionState !== 'object' || !isContinuationPrompt(prompt)) {
-    return [];
-  }
-
-  return normalizeGroupsForPlanning(sessionState?.last_groups);
-}
-
-function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, prompt = '', sessionState = null) {
+function applyPathPreflightToResolvedQuery(resolvedQuery = undefined, _prompt = '', _sessionState = null) {
   return resolvedQuery;
 }
 
 function applyPathPreflightToSkillArgs(args = {}) {
   return isPlainObject(args) ? { ...args } : {};
-}
-
-function roundToNearestMinute(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return null;
-  }
-  return Math.floor(numeric / 60) * 60;
-}
-
-function getDefaultTimeRange() {
-  const end = roundToNearestMinute(Math.floor(Date.now() / 1000));
-  return {
-    start: end - (24 * 60 * 60),
-    end
-  };
-}
-
-function formatNumber(value, digits = 2) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return '';
-  }
-  return numeric.toFixed(digits).replace(/\.?0+$/, '');
-}
-
-function normalizeTimeRange(args = {}) {
-  const fallback = getDefaultTimeRange();
-  const start = roundToNearestMinute(args.start);
-  const end = roundToNearestMinute(args.end);
-  if (start && end && end > start) {
-    return { start, end };
-  }
-  if (end && !start) {
-    return { start: end - (24 * 60 * 60), end };
-  }
-  if (start && !end) {
-    return { start, end: start + (24 * 60 * 60) };
-  }
-  return fallback;
-}
-
-function looksLikeMetricCode(value = '') {
-  const text = String(value || '').trim().toUpperCase();
-  return /^[A-Z][A-Z0-9]{2,}$/.test(text);
-}
-
-function normalizeMetricInput(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return 'TPIO';
-  }
-
-  const normalized = raw.toUpperCase();
-  if (looksLikeMetricCode(normalized)) {
-    return normalized;
-  }
-
-  if (/(请求次数|访问量|访问次数|页面访问|page\s*views|visit\s*count|visits)/i.test(raw)) return 'PGNPGE';
-  if (/(http响应数|响应数|response\s*count|http\s*responses)/i.test(raw)) return 'PGNOBJE';
-  if (/(吞吐|吞吐量|带宽|throughput|bandwidth)/i.test(raw)) return 'TPIO';
-  if (/(页面流量|网站流量|web页面流量)/i.test(raw)) return 'PGBYTO';
-  if (/(请求流量|页面请求流量|请求数据量)/i.test(raw)) return 'PGBYTI';
-  if (/(总流量|流量|traffic)/i.test(raw)) return 'BYTIO';
-  if (/(服务端响应时间|服务器响应时间|server\s*response)/i.test(raw)) return 'TRTI';
-  if (/(往返时延|网络时延|延迟|时延|latency|rtt)/i.test(raw)) return 'RTTI';
-  if (/(慢页面|慢页|slow\s*page)/i.test(raw)) return 'PGNSLPGE';
-  if (/(http\s*500|5xx|500错误|500异常)/i.test(raw)) return 'PGHTTP500';
-  if (/(http\s*400|4xx|400错误|400异常)/i.test(raw)) return 'PGHTTP400';
-  if (/(丢包|丢包率|packet\s*loss|loss)/i.test(raw)) return 'PLI';
-  if (/(重传|retransmission)/i.test(raw)) return 'RDTI';
-  if (/(连接请求数|建连请求数|connection\s*request)/i.test(raw)) return 'CONI';
-  if (/(连接失败数|失败连接数|connection\s*failure)/i.test(raw)) return 'RFCI';
-  if (/(连接数|新建连接数|connection\s*count)/i.test(raw)) return 'CCNI';
-  return raw;
-}
-
-function normalizeGroupInput(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) {
-    return 'IPAddress';
-  }
-
-  if (/^(?:ClientIPs|BusinessGroup|WebApplication|DefinedApp|Application|Prefix24|IPConversation|TotalTraffic|IPAddress)$/i.test(raw)) {
-    if (/^Application$/i.test(raw)) {
-      return 'DefinedApp';
-    }
-    if (/^ClientIPs$/i.test(raw)) {
-      return 'ClientIPs';
-    }
-    return raw;
-  }
-
-  if (/(客户端ip|client\s*ip|clientip)/i.test(raw)) return 'IPAddress';
-  if (/(服务端ip|server\s*ip|serverip)/i.test(raw)) return 'IPAddress';
-  if (/(ip地址|主机|host|\bip\b)/i.test(raw)) return 'IPAddress';
-  if (/(业务组|工作组|业务分组|business\s*group)/i.test(raw)) return 'BusinessGroup';
-  if (/(web应用|业务系统|网站|站点|web\s*application|webapp|website|\bweb\b)/i.test(raw)) return 'WebApplication';
-  if (/(已知应用|协议应用|应用|app|application)/i.test(raw)) return 'DefinedApp';
-  if (/(ip会话|会话|session|conversation)/i.test(raw)) return 'IPConversation';
-  if (/(网段|prefix24|\/24)/i.test(raw)) return 'Prefix24';
-  if (/(总流量|全局|整体|概览|系统整体|global|overall|total\s*traffic)/i.test(raw)) return 'TotalTraffic';
-  return raw;
-}
-
-function normalizeGranularity(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) {
-    return 3600;
-  }
-
-  const numeric = Number(raw);
-  if (Number.isFinite(numeric) && numeric > 0) {
-    return numeric;
-  }
-
-  if (raw === '1m' || raw === '1min' || raw === '1minute') return 60;
-  if (raw === '5m' || raw === '5min' || raw === '5minute') return 300;
-  if (raw === '15m' || raw === '15min' || raw === '15minute') return 900;
-  if (raw === '30m' || raw === '30min' || raw === '30minute') return 1800;
-  if (raw === '1h' || raw === '1hr' || raw === '1hour') return 3600;
-  return 3600;
 }
 
 function isOverviewPrompt(prompt = '') {
@@ -2714,31 +2823,12 @@ function observePromptQuerySemanticMismatch(prompt = '', resolvedQuery = {}) {
   return napmQueryDecisionPolicy().evaluateHighRiskSemanticConsistency(prompt, resolvedQuery);
 }
 
-function buildBusinessObjectInventoryResolvedQuery(prompt = '') {
+function buildBusinessObjectInventoryResolvedQuery(_prompt = '') {
   return null;
 }
 
-function buildMetricInventoryResolvedQuery(prompt = '') {
+function buildMetricInventoryResolvedQuery(_prompt = '') {
   return null;
-}
-
-function getOverviewDayStart(offsetDays = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + Number(offsetDays || 0));
-  date.setHours(0, 0, 0, 0);
-  return Math.floor(date.getTime() / 1000);
-}
-
-function getOverviewDayEndExclusive(offsetDays = 0) {
-  return getOverviewDayStart(Number(offsetDays || 0) + 1);
-}
-
-function getOverviewRelativeRange(seconds) {
-  const end = roundToNearestMinute(Math.floor(Date.now() / 1000));
-  return {
-    start: end - Number(seconds || 0),
-    end
-  };
 }
 
 function inferOverviewScene(prompt = '') {
@@ -2753,39 +2843,7 @@ function inferOverviewTimeRangeKey(prompt = '') {
   return getPromptRoutingService().inferOverviewTimeRangeKey(prompt);
 }
 
-function parseOverviewTimeRange(timeRangeKey = 'last24hours') {
-  switch (String(timeRangeKey || '').toLowerCase()) {
-    case 'today':
-      return {
-        start: getOverviewDayStart(0),
-        end: getOverviewDayEndExclusive(0)
-      };
-    case 'yesterday':
-      return {
-        start: getOverviewDayStart(-1),
-        end: getOverviewDayEndExclusive(-1)
-      };
-    case 'last7days':
-      return getOverviewRelativeRange(7 * 24 * 3600);
-    case 'last30days':
-      return getOverviewRelativeRange(30 * 24 * 3600);
-    case 'last1hour':
-      return getOverviewRelativeRange(3600);
-    case 'last24hours':
-    default:
-      return getOverviewRelativeRange(24 * 3600);
-  }
-}
-
-function materializePluginPromptRoute(route = null, options = {}) {
-  return null;
-}
-
-function buildOverviewResolvedQuery(prompt = '') {
-  return null;
-}
-
-function resolvePromptInjectedResolvedQuery(prompt = '', currentResolvedQuery = undefined, options = {}) {
+function buildOverviewResolvedQuery(_prompt = '') {
   return null;
 }
 
@@ -2814,64 +2872,6 @@ function getResolvedQueryValidationOptions(args = {}) {
   return {
     nowSeconds: args?.nowSeconds
   };
-}
-
-function rememberResolvedQueryFailureForTurn(
-  activePrompt = '',
-  validation = {},
-  args = {},
-  conversationKey = '',
-  turnId = ''
-) {
-  const failureResult = buildResolvedQueryBoundaryFailureResult(validation, args);
-  const prompt = activePrompt || normalizePrompt(args);
-  const failureRecord = napmOperationState.rememberQueryFailure({
-    scope: conversationKey,
-    turnId,
-    promptKey: buildPromptScopeKey(prompt, conversationKey),
-    result: failureResult,
-    resolvedQuery: normalizeObject(args?.resolvedQuery) || null
-  });
-
-  if (failureRecord?.terminal) {
-    failureResult.decision = {
-      next_action: 'STOP_RETRYING',
-      reason: failureResult.error.reason,
-      message: 'Query repair budget exhausted. Stop reconstructing and report the typed failure.'
-    };
-  }
-
-  return failureRecord || {
-    result: failureResult,
-    attemptCount: 1,
-    mayRepair: true,
-    terminal: false,
-    duplicate: false
-  };
-}
-
-function rememberResolvedQueryBoundaryFailureForTurn(
-  activePrompt = '',
-  validation = {},
-  args = {},
-  conversationKey = '',
-  conversationState = null,
-  guardState = null
-) {
-  return rememberResolvedQueryFailureForTurn(
-    activePrompt,
-    validation,
-    args,
-    conversationKey,
-    getActiveTurnId(conversationState, guardState)
-  );
-}
-
-function clearResolvedQueryFailureForTurn(conversationKey = '', conversationState = null, guardState = null) {
-  return napmOperationState.clearQueryFailureForTurn(
-    conversationKey,
-    getActiveTurnId(conversationState, guardState)
-  );
 }
 
 function rememberSkillExecutionFailureForTurn(
@@ -2911,7 +2911,7 @@ function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = n
 }
 
 function prepareSkillExecutionArgs(args = {}) {
-  const prepared = isPlainObject(args) ? { ...args } : {};
+  const prepared = isPlainObject(args) ? cloneJsonObject(args) : {};
   const prompt = normalizePrompt(prepared);
   if (!prepared.userQuery && prompt) {
     prepared.userQuery = prompt;
@@ -2942,11 +2942,95 @@ function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
   return prepareSkillExecutionArgs(nextParams);
 }
 
-function isPluginStructuredOverviewInjection(originalArgs = {}, preparedArgs = {}) {
-  return !isPlainObject(originalArgs?.resolvedQuery)
-    && isPlainObject(preparedArgs?.resolvedQuery)
-    && String(preparedArgs.resolvedQuery?.service || '').trim() === 'overview'
-    && isOverviewPrompt(normalizePrompt(preparedArgs));
+function normalizePacketToolParams(activePrompt = '', toolParams = {}) {
+  const prompt = String(activePrompt || '').trim();
+  const nextParams = buildCanonicalSkillToolParams(prompt, toolParams);
+  const packetQuery = isPlainObject(nextParams.packetQuery) ? nextParams.packetQuery : {};
+  const packetCriteria = isPlainObject(packetQuery.criteria) ? packetQuery.criteria : {};
+  const inputCriteria = isPlainObject(nextParams.criteria) ? nextParams.criteria : {};
+  const criteria = {
+    ...packetCriteria,
+    ...inputCriteria,
+    ...(prompt ? { prompt } : {})
+  };
+
+  // Reuse the packet runtime's canonicalization at the plugin boundary. This
+  // repairs a model payload such as ipRanges:["服务器网段"] before any
+  // packetsPreview/packetsDown URL can be built.
+  try {
+    const packetRuntime = napmPacketSkill();
+    if (typeof packetRuntime.normalizeCriteria === 'function') {
+      nextParams.criteria = packetRuntime.normalizeCriteria(criteria);
+      if (isPlainObject(nextParams.packetQuery)) {
+        nextParams.packetQuery = {
+          ...nextParams.packetQuery,
+          criteria: nextParams.criteria
+        };
+      }
+    } else {
+      nextParams.criteria = criteria;
+    }
+  } catch (_error) {
+    nextParams.criteria = criteria;
+  }
+
+  return nextParams;
+}
+
+function stripUntrustedPacketPreviewConfirmation(toolParams = {}) {
+  const nextParams = isPlainObject(toolParams) ? cloneJsonObject(toolParams) : {};
+  delete nextParams.previewRiskAccepted;
+  // This marker is plugin-owned and may only be reintroduced by
+  // buildConfirmedPacketToolParams from a trusted preview record. A model
+  // supplied marker must never cause the runtime to trust arbitrary member
+  // arrays on an initial request.
+  delete nextParams.__businessGroupMembersResolved;
+
+  if (isPlainObject(nextParams.criteria)) {
+    delete nextParams.criteria.previewRiskAccepted;
+    delete nextParams.criteria.__businessGroupMembersResolved;
+  }
+  if (isPlainObject(nextParams.packetQuery)) {
+    delete nextParams.packetQuery.previewRiskAccepted;
+    delete nextParams.packetQuery.__businessGroupMembersResolved;
+    if (isPlainObject(nextParams.packetQuery.criteria)) {
+      delete nextParams.packetQuery.criteria.previewRiskAccepted;
+      delete nextParams.packetQuery.criteria.__businessGroupMembersResolved;
+    }
+  }
+  return nextParams;
+}
+
+function buildConfirmedPacketToolParams(activePrompt = '', toolParams = {}, confirmationContext = null) {
+  const nextParams = stripUntrustedPacketPreviewConfirmation(toolParams);
+  if (!isPlainObject(confirmationContext?.criteria)) {
+    return nextParams;
+  }
+
+  delete nextParams.packetQuery;
+  const restoredCriteria = cloneJsonObject(confirmationContext.criteria);
+  if (
+    String(restoredCriteria.businessGroupName || '').trim()
+    && (
+      (Array.isArray(restoredCriteria.ips) && restoredCriteria.ips.length > 0)
+      || (Array.isArray(restoredCriteria.ipRanges) && restoredCriteria.ipRanges.length > 0)
+    )
+  ) {
+    // This marker is created only from the trusted preview record. The packet
+    // runtime consumes it while normalizing criteria, then removes it. It
+    // prevents a confirmed group download from re-resolving or clearing the
+    // exact member IPs captured by the preview.
+    restoredCriteria.__businessGroupMembersResolved = true;
+  }
+  return {
+    ...nextParams,
+    prompt: String(activePrompt || '').trim(),
+    userQuery: String(activePrompt || '').trim(),
+    mode: confirmationContext.mode || 'preview_download_analyze',
+    downloadType: confirmationContext.downloadType || 'packetsDown',
+    criteria: restoredCriteria,
+    previewRiskAccepted: true
+  };
 }
 
 function buildGuardKey(prefix, value) {
@@ -2996,72 +3080,126 @@ function setGuardState(ctx = {}, state) {
   }
 }
 
-function buildConversationScopedGuardState(content = '', previousState = null) {
-  const prompt = String(content || '').trim();
-  const platformIdentityPrompt = isPlatformIdentityPrompt(prompt);
-  if (platformIdentityPrompt) {
-    const turnPolicy = buildTurnPolicy({ prompt, platformIdentityPrompt });
-    return {
-      prompt,
-      turnPolicy,
-      turnRoute: turnPolicy.route,
-      napmRelated: false,
-      domainRelated: false,
-      platformIdentityPrompt: true,
-      alertRelated: false,
-      alertEventPrompt: false,
-      alertMetaFollowUpPrompt: false,
-      metricInventoryPrompt: false,
-      metaFollowUpPrompt: false,
-      resultDeliveryFollowUpPrompt: false,
-      lastMetricInventoryGroup: '',
-      generalOutOfScopeRequested: false,
-      outOfScopeBoundaryRequested: false,
-      turnNapmToolUsed: false,
-      updatedAt: Date.now()
-    };
-  }
+function buildQueryAdmissionContextCandidates(conversationKey = '') {
+  const scope = String(conversationKey || '').trim();
+  const resultSet = scope ? queryTurnCoordinator.getLatestResultReference(scope) : null;
+  const queryContext = scope ? napmOperationState.getLatestQueryContext(scope) : null;
+  return [
+    ...queryContextResolver.getAdmissionCandidates({ resultSet }),
+    ...queryContextResolver.getQueryContextAdmissionCandidates({ queryContext })
+  ];
+}
 
-  const overviewRelated = isOverviewPrompt(prompt);
-  const alertEventPrompt = isAlertEventPrompt(prompt);
-  const alertMetaFollowUpPrompt = isAlertSkillMetaFollowUpPrompt(prompt, previousState);
-  const metricInventoryPrompt = isMetricInventoryPrompt(prompt)
-    || (previousState?.lastMetricInventoryGroup && isMetricInventoryDetailPrompt(prompt));
-  const metaFollowUpPrompt = isNapmMetaFollowUpPrompt(prompt, previousState);
-  const resultDeliveryFollowUpPrompt = isResultDeliveryFollowUpPrompt(prompt, previousState);
-  const reportExportPrompt = isReportExportPrompt(prompt);
-  const reportWorkflowPrompt = isReportWorkflowPrompt(prompt);
-  const domainRelated = overviewRelated
-    || reportWorkflowPrompt
-    || reportExportPrompt
-    || alertEventPrompt
-    || alertMetaFollowUpPrompt
-    || metricInventoryPrompt
-    || isSystemDomainPrompt(prompt)
-    || metaFollowUpPrompt
-    || resultDeliveryFollowUpPrompt
-    || (previousState?.domainRelated && isContinuationPrompt(prompt));
-  const napmRelated = overviewRelated
-    || reportWorkflowPrompt
-    || reportExportPrompt
-    || alertEventPrompt
-    || alertMetaFollowUpPrompt
-    || metricInventoryPrompt
-    || isNapmRelatedPrompt(prompt)
-    || metaFollowUpPrompt
-    || resultDeliveryFollowUpPrompt
-    || (previousState?.napmRelated && isContinuationPrompt(prompt));
+function buildTurnAdmissionContextCandidates(conversationKey = '') {
+  const latestSkillRecord = conversationKey
+    ? getLatestRememberedSkillRecord(conversationKey)
+    : null;
+  const queryCandidates = buildQueryAdmissionContextCandidates(conversationKey);
+  const alertCandidates = alertContextResolver.getAdmissionCandidates({ record: latestSkillRecord });
+  const latestRecordHandled = Boolean(
+    latestSkillRecord
+    && (
+      (
+        latestSkillRecord.sourceTool === 'napm-skill-query'
+        && queryCandidates.some((candidate) => (
+          candidate.sourceTurnId
+          && candidate.sourceTurnId === latestSkillRecord.turnId
+        ))
+      )
+      || alertCandidates.length > 0
+    )
+  );
+  return [
+    ...queryCandidates,
+    ...alertCandidates,
+    ...contextBoundaryResolver.getAdmissionCandidates({
+      record: latestSkillRecord,
+      handled: latestRecordHandled
+    })
+  ];
+}
+
+function buildConversationScopedGuardState(content = '', previousState = null, options = {}) {
+  const prompt = String(content || '').trim();
+  const conversationKey = String(options?.conversationKey || '').trim();
+  const turnIntentClassification = domainIntentClassificationAdapter.classify({
+    prompt,
+    previousState
+  });
+  const classificationFacts = turnIntentClassification.facts;
+  const workflow = turnIntentClassification.workflow;
+  const platformIdentityPrompt = classificationFacts.platformIdentityPrompt;
+  const {
+    alertEventPrompt,
+    alertMetaFollowUpPrompt,
+    metricInventoryPrompt,
+    metaFollowUpPrompt,
+    resultDeliveryFollowUpPrompt,
+    classifiedQueryResultFollowUpPrompt,
+    continuationPrompt,
+    outOfScopeNapmRequest,
+    baseDomainRelated,
+    baseNapmRelated
+  } = classificationFacts;
+  const baseTurnPolicy = buildTurnPolicy({
+    prompt,
+    napmRelated: baseNapmRelated,
+    domainRelated: baseDomainRelated,
+    platformIdentityPrompt,
+    outOfScopeBoundaryRequested: baseDomainRelated && outOfScopeNapmRequest
+  });
+  const turnIntent = resolveTurnIntent({
+    route: baseTurnPolicy.route,
+    classification: turnIntentClassification
+  });
+  const turnAdmissionDecision = turnAdmissionCoordinator.decide({
+    prompt,
+    baseDecision: {
+      route: baseTurnPolicy.route,
+      workflow: turnIntent.workflowType || workflow.workflowType,
+      reasonCode: baseTurnPolicy.reason,
+      expectedTool: turnIntent.expectedTool,
+      intentType: turnIntent.intentType,
+      handling: turnIntent.handling,
+      classificationSchemaVersion: turnIntentClassification.schemaVersion,
+      classificationSource: turnIntentClassification.source
+    },
+    contextCandidates: buildTurnAdmissionContextCandidates(conversationKey),
+    identity: {
+      conversationKey,
+      turnId: options?.turnId,
+      runId: options?.runId,
+      messageId: options?.messageId
+    }
+  });
+  const authoritativeContextFollowUp = Boolean(
+    turnAdmissionDecision.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+  );
+  const authoritativeQueryFollowUp = Boolean(
+    turnAdmissionDecision.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+    && turnAdmissionDecision.expectedTool === 'napm-skill-query'
+  );
+  const queryResultFollowUpPrompt = classifiedQueryResultFollowUpPrompt
+    || authoritativeQueryFollowUp;
+  const domainRelated = baseDomainRelated || authoritativeContextFollowUp;
+  const napmRelated = baseNapmRelated || authoritativeContextFollowUp;
   const alertRelated = alertEventPrompt
     || alertMetaFollowUpPrompt
-    || Boolean(previousState?.alertRelated && (isContinuationPrompt(prompt) || metaFollowUpPrompt));
-  const outOfScopeBoundaryRequested = domainRelated && isOutOfScopeNapmRequest(prompt);
-  const turnPolicy = buildTurnPolicy({
-    prompt,
-    napmRelated,
-    domainRelated,
-    platformIdentityPrompt,
-    outOfScopeBoundaryRequested
-  });
+    || (
+      authoritativeContextFollowUp
+      && turnAdmissionDecision.sourceDomain === 'ALERT'
+    )
+    || Boolean(previousState?.alertRelated && (continuationPrompt || metaFollowUpPrompt));
+  const outOfScopeBoundaryRequested = domainRelated && outOfScopeNapmRequest;
+  const admissionRequiresClarification = turnAdmissionDecision.action === 'ASK_CLARIFYING_QUESTION';
+  const turnPolicy = authoritativeContextFollowUp || admissionRequiresClarification
+    ? Object.freeze({
+        route: turnAdmissionDecision.route,
+        reason: turnAdmissionDecision.reasonCode,
+        modelOwnsResponse: admissionRequiresClarification,
+        toolActionsAllowed: authoritativeContextFollowUp
+      })
+    : baseTurnPolicy;
 
   return {
     prompt,
@@ -3076,14 +3214,56 @@ function buildConversationScopedGuardState(content = '', previousState = null) {
     metricInventoryPrompt,
     metaFollowUpPrompt,
     resultDeliveryFollowUpPrompt,
-    lastMetricInventoryGroup: isMetricInventoryPrompt(prompt)
-      ? inferMetricInventoryGroup(prompt)
+    queryResultFollowUpPrompt,
+    turnIntent,
+    turnAdmissionDecision,
+    lastMetricInventoryGroup: classificationFacts.metricInventoryRootPrompt
+      ? classificationFacts.inferredMetricInventoryGroup
       : (previousState?.lastMetricInventoryGroup || ''),
     generalOutOfScopeRequested: turnPolicy.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE,
     outOfScopeBoundaryRequested,
     turnNapmToolUsed: false,
     updatedAt: Date.now()
   };
+}
+
+function buildResumedQueryAdmissionState({
+  conversationKey = '',
+  turnId = '',
+  runId = '',
+  messageId = ''
+} = {}) {
+  const turnIntent = Object.freeze({
+    intentType: TURN_INTENT_TYPES.QUERY,
+    handling: TURN_INTENT_HANDLING.SINGLE_TOOL,
+    expectedTool: 'napm-skill-query',
+    workflowType: 'query_clarification_continuation',
+    operation: 'resume_clarification',
+    targetObjectType: null
+  });
+  const turnAdmissionDecision = turnAdmissionCoordinator.decide({
+    // Successful pending-query restoration is authoritative. The short answer
+    // must not be reinterpreted as a new cross-skill reference selection.
+    prompt: '',
+    baseDecision: {
+      route: TURN_ADMISSION_ROUTES.NAPM_CANDIDATE,
+      workflow: turnIntent.workflowType,
+      reasonCode: 'QUERY_CLARIFICATION_RESUMED',
+      expectedTool: turnIntent.expectedTool,
+      intentType: turnIntent.intentType,
+      handling: turnIntent.handling,
+      classificationSchemaVersion: CLASSIFICATION_SCHEMA_VERSION,
+      classificationSource: CLASSIFICATION_SOURCE
+    },
+    contextCandidates: [],
+    identity: {
+      conversationKey,
+      turnId,
+      runId,
+      messageId
+    }
+  });
+  return Object.freeze({ turnIntent, turnAdmissionDecision });
 }
 
 function getActiveTurnId(_conversationState = null, guardState = null) {
@@ -3140,7 +3320,12 @@ function isPendingClarificationAnswer(content = '', pending = null) {
   return !/(?:最近|过去|趋势|走势|平均|排行|排名|有哪些|有什么|多少|如何|怎么样|查询|查看|总流量|全局流量|告警|报告|导出)/i.test(text);
 }
 
-function derivePromptGuardState(activePrompt = '', conversationState = null, guardState = null) {
+function derivePromptGuardState(
+  activePrompt = '',
+  conversationState = null,
+  guardState = null,
+  options = {}
+) {
   const prompt = String(activePrompt || '').trim();
   const existingState = {
     ...(isPlainObject(conversationState) ? conversationState : {}),
@@ -3164,7 +3349,7 @@ function derivePromptGuardState(activePrompt = '', conversationState = null, gua
   const previousState = isPlainObject(conversationState)
     ? conversationState
     : (isPlainObject(guardState) ? guardState : null);
-  const derivedState = buildConversationScopedGuardState(prompt, previousState);
+  const derivedState = buildConversationScopedGuardState(prompt, previousState, options);
 
   return {
     ...(isPlainObject(conversationState) ? conversationState : {}),
@@ -3250,6 +3435,7 @@ function clearNapmConversationScope(ctx = {}) {
     trustedContexts: napmTrustedToolContextStore.clearScope(scope),
     inMemoryTrustedContexts: 0,
     automaticReportOperations: 0,
+    packetExecutionOperations: 0,
     mediaState: napmSentMediaByConversation.delete(scope),
     nativeCommandState: nativeCommandByScope.delete(scope),
     scopeAliases: 0,
@@ -3266,6 +3452,11 @@ function clearNapmConversationScope(ctx = {}) {
   for (const key of napmAutomaticReportByTurn.keys()) {
     if (key.startsWith(`${scope}::`) && napmAutomaticReportByTurn.delete(key)) {
       summary.automaticReportOperations += 1;
+    }
+  }
+  for (const key of napmPacketExecutionByTurn.keys()) {
+    if (key.startsWith(`${scope}::`) && napmPacketExecutionByTurn.delete(key)) {
+      summary.packetExecutionOperations += 1;
     }
   }
   for (const [key, state] of napmGuardState.entries()) {
@@ -3316,6 +3507,42 @@ function rememberAutomaticReportOperation(operationKey = '', operation = null) {
   return operation;
 }
 
+function prunePacketExecutionOperations() {
+  const now = Date.now();
+  for (const [key, record] of napmPacketExecutionByTurn.entries()) {
+    if ((now - Number(record?.updatedAt || 0)) > PACKET_EXECUTION_OPERATION_MAX_AGE_MS) {
+      napmPacketExecutionByTurn.delete(key);
+    }
+  }
+  while (napmPacketExecutionByTurn.size > 2000) {
+    napmPacketExecutionByTurn.delete(napmPacketExecutionByTurn.keys().next().value);
+  }
+}
+
+function buildPacketExecutionOperationKey(args = {}) {
+  const conversationKey = getTrustedConversationKey(args);
+  const turnId = getTrustedTurnId(args);
+  const toolName = getTrustedToolName(args);
+  return conversationKey && turnId && toolName === 'napm-packet-analysis'
+    ? `${conversationKey}::${turnId}`
+    : '';
+}
+
+function getPacketExecutionOperation(operationKey = '') {
+  prunePacketExecutionOperations();
+  return napmPacketExecutionByTurn.get(String(operationKey || '').trim())?.operation || null;
+}
+
+function rememberPacketExecutionOperation(operationKey = '', operation = null) {
+  const key = String(operationKey || '').trim();
+  if (!key || !operation || typeof operation.then !== 'function') {
+    return null;
+  }
+  prunePacketExecutionOperations();
+  napmPacketExecutionByTurn.set(key, { operation, updatedAt: Date.now() });
+  return operation;
+}
+
 function pruneTrustedToolContexts() {
   const now = Date.now();
   for (const [traceId, record] of napmTrustedToolContextByTraceId.entries()) {
@@ -3327,6 +3554,87 @@ function pruneTrustedToolContexts() {
   while (napmTrustedToolContextByTraceId.size > 2000) {
     napmTrustedToolContextByTraceId.delete(napmTrustedToolContextByTraceId.keys().next().value);
   }
+}
+
+function sortJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJsonValue);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.keys(value)
+    .sort()
+    .reduce((result, key) => {
+      result[key] = sortJsonValue(value[key]);
+      return result;
+    }, {});
+}
+
+function buildTrustedToolParametersDigest(params = {}) {
+  const normalized = cloneJsonObject(normalizeObject(params) || {});
+  delete normalized.traceId;
+  if (isPlainObject(normalized.sessionState)) {
+    delete normalized.sessionState.traceId;
+  }
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(sortJsonValue(normalized)), 'utf8')
+    .digest('hex');
+}
+
+function authorizeTrustedToolContext(traceId = '', params = {}, admissionDecision = null) {
+  const normalizedTraceId = normalizeTraceId(traceId);
+  if (!normalizedTraceId || !isPlainObject(admissionDecision)) return false;
+  pruneTrustedToolContexts();
+  const current = napmTrustedToolContextByTraceId.get(normalizedTraceId) || null;
+  if (!current) return false;
+
+  const admissionTurnId = normalizeTurnId(admissionDecision.turnId);
+  if (admissionTurnId && admissionTurnId !== normalizeTurnId(current.turnId)) return false;
+  const admissionConversationKey = String(admissionDecision.conversationKey || '').trim();
+  if (admissionConversationKey && admissionConversationKey !== current.conversationKey) return false;
+
+  napmTrustedToolContextByTraceId.set(normalizedTraceId, {
+    ...current,
+    parametersDigest: buildTrustedToolParametersDigest(params),
+    turnAdmissionDecision: normalizeObject(admissionDecision),
+    authorizedAt: Date.now()
+  });
+  return true;
+}
+
+function getTrustedToolContext(args = {}) {
+  const traceId = normalizeTraceId(args?.traceId);
+  if (!traceId) return null;
+  pruneTrustedToolContexts();
+  return napmTrustedToolContextByTraceId.get(traceId) || null;
+}
+
+function validateTrustedQueryExecutionAuthorization(args = {}, trustedContext = null) {
+  const decision = isPlainObject(trustedContext?.turnAdmissionDecision)
+    ? trustedContext.turnAdmissionDecision
+    : null;
+  if (!decision || !trustedContext?.parametersDigest) {
+    return { ok: false, code: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED' };
+  }
+  if (
+    decision.action !== TURN_ADMISSION_ACTIONS.EXECUTE_TOOL
+    || decision.route !== TURN_ADMISSION_ROUTES.NAPM_CANDIDATE
+    || decision.expectedTool !== 'napm-skill-query'
+  ) {
+    return { ok: false, code: 'TURN_ADMISSION_TOOL_MISMATCH' };
+  }
+  if (
+    normalizeTurnId(decision.turnId)
+    && normalizeTurnId(decision.turnId) !== normalizeTurnId(trustedContext.turnId)
+  ) {
+    return { ok: false, code: 'TURN_ADMISSION_TURN_MISMATCH' };
+  }
+  if (buildTrustedToolParametersDigest(args) !== trustedContext.parametersDigest) {
+    return { ok: false, code: 'QUERY_TOOL_PARAMETERS_MISMATCH', decision };
+  }
+  return { ok: true, decision };
 }
 
 function bindTrustedToolContext(event = {}, ctx = {}) {
@@ -3693,12 +4001,24 @@ function buildContextTimeSignature(resolvedQuery = {}) {
   };
 }
 
-function authorizeContextualTimeValuesFollowUp(conversationKey = '', toolName = '', resolvedQuery = null) {
+function validateAdmittedTimeValuesContinuation(
+  conversationKey = '',
+  toolName = '',
+  resolvedQuery = null,
+  admissionDecision = null
+) {
   if (toolName !== 'napm-skill-query' || !conversationKey || !isPlainObject(resolvedQuery)) {
     return { ok: false, reason: 'unsupported_tool_or_query' };
   }
 
-  const previousRecord = napmOperationState.getLatestQueryContext(conversationKey);
+  const sourceArtifactId = String(admissionDecision?.sourceArtifactId || '').trim();
+  const sourceTurnId = sourceArtifactId.startsWith('query-context:')
+    ? sourceArtifactId.slice('query-context:'.length).trim()
+    : '';
+  if (!sourceTurnId) {
+    return { ok: false, reason: 'missing_admitted_query_context_reference' };
+  }
+  const previousRecord = napmOperationState.getQueryContext(conversationKey, sourceTurnId);
   if (
     !previousRecord
     || previousRecord.sourceTool !== 'napm-skill-query'
@@ -3914,14 +4234,25 @@ function buildAutomaticInspectionToolArgs(prompt = '') {
   const resolver = getNapmResolvedQueryResolverService();
   let timeRange;
   try {
-    const resolved = resolver?.resolveTimeRange?.(normalizedPrompt);
+    const resolved = resolver?.resolvePromptTimeRange?.(normalizedPrompt);
     if (resolved?.key) {
       timeRange = {
         key: resolved.key,
-        displayText: resolved.displayText || normalizedPrompt
+        displayText: resolved.displayText || normalizedPrompt,
+        ...(resolved.mode ? { mode: resolved.mode } : {}),
+        ...(resolved.mode === 'custom' ? {
+          start: resolved.start,
+          end: resolved.end,
+          timezone: resolved.timezone || 'Asia/Shanghai'
+        } : {})
       };
+    } else if (resolver?.hasExplicitTimeRangeExpression?.(normalizedPrompt)) {
+      const error = new Error('Unable to resolve the requested inspection report time range.');
+      error.code = 'INSPECTION_TIME_RANGE_UNRECOGNIZED';
+      throw error;
     }
-  } catch (_error) {
+  } catch (error) {
+    if (error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED') throw error;
     timeRange = undefined;
   }
   return {
@@ -4050,7 +4381,9 @@ async function runAutomaticInspectionReportDelivery(prompt = '', ctx = {}, conve
         error: String(error?.message || error || 'unknown error').slice(0, 500)
       });
       return {
-        content: '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
+        content: error?.code === 'INSPECTION_TIME_RANGE_UNRECOGNIZED'
+          ? '巡检报告未生成：无法识别请求中的时间范围，请使用明确的起止时间、最近N天或年份/季度表达。'
+          : '巡检报告生成失败：巡检数据采集或报告导出未完成，请稍后重试。',
         mediaUrl: '',
         mediaUrls: [],
         failed: true,
@@ -4289,7 +4622,7 @@ async function dispatchReportReplyPayload(
   };
 }
 
-async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}, conversationKey = '', turnId = '') {
+async function dispatchAlertReplyPayload(record = null, _event = {}, hookCtx = {}, conversationKey = '', turnId = '') {
   const content = isCurrentAlertQueryResultRecord(record, turnId)
     ? buildAlertQueryReply(record.result)
     : '';
@@ -4354,6 +4687,19 @@ async function dispatchAlertReplyPayload(record = null, event = {}, hookCtx = {}
   };
 }
 
+function preparePacketFinalContent(record = null, conversationKey = '', turnId = '') {
+  if (!isPacketSkillResultRecord(record) || !conversationKey || !turnId) {
+    return null;
+  }
+  return napmOperationState.prepareFinalContent({
+    scope: conversationKey,
+    turnId,
+    content: buildPacketFinalReply(record.result),
+    source: 'napm-packet-analysis',
+    workflowState: record.result?.decision?.next_action || 'PACKET_COMPLETED'
+  });
+}
+
 function isFreshRememberedRecord(record, maxAgeMs = RESULT_CACHE_MAX_AGE_MS) {
   return Boolean(
     record
@@ -4400,18 +4746,6 @@ function getReportDataFromRecord(record = null) {
     return record.result.result.reportData;
   }
   return null;
-}
-
-function getRememberedDebugApi(prompt, conversationKey = '') {
-  const key = buildPromptScopeKey(prompt, conversationKey);
-  if (!key) {
-    return '';
-  }
-  return String(napmOperationState.getDebugApi(key)?.requestUrl || '').trim();
-}
-
-function getRecentDebugApiFallback(conversationKey = '') {
-  return String(napmOperationState.getLatestDebugApi(conversationKey)?.requestUrl || '').trim();
 }
 
 function getRememberedSkillResult(prompt, conversationKey = '') {
@@ -4532,6 +4866,19 @@ function isAlertPacketSkillResultRecord(record = null) {
   );
 }
 
+function isPacketSkillResultRecord(record = null) {
+  if (!record || record.sourceTool !== 'napm-packet-analysis' || !isPlainObject(record.result)) {
+    return false;
+  }
+  return Boolean(
+    record.result?.narrationInput?.schema === 'openclaw_napm_packet_analysis.v1'
+    || record.result?.mode
+    || record.result?.businessGroupResolution
+    || record.result?.preview
+    || record.result?.download
+  );
+}
+
 function isSkillResultRecordForTurn(record = null, turnId = '') {
   const normalizedTurnId = normalizeTurnId(turnId);
   return Boolean(
@@ -4615,45 +4962,6 @@ function extractOverviewSceneFromRememberedRecord(record = null) {
   );
 }
 
-function readRecentAuditLines(maxLines = 400) {
-  try {
-    const raw = fs.readFileSync(AUDIT_LOG_PATH, 'utf8');
-    const lines = raw.split(/\r?\n/).filter(Boolean);
-    return lines.slice(Math.max(0, lines.length - maxLines));
-  } catch (_error) {
-    return [];
-  }
-}
-
-function findRecentPacketLossAuditWindow(metric = 'PLI') {
-  const lines = readRecentAuditLines();
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (!line.includes('"event":"napm_api_request_built"') || !line.includes('"service":"topValues"')) {
-      continue;
-    }
-
-    try {
-      const entry = JSON.parse(line);
-      const request = isPlainObject(entry?.gatewayRequest) ? entry.gatewayRequest : {};
-      const groups = Array.isArray(request.groups) ? request.groups : [];
-      if (String(request.metric || '').trim().toUpperCase() !== metric) {
-        continue;
-      }
-      if (groups.length !== 1 || String(groups[0]?.type || '').trim() !== 'IPAddress') {
-        continue;
-      }
-      const start = Number(request.start);
-      const end = Number(request.end);
-      const topCount = Number(request.topCount || 5);
-      if (start > 0 && end > 0) {
-        return { start, end, topCount: topCount > 0 ? topCount : 5 };
-      }
-    } catch (_error) {}
-  }
-  return null;
-}
-
 function isPacketLossClientTopPrompt(prompt = '') {
   const text = String(prompt || '').trim();
   if (!text) {
@@ -4667,7 +4975,7 @@ function isPacketLossClientTopPrompt(prompt = '') {
   return hasLoss && hasRanking && hasAddressScope;
 }
 
-function buildPacketLossClientTopResolvedQuery(prompt = '', seedResolvedQuery) {
+function buildPacketLossClientTopResolvedQuery(_prompt = '', _seedResolvedQuery) {
   return null;
 }
 
@@ -4927,27 +5235,6 @@ function normalizeReportFormat(format = '') {
   return raw || 'docx';
 }
 
-function buildReportTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-report-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildPacketTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-packet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildAlertTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-alert-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function buildInspectionTraceId(args = {}) {
-  return normalizeTraceId(args?.traceId)
-    || `napm-inspection-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-
 
 function buildFaultDiagnosisReply(result = {}) {
   if (!result?.ok) {
@@ -5133,7 +5420,6 @@ function buildAlertQueryReply(result = {}) {
   const events = Array.isArray(result.details) && result.details.length > 0
     ? result.details
     : (Array.isArray(result.events) ? result.events : []);
-  const bySeverity = result.summary?.bySeverity || {};
   const shouldGroupByCategory = shouldRenderAlertCategorySections(result);
   const timeRange = result.timeRange || {};
   const timeText = timeRange.displayText
@@ -5403,25 +5689,6 @@ function resolveAlertDurationSeconds(event = {}) {
   return rangeSeconds;
 }
 
-function formatAlertTimestamp(value) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return '未知';
-  }
-  const milliseconds = timestamp > 1000000000000 ? timestamp : timestamp * 1000;
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).formatToParts(new Date(milliseconds));
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
-}
-
 function formatSeverityBadge(severity) {
   const value = Number(severity);
   if (value === 4) return '🔴';
@@ -5474,113 +5741,460 @@ function maskDebugApiUrl(inputUrl = '') {
 }
 
 
-function looksLikeBusinessPagePacketPreviewPrompt(text = '') {
-  const raw = String(text || '');
-  if (!raw) return false;
-  const hasPacketPreview = /(数据包|报文|抓包|原始包|pcap|cap\b|packet|DownServlet|pageViews)/i.test(raw)
-    && /(预览|查看|分析|明细|访问实例|对端|选择)/i.test(raw);
-  const hasHttpPageUrl = /https?:\/\/[^\s"'<>]+\/[^\s"'<>]+/i.test(raw);
-  const hasPagePath = /\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)+/.test(raw);
-  return hasPacketPreview && (hasHttpPageUrl || hasPagePath);
-}
-
-function extractFirstHttpPageUrl(text = '') {
-  const match = String(text || '').match(/https?:\/\/[^\s"'<>，。；、]+\/[^\s"'<>，。；、]+/i);
-  return match ? match[0] : '';
-}
-
-function normalizePacketBusinessPagePayload(payload = {}) {
-  const criteria = isPlainObject(payload.criteria) ? { ...payload.criteria } : {};
-  const prompt = String(payload.prompt || '').trim();
-  const hasBusinessPageSignal = Boolean(
-    criteria.page
-    || criteria.pageUrl
-    || criteria.pageFamilyId
-    || criteria.pageFamilyDetailId
-    || criteria.businessName
-    || criteria.businessPageViewsPreviewOnly
-    || payload.downloadType === 'DownServlet'
-    || looksLikeBusinessPagePacketPreviewPrompt(prompt)
-  );
-  if (!hasBusinessPageSignal) {
-    return payload;
-  }
-
-  const pageUrl = String(criteria.page || criteria.pageUrl || '').trim() || extractFirstHttpPageUrl(prompt);
-  if (pageUrl && !criteria.page) criteria.page = pageUrl;
-  if (pageUrl && !criteria.pageUrl) criteria.pageUrl = pageUrl;
-
-  const normalized = {
-    ...payload,
-    downloadType: 'DownServlet',
-    criteria
-  };
-
-  const asksPreview = String(normalized.mode || '').trim() === 'preview_only'
-    || /预览|查看|明细|访问实例|对端|选择/.test(prompt)
-    || criteria.businessPageViewsPreviewOnly;
-  if (asksPreview) {
-    normalized.mode = 'preview_only';
-    normalized.criteria.businessPageViewsPreviewOnly = true;
-  }
-
-  return normalized;
-}
-
-
 function buildPacketAnalysisReply(result = {}) {
-  const summary = isPlainObject(result?.summary) ? result.summary : {};
-  const highlights = Array.isArray(summary.highlights)
-    ? summary.highlights.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (!result?.ok) {
-    return String(
-      result?.message
-      || result?.error?.message
-      || highlights.join('\n')
-      || '数据包任务执行失败。'
-    ).trim();
-  }
-  if (highlights.length > 0) {
-    // 2026-07-14: 禁止 AI 看到 Password=*** 后自己猜密码填进去。
-    // skill 内部已从 .env 读取正确凭证，URL 中的 *** 是脱敏标记。
-    const credentialNotice = '⛔ 安全提示：所有 URL 中的认证（UserName/Password）已由 skill 从 .env 自动注入。Password=*** 是脱敏标记，不是占位符——禁止自行替换或拼接密码！如需下载/分析数据包，请使用 napm-packet-analysis 工具而非 curl。';
-    return highlights.join('\n') + '\n\n' + credentialNotice;
-  }
-  return JSON.stringify(result, null, 2);
+  return buildPacketFinalReply(result);
 }
 
-function buildLegacyReportDataForExport(args = {}) {
-  const explicitReportData = isPlainObject(args.reportData) ? args.reportData : null;
-  const conversationKey = getTrustedConversationKey(args);
-  const rememberedRecord = getLatestRememberedSkillRecord(conversationKey);
-  const rememberedReportData = getReportDataFromRecord(rememberedRecord);
-  const sourceReportData = explicitReportData || rememberedReportData;
-  if (!sourceReportData) {
+function formatPacketTimestamp(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const milliseconds = numeric > 1000000000000 ? numeric : numeric * 1000;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(milliseconds));
+  const values = Object.fromEntries(parts
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]));
+  if (!values.year || !values.month || !values.day) return '';
+  return `${values.year}-${values.month}-${values.day} ${values.hour || '00'}:${values.minute || '00'}:${values.second || '00'}`;
+}
+
+function formatPacketInteger(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.floor(numeric).toLocaleString('en-US') : '';
+}
+
+function formatPacketBytes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let scaled = numeric;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  const precision = scaled >= 100 || index === 0 ? 0 : scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(precision)} ${units[index]}`;
+}
+
+function formatPacketTrafficEntry(entry = {}) {
+  const formattedBytes = entry.bytes != null && entry.bytes !== ''
+    ? formatPacketBytes(entry.bytes)
+    : '';
+  const sizeText = String(entry.sizeText || formattedBytes || '流量未知').trim();
+  const hasConversationCount = entry.conversationCount != null && entry.conversationCount !== '';
+  const conversationCount = hasConversationCount ? Number(entry.conversationCount) : null;
+  return conversationCount != null && Number.isFinite(conversationCount)
+    ? `${sizeText}（${formatPacketInteger(conversationCount)} 条）`
+    : sizeText;
+}
+
+function packetDirectionLabel(direction = '') {
+  return {
+    outbound: '发出',
+    inbound: '进入',
+    internal: '组内互访',
+    unmatched: '其他',
+  }[direction] || '';
+}
+
+function formatPacketAnalysisRow(value) {
+  return String(value == null ? '' : value)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+function formatPacketAnalysisValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .slice(0, limit)
+    .map((item) => {
+      if (isPlainObject(item)) {
+        const value = formatPacketAnalysisRow(item.value || item.name || item.label || '');
+        const count = Number(item.count);
+        return value && Number.isFinite(count)
+          ? `${value}（${formatPacketInteger(count)} 次）`
+          : value;
+      }
+      return formatPacketAnalysisRow(item);
+    })
+    .filter(Boolean);
+}
+
+const PACKET_PROTOCOL_LABELS = Object.freeze({
+  eth: '以太网',
+  ip: 'IP',
+  ipv4: 'IPv4',
+  ipv6: 'IPv6',
+  tcp: 'TCP',
+  udp: 'UDP',
+  dns: 'DNS',
+  http: 'HTTP',
+  tls: 'TLS',
+  mysql: 'MySQL',
+});
+
+function packetProtocolLabel(protocol = '') {
+  const key = String(protocol || '').trim().toLowerCase();
+  if (!key) return '';
+  if (key.includes('malformed')) return `解析异常（${protocol}）`;
+  return PACKET_PROTOCOL_LABELS[key] || protocol;
+}
+
+function parsePacketProtocolValue(value) {
+  if (isPlainObject(value)) {
+    const protocol = String(value.protocol || value.name || value.label || '').trim();
+    const frames = Number(value.frames ?? value.packets ?? value.packetCount);
+    const bytes = Number(value.bytes ?? value.totalBytes);
+    return protocol && (Number.isFinite(frames) || Number.isFinite(bytes))
+      ? { protocol, frames, bytes }
+      : null;
+  }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const match = raw.match(/^([^\s|]+)\s+frames\s*:\s*(\d+)\s+bytes\s*:\s*(\d+)/i);
+  return match
+    ? { protocol: match[1], frames: Number(match[2]), bytes: Number(match[3]) }
+    : null;
+}
+
+function formatPacketProtocolValues(values = [], limit = 8) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketProtocolValue)
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((item) => {
+      const parts = [];
+      if (Number.isFinite(item.frames)) parts.push(`${formatPacketInteger(item.frames)} 帧`);
+      if (Number.isFinite(item.bytes)) parts.push(formatPacketBytes(item.bytes));
+      return `${packetProtocolLabel(item.protocol)}${parts.length > 0 ? `（${parts.join('，')}）` : ''}`;
+    })
+    .filter(Boolean);
+}
+
+function parsePacketEndpointValue(value) {
+  if (isPlainObject(value)) {
+    const address = String(value.address || value.ip || value.endpoint || '').trim();
+    if (!address) return null;
     return {
-      ok: false,
-      errorCode: 'REPORT_DATA_NOT_FOUND',
-      message: '未找到可导出的 NAPM reportData。请先完成一次 NAPM 查询或分析，再说“将以上导出为 Word”。'
+      address,
+      packets: Number(value.packets ?? value.packetCount ?? value.totalPackets),
+      bytes: Number(value.bytes ?? value.totalBytes),
+      txPackets: Number(value.txPackets ?? value.transmitPackets),
+      txBytes: Number(value.txBytes ?? value.transmitBytes),
+      rxPackets: Number(value.rxPackets ?? value.receivePackets),
+      rxBytes: Number(value.rxBytes ?? value.receiveBytes),
     };
   }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const match = raw.match(/^([^|\s]+)\s+(\d+)\s+(\d+)(?:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+))?$/);
+  return match
+    ? {
+      address: match[1],
+      packets: Number(match[2]),
+      bytes: Number(match[3]),
+      txPackets: match[4] == null ? NaN : Number(match[4]),
+      txBytes: match[5] == null ? NaN : Number(match[5]),
+      rxPackets: match[6] == null ? NaN : Number(match[6]),
+      rxBytes: match[7] == null ? NaN : Number(match[7]),
+    }
+    : null;
+}
 
-  const format = normalizeReportFormat(args.format || args.reportPlan?.format || sourceReportData.format || sourceReportData.defaultFormat || 'docx');
-  return {
-    ok: true,
-    reportData: {
-      ...sourceReportData,
-      format,
-      title: String(args.title || args.reportPlan?.title || sourceReportData.title || '').trim() || sourceReportData.title,
-      sourceQuestion: String(args.sourceQuestion || args.prompt || sourceReportData.sourceQuestion || '').trim() || sourceReportData.sourceQuestion,
-      audit: {
-        ...(isPlainObject(sourceReportData.audit) ? sourceReportData.audit : {}),
-        exportPrompt: normalizePrompt(args) || null,
-        reportDataSource: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result',
-        sourcePromptKey: rememberedRecord?.promptKey || null
+function formatPacketEndpointValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketEndpointValue)
+    .filter((item) => item && Number.isFinite(item.packets))
+    .slice(0, limit)
+    .map((item) => {
+      const summary = [`${formatPacketInteger(item.packets)} 包`];
+      if (Number.isFinite(item.bytes)) summary.push(formatPacketBytes(item.bytes));
+      const direction = [];
+      if (Number.isFinite(item.txPackets)) {
+        direction.push(`发出 ${formatPacketInteger(item.txPackets)} 包${Number.isFinite(item.txBytes) ? `/${formatPacketBytes(item.txBytes)}` : ''}`);
       }
-    },
-    source: explicitReportData ? 'tool_args.reportData' : 'conversation_scoped_napm_skill_result'
+      if (Number.isFinite(item.rxPackets)) {
+        direction.push(`接收 ${formatPacketInteger(item.rxPackets)} 包${Number.isFinite(item.rxBytes) ? `/${formatPacketBytes(item.rxBytes)}` : ''}`);
+      }
+      return `${item.address}：${summary.join('，')}${direction.length > 0 ? `（${direction.join('，')}）` : ''}`;
+    });
+}
+
+function parsePacketConversationValue(value) {
+  if (isPlainObject(value)) {
+    const source = String(value.source || value.sourceIp || value.addressA || '').trim();
+    const destination = String(value.destination || value.destinationIp || value.addressB || '').trim();
+    if (!source || !destination) return null;
+    return {
+      source,
+      destination,
+      packets: Number(value.packets ?? value.packetCount ?? value.totalPackets ?? value.frames),
+      bytes: Number(value.bytes ?? value.totalBytes),
+    };
+  }
+  const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  const addresses = raw.match(/(?:\d{1,3}\.){3}\d{1,3}/g) || [];
+  if (addresses.length < 2) return null;
+  const withoutAddresses = raw.replace(/(?:\d{1,3}\.){3}\d{1,3}/g, ' ');
+  const numbers = withoutAddresses.match(/\b\d+(?:\.\d+)?\b/g) || [];
+  return {
+    source: addresses[0],
+    destination: addresses[1],
+    packets: Number(numbers.length >= 6 ? numbers[4] : numbers[0]),
+    bytes: Number(numbers.length >= 6 ? numbers[5] : numbers[1]),
   };
+}
+
+function formatPacketConversationValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .map(parsePacketConversationValue)
+    .filter((item) => item && Number.isFinite(item.packets))
+    .slice(0, limit)
+    .map((item) => `${item.source} ↔ ${item.destination}：${formatPacketInteger(item.packets)} 包${Number.isFinite(item.bytes) ? `，${formatPacketBytes(item.bytes)}` : ''}`);
+}
+
+function formatPacketHttpValues(values = [], limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .slice(0, limit)
+    .map((item) => {
+      if (isPlainObject(item)) {
+        const host = String(item.host || item.httpHost || '').trim();
+        const uri = String(item.uri || item.path || item.requestUri || '/').trim() || '/';
+        const status = String(item.status || item.statusCode || item.responseCode || '').trim();
+        if (!host && !status && uri === '/') return '';
+        return `${host || '未知主机'} ${uri}${status ? `（HTTP ${status}）` : ''}`;
+      }
+      const fields = String(item == null ? '' : item).split('|').map((field) => field.trim());
+      if (fields.length < 2 || fields.every((field) => !field)) return '';
+      const [host, uri, status] = fields;
+      return `${host || '未知主机'} ${uri || '/'}${status ? `（HTTP ${status}）` : ''}`;
+    })
+    .filter(Boolean);
+}
+
+function buildPacketFinalReply(result = {}) {
+  const criteria = isPlainObject(result?.criteria) ? result.criteria : {};
+  const preview = isPlainObject(result?.preview) ? result.preview : null;
+  const overview = isPlainObject(preview?.overview) ? preview.overview : {};
+  const resolution = isPlainObject(result?.businessGroupResolution)
+    ? result.businessGroupResolution
+    : null;
+  const hasPreviewEvidence = Boolean(preview?.ok && !preview?.empty);
+  const hasPreviewAttempt = Boolean(preview);
+  const previewEmpty = Boolean(preview?.empty || result?.error?.code === 'PACKET_PREVIEW_EMPTY');
+  const errorMessage = String(result?.error?.message || result?.message || '').trim();
+
+  // A failed discovery/request has no evidence to narrate. Return only the
+  // typed failure instead of letting the model infer a packet conclusion.
+  if (!result?.ok && !hasPreviewEvidence && !hasPreviewAttempt) {
+    return errorMessage || '数据包任务执行失败。';
+  }
+
+  const lines = [
+    result?.mode === 'preview_only'
+      ? '数据包预览结果'
+      : result?.mode === 'build_url_only'
+        ? '数据包链接'
+        : '数据包分析结果'
+  ];
+  const startText = formatPacketTimestamp(criteria.start);
+  const endText = formatPacketTimestamp(criteria.end);
+  if (startText && endText) {
+    lines.push(`时间范围：${startText} 至 ${endText}`);
+  }
+
+  const businessGroupName = String(
+    criteria.businessGroupName
+    || resolution?.businessGroupName
+    || ''
+  ).trim();
+  if (businessGroupName) {
+    lines.push(`业务组：${businessGroupName}`);
+  } else {
+    const targetIps = Array.isArray(criteria.ips) ? criteria.ips.filter(Boolean).map(String) : [];
+    const targetRanges = Array.isArray(criteria.ipRanges) ? criteria.ipRanges.filter(Boolean).map(String) : [];
+    if (targetIps.length > 0) lines.push(`目标 IP：${targetIps.join('、')}`);
+    if (targetRanges.length > 0) lines.push(`目标 IP 范围：${targetRanges.join('、')}`);
+  }
+  if (resolution?.ok) {
+    const memberValues = [
+      ...(Array.isArray(resolution.memberIps) ? resolution.memberIps : []),
+      ...(Array.isArray(resolution.memberIpRanges) ? resolution.memberIpRanges : []),
+    ].filter(Boolean).map(String);
+    const members = memberValues.length > 0
+      ? memberValues
+      : [
+        Number(resolution.memberIpCount) > 0 ? `${Number(resolution.memberIpCount)} 个成员 IP` : '',
+        Number(resolution.memberIpRangeCount) > 0 ? `${Number(resolution.memberIpRangeCount)} 个 IP 范围` : ''
+      ].filter(Boolean);
+    if (members.length > 0) lines.push(`成员范围：${members.join('、')}`);
+    if (Array.isArray(resolution.invalidMembers) && resolution.invalidMembers.length > 0) {
+      lines.push(`成员解析：忽略 ${resolution.invalidMembers.length} 个无效成员值`);
+    }
+  }
+
+  if (preview) {
+    if (previewEmpty) {
+      lines.push('预览结果：未发现匹配的数据包。');
+    } else if (!preview.ok) {
+      lines.push(`预览失败：${preview.error?.message || errorMessage || '接口未返回有效结果。'}`);
+    } else {
+      const trafficSummary = isPlainObject(overview.trafficSummary)
+        ? overview.trafficSummary
+        : null;
+      if (trafficSummary) {
+        const conversationCount = Number(trafficSummary.conversationCount);
+        const endpointCount = Number(trafficSummary.endpointCount);
+        if (Number.isFinite(conversationCount)) {
+          const endpointText = Number.isFinite(endpointCount)
+            ? `，涉及 ${formatPacketInteger(endpointCount)} 个端点`
+            : '';
+          lines.push(`预览命中：${formatPacketInteger(conversationCount)} 条通信记录${endpointText}`);
+        }
+        const trafficSizeText = String(
+          trafficSummary.trafficSizeText
+          || (trafficSummary.trafficBytes != null
+            ? formatPacketBytes(trafficSummary.trafficBytes)
+            : '')
+          || ''
+        ).trim();
+        if (trafficSizeText) lines.push(`预览流量：${trafficSizeText}`);
+
+        const directions = isPlainObject(trafficSummary.directions)
+          ? trafficSummary.directions
+          : {};
+        const directionParts = ['outbound', 'inbound', 'internal', 'unmatched']
+          .filter((direction) => isPlainObject(directions[direction]))
+          .filter((direction) => direction !== 'unmatched'
+            || Number(directions[direction].conversationCount) > 0)
+          .map((direction) => `${packetDirectionLabel(direction)} ${formatPacketTrafficEntry(directions[direction])}`);
+        if (directionParts.length > 0) {
+          lines.push(`${businessGroupName ? '业务组' : '目标'}流向：${directionParts.join('、')}`);
+        }
+
+        const topGroupMembers = Array.isArray(trafficSummary.topGroupMembers)
+          ? trafficSummary.topGroupMembers.slice(0, 5)
+          : [];
+        if (topGroupMembers.length > 0) {
+          lines.push(`活跃成员：${topGroupMembers.map((member) => {
+            const ip = String(member.ip || '').trim();
+            return `${ip} ${formatPacketTrafficEntry(member)}`.trim();
+          }).join('、')}`);
+        }
+
+        const topConversations = Array.isArray(trafficSummary.topConversations)
+          ? trafficSummary.topConversations.slice(0, 5)
+          : [];
+        if (topConversations.length > 0) {
+          lines.push(`主要通信：${topConversations.map((conversation) => {
+            const sourceIp = String(conversation.sourceIp || '').trim();
+            const destinationIp = String(conversation.destinationIp || '').trim();
+            const sizeText = String(
+              conversation.sizeText
+              || (conversation.bytes != null ? formatPacketBytes(conversation.bytes) : '')
+              || '流量未知'
+            ).trim();
+            return `${sourceIp} -> ${destinationIp} ${sizeText}`;
+          }).join('、')}`);
+        }
+      } else if (overview.packetCount != null) {
+        lines.push(`预览包数：${formatPacketInteger(overview.packetCount)} 个`);
+      } else if (Number(overview.rowCount) > 0) {
+        lines.push(`预览记录数：${formatPacketInteger(overview.rowCount)} 条`);
+      } else {
+        lines.push('预览接口已返回数据。');
+      }
+      if (overview.estimatedBytes != null) {
+        lines.push(`预估大小：${overview.estimatedSizeText || formatPacketBytes(overview.estimatedBytes)}`);
+      }
+      if (preview.risk?.level && result?.mode !== 'preview_only') {
+        lines.push(`下载风险评估：${preview.risk.level}`);
+      }
+    }
+  }
+
+  if (result?.download?.ok) {
+    const fileName = String(result.download.fileName || 'packet capture').trim();
+    const bytes = Number(result.download.bytes);
+    const byteText = Number.isFinite(bytes)
+      ? `${formatPacketInteger(bytes)} bytes（${formatPacketBytes(bytes)}）`
+      : '';
+    lines.push(byteText ? `下载完成：${fileName}（${byteText}）` : `下载完成：${fileName}`);
+  } else if (result?.mode === 'preview_only') {
+    lines.push('仅预览，未下载。');
+    lines.push('说明：这是下载前流量预览，尚未执行 pcap 协议分析。');
+  } else if (previewEmpty) {
+    lines.push('未下载，也未执行协议分析。');
+  } else if (result?.decision?.next_action === 'CONFIRM_DOWNLOAD') {
+    lines.push('当前未下载：需要确认后才能继续。');
+  }
+
+  const analysis = isPlainObject(result?.analysis) ? result.analysis : null;
+  if (analysis?.ok) {
+    lines.push('协议分析：已完成');
+    const packetCountValue = analysis.capinfos?.number_of_packets || analysis.capinfos?.packet_count;
+    const packetCount = Number(packetCountValue);
+    if (Number.isFinite(packetCount)) {
+      lines.push(`数据包数：${formatPacketInteger(packetCount)} 个`);
+    }
+
+    const protocolHierarchy = formatPacketProtocolValues(analysis.protocolHierarchy, 8);
+    if (protocolHierarchy.length > 0) {
+      lines.push(`协议分布：${protocolHierarchy.join('、')}`);
+    }
+    const endpoints = formatPacketEndpointValues(analysis.endpoints, 5);
+    if (endpoints.length > 0) {
+      lines.push(`主要端点：${endpoints.join('；')}`);
+    }
+    const conversations = formatPacketConversationValues(analysis.conversations, 5);
+    if (conversations.length > 0) {
+      lines.push(`主要会话：${conversations.join('；')}`);
+    }
+    const dnsQueries = formatPacketAnalysisValues(analysis.dnsQueries, 5);
+    if (dnsQueries.length > 0) {
+      lines.push(`DNS 查询：${dnsQueries.join('、')}`);
+    }
+    const httpRows = formatPacketHttpValues(analysis.httpRows, 5);
+    if (httpRows.length > 0) {
+      lines.push(`HTTP 记录：${httpRows.join('；')}`);
+    }
+    const tlsSni = formatPacketAnalysisValues(analysis.tlsSni, 5);
+    if (tlsSni.length > 0) {
+      lines.push(`TLS SNI：${tlsSni.join('、')}`);
+    }
+    const malformedRows = (Array.isArray(analysis.protocolHierarchy) ? analysis.protocolHierarchy : [])
+      .map(parsePacketProtocolValue)
+      .filter((item) => item && /malformed/i.test(item.protocol));
+    const malformedFrames = malformedRows.reduce(
+      (total, item) => total + (Number.isFinite(item.frames) ? item.frames : 0),
+      0
+    );
+    if (malformedFrames > 0) {
+      lines.push(`解析提示：发现 ${formatPacketInteger(malformedFrames)} 个协议解析异常帧（不等同于丢包，需结合原始抓包进一步确认）。`);
+    }
+  } else if (analysis) {
+    lines.push(`协议分析：失败（${analysis.error?.message || 'tshark 未返回有效分析结果'}）`);
+  } else if (result?.download?.ok && ['download_analyze', 'preview_download_analyze'].includes(result?.mode)) {
+    lines.push('协议分析：未完成');
+  }
+
+  const previewUrl = String(result?.urls?.preview || preview?.urlMasked || '').trim();
+  const shouldShowPacketLinks = result?.mode === 'build_url_only';
+  if (shouldShowPacketLinks && previewUrl) lines.push(`预览链接：${maskDebugApiUrl(previewUrl)}`);
+  const downloadUrl = String(result?.urls?.download || result?.download?.urlMasked || '').trim();
+  if (shouldShowPacketLinks && downloadUrl) {
+    lines.push(`下载链接：${maskDebugApiUrl(downloadUrl)}`);
+  }
+  if (errorMessage && !previewEmpty) lines.push(`任务状态：${errorMessage}`);
+  return lines.join('\n').trim();
 }
 
 function buildReportDataForExport(args = {}) {
@@ -5875,60 +6489,11 @@ function buildResolvedQueryForPrompt(prompt = '', args = {}) {
   };
 }
 
-async function runResolvedSkillExecutor(args = {}) {
-  const prompt = normalizePrompt(args);
-  const traceId = normalizeTraceId(args?.traceId) || `napm-resolved-refresh-${Date.now()}`;
-  const nextArgs = isPlainObject(args) ? { ...args } : {};
-  if (!isPlainObject(nextArgs.resolvedQuery)) {
-    const resolverPrompt = normalizePrompt(args?.resolverPrompt || '') || prompt;
-    const resolved = buildResolvedQueryForPrompt(resolverPrompt, args);
-    if (isPlainObject(resolved.resolvedQuery)) {
-      nextArgs.resolvedQuery = resolved.resolvedQuery;
-      if (resolverPrompt !== prompt) {
-        nextArgs.resolvedQuery = {
-          ...nextArgs.resolvedQuery,
-          userRequirement: prompt
-        };
-      }
-      appendPluginAuditEvent('napm_resolver_resolved_query_created', {
-        traceId,
-        prompt,
-        resolverPrompt,
-        source: resolved.source,
-        ok: true,
-        intent: normalizeObject(resolved.result?.intent) || null,
-        resolvedQuery: normalizeObject(nextArgs.resolvedQuery) || null,
-        resolvedQuerySummary: summarizeResolvedQueryForAudit(nextArgs.resolvedQuery),
-        diagnostics: normalizeObject(resolved.result?.diagnostics) || null
-      });
-    }
-  }
-  nextArgs.traceId = traceId;
-  return napmQuerySkill().handleSkillCall(nextArgs);
-}
-
-function isQueryLikeAction(nextAction) {
-  return nextAction === 'GO_DIRECT_QUERY' || nextAction === 'GO_OVERVIEW_QUERY';
-}
-
-async function runGatewaySkillFallback(args = {}) {
-  return napmQuerySkill().handleSkillCall(args);
-}
-
 function isDirectNapmTool(toolName = '') {
   const normalized = String(toolName || '').trim();
   return normalized === 'napm-topn'
     || normalized === 'napm-average'
     || normalized === 'napm-timeseries';
-}
-
-function buildRemovedDirectToolReply(toolName = '') {
-  const normalized = String(toolName || '').trim() || 'legacy NAPM direct tool';
-  return {
-    ok: false,
-    error: `${normalized} has been removed from this deployment. Use napm-skill-query and let OpenClaw construct a structured queryDraft instead.`,
-    nextAction: 'USE_NAPM_SKILL_QUERY'
-  };
 }
 
 function makeTextReply(text) {
@@ -5984,6 +6549,10 @@ function buildRememberedSkillReplyText(rememberedRecord = null) {
 
   if (isAlertPacketSkillResultRecord(rememberedRecord)) {
     return buildAlertPacketFinalReply(rememberedRecord.result);
+  }
+
+  if (isPacketSkillResultRecord(rememberedRecord)) {
+    return buildPacketFinalReply(rememberedRecord.result);
   }
 
   if (isAlertSkillResultRecord(rememberedRecord)) {
@@ -6632,6 +7201,20 @@ function buildQueryExecutionInProgressResult(turn = null) {
   };
 }
 
+function buildQueryResultReferenceSchema() {
+  return {
+    type: 'object',
+    description: 'Ordinal selection from the authoritative Query Turn ranking. WebApplication selects a business for a PageFamily TopN drilldown; PageFamily selects a page for pageViews detail.',
+    properties: {
+      resultSetId: { type: 'string' },
+      objectType: { type: 'string', enum: ['WebApplication', 'PageFamily'] },
+      ordinal: { type: 'number', minimum: 1 }
+    },
+    required: ['objectType', 'ordinal'],
+    additionalProperties: false
+  };
+}
+
 function createSkillToolDefinition() {
   const queryContract = getResolutionSpecQueryContract() || {};
   const allowedServices = getResolutionSpecServiceNames();
@@ -6652,6 +7235,7 @@ function createSkillToolDefinition() {
   const timeConstructionRules = Array.isArray(queryContract.constructionRules)
     ? queryContract.constructionRules.join(' ')
     : 'Executable timestamps must be root-level start/end.';
+  const resultReferenceSchema = buildQueryResultReferenceSchema();
   return {
     label: 'NAPM Skill Query',
     name: 'napm-skill-query',
@@ -6667,6 +7251,9 @@ function createSkillToolDefinition() {
         queryDraft: {
           type: 'object',
           description: 'Structured query interpretation evaluated by QueryDecisionPolicy. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to a Resolved Query.',
+          properties: {
+            resultReference: resultReferenceSchema
+          },
           additionalProperties: true
         },
         resolvedQuery: {
@@ -6697,6 +7284,23 @@ function createSkillToolDefinition() {
               }
             },
             topCount: { type: 'number' },
+            pageFamilyId: {
+              type: 'string',
+              pattern: '^\\d+$',
+              description: 'Trusted NAPM PageFamily identifier for service=pageViews. Prefer resultReference for natural-language ordinal follow-ups.'
+            },
+            maxLimit: {
+              type: 'number',
+              minimum: 1,
+              maximum: 200,
+              description: 'Maximum page visit rows for pageViews. Defaults to the local client value 20; 200 is a local protection limit, not an asserted upstream maximum.'
+            },
+            resultReference: resultReferenceSchema,
+            sourceReference: {
+              type: 'object',
+              description: 'Plugin-generated provenance for a resolved ordinal selection. Callers must not invent this field.',
+              additionalProperties: true
+            },
             granularity: {
               type: 'number',
               minimum: 1,
@@ -6774,6 +7378,7 @@ function createSkillToolDefinition() {
       additionalProperties: false
     },
     execute: async (toolCallId, args) => {
+      const trustedToolContext = getTrustedToolContext(args || {});
       const preparedArgs = prepareSkillExecutionArgs(args || {});
       const trustedTraceId = normalizeTraceId(preparedArgs?.traceId);
       const conversationKey = getTrustedConversationKey(preparedArgs);
@@ -6807,6 +7412,28 @@ function createSkillToolDefinition() {
           'QUERY_TOOL_IDENTITY_MISMATCH'
         ));
       }
+
+      const executionAuthorization = validateTrustedQueryExecutionAuthorization(
+        args || {},
+        trustedToolContext
+      );
+      const parameterOnlyReplay = Boolean(
+        executionAuthorization.code === 'QUERY_TOOL_PARAMETERS_MISMATCH'
+        && [QUERY_PHASES.EXECUTING, QUERY_PHASES.TERMINAL].includes(currentQueryTurn?.phase)
+      );
+      if (!executionAuthorization.ok && !parameterOnlyReplay) {
+        appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+          traceId,
+          conversationKey,
+          turnId,
+          reasonCode: executionAuthorization.code,
+          toolCallId: String(toolCallId || '').trim() || null
+        });
+        return makeToolResult(buildQueryToolAuthorizationFailureResult(
+          executionAuthorization.code
+        ));
+      }
+      const turnAdmissionDecision = executionAuthorization.decision;
 
       if (currentQueryTurn && currentQueryTurn.route !== QUERY_ROUTES.NAPM_QUERY) {
         appendPluginAuditEvent('napm_query_tool_execute_route_mismatch', {
@@ -6917,6 +7544,119 @@ function createSkillToolDefinition() {
             toolCallId: String(toolCallId || '').trim() || null
           });
           return makeToolResult(buildQueryExecutionInProgressResult(currentQueryTurn));
+        }
+
+        if (
+          turnAdmissionDecision.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+          && turnAdmissionDecision.sourceDomain === 'QUERY'
+        ) {
+          if (turnAdmissionDecision.workflow === 'time_values_followup') {
+            const admittedContinuation = validateAdmittedTimeValuesContinuation(
+              conversationKey,
+              'napm-skill-query',
+              preparedArgs?.resolvedQuery || preparedArgs?.queryDraft,
+              turnAdmissionDecision
+            );
+            if (!admittedContinuation.ok) {
+              appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+                traceId,
+                conversationKey,
+                turnId,
+                reasonCode: 'TURN_ADMISSION_QUERY_CONTEXT_MISMATCH',
+                detailReason: admittedContinuation.reason || null,
+                toolCallId: String(toolCallId || '').trim() || null
+              });
+              return makeToolResult(buildQueryToolAuthorizationFailureResult(
+                'TURN_ADMISSION_QUERY_CONTEXT_MISMATCH'
+              ));
+            }
+          } else if (
+            String(turnAdmissionDecision.sourceArtifactId || '').trim()
+            !== String(currentQueryTurn.sourceResultSetId || '').trim()
+          ) {
+            appendPluginAuditEvent('napm_query_tool_execute_admission_blocked', {
+              traceId,
+              conversationKey,
+              turnId,
+              reasonCode: 'TURN_ADMISSION_RESULT_SOURCE_MISMATCH',
+              toolCallId: String(toolCallId || '').trim() || null
+            });
+            return makeToolResult(buildQueryToolAuthorizationFailureResult(
+              'TURN_ADMISSION_RESULT_SOURCE_MISMATCH'
+            ));
+          }
+        }
+
+        const referencePrompt = String(
+          currentQueryTurn?.semanticQuestion
+          || normalizePrompt(preparedArgs)
+          || preparedArgs?.resolvedQuery?.userRequirement
+          || ''
+        ).trim();
+        const resultReferenceResolution = resolveQueryResultReference(
+          preparedArgs?.resolvedQuery,
+          conversationKey,
+          turnId,
+          referencePrompt
+        );
+        if (!resultReferenceResolution.ok) {
+          const referenceDecision = evaluatePluginQueryDecision(
+            referencePrompt,
+            preparedArgs?.resolvedQuery,
+            resultReferenceResolution
+          );
+          const failureResult = buildResolvedQueryBoundaryFailureResult(
+            resultReferenceResolution,
+            preparedArgs
+          );
+          failureResult.decision = {
+            action: referenceDecision.action,
+            next_action: referenceDecision.action,
+            outcome: referenceDecision.outcome,
+            reasonCode: referenceDecision.reasonCode,
+            southboundAllowed: false
+          };
+          queryTurnCoordinator.recordValidationFailure({
+            scope: conversationKey,
+            turnId,
+            attemptId: String(toolCallId || '').trim() || `result-reference-${crypto.randomUUID()}`,
+            queryDraft: preparedArgs?.resolvedQuery,
+            validation: resultReferenceResolution,
+            result: failureResult,
+            finalContent: buildResolvedQueryValidationFailureReply()
+          });
+          appendPluginAuditEvent('napm_page_views_result_reference_blocked', {
+            traceId,
+            conversationKey,
+            turnId,
+            reasonCode: resultReferenceResolution.code || null
+          });
+          appendPluginAuditEvent('authoritative_artifact_resolution_failed', {
+            scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+            turnId,
+            sourceDomain: 'QUERY',
+            objectType: preparedArgs?.resolvedQuery?.resultReference?.objectType || null,
+            ordinal: preparedArgs?.resolvedQuery?.resultReference?.ordinal || null,
+            reasonCode: resultReferenceResolution.code || null,
+            phase: 'execution'
+          });
+          return makeToolResult(failureResult);
+        }
+        if (isPlainObject(resultReferenceResolution.resolvedQuery)) {
+          preparedArgs.resolvedQuery = resultReferenceResolution.resolvedQuery;
+          preparedArgs.queryDraft = resultReferenceResolution.resolvedQuery;
+        }
+        if (resultReferenceResolution.resolvedQuery?.sourceReference) {
+          appendPluginAuditEvent('authoritative_artifact_resolved', {
+            scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+            turnId,
+            sourceDomain: 'QUERY',
+            artifactType: 'authoritative_ranking_result',
+            objectType: resultReferenceResolution.resolvedQuery.sourceReference.objectType || null,
+            ordinal: resultReferenceResolution.resolvedQuery.sourceReference.ordinal || null,
+            targetService: resultReferenceResolution.resolvedQuery.service || null,
+            phase: 'execution'
+          });
         }
 
         const timeResolverPath = path.join(
@@ -7091,12 +7831,25 @@ function createSkillToolDefinition() {
           const authoritativeFinalContent = String(
             makeTextReplyFromSkillResult(result)?.text || ''
           ).trim();
-          queryTurnCoordinator.recordResult({
+          const completedTurn = queryTurnCoordinator.recordResult({
             scope: conversationKey,
             turnId,
             result,
             finalContent: authoritativeFinalContent
           });
+          if (completedTurn?.resultReferenceSetId) {
+            const resultSet = queryTurnCoordinator.getLatestResultReference(conversationKey);
+            appendPluginAuditEvent('authoritative_artifact_stored', {
+              scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+              sourceDomain: 'QUERY',
+              sourceTurnId: turnId,
+              artifactId: completedTurn.resultReferenceSetId,
+              artifactType: 'authoritative_ranking_result',
+              objectType: resultSet?.objectType || null,
+              rowCount: Array.isArray(resultSet?.rows) ? resultSet.rows.length : 0,
+              updatedAt: resultSet?.updatedAt || null
+            });
+          }
         }
         return makeToolResult(result, debugRecord?.reportSourceId);
       } catch (error) {
@@ -7541,7 +8294,7 @@ function createPacketAnalysisToolDefinition() {
   return {
     label: 'NAPM Packet Analysis',
     name: 'napm-packet-analysis',
-    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests WHEN the target IPs are already known and the request is not tied to an alert event. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
+    description: 'Execute the standalone NAPM packet skill for packet preview/download URL construction, packet preview, packet download, BusinessGroup member-IP discovery, business page packet preview, or pcap/cap analysis. Use this for 数据包, 报文, 抓包, pcap/cap, packetsPreview, packetsDown, DownServlet, pageViews requests when the target IPs are already known OR a BusinessGroup/workgroup name is supplied, and the request is not tied to an alert event. A named workgroup does not require a separate inventory turn: if the prompt supplies an untyped non-IP name such as 服务器网段, the runtime can repair it to BusinessGroup and resolve businessGroups→IpMembers; explicit groupType/groupArgument remains preferred. Pass the original prompt or a concrete criteria.timeRange.key such as last5minutes; the runtime resolves relative time against its server clock and fills start/end. Combined 告警数据包 requests with eventId must use napm-alert-packet-analysis instead. The criteria.id parameter is ONLY for linkType=2 event IDs supplied by a trusted handoff, not an arbitrary alert event ID.',
     parameters: {
       type: 'object',
       properties: {
@@ -7564,7 +8317,7 @@ function createPacketAnalysisToolDefinition() {
         packetQuery: { type: 'object', description: 'Optional full packet query payload accepted by openclaw-napm-packet-analysis.', additionalProperties: true },
         criteria: {
           type: 'object',
-          description: 'Packet criteria. Live preview/download requires start/end and one target such as ips, ipRanges, id, top, instanceId, businessName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
+          description: 'Packet criteria. Live preview/download requires start/end (or a relative prompt/timeRange.key) and one target such as ips, ipRanges, id, top, instanceId, businessName, BusinessGroup/businessGroupName, pageFamilyId, pageFamilyDetailId, page, or pageUrl.',
           properties: {
             host: { type: 'string', description: 'Optional NetInside host. Normally omit and let runtime env provide NETINSIDE_HOST.' },
             ips: { type: 'array', items: { type: 'string' } },
@@ -7572,6 +8325,10 @@ function createPacketAnalysisToolDefinition() {
             id: { type: 'string', description: 'Event ID for linkType=2 packets ONLY. For a combined alert packet request, use napm-alert-packet-analysis and accept an id only from its trusted handoff.' },
             instanceId: { type: 'string' },
             businessName: { type: 'string', description: 'Web application/business name for business packet DownServlet resolution.' },
+            businessGroupName: { type: 'string', description: 'BusinessGroup/workgroup name. The packet skill queries businessGroups CSV, matches Name exactly, expands IpMembers into ips/ipRanges, then calls packetsPreview/packetsDown.' },
+            businessGroup: { type: 'string', description: 'Alias of businessGroupName.' },
+            groupType: { type: 'string', description: 'Use BusinessGroup for workgroup packet discovery.' },
+            groupArgument: { type: 'string', description: 'BusinessGroup object name when groupType=BusinessGroup.' },
             page: { type: 'string', description: 'Business page URL/path to preview via pageViews before DownServlet download.' },
             pageUrl: { type: 'string', description: 'Alias of page. Use for Web page URL/path packet preview.' },
             pageFamilyId: { type: 'string', description: 'Known PageFamily id. Starts business packet preview from pageViews.' },
@@ -7581,7 +8338,9 @@ function createPacketAnalysisToolDefinition() {
             pageViewIndex: { type: 'number', description: 'Optional row index selected from pageViews preview rows.' },
             top: { type: 'object', additionalProperties: true },
             start: { type: 'number', description: 'Unix-second start timestamp.' },
-            end: { type: 'number', description: 'Unix-second end timestamp.' }
+            end: { type: 'number', description: 'Unix-second end timestamp.' },
+            timeRange: { type: 'object', description: 'Optional relative time declaration, e.g. {key:"last5minutes"}; runtime resolves it to minute-aligned start/end.', additionalProperties: true },
+            timeRangeKey: { type: 'string', description: 'Alias for criteria.timeRange.key, e.g. last5minutes or last1hour.' }
           },
           additionalProperties: true
         },
@@ -7592,25 +8351,44 @@ function createPacketAnalysisToolDefinition() {
       additionalProperties: false
     },
     execute: async (_toolCallId, args = {}) => {
-      const result = await napmPacketSkill().handleSkillCall(args || {});
-      const handoffRecord = rememberSkillResult(
-        normalizePrompt(args),
-        result,
-        getTrustedConversationKey(args),
-        'napm-packet-analysis',
-        getTrustedTurnId(args)
-      );
-      const reportSourceId = handoffRecord?.reportSourceId || '';
-      return {
-        content: [
-          {
-            type: 'text',
-            text: appendReportSourceId(buildPacketAnalysisReply(result), reportSourceId)
-          }
-        ],
-        details: result,
-        metadata: reportSourceId ? { reportSourceId } : undefined
-      };
+      const operationKey = buildPacketExecutionOperationKey(args);
+      const existingOperation = operationKey
+        ? getPacketExecutionOperation(operationKey)
+        : null;
+      if (existingOperation) {
+        appendPluginAuditEvent('napm_packet_execution_replayed', {
+          scopeHash: ReportSourceStore.hashScope(getTrustedConversationKey(args)),
+          turnId: getTrustedTurnId(args)
+        });
+        return existingOperation;
+      }
+
+      const operation = (async () => {
+        const result = await napmPacketSkill().handleSkillCall(args || {});
+        const handoffRecord = rememberSkillResult(
+          normalizePrompt(args),
+          result,
+          getTrustedConversationKey(args),
+          'napm-packet-analysis',
+          getTrustedTurnId(args)
+        );
+        const reportSourceId = handoffRecord?.reportSourceId || '';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: appendReportSourceId(buildPacketAnalysisReply(result), reportSourceId)
+            }
+          ],
+          details: result,
+          metadata: reportSourceId ? { reportSourceId } : undefined
+        };
+      })();
+
+      if (operationKey) {
+        rememberPacketExecutionOperation(operationKey, operation);
+      }
+      return operation;
     }
   };
 }
@@ -7755,6 +8533,9 @@ function createMainflowQueryToolDefinition() {
 function buildNapmRoutingSystemContext(opts = {}) {
   const acceptedInputs = 'queryDraft, clarificationAnswer, resolvedQuery (legacy alias only)';
   const prompt = String(opts.prompt || '').trim();
+  const admissionDecision = isPlainObject(opts.turnAdmissionDecision)
+    ? opts.turnAdmissionDecision
+    : null;
 
   if (isPlatformIdentityPrompt(prompt)) {
     return [
@@ -7774,6 +8555,15 @@ function buildNapmRoutingSystemContext(opts = {}) {
       outOfScopeBoundaryRequested: isSystemDomainPrompt(prompt) && isOutOfScopeNapmRequest(prompt)
     })
     : buildTurnPolicy({ domainRelated: true }));
+
+  if (admissionDecision?.action === 'ASK_CLARIFYING_QUESTION') {
+    return [
+      'TURN ADMISSION CLARIFICATION REQUIRED:',
+      String(admissionDecision.finalContent || '请明确您要引用的上一份结果。').trim(),
+      `原因码：${admissionDecision.reasonCode || 'TURN_ADMISSION_UNRESOLVED'}`,
+      '直接向用户提出这一项澄清并停止；不得调用任何 Tool，不得从聊天文字猜测对象或内部 ID。'
+    ].join('\n');
+  }
 
   if (turnPolicy.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
     return [
@@ -7806,12 +8596,21 @@ function buildNapmRoutingSystemContext(opts = {}) {
     }
   } catch (_e) { /* classifier errors → inject all rules as fallback */ }
 
-  var isNapm = Boolean(opts.napmRelated) || (prompt && isNapmRelatedPrompt(prompt));
   // Guard: if no scene detected, default to data-query + packet scenes to cover all possibilities
   var anyScene = isFault || isSummary || isInspection || isAlert || isPacket;
   if (!anyScene) { isFault = true; isSummary = true; isAlert = true; isPacket = true; }
 
   var rules = [];
+
+  if (admissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP') {
+    const selection = admissionDecision.selection || {};
+    const sourceObjectType = String(admissionDecision.sourceObjectType || '').trim();
+    rules.push(
+      'AUTHORITATIVE CONTEXT FOLLOW-UP:',
+      `当前短句已经由 Plugin 准入为 ${admissionDecision.workflow || 'result_drilldown'}，来源对象=${sourceObjectType || 'unknown'}，选择序号=${selection.ordinal || 'unknown'}。`,
+      `只调用 ${admissionDecision.expectedTool || '指定 Tool'} 一次。Plugin 会从冻结的权威结果集生成续查 queryDraft；不得复制聊天答案中的对象名，不得伪造 resultSetId、业务名或 pageFamilyId。`
+    );
+  }
 
   // ── TOOL ROUTING TABLE (always) ──
   rules.push(
@@ -7870,7 +8669,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── PACKET CONTRACT (only for packet scenes) ──
   if (isPacket) {
     rules.push(
-      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
+      'Packet modes: build_url_only (link-only), preview_only (large ranges), preview_download_analyze (full). Pass original prompt and/or criteria.timeRange.key (for example last5minutes); napm-packet-analysis resolves relative time against the server clock and fills start/end, so do not calculate timestamps or use exec/date. BusinessGroup/workgroup packet requests should pass groupType="BusinessGroup" plus groupArgument/businessGroupName when known; a named non-IP target such as 服务器网段 may be supplied without a prior inventory query and the runtime will repair it to BusinessGroup, query businessGroups?csv=true, match Name exactly, split IpMembers into repeated ips/ipRanges, then call packetsPreview and packetsDown. Business page preview: use downloadType="DownServlet"+criteria.page; never downgrade to IP-based packetsPreview when URL is provided. IP packetsPreview only when user explicitly asks 按IP.',
       'Alert-packet: napm-alert-packet-analysis ONLY. It performs alertsDetail discovery and calls packet-analysis internally. criteria.id is for linkType=2 trusted handoffs only, not arbitrary alert event IDs.',
       'Trigger cause analysis: always explain alert trigger metrics/threshold/actual value/packet correlation. Do NOT skip because alert name contains 测试.'
     );
@@ -7973,7 +8772,11 @@ const plugin = {
         const continuationPrompt = batchContinuationPrompt
           || buildAlertPacketContinuationPrompt(content, previousState);
         const analyzeAllCandidates = Boolean(batchContinuationPrompt);
-        const effectivePrompt = continuationPrompt || content;
+        const packetDownloadContext = continuationPrompt
+          ? null
+          : buildPendingPacketDownloadContext(content, conversationKey);
+        const packetDownloadContinuationPrompt = buildPacketDownloadContinuationPrompt(packetDownloadContext);
+        const effectivePrompt = continuationPrompt || packetDownloadContinuationPrompt || content;
         const turnId = buildNapmTurnId();
         const pendingClarification = conversationKey
           ? queryTurnCoordinator.getPending(conversationKey)
@@ -7986,12 +8789,25 @@ const plugin = {
               answer: content
             })
           : null;
-        const baseState = buildConversationScopedGuardState(effectivePrompt, previousState);
+        const baseState = buildConversationScopedGuardState(effectivePrompt, previousState, {
+          conversationKey,
+          turnId,
+          runId: normalizeTraceId(ctx?.runId),
+          messageId: normalizeTraceId(ctx?.messageId)
+        });
         const resumedTurnPolicy = resumedTurn
           ? buildTurnPolicy({
               prompt: resumedTurn.semanticQuestion || effectivePrompt,
               napmRelated: true,
               domainRelated: true
+            })
+          : null;
+        const resumedAdmissionState = resumedTurn
+          ? buildResumedQueryAdmissionState({
+              conversationKey,
+              turnId,
+              runId: normalizeTraceId(ctx?.runId),
+              messageId: normalizeTraceId(ctx?.messageId)
             })
           : null;
         const nextState = {
@@ -8001,6 +8817,8 @@ const plugin = {
             domainRelated: true,
             turnPolicy: resumedTurnPolicy,
             turnRoute: resumedTurnPolicy.route,
+            turnIntent: resumedAdmissionState.turnIntent,
+            turnAdmissionDecision: resumedAdmissionState.turnAdmissionDecision,
             pendingQueryDraft: resumedTurn.queryDraft,
             pendingParentTurnId: resumedTurn.parentTurnId,
             semanticPrompt: resumedTurn.semanticQuestion
@@ -8020,6 +8838,9 @@ const plugin = {
             : continuationPrompt
             ? (extractAlertReference(continuationPrompt)?.candidateId || previousState?.alertPacketCandidateId || null)
             : (previousState?.alertPacketCandidateId || extractAlertReference(effectivePrompt)?.candidateId || null),
+          packetDownloadContinuationPrompt: Boolean(packetDownloadContinuationPrompt),
+          packetPreviewRiskAccepted: Boolean(packetDownloadContinuationPrompt),
+          packetDownloadContext,
           turnId,
           runId: normalizeTraceId(ctx?.runId) || null,
           messageId: normalizeTraceId(ctx?.messageId) || null,
@@ -8028,6 +8849,15 @@ const plugin = {
 
         if (conversationKey) {
           napmConversationState.set(conversationKey, nextState);
+          if (packetDownloadContext) {
+            appendPluginAuditEvent('napm_packet_download_confirmation_resumed', {
+              scopeHash: ReportSourceStore.hashScope(conversationKey),
+              turnId,
+              sourceTurnId: packetDownloadContext.sourceTurnId || null,
+              start: packetDownloadContext.criteria.start,
+              end: packetDownloadContext.criteria.end
+            });
+          }
           queryTurnCoordinator.begin({
             scope: conversationKey,
             turnId,
@@ -8053,6 +8883,27 @@ const plugin = {
         }
 
         setGuardState(ctx, nextState);
+        appendPluginAuditEvent('turn_admission_decided', {
+          scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+          turnId,
+          runId: normalizeTraceId(ctx?.runId) || null,
+          messageId: normalizeTraceId(ctx?.messageId) || null,
+          route: nextState.turnAdmissionDecision?.route || null,
+          action: nextState.turnAdmissionDecision?.action || null,
+          expectedTool: nextState.turnAdmissionDecision?.expectedTool || null,
+          workflow: nextState.turnAdmissionDecision?.workflow || null,
+          intentType: nextState.turnAdmissionDecision?.intentType || null,
+          handling: nextState.turnAdmissionDecision?.handling || null,
+          classificationSchemaVersion:
+            nextState.turnAdmissionDecision?.classificationSchemaVersion || null,
+          classificationSource: nextState.turnAdmissionDecision?.classificationSource || null,
+          reasonCode: nextState.turnAdmissionDecision?.reasonCode || null,
+          sourceDomain: nextState.turnAdmissionDecision?.sourceDomain || null,
+          sourceArtifactType: nextState.turnAdmissionDecision?.sourceArtifactType || null,
+          sourceObjectType: nextState.turnAdmissionDecision?.sourceObjectType || null,
+          selectionKind: nextState.turnAdmissionDecision?.selection?.kind || null,
+          selectionOrdinal: nextState.turnAdmissionDecision?.selection?.ordinal || null
+        });
       },
       {
         name: 'napm-message-scope-detect',
@@ -8107,7 +8958,12 @@ const plugin = {
         let conversationState = runGuardState || null;
         if (!conversationState && isMeaningfulText(prompt)) {
           conversationState = {
-            ...buildConversationScopedGuardState(prompt, previousConversationState),
+            ...buildConversationScopedGuardState(prompt, previousConversationState, {
+              conversationKey,
+              turnId,
+              runId: normalizeTraceId(ctx?.runId),
+              messageId: normalizeTraceId(ctx?.messageId)
+            }),
             conversationKey: conversationKey || null,
             promptKey: normalizePromptKey(prompt),
             canonicalPrompt: prompt,
@@ -8140,7 +8996,12 @@ const plugin = {
         if (guardKeys.length > 0) {
           const previousGuardState = getGuardState(ctx);
           const guardState = {
-            ...(conversationState || buildConversationScopedGuardState(prompt, previousConversationState)),
+            ...(conversationState || buildConversationScopedGuardState(prompt, previousConversationState, {
+              conversationKey,
+              turnId,
+              runId: normalizeTraceId(ctx?.runId),
+              messageId: normalizeTraceId(ctx?.messageId)
+            })),
             prompt,
             canonicalPrompt: prompt,
             conversationKey: conversationKey || null,
@@ -8162,7 +9023,8 @@ const plugin = {
         const routingContext = buildNapmRoutingSystemContext({
           prompt,
           napmRelated: Boolean(conversationState?.napmRelated),
-          turnPolicy: conversationState?.turnPolicy
+          turnPolicy: conversationState?.turnPolicy,
+          turnAdmissionDecision: conversationState?.turnAdmissionDecision
         });
         const clarificationContinuation = boundTurn?.resumedFromClarification
           ? [
@@ -8171,8 +9033,17 @@ const plugin = {
               '插件会从当前 Query Turn 恢复并注入待补全的 queryDraft。'
             ].join('\n')
           : '';
+        const packetDownloadContinuation = conversationState?.packetDownloadContinuationPrompt
+          ? [
+              'PACKET DOWNLOAD CONFIRMATION CONTINUATION:',
+              '用户已确认下载上一轮预览的数据包。只调用一次 napm-packet-analysis；插件会恢复上一轮固定目标和 start/end，并注入可信下载确认。',
+              '不得改用相对时间、重算时间窗口、替换目标，或调用 napm-skill-query。'
+            ].join('\n')
+          : '';
         return {
-          appendSystemContext: [routingContext, clarificationContinuation].filter(Boolean).join('\n\n')
+          appendSystemContext: [routingContext, clarificationContinuation, packetDownloadContinuation]
+            .filter(Boolean)
+            .join('\n\n')
         };
       },
       {
@@ -8321,7 +9192,18 @@ const plugin = {
       'before_tool_call',
       (event, ctx) => {
         if (isNativeCommandTurn(ctx)) {
-          return undefined;
+          const nativeParams = isPlainObject(event?.params) ? event.params : {};
+          const nativeParamsText = JSON.stringify(nativeParams).toLowerCase();
+          const nativePrompt = normalizePrompt(nativeParams);
+          const packetBypassSignal = isPacketCapturePrompt(nativePrompt)
+            || /(packetspreview|packetsdown|downservlet|pcap|抓包|数据包|报文|ipranges?)/i.test(nativeParamsText);
+          if (!packetBypassSignal) {
+            return undefined;
+          }
+          appendPluginAuditEvent('napm_native_command_packet_guard_not_bypassed', {
+            toolName: String(event?.toolName || '').trim() || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
         }
 
         const guardKeys = getGuardKeys(ctx);
@@ -8352,7 +9234,53 @@ const plugin = {
         const querySemanticPrompt = String(
           queryTurnContext.turn?.semanticQuestion || activePrompt
         ).trim();
-        const activePromptState = derivePromptGuardState(activePrompt, conversationState, guardState);
+        const activePromptState = derivePromptGuardState(
+          activePrompt,
+          conversationState,
+          guardState,
+          { conversationKey }
+        );
+        if (
+          activePromptState?.turnAdmissionDecision?.action === 'ASK_CLARIFYING_QUESTION'
+          && isSafeNapmToolName(toolName)
+        ) {
+          appendPluginAuditEvent('execution_gate_blocked', {
+            gate: 'turn_admission',
+            reasonCode: activePromptState.turnAdmissionDecision.reasonCode || 'TURN_ADMISSION_UNRESOLVED',
+            toolName,
+            conversationKey: conversationKey || null,
+            turnId: queryTurnContext.turnId || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: `${activePromptState.turnAdmissionDecision.reasonCode || 'TURN_ADMISSION_UNRESOLVED'}: ${activePromptState.turnAdmissionDecision.finalContent || '当前上下文不足，必须先澄清。'}`
+          };
+        }
+        const admissionExpectedTool = String(
+          activePromptState?.turnAdmissionDecision?.expectedTool || ''
+        ).trim();
+        if (
+          admissionExpectedTool
+          && isSafeNapmToolName(toolName)
+          && !DEV_RESOLVER_TOOL_NAMES.has(toolName)
+          && toolName !== admissionExpectedTool
+        ) {
+          appendPluginAuditEvent('napm_turn_admission_wrong_tool_blocked', {
+            toolName,
+            expectedTool: admissionExpectedTool,
+            conversationKey: conversationKey || null,
+            turnId: queryTurnContext.turnId || null,
+            reasonCode: activePromptState.turnAdmissionDecision.reasonCode || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: admissionExpectedTool === 'napm-alert-packet-analysis'
+              ? `EXPECTED_TOOL_MISMATCH: This turn requires ${admissionExpectedTool}. ALERT_PACKET_WORKFLOW_REQUIRED.`
+              : `EXPECTED_TOOL_MISMATCH: This turn requires ${admissionExpectedTool}.`
+          };
+        }
         if (isSafeNapmToolName(toolName) && (!queryTurnContext.turnId || !queryTurnContext.turn)) {
           appendPluginAuditEvent('napm_tool_turn_binding_missing', {
             toolName,
@@ -8409,15 +9337,35 @@ const plugin = {
         }
 
         const activeTurnRoute = getTurnPolicyRoute(activePromptState);
-        const contextualQueryFollowUp = activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED
-          ? authorizeContextualTimeValuesFollowUp(
+        const admittedTimeValuesFollowUp = Boolean(
+          activePromptState?.turnAdmissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+          && activePromptState.turnAdmissionDecision.workflow === 'time_values_followup'
+        );
+        const contextualQueryFollowUp = admittedTimeValuesFollowUp
+          ? validateAdmittedTimeValuesContinuation(
               conversationKey,
               toolName,
-              originalToolParams?.resolvedQuery
+              originalToolParams?.resolvedQuery || originalToolParams?.queryDraft,
+              activePromptState.turnAdmissionDecision
             )
-          : { ok: false, reason: 'turn_route_does_not_require_contextual_authorization' };
+          : { ok: false, reason: 'not_an_admitted_time_values_followup' };
+        if (admittedTimeValuesFollowUp && !contextualQueryFollowUp.ok) {
+          appendPluginAuditEvent('execution_gate_blocked', {
+            gate: 'turn_admission_context',
+            reasonCode: 'TURN_ADMISSION_QUERY_CONTEXT_MISMATCH',
+            detailReason: contextualQueryFollowUp.reason || null,
+            toolName,
+            conversationKey: conversationKey || null,
+            turnId: queryTurnContext.turnId || null,
+            context: buildAuditContextSnapshot(ctx)
+          });
+          return {
+            block: true,
+            blockReason: `TURN_ADMISSION_QUERY_CONTEXT_MISMATCH: ${contextualQueryFollowUp.reason || 'the submitted query does not match the authoritative prior query context'}.`
+          };
+        }
         if (
-          (activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED && !contextualQueryFollowUp.ok)
+          activeTurnRoute === TURN_POLICY_ROUTES.MODEL_OWNED
           || activeTurnRoute === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE
         ) {
           api.logger.warn(`[napm-openclaw-plugin] blocked tool for non-action turn: route=${activeTurnRoute} tool=${toolName}`);
@@ -8434,8 +9382,8 @@ const plugin = {
           };
         }
         if (contextualQueryFollowUp.ok) {
-          api.logger.info(`[napm-openclaw-plugin] allowed contextual timeValues follow-up: parentTurnId=${contextualQueryFollowUp.parentTurnId || 'none'}`);
-          appendPluginAuditEvent('napm_plugin_contextual_query_followup_allowed', {
+          api.logger.info(`[napm-openclaw-plugin] allowed admitted timeValues follow-up: parentTurnId=${contextualQueryFollowUp.parentTurnId || 'none'}`);
+          appendPluginAuditEvent('napm_turn_admission_context_followup_allowed', {
             route: activeTurnRoute,
             toolName,
             prompt: activePrompt,
@@ -8458,6 +9406,38 @@ const plugin = {
         let toolParams = trustedTraceId
           ? { ...originalToolParams, traceId: trustedTraceId }
           : originalToolParams;
+        if (
+          toolName === 'napm-skill-query'
+          && activePromptState?.turnAdmissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+        ) {
+          const continuationQueryDraft = queryContextResolver.buildContinuationQueryDraft(
+            activePromptState.turnAdmissionDecision
+          );
+          if (continuationQueryDraft) {
+            toolParams = {
+              ...toolParams,
+              prompt: querySemanticPrompt || activePrompt,
+              userQuery: querySemanticPrompt || activePrompt,
+              queryDraft: continuationQueryDraft,
+              resolvedQuery: continuationQueryDraft
+            };
+          }
+        }
+        if (
+          toolName === 'napm-alert-query'
+          && activePromptState?.turnAdmissionDecision?.reasonCode === 'AUTHORITATIVE_RESULT_FOLLOWUP'
+        ) {
+          const continuationAlertParams = alertContextResolver.buildContinuationToolParams(
+            activePromptState.turnAdmissionDecision
+          );
+          if (continuationAlertParams) {
+            toolParams = {
+              ...toolParams,
+              ...continuationAlertParams,
+              prompt: querySemanticPrompt || activePrompt
+            };
+          }
+        }
         if (
           toolName === 'napm-skill-query'
           && queryTurnContext.turn?.resumedFromClarification
@@ -8489,6 +9469,31 @@ const plugin = {
               ...toolParams,
               previewRiskAccepted: true
             };
+          }
+        }
+        if (toolName === 'napm-packet-analysis') {
+          // Preserve exact user wording for server-clock time resolution and
+          // canonicalize BusinessGroup targets before the packet runtime builds
+          // any southbound URL.
+          const packetParams = activePromptState?.packetDownloadContinuationPrompt
+            ? buildConfirmedPacketToolParams(
+                activePrompt || normalizePrompt(toolParams),
+                toolParams,
+                activePromptState.packetDownloadContext
+              )
+            : stripUntrustedPacketPreviewConfirmation(toolParams);
+          toolParams = normalizePacketToolParams(
+            activePrompt || normalizePrompt(packetParams),
+            packetParams
+          );
+          if (activePromptState?.packetDownloadContinuationPrompt) {
+            appendPluginAuditEvent('napm_packet_download_confirmation_applied', {
+              scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+              turnId: queryTurnContext.turnId || null,
+              sourceTurnId: activePromptState.packetDownloadContext?.sourceTurnId || null,
+              start: toolParams.criteria?.start || null,
+              end: toolParams.criteria?.end || null
+            });
           }
         }
         if (toolName === 'napm-inspection-snapshot' && activePrompt) {
@@ -8541,7 +9546,6 @@ const plugin = {
             Boolean(activePromptState?.napmRelated)
             || isOverviewPrompt(activePrompt)
             || isNapmRelatedPrompt(activePrompt)
-            || contextualQueryFollowUp.ok
           );
         const activePacketPrompt = Boolean(activePrompt) && isPacketCapturePrompt(activePrompt);
         const activeAlertPrompt = Boolean(activePrompt) && (
@@ -8739,15 +9743,50 @@ const plugin = {
           const originalTraceId = normalizeTraceId(toolParams?.traceId);
           const canonicalTraceId = normalizeTraceId(canonicalSkillParams?.traceId);
           const originalResolvedGroup = String(toolParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
-          const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const originalResolvedQueryJson = JSON.stringify(normalizeObject(toolParams?.resolvedQuery) || null);
-          const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const boundaryMode = getBoundaryMode();
           const semanticGuardMode = getQuerySemanticGuardMode();
-          const resolvedQueryValidation = validateResolvedQueryAgainstSpec(
+          const resultReferenceResolution = resolveQueryResultReference(
             canonicalSkillParams?.resolvedQuery,
-            { phase: 'construction' }
+            conversationKey,
+            queryTurnContext.turnId,
+            querySemanticPrompt
           );
+          if (!resultReferenceResolution.ok) {
+            appendPluginAuditEvent('authoritative_artifact_resolution_failed', {
+              scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+              turnId: queryTurnContext.turnId,
+              sourceDomain: 'QUERY',
+              objectType: canonicalSkillParams?.resolvedQuery?.resultReference?.objectType || null,
+              ordinal: canonicalSkillParams?.resolvedQuery?.resultReference?.ordinal || null,
+              reasonCode: resultReferenceResolution.code || null,
+              phase: 'construction'
+            });
+          }
+          if (isPlainObject(resultReferenceResolution.resolvedQuery)) {
+            canonicalSkillParams.resolvedQuery = resultReferenceResolution.resolvedQuery;
+            canonicalSkillParams.queryDraft = resultReferenceResolution.resolvedQuery;
+          }
+          if (resultReferenceResolution.resolvedQuery?.sourceReference) {
+            appendPluginAuditEvent('authoritative_artifact_resolved', {
+              scopeHash: conversationKey ? ReportSourceStore.hashScope(conversationKey) : null,
+              turnId: queryTurnContext.turnId,
+              sourceDomain: 'QUERY',
+              artifactType: 'authoritative_ranking_result',
+              objectType: resultReferenceResolution.resolvedQuery.sourceReference.objectType || null,
+              ordinal: resultReferenceResolution.resolvedQuery.sourceReference.ordinal || null,
+              targetService: resultReferenceResolution.resolvedQuery.service || null,
+              phase: 'construction'
+            });
+          }
+          const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
+          const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
+          const resolvedQueryValidation = resultReferenceResolution.ok
+            ? validateResolvedQueryAgainstSpec(
+                canonicalSkillParams?.resolvedQuery,
+                { phase: 'construction' }
+              )
+            : resultReferenceResolution;
           if (isPlainObject(resolvedQueryValidation.resolvedQuery)) {
             canonicalSkillParams.resolvedQuery = resolvedQueryValidation.resolvedQuery;
           }
@@ -8868,6 +9907,27 @@ const plugin = {
               || canonicalResolvedQueryJson !== originalResolvedQueryJson
             )
           );
+          const authorizedSkillParams = shouldRewriteSkillParams
+            ? canonicalSkillParams
+            : toolParams;
+          if (!authorizeTrustedToolContext(
+            traceId,
+            authorizedSkillParams,
+            activePromptState?.turnAdmissionDecision
+          )) {
+            appendPluginAuditEvent('execution_gate_blocked', {
+              gate: 'turn_admission_authorization',
+              reasonCode: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED',
+              toolName,
+              conversationKey: conversationKey || null,
+              turnId: queryTurnContext.turnId || null,
+              context: buildAuditContextSnapshot(ctx)
+            });
+            return {
+              block: true,
+              blockReason: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED: unable to seal this Query Tool call to the current run-bound admission decision.'
+            };
+          }
           appendPluginAuditEvent('napm_plugin_resolved_query_forwarded', {
             traceId,
             toolName,
@@ -9152,6 +10212,30 @@ const plugin = {
             conversationKey: conversationKey || null,
             turnId: turnId || null,
             workflowState: rememberedRecord.result.workflowState || null,
+            source: preparedFinal.source,
+            fingerprint: preparedFinal.fingerprint
+          });
+          return { content: preparedFinal.content };
+        }
+        if (
+          isPacketCapturePrompt(activePromptForReport)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          if (isStreamingPreviewMessageEvent(event)) {
+            return { cancel: true };
+          }
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (!preparedFinal || !napmOperationState.claimPreparedFinalDelivery(conversationKey, turnId)) {
+            appendPluginAuditEvent('napm_plugin_duplicate_packet_final_delivery_suppressed', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null
+            });
+            return { cancel: true };
+          }
+          appendPluginAuditEvent('napm_plugin_packet_final_delivery_claimed', {
+            conversationKey: conversationKey || null,
+            turnId: turnId || null,
             source: preparedFinal.source,
             fingerprint: preparedFinal.fingerprint
           });
@@ -9518,6 +10602,25 @@ const plugin = {
           ? getRememberedAlertRecordForPrompt(activePrompt, conversationState, conversationKey, guardState)
           : getRememberedRecordForPrompt(activePrompt, conversationState, conversationKey, guardState);
         const requiresSkillBackedReply = shouldRequireSkillBackedReply(activePrompt, guardState, rememberedRecord);
+        if (
+          isPacketCapturePrompt(activePrompt)
+          && isPacketSkillResultRecord(rememberedRecord)
+          && isSkillResultRecordForTurn(rememberedRecord, turnId)
+        ) {
+          const preparedFinal = preparePacketFinalContent(rememberedRecord, conversationKey, turnId);
+          if (preparedFinal) {
+            appendPluginAuditEvent('napm_plugin_packet_deterministic_final_prepared', {
+              conversationKey: conversationKey || null,
+              turnId: turnId || null,
+              source: preparedFinal.source,
+              fingerprint: preparedFinal.fingerprint,
+              replacedModelContent: Boolean(existingText)
+            });
+            return {
+              message: buildAssistantTextMessage(preparedFinal.content, message)
+            };
+          }
+        }
         if (isCurrentAlertQueryResultRecord(rememberedRecord, turnId)) {
           const content = buildAlertQueryReply(rememberedRecord.result);
           appendPluginAuditEvent('napm_alert_deterministic_final_delivery', {
@@ -9722,6 +10825,8 @@ module.exports.__test__ = {
   summarizeResolvedQueryForAudit,
   normalizeQueryModeKeyForService,
   normalizeResolvedQueryForPlugin,
+  resolveQueryResultReference,
+  resolvePageViewsResultReference,
   validateResolvedQueryAgainstSpec,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
@@ -9759,6 +10864,9 @@ module.exports.__test__ = {
   buildAlertPacketFinalReply,
   buildNapmRoutingSystemContext,
   buildPacketAnalysisReply,
+  buildPacketFinalReply,
+  normalizePacketToolParams,
+  parsePacketDownloadConfirmationIntent,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,
@@ -9806,6 +10914,7 @@ module.exports.__test__ = {
   isAlertSkillMetaFollowUpPrompt,
   isAlertSkillResultRecord,
   isAlertPacketSkillResultRecord,
+  isPacketSkillResultRecord,
   buildAlertSkillRequiredReply,
   buildAlertPacketSkillRequiredReply,
   buildAlertExecutionTraceReplyFromRememberedRecord,
@@ -9826,6 +10935,7 @@ module.exports.__test__ = {
   rememberSkillResult,
   getConversationKey,
   bindTrustedToolContext,
+  authorizeTrustedToolContext,
   getTrustedConversationKey,
   getTrustedTurnId,
   getTrustedToolName,

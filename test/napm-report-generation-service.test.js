@@ -121,6 +121,31 @@ describe('openclaw-napm-report generation service', () => {
 
   test('should sanitize file segments for report id parts', () => {
     expect(storageTest.sanitizeFileSegment('diag/report:*?')).toBe('diag_report');
+    expect(storageTest.sanitizeDirectorySegment('../user/id')).toBe('_unattributed');
+    expect(storageTest.sanitizeDirectorySegment('user-001')).toBe('user-001');
+  });
+
+  test('should preserve trusted report ownership and expose relative archive paths', async () => {
+    const service = new ReportGenerationService({ outputDir, downloadBaseUrl: '/reports' });
+
+    const result = await service.generate(makeReportPayload({
+      sourceUserId: 'user-001',
+      sourceSessionId: 'session-001',
+      sourceChannel: 'wecom',
+      dataSourceId: 'napm-prod',
+      reportType: 'quick_report',
+      title: '来源归属报告',
+      sections: [{ type: 'summary', title: '摘要', content: '内容' }]
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.relativeFilePath).toMatch(/^user-001\/quick_report\/.*\.docx$/);
+    expect(result.relativeAuditPath).toMatch(/^user-001\/quick_report\/.*\.json$/);
+    expect(result.filePath).toContain(path.join(outputDir, 'user-001', 'quick_report'));
+    expect(fs.existsSync(result.filePath)).toBe(true);
+    const audit = JSON.parse(fs.readFileSync(result.auditPath, 'utf8'));
+    expect(audit.sourceUserId).toBe('user-001');
+    expect(audit.dataSourceId).toBe('napm-prod');
   });
 
   test('should generate human-readable filename: {SystemName}_{TypeCN}_{timestamp} for regular reports', async () => {

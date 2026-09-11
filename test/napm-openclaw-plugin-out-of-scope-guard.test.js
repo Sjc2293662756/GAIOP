@@ -329,6 +329,30 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     expect(result.blockReason).toContain('身份');
   });
 
+  test('should bind an immutable model-owned admission decision during identity message receipt', () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('identity-admission');
+    const prompt = '你是谁？';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+
+    const guardState = plugin.__test__.getGuardState(ctx);
+    expect(guardState.turnAdmissionDecision).toMatchObject({
+      conversationKey: expect.any(String),
+      turnId: guardState.turnId,
+      runId: ctx.runId,
+      route: 'model_owned',
+      action: 'MODEL_OWNED',
+      expectedTool: null,
+      intentType: 'model_owned',
+      handling: 'model_owned',
+      classificationSchemaVersion: 'napm.domain-intent-classification.v1',
+      classificationSource: 'existing-domain-classifier-adapter',
+      reasonCode: 'platform_identity_fast_path'
+    });
+    expect(Object.isFrozen(guardState.turnAdmissionDecision)).toBe(true);
+  });
+
   test('should keep real NAPM inventory prompts behind Skill evidence', () => {
     const prompt = '系统里有哪些业务？';
 

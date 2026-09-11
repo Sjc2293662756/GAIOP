@@ -95,6 +95,24 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       params: { ...params }
     };
     const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    if (options.authorize !== false) {
+      const admissionDecision = options.admissionDecision || {
+        conversationKey: scope,
+        turnId,
+        runId: ctx.runId,
+        messageId: ctx.messageId,
+        route: 'napm_candidate',
+        action: 'EXECUTE_TOOL',
+        expectedTool: 'napm-skill-query',
+        workflow: 'direct_query_test',
+        reasonCode: 'BASE_TURN_POLICY'
+      };
+      expect(plugin.__test__.authorizeTrustedToolContext(
+        traceId,
+        event.params,
+        admissionDecision
+      )).toBe(true);
+    }
     return { scope, turnId, params: { ...event.params, traceId } };
   }
 
@@ -133,6 +151,18 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       minLength: 1
     });
     expect(queryTool.parameters.anyOf).toContainEqual({ required: ['clarificationAnswer'] });
+  });
+
+  test('declares business and page ordinal result references in the Tool schema', () => {
+    const resultReference = tools.get('napm-skill-query')
+      .parameters.properties.queryDraft.properties.resultReference;
+
+    expect(resultReference.properties.objectType.enum).toEqual([
+      'WebApplication',
+      'PageFamily'
+    ]);
+    expect(resultReference.description).toContain('WebApplication');
+    expect(resultReference.description).toContain('PageFamily');
   });
 
   test('keeps overlapping runs bound to their own turns through Tool and output hooks', async () => {
@@ -351,6 +381,90 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       phase: 'TERMINAL',
       outcome: 'CLARIFICATION'
     });
+  });
+
+  test('admits a pending clarification answer even when the application name has no NAPM keyword', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'timeValues',
+        data: [{ timestamp: 1787742000, value: 10 }],
+        error: null
+      });
+    const initialCtx = createCtx('run-non-keyword-clarification');
+    const initialPrompt = '最近 7 天应用流量趋势如何？';
+    await startTurn(initialCtx, initialPrompt);
+    const clarificationCall = callBeforeTool(initialCtx, 'non-keyword-clarification-call', {
+      prompt: initialPrompt,
+      queryDraft: buildTrendDraft('TotalTraffic')
+    });
+    await executeBound('non-keyword-clarification-call', clarificationCall);
+
+    const scope = plugin.__test__.getConversationKey(initialCtx);
+    expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeTruthy();
+    expect(southbound).not.toHaveBeenCalled();
+
+    const answerCtx = createCtx('run-non-keyword-answer');
+    await startTurn(answerCtx, '支付平台');
+    const guardState = plugin.__test__.getGuardState(answerCtx);
+    expect(guardState.turnAdmissionDecision).toMatchObject({
+      conversationKey: scope,
+      turnId: guardState.turnId,
+      runId: answerCtx.runId,
+      messageId: answerCtx.messageId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query',
+      intentType: 'query',
+      handling: 'single_tool',
+      workflow: 'query_clarification_continuation',
+      reasonCode: 'QUERY_CLARIFICATION_RESUMED',
+      classificationSchemaVersion: 'napm.domain-intent-classification.v1',
+      classificationSource: 'existing-domain-classifier-adapter'
+    });
+    expect(Object.isFrozen(guardState.turnAdmissionDecision)).toBe(true);
+
+    const resumedCall = callBeforeTool(answerCtx, 'non-keyword-answer-call', {
+      prompt: '支付平台',
+      clarificationAnswer: '支付平台'
+    });
+    expect(resumedCall.hookResult?.block).not.toBe(true);
+    expect(resumedCall.params.queryDraft).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
+      metrics: ['TPIO'],
+      timeRange: { key: 'last7days' }
+    });
+
+    const result = await executeBound('non-keyword-answer-call', resumedCall);
+    expect(result.details.ok).toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(1);
+    expect(southbound.mock.calls[0][0]).toMatchObject({
+      service: 'timeValues',
+      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
+      metrics: ['TPIO'],
+      timeRange: { key: 'last7days' }
+    });
+  });
+
+  test('does not admit a non-keyword application name without an authoritative pending query', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-non-keyword-without-pending');
+    await startTurn(ctx, '支付平台');
+
+    const guardState = plugin.__test__.getGuardState(ctx);
+    expect(guardState.turnAdmissionDecision).toMatchObject({
+      route: 'model_owned',
+      action: 'MODEL_OWNED',
+      expectedTool: null
+    });
+
+    const attemptedCall = callBeforeTool(ctx, 'non-keyword-without-pending-call', {
+      prompt: '支付平台',
+      clarificationAnswer: '支付平台'
+    });
+    expect(attemptedCall.hookResult).toMatchObject({ block: true });
+    expect(southbound).not.toHaveBeenCalled();
   });
 
   test('delivers a real Skill clarification as a normal clarification without southbound calls', async () => {
@@ -1214,6 +1328,85 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
+  test('blocks direct query execution when the trusted trace has no Turn Admission authorization', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const direct = bindTrustedDirect(createCtx('run-direct-admission-missing'), {
+      prompt: '最近 7 天 HTTP 应用流量趋势如何？',
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    }, { authorize: false });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-admission-missing',
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'TURN_ADMISSION_AUTHORIZATION_REQUIRED' }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('blocks reused trusted trace when execute parameters differ from the Hook-authorized query', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-reused-trace-query-mutation');
+    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    await startTurn(ctx, prompt);
+    const bound = callBeforeTool(ctx, 'authorized-query', {
+      prompt,
+      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+    });
+    expect(bound.hookResult?.block).not.toBe(true);
+    expect(bound.hookResult).toEqual(expect.objectContaining({
+      params: expect.objectContaining({ traceId: expect.any(String) })
+    }));
+    expect(bound.params.traceId).toEqual(expect.any(String));
+    expect(plugin.__test__.getTrustedConversationKey(bound.params)).toBeTruthy();
+    expect(plugin.__test__.getTrustedTurnId(bound.params)).toBeTruthy();
+
+    const mutatedDraft = {
+      ...bound.params.resolvedQuery,
+      timeRange: { key: 'last24hours' }
+    };
+    const result = await tools.get('napm-skill-query').execute('mutated-query', {
+      ...bound.params,
+      queryDraft: mutatedDraft,
+      resolvedQuery: mutatedDraft
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        error: { code: 'QUERY_TOOL_PARAMETERS_MISMATCH' }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
   test('blocks an unverified multi-group query before Query Skill, NapmClient, or southbound execution', async () => {
     const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
     const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
@@ -1241,6 +1434,70 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         decision: {
           outcome: 'VALIDATION_FAILURE',
           reasonCode: 'MULTI_GROUP_PATH_UNVERIFIED',
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('blocks a PageFamily path that drifts from the requested business ranking before all query runtimes', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const groups = [
+      { type: 'WebApplication', argument: null },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const direct = bindTrustedDirect(createCtx('run-direct-business-page-drift'), {
+      prompt: '今天哪些业务页面访问量最高？',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' },
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'ranking',
+          targetObjectType: 'PageFamily'
+        },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: null,
+          anchorType: 'WebApplication',
+          plannedGroups: groups,
+          selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+        }
+      }
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-business-page-drift',
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        decision: {
+          outcome: 'VALIDATION_FAILURE',
+          reasonCode: 'SEMANTIC_TARGET_PATH_MISMATCH',
           southboundAllowed: false
         }
       }
@@ -1307,5 +1564,756 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       { turnId: 'latest-conversation-turn' },
       { turnId: 'bound-run-turn' }
     )).toBe('bound-run-turn');
+  });
+
+  test('resolves business and page ordinals across the authoritative three-turn pageViews workflow', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(async (query) => {
+        const terminalGroupType = query.groups?.[query.groups.length - 1]?.type;
+        if (query.service === 'topValues' && terminalGroupType === 'WebApplication') {
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [
+              {
+                groupPath: 'root>WebApplication business-low',
+                group: { key: 'WebApplication', argument: 'business-low' },
+                metricValues: [{ metric: { id: 'PGNPGE' }, value: 19 }]
+              },
+              {
+                groupPath: 'root>WebApplication business-a',
+                group: { key: 'WebApplication', argument: 'business-a' },
+                metricValues: [{ metric: { id: 'PGNPGE' }, value: 2348 }]
+              }
+            ],
+            error: null
+          };
+        }
+        if (query.service === 'topValues' && terminalGroupType === 'PageFamily') {
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [
+              {
+                groupPath: 'root>WebApplication business-a>pages>page 8573008/https://example.invalid/low',
+                group: { key: 'PageFamily', argument: 'https://example.invalid/low' },
+                metricValues: [{ metric: { id: 'PGNPGE' }, value: 19 }]
+              },
+              {
+                groupPath: 'root>WebApplication business-a>pages>page 8573007/https://example.invalid/api',
+                group: { key: 'PageFamily', argument: 'https://example.invalid/api' },
+                metricValues: [{ metric: { id: 'PGNPGE' }, value: 1393 }]
+              }
+            ],
+            error: null
+          };
+        }
+        return {
+          ok: true,
+          service: 'pageViews',
+          data: [{
+            index: 1,
+            rowRef: 'page-view:1',
+            startTime: '2026-08-27 14:05:00',
+            page: 'https://example.invalid/api',
+            clientIp: '192.0.2.10',
+            serverIp: '192.0.2.20',
+            httpStatus: 500,
+            pageFamilyDetailId: 'detail-1'
+          }],
+          error: null
+        };
+      });
+
+    const businessRankCtx = createCtx('run-business-rank');
+    const businessRankPrompt = '今天哪些业务页面访问量最高？';
+    await startTurn(businessRankCtx, businessRankPrompt);
+    const businessRankCall = callBeforeTool(businessRankCtx, 'business-rank-call', {
+      prompt: businessRankPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' },
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'ranking',
+          targetObjectType: 'WebApplication'
+        }
+      }
+    });
+    expect(businessRankCall.hookResult?.block).not.toBe(true);
+    await executeBound('business-rank-call', businessRankCall);
+
+    const pageRankCtx = createCtx('run-page-family-rank');
+    const pageRankPrompt = '看第一个的详情';
+    await startTurn(pageRankCtx, pageRankPrompt);
+    const wrongPageRankTool = hooks.get('before_tool_call')({
+      toolName: 'napm-alert-query',
+      toolCallId: 'page-family-rank-wrong-tool',
+      params: { prompt: pageRankPrompt }
+    }, pageRankCtx);
+    expect(wrongPageRankTool).toMatchObject({ block: true });
+    expect(wrongPageRankTool.blockReason).toContain('EXPECTED_TOOL_MISMATCH');
+    expect(wrongPageRankTool.blockReason).toContain('napm-skill-query');
+    const pageRankCall = callBeforeTool(pageRankCtx, 'page-family-rank-call', {
+      prompt: pageRankPrompt
+    });
+    expect(pageRankCall.hookResult?.blockReason).toBeUndefined();
+    expect(pageRankCall.hookResult?.block).not.toBe(true);
+    expect(pageRankCall.params.resolvedQuery).toMatchObject({
+      groups: [
+        { type: 'WebApplication', argument: 'business-a' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      sourceReference: {
+        objectType: 'WebApplication',
+        ordinal: 1,
+        sourceTurnId: expect.any(String)
+      },
+      pathPlanning: {
+        applied: true,
+        strategy: 'static_groups_tree',
+        followUpAction: 'drilldown',
+        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+      }
+    });
+    const pageRankResult = await executeBound('page-family-rank-call', pageRankCall);
+    expect(pageRankResult.details).toMatchObject({
+      ok: true,
+      responseType: 'topn',
+      narrationStructure: {
+        objectType: 'PageFamily'
+      }
+    });
+    expect(pageRankResult.details.narrationStructure.items[0]).toMatchObject({
+      rank: 1,
+      objectType: 'PageFamily',
+      rawValue: 1393
+    });
+
+    const detailCtx = createCtx('run-page-view-detail');
+    const detailPrompt = '再看第一个的详情，前 20 条';
+    await startTurn(detailCtx, detailPrompt);
+    const detailCall = callBeforeTool(detailCtx, 'page-view-detail-call', {
+      prompt: detailPrompt
+    });
+
+    expect(detailCall.hookResult?.block).not.toBe(true);
+    expect(detailCall.params.resolvedQuery).toMatchObject({
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      pageFamilyId: '8573007',
+      maxLimit: 20,
+      start: expect.any(Number),
+      end: expect.any(Number),
+      sourceReference: {
+        objectType: 'PageFamily',
+        ordinal: 1,
+        sourceTurnId: expect.any(String)
+      }
+    });
+    const result = await executeBound('page-view-detail-call', detailCall);
+
+    expect(result.details).toMatchObject({
+      ok: true,
+      service: 'pageViews',
+      responseType: 'page_view_detail'
+    });
+    expect(southbound).toHaveBeenCalledTimes(3);
+    expect(southbound.mock.calls[0][0]).toMatchObject({
+      service: 'topValues',
+      groups: [{ type: 'WebApplication' }]
+    });
+    expect(southbound.mock.calls[1][0]).toMatchObject({
+      service: 'topValues',
+      groups: [
+        { type: 'WebApplication', argument: 'business-a' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ]
+    });
+    expect(southbound.mock.calls[2][0]).toMatchObject({
+      service: 'pageViews',
+      pageFamilyId: '8573007',
+      maxLimit: 20
+    });
+    const scope = plugin.__test__.getConversationKey(detailCtx);
+    const detailTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, detailCtx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, detailTurnId)).toMatchObject({
+      phase: 'TERMINAL',
+      outcome: 'RESULT'
+    });
+
+    await executeBound('page-view-detail-call-replay', detailCall);
+    expect(southbound).toHaveBeenCalledTimes(3);
+    const auditRecords = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(auditRecords.filter((record) => record.event === 'authoritative_artifact_stored')).toEqual([
+      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'WebApplication', rowCount: 2 }),
+      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'PageFamily', rowCount: 2 })
+    ]);
+    expect(auditRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'authoritative_artifact_resolved',
+        objectType: 'WebApplication',
+        ordinal: 1,
+        targetService: 'topValues'
+      }),
+      expect.objectContaining({
+        event: 'authoritative_artifact_resolved',
+        objectType: 'PageFamily',
+        ordinal: 1,
+        targetService: 'pageViews'
+      })
+    ]));
+
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const invalidTimeCtx = createCtx('run-page-view-invalid-explicit-time');
+    await startTurn(invalidTimeCtx, '把排名第一页面改为非法时间后查看访问实例');
+    const invalidTimeCall = callBeforeTool(invalidTimeCtx, 'page-view-invalid-explicit-time', {
+      prompt: '把排名第一页面改为非法时间后查看访问实例',
+      queryDraft: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 1 },
+        start: 1,
+        maxLimit: 20,
+        semanticConstraints: {
+          workflowType: 'page_view_detail',
+          operation: 'detail_list',
+          targetObjectType: 'PageFamily'
+        }
+      }
+    });
+    expect(invalidTimeCall.hookResult).toMatchObject({ block: true });
+    expect(skill).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(3);
+  });
+
+  test('keeps an ordinal follow-up bound to the result frozen when its message arrived', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(async (query) => {
+        const terminalType = query.groups?.[query.groups.length - 1]?.type;
+        if (terminalType === 'WebApplication') {
+          const sourceName = query.resolutionHints?.testSource === 'newer'
+            ? 'business-newer'
+            : 'business-frozen';
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [{
+              group: { key: 'WebApplication', argument: sourceName },
+              metricValues: [{ metric: { id: 'PGNPGE' }, value: 100 }]
+            }],
+            error: null
+          };
+        }
+        return { ok: true, service: 'topValues', data: [], error: null };
+      });
+
+    const firstCtx = createCtx('run-frozen-source-first');
+    const firstPrompt = '今天哪些业务页面访问量最高？';
+    await startTurn(firstCtx, firstPrompt);
+    const firstCall = callBeforeTool(firstCtx, 'frozen-source-first', {
+      prompt: firstPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' }
+      }
+    });
+    await executeBound('frozen-source-first', firstCall);
+
+    const followUpCtx = createCtx('run-frozen-source-follow-up');
+    const followUpPrompt = '看第一个的详情';
+    await startTurn(followUpCtx, followUpPrompt);
+    const scope = plugin.__test__.getConversationKey(followUpCtx);
+    const followUpTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(
+      scope,
+      followUpCtx.runId
+    );
+    const frozenSourceResultSetId = plugin.__test__.queryTurnCoordinator
+      .get(scope, followUpTurnId)
+      .sourceResultSetId;
+
+    const newerCtx = createCtx('run-frozen-source-newer');
+    const newerPrompt = '最近一小时哪些业务页面访问量最高？';
+    await startTurn(newerCtx, newerPrompt);
+    const newerCall = callBeforeTool(newerCtx, 'frozen-source-newer', {
+      prompt: newerPrompt,
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'last1hour' },
+        resolutionHints: { testSource: 'newer' }
+      }
+    });
+    await executeBound('frozen-source-newer', newerCall);
+    expect(plugin.__test__.queryTurnCoordinator.getLatestResultReference(scope)).toMatchObject({
+      rows: [{ argument: 'business-newer' }]
+    });
+
+    const followUpCall = callBeforeTool(followUpCtx, 'frozen-source-follow-up', {
+      prompt: followUpPrompt
+    });
+    expect(followUpCall.hookResult?.block).not.toBe(true);
+    expect(followUpCall.params.resolvedQuery).toMatchObject({
+      groups: [
+        { type: 'WebApplication', argument: 'business-frozen' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      resultReference: {
+        resultSetId: frozenSourceResultSetId,
+        objectType: 'WebApplication',
+        ordinal: 1
+      },
+      sourceReference: {
+        sourceTurnId: expect.any(String),
+        objectType: 'WebApplication',
+        ordinal: 1
+      }
+    });
+    await executeBound('frozen-source-follow-up', followUpCall);
+
+    expect(southbound).toHaveBeenCalledTimes(3);
+    expect(southbound.mock.calls[2][0].groups[0]).toEqual({
+      type: 'WebApplication',
+      argument: 'business-frozen'
+    });
+  });
+
+  test('resolves an authoritative WebApplication ordinal through direct Tool execution', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockImplementation(async (query) => {
+        const terminalType = query.groups?.[query.groups.length - 1]?.type;
+        if (terminalType === 'WebApplication') {
+          return {
+            ok: true,
+            service: 'topValues',
+            data: [{
+              group: { key: 'WebApplication', argument: 'business-a' },
+              metricValues: [{ metric: { id: 'PGNPGE' }, value: 100 }]
+            }],
+            error: null
+          };
+        }
+        return { ok: true, service: 'topValues', data: [], error: null };
+      });
+    const business = bindTrustedDirect(createCtx('run-direct-business-rank'), {
+      prompt: '今天哪些业务页面访问量最高？',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' }
+      }
+    });
+    await tools.get('napm-skill-query').execute('direct-business-rank', business.params);
+
+    const page = bindTrustedDirect(createCtx('run-direct-page-rank'), {
+      prompt: '排名第一的都访问了什么',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'PageFamily' }],
+        resultReference: { objectType: 'WebApplication', ordinal: 1 },
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10
+      }
+    });
+    const result = await tools.get('napm-skill-query').execute('direct-page-rank', page.params);
+
+    expect(result.details.ok).toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(2);
+    expect(southbound.mock.calls[1][0]).toMatchObject({
+      start: expect.any(Number),
+      end: expect.any(Number),
+      groups: [
+        { type: 'WebApplication', argument: 'business-a' },
+        { type: 'PageFamilies' },
+        { type: 'PageFamily' }
+      ],
+      sourceReference: {
+        objectType: 'WebApplication',
+        ordinal: 1
+      },
+      executionBinding: {
+        resultReferenceValidated: true,
+        resultReferenceObjectType: 'WebApplication'
+      }
+    });
+  });
+
+  test('blocks an invalid WebApplication ordinal in the Hook before every query runtime', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
+      .mockResolvedValue({
+        ok: true,
+        service: 'topValues',
+        data: [{
+          group: { key: 'WebApplication', argument: 'business-a' },
+          metricValues: [{ metric: { id: 'PGNPGE' }, value: 100 }]
+        }],
+        error: null
+      });
+    const rankCtx = createCtx('run-hook-business-source');
+    await startTurn(rankCtx, '今天哪些业务页面访问量最高？');
+    const rank = callBeforeTool(rankCtx, 'hook-business-source', {
+      prompt: '今天哪些业务页面访问量最高？',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'WebApplication' }],
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' }
+      }
+    });
+    await executeBound('hook-business-source', rank);
+    skill.mockClear();
+    clientGet.mockClear();
+    clientGetJson.mockClear();
+    clientPost.mockClear();
+    southbound.mockClear();
+
+    const pageCtx = createCtx('run-hook-invalid-business-reference');
+    await startTurn(pageCtx, '排名第十的都访问了什么');
+    const page = callBeforeTool(pageCtx, 'hook-invalid-business-reference', {
+      prompt: '排名第十的都访问了什么',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups: [{ type: 'PageFamily' }],
+        resultReference: { objectType: 'WebApplication', ordinal: 10 },
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10
+      }
+    });
+
+    expect(page.hookResult).toMatchObject({ block: true });
+    expect(page.hookResult.blockReason).toContain('ordinal 10');
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('blocks direct ordinal drilldown without an authoritative result reference', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const groups = [
+      { type: 'WebApplication', argument: 'invented-business' },
+      { type: 'PageFamilies', argument: null },
+      { type: 'PageFamily', argument: null }
+    ];
+    const direct = bindTrustedDirect(createCtx('run-direct-missing-business-reference'), {
+      prompt: '排名第一的都访问了什么',
+      queryDraft: {
+        service: 'topValues',
+        queryModeKey: 'topn',
+        groups,
+        metrics: ['PGNPGE'],
+        metric: 'PGNPGE',
+        topMetric: 'PGNPGE',
+        topCount: 10,
+        timeRange: { key: 'today' },
+        semanticConstraints: {
+          workflowType: 'metric_topn',
+          operation: 'drilldown',
+          drilldownRequested: true,
+          targetObjectType: 'PageFamily'
+        },
+        pathPlanning: {
+          applied: true,
+          shouldApply: true,
+          strategy: 'static_groups_tree',
+          followUpAction: 'drilldown',
+          anchorType: 'WebApplication',
+          plannedGroups: groups,
+          selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
+        }
+      }
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      'direct-missing-business-reference',
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        decision: {
+          outcome: 'VALIDATION_FAILURE',
+          reasonCode: 'RESULT_REFERENCE_REQUIRED',
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      'missing page family reference',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        timeRange: { key: 'today' },
+        maxLimit: 20
+      },
+      'PAGE_FAMILY_ID_REQUIRED'
+    ],
+    [
+      'synthetic PageFamilyDetail group',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        timeRange: { key: 'today' },
+        pageFamilyId: '8573007',
+        maxLimit: 20,
+        groups: [{ type: 'PageFamilyDetail' }]
+      },
+      'PAGE_FAMILY_DETAIL_GROUP_FORBIDDEN'
+    ],
+    [
+      'out-of-range result ordinal',
+      {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 99 },
+        maxLimit: 20
+      },
+      'RESULT_REFERENCE_NOT_FOUND'
+    ]
+  ])('blocks direct pageViews execution for %s before Query Skill or southbound calls', async (
+    _label,
+    queryDraft,
+    reasonCode
+  ) => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const direct = bindTrustedDirect(createCtx(`run-page-view-invalid-${reasonCode}`), {
+      prompt: '详细查看排名第一页面的访问实例',
+      queryDraft
+    });
+
+    const result = await tools.get('napm-skill-query').execute(
+      `page-view-invalid-${reasonCode}`,
+      direct.params
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        ok: false,
+        decision: {
+          outcome: 'VALIDATION_FAILURE',
+          reasonCode,
+          southboundAllowed: false
+        }
+      }
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('clarifies an invalid pageViews result reference in the Hook before any query runtime call', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-page-view-hook-invalid-reference');
+    const prompt = '详细查看排名第一页面的前 20 个访问实例';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const call = callBeforeTool(ctx, 'page-view-hook-invalid-reference', {
+      prompt,
+      queryDraft: {
+        service: 'pageViews',
+        queryModeKey: 'detail',
+        resultReference: { objectType: 'PageFamily', ordinal: 1 },
+        maxLimit: 20,
+        semanticConstraints: {
+          workflowType: 'page_view_detail',
+          operation: 'detail_list',
+          targetObjectType: 'PageFamily'
+        }
+      }
+    });
+
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
+    expect(promptHook.appendSystemContext).toContain('TURN ADMISSION CLARIFICATION REQUIRED');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      route: 'MODEL_OWNED',
+      phase: 'RECEIVED',
+      attempts: []
+    });
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('formally clarifies a context-only ordinal follow-up when no authoritative result exists', async () => {
+    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
+    const NapmClient = require('../skills/openclaw-napm-query/services/NapmClient');
+    const skill = jest.spyOn(querySkill, 'handleSkillCall');
+    const clientGet = jest.spyOn(NapmClient.prototype, 'get');
+    const clientGetJson = jest.spyOn(NapmClient.prototype, 'getJson');
+    const clientPost = jest.spyOn(NapmClient.prototype, 'post');
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-context-reference-without-source');
+    const prompt = '看第一个的详情';
+
+    hooks.get('message_received')({ content: prompt }, ctx);
+    const promptHook = await hooks.get('before_prompt_build')({ prompt }, ctx);
+    const call = callBeforeTool(ctx, 'context-reference-without-source', { prompt });
+
+    expect(promptHook.appendSystemContext).toContain('TURN ADMISSION CLARIFICATION REQUIRED');
+    expect(promptHook.appendSystemContext).toContain('当前会话没有可安全引用的排行结果');
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_REQUIRED');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
+      route: 'MODEL_OWNED',
+      phase: 'RECEIVED',
+      attempts: []
+    });
+    const auditRecords = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8')
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    expect(auditRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: 'turn_admission_decided',
+        reasonCode: 'TURN_ADMISSION_CONTEXT_REQUIRED',
+        action: 'ASK_CLARIFYING_QUESTION'
+      }),
+      expect.objectContaining({
+        event: 'execution_gate_blocked',
+        reasonCode: 'TURN_ADMISSION_CONTEXT_REQUIRED'
+      })
+    ]));
+    expect(skill).not.toHaveBeenCalled();
+    expect(clientGet).not.toHaveBeenCalled();
+    expect(clientGetJson).not.toHaveBeenCalled();
+    expect(clientPost).not.toHaveBeenCalled();
+    expect(southbound).not.toHaveBeenCalled();
+  });
+
+  test('does not reuse a stale Query ordinal behind a newer unsupported skill result', async () => {
+    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
+    const ctx = createCtx('run-newer-packet-boundary');
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const sourceTurnId = 'turn-stale-query-ranking';
+    const queryDraft = {
+      service: 'topValues',
+      queryModeKey: 'topn',
+      groups: [{ type: 'WebApplication' }],
+      metrics: ['PGNPGE'],
+      topMetric: 'PGNPGE',
+      timeRange: { key: 'last1hour' }
+    };
+    plugin.__test__.queryTurnCoordinator.begin({
+      scope,
+      turnId: sourceTurnId,
+      route: 'NAPM_QUERY',
+      queryDraft
+    });
+    plugin.__test__.queryTurnCoordinator.recordDecision({
+      scope,
+      turnId: sourceTurnId,
+      queryDraft,
+      decision: { action: 'EXECUTE_QUERY', queryDraft }
+    });
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId: sourceTurnId,
+      queryDraft
+    });
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId: sourceTurnId,
+      result: {
+        ok: true,
+        data: [{ group: { argument: 'business-a' } }]
+      }
+    });
+    plugin.__test__.rememberSkillResult('packet completed later', {
+      ok: true,
+      workflowState: 'COMPLETED'
+    }, scope, 'napm-packet-analysis', 'turn-newer-packet');
+
+    const prompt = '看第一个的详情';
+    await startTurn(ctx, prompt);
+    const call = callBeforeTool(ctx, 'stale-query-behind-packet', { prompt });
+
+    expect(call.hookResult).toMatchObject({ block: true });
+    expect(call.hookResult.blockReason).toContain('TURN_ADMISSION_CONTEXT_NOT_MIGRATED');
+    expect(call.hookResult.blockReason).not.toContain('business-a');
+    expect(southbound).not.toHaveBeenCalled();
   });
 });

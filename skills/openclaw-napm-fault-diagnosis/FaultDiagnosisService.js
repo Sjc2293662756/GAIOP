@@ -4,6 +4,7 @@ const SummaryClient = require('../../openclaw-napm-summary/services/SummaryClien
 const { classify, getFlow, getNextStep, resolveJump, getJumpOptions,
   extractTargetName, matchAppByName, resolveFlowTypeFromCatalog } = require('./FaultDiagnosisFlowRouter');
 const { FaultDiagnosisSteps, matchHints } = require('./FaultDiagnosisSteps');
+const { selectGranularityForRange } = require('../shared/TimeGranularityPolicy');
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -817,10 +818,7 @@ class FaultDiagnosisService {
   }
 
   _autoGranularity(start, end) {
-    const rangeSec = Math.abs(Number(end || 0) - Number(start || 0));
-    if (rangeSec <= 86400) return 60;
-    if (rangeSec <= 604800) return 3600;
-    return 86400;
+    return selectGranularityForRange(start, end);
   }
 
   _buildNextOptions(session) {
