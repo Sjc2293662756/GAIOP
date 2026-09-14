@@ -65,10 +65,11 @@ Skills are not spawned as subprocesses; they run in the Gateway process. Runtime
 - A first technical validation failure enters `REPAIR_PENDING` and consumes the one-repair budget. Replaying the same attempt id is idempotent; a second failed construction terminates. `recordResult` and `recordFailure` accept only `EXECUTING`; abandoned repair and execution-time Skill clarification use dedicated transitions. Execution failure terminates immediately.
 - A Tool replay while the turn is already `EXECUTING` returns `QUERY_EXECUTION_IN_PROGRESS` before processing the replayed Draft. It cannot revalidate, change state, start a second attempt, or call southbound again.
 - After clarification, a name-only reply such as `HTTP` or `支付平台` is sent as `clarificationAnswer`. Only a successful `QueryTurnCoordinator.resumePending()` authorizes the new run: the plugin rebuilds its immutable admission as `EXECUTE_TOOL + napm-skill-query`, restores the policy-normalized pending Query Draft, and fills `DefinedApp.argument` before reevaluating the full policy. Keyword matching never grants this continuation authority; without a live pending Query the same short text remains `MODEL_OWNED` with zero southbound calls. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
-- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` supplies structured workflow, object, and metric semantics for application-traffic scope checks; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` matches a queryable static-tree path, the effective terminal group matches the structured intent, and a plugin-validated result reference explicitly authorizes the drilldown.
+- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` only composes Object Ontology, Resolution-Spec-driven metric semantics, Resolution-Spec-driven ranking grammar, and the shared time parser into immutable `napm-query-semantic.v1`. Its only lifecycle states are `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`; only `RESOLVED` may enter Query Draft assembly. `requestedMetrics[]` and `rankingMetric` are distinct, while `primaryMetric` remains optional. The Resolver consumes that contract and must not reinterpret raw prompt metric/ranking/count/direction or inject a default object; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` matches a queryable static-tree path, the effective terminal group matches the structured intent, and a plugin-validated result reference explicitly authorizes the drilldown.
+- Canonical metric execution uses `schemaVersion=napm-resolved-query.v1`. `metrics[]` controls returned metrics; `topMetric` independently controls `topValues` ordering and need not appear in `metrics[]`. `averageValues/timeValues` forbid ranking fields, and `timeValues` requires granularity. `queryModeKey` is derived from service. The singular `metric` field is legacy input only: `LegacyMetricInputAdapter` may run once at a legacy boundary, must remove it, and is never called by the Semantic→Resolver path.
 - “Which businesses have the most page visits?” remains `topValues + WebApplication + PGNPGE`. A later ordinal business follow-up resolves a frozen `WebApplication` row, fills its argument, and builds the validated `WebApplication > PageFamilies > PageFamily` path. Page visit instances then use `service=pageViews` and `queryModeKey=detail`, not a synthetic `PageFamilyDetail` group, after a frozen `PageFamily` ordinal resolves to `pageFamilyId`.
 - `WebApplication` and `PageFamily` result references have a separate 30-minute TTL. Missing, expired, cross-scope, wrong-type, and out-of-range references fail before time materialization with zero Skill, `NapmClient`, or southbound calls. Caller-supplied provenance and validation flags are stripped; only the plugin can authorize the path.
-- `topValues` rows are normalized numerically by `topMetric` and structured direction before Query Turn storage and narration. Ranks are reassigned, blank/missing values remain last, and narration labels the effective terminal group.
+- `rank_top/desc` rows are normalized numerically by `topMetric` before Query Turn storage and narration. Ranks are reassigned, blank/missing values remain last, and narration labels the effective terminal group. A semantically complete `rank_bottom/asc` returns `RANK_BOTTOM_UNSUPPORTED`, while one missing its ranking metric remains `UNRESOLVED`; the normalizer must not reverse an upstream TopN result to fabricate BottomN.
 - `QueryTurnCoordinator` receives the shared page-family ID extractor through dependency injection. The installed extension contains plugin files but no partial Skill tree, so coordinator modules must not import `../skills/*` by relative path.
 - `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, and `CONTRACT_VIOLATION` all have write-once authoritative `finalContent`. A legacy-shaped Skill clarification is normalized to a successful `clarification_required` Tool result and completes the execution attempt as `CLARIFICATION`, never `EXECUTION_FAILURE`. Streaming partial output does not terminate a turn; a Tool replay after terminal returns the existing authoritative result without another Skill or southbound call.
 - A non-streaming final cannot leave an ordinary query nonterminal. `RECEIVED` without a Decision/Attempt and `DECIDED` without adapter execution terminate as contract violations; `REPAIR_PENDING` terminates as a validation failure; `EXECUTING` without a result terminates as an execution failure. A late adapter result cannot overwrite that outcome.
@@ -94,6 +95,9 @@ The query skill (`openclaw-napm-query`) is the most complex — its `services/` 
 - **NapmMetadataService.js** — metadata/catalog lookups with local cache
 - **OpenClawNarrationContractService.js** — converts query results into Chinese narration input
 - **NapmResolvedQueryResolverService.js** — resolves structured queries into executable form
+- **MetricSemanticNormalizerService.js** — resolves metric semantics only from canonical Resolution Spec rules
+- **RankingIntentParserService.js** — resolves ranking operation, direction, and count only from canonical ranking grammar
+- **WorkflowClassifierService.js** — composes the canonical query semantic contract without private metric/ranking inference
 - **PageViewsExecutionKernel.js** — executes and normalizes per-visit `pageViews` detail requests
 - **TopValuesResultNormalizerService.js** — numerically orders TopN rows, places missing values last, and assigns authoritative ranks
 
@@ -101,15 +105,41 @@ Cross-skill page detail primitives live in `skills/shared/NapmPageViewsContract.
 
 ### `src/` location
 
-As of 2026-07-15, the shared `src/` (constants, utils, timeResolver) lives inside `skills/openclaw-napm-query/src/` — it was moved from project root because only that skill used it. Do not recreate a root-level `src/`; keep skill-internal dependencies inside the skill directory.
+As of 2026-07-15, the shared `src/` (constants, utils, timeResolver) lives inside `skills/openclaw-napm-query/src/` — it was moved from project root because only that skill used it. Keep skill-internal dependencies inside the skill directory. The only root compatibility entry currently retained is `src/constants/objectMetricOwnership.js`, and it must remain a thin re-export of the Skill-local canonical module rather than an independent rule table.
 
 ### Config files (`config/`)
 
-Static configuration consumed at runtime — no database, no dynamic config server:
+Static configuration consumed at runtime lives under `skills/openclaw-napm-query/config/` — no database, no dynamic config server:
 - `groups-tree.static.json` — authoritative drilldown hierarchy tree
-- `object-ontology.v1.json` — object type definitions and Chinese aliases
-- `metrics-config.yml` — metric code definitions
-- `napm-resolution-spec.v1.json` — query service/mode/field contracts
+- `object-ontology.v1.json` — the only object type and Chinese-alias source
+- `metrics-config.yml` — the only legal Metric ID catalog; catalog loading fails closed
+- `napm-resolution-spec.v1.json` — the only query service/mode/field authoring source and the only machine source for `metricSemanticRules` and `rankingGrammar`
+
+Do not recreate root copies of these files. Resolution Spec ownership fields and old `metrics.aliases` semantic matching are legacy compatibility data marked deprecated; production metric/ranking interpretation reads only `metricSemanticRules` and `rankingGrammar`. New execution admission code must use the canonical ownership module instead.
+
+### Phase 4 executable gate
+
+ResolvedQueryExecutableValidator is the shared static executable gate: Metric Catalog existence is checked first, then exact Object × Metric ownership is classified against a trusted product baseline. Invalid static results stop before metadata, Skill, Kernel, or southbound work. Static UNKNOWN is RUNTIME_CAPABILITY_REQUIRED; only the Phase 5 runtime admission may confirm an explicitly supported provider.
+
+### Phase 5 runtime capability
+
+`RuntimeMetricCapabilityService` is the only runtime metric capability provider. It consumes only static `UNKNOWN` checks explicitly marked `METRICS_FOR_GROUP`, reuses the canonical group builder, deduplicates one request by exact path, and returns `SUPPORTED`, `UNSUPPORTED`, or `INDETERMINATE`. `ResolvedQueryExecutionAdmissionService` combines static and runtime results without mutating the canonical query. Runtime failure or unsupported capability fails closed before the data kernel.
+
+### Phase 6 atomic query repair
+
+`AtomicQueryRepairService` is the sole Query repair applier. It accepts only canonical `napm-resolved-query.v1`, plans allowlisted semantic-neutral transformations, applies them atomically to a clone, and records stable before/after fingerprints. Metadata constraints may emit structured suggestions but cannot mutate the executable Query authority. Every applied repair re-enters `ResolvedQueryContract`, the static executable validator, and the runtime capability gate when the result remains `UNKNOWN`; semantic metric/object/service replacement and dropping requested metrics are rejected. A changed query fingerprint invalidates prepared proof, and runtime capability evidence is request-scoped.
+
+### Phase 7 NAPM serializer
+
+`NapmQuerySerializer` is the only canonical-to-transport mapping for admitted metric queries. It explicitly builds NAPM params, preserves `metrics[]` order, and keeps `topMetric` independent. It does not read legacy `metric`, perform repair/admission, parse time, or emit internal repair/runtime/proof fields. `MetricExecutionKernel` dispatches by `service` only; `NapmClient` receives transport-ready params and remains a HTTP transport boundary. `pageViews` keeps its independent detail contract.
+
+### Phase 7.1 transport boundary audit
+
+`GroupBuilder.buildGroupParams()` is the single production group flattener and remains mechanical only. Transport metrics comma encoding exists only in `NapmQuerySerializer`; Kernel and Client do not re-encode. Phase 7.1 removed uncalled Query helpers and verified static-invalid/runtime-unsupported paths stop before Serializer and Client. LegacyMetricInputAdapter remains an explicit migration boundary; non-execution metrics[0] references are classified as presentation or semantic compatibility only.
+
+### Phase 8 unified outcome
+
+`ExecutionOutcomeContract` defines the six execution outcomes: `SUCCESS`, `NO_DATA`, `VALIDATION_FAILURE`, `RUNTIME_CAPABILITY_FAILURE`, `SERIALIZATION_FAILURE`, and `EXECUTION_FAILURE`. `ExecutionOutcomeMapper` is the single cross-layer mapper. `NO_DATA` requires a real attempted and successful data request plus successful response parsing and zero rows; validation, capability, serializer, network, and parse failures cannot be presented as no data.
 
 ### Deploy
 

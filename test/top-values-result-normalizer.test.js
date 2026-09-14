@@ -27,7 +27,7 @@ describe('TopValuesResultNormalizerService', () => {
     ]);
   });
 
-  test('honors structured ascending direction and keeps missing values last', () => {
+  test('does not locally reorder returned TopN rows to fake BottomN', () => {
     const rows = normalizeTopValuesRows([
       { group: { argument: 'missing' } },
       {
@@ -42,10 +42,11 @@ describe('TopValuesResultNormalizerService', () => {
     });
 
     expect(rows.map((row) => row.group.argument)).toEqual([
-      'low',
-      'high',
       'missing',
-      'blank'
+      'blank',
+      'high',
+      'low'
     ]);
+    expect(rows.map((row) => row.rank)).toEqual([1, 2, 3, 4]);
   });
 });

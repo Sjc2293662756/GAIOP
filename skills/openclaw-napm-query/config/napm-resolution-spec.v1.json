@@ -1,6 +1,213 @@
 {
   "specVersion": "1.1.0",
   "skillId": "openclaw-napm-query",
+  "metricSemanticRules": {
+    "schemaVersion": "napm-metric-semantic-rules.v1",
+    "explicitMetricIdsFromCatalog": true,
+    "rules": [
+      {
+        "id": "web-slow-page-count",
+        "priority": 400,
+        "specificity": 100,
+        "metricId": "PGNSLPGE",
+        "objectConstraints": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
+        "phrases": ["慢页面数量", "慢页面个数", "慢页面数"]
+      },
+      {
+        "id": "web-page-delay",
+        "priority": 300,
+        "specificity": 90,
+        "metricId": "PGTME",
+        "objectConstraints": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
+        "phrases": ["业务访问较慢", "业务访问慢", "业务响应慢", "页面响应时间", "页面响应慢", "页面耗时", "页面时延", "页面延时", "慢业务", "访问较慢", "慢"]
+      },
+      {
+        "id": "defined-application-server-response-time",
+        "priority": 300,
+        "specificity": 90,
+        "metricId": "TRTI",
+        "objectConstraints": ["DefinedApp", "BuiltinApplication", "CompositeApplication", "OtherApp"],
+        "phrases": ["服务器响应时间", "服务端响应时间"]
+      },
+      {
+        "id": "network-round-trip-delay",
+        "priority": 300,
+        "specificity": 90,
+        "metricId": "RTTI",
+        "objectConstraints": ["IPAddress", "Prefix24", "ISPAS", "DestAS", "BusinessGroup", "BusinessGroupLink", "IPConversation", "DefinedApp", "OtherApp", "VLAN", "Interface", "MonInterfaceGroup", "TotalTraffic"],
+        "phrases": ["网络时延", "网络延迟", "往返时延", "RTT"]
+      },
+      {
+        "id": "web-page-visits",
+        "priority": 250,
+        "specificity": 80,
+        "metricId": "PGNPGE",
+        "objectConstraints": ["WebApplication", "PageFamily", "User", "ClientBusinessGroup"],
+        "phrases": ["页面访问数", "页面访问量", "页面访问", "访问次数", "访问量", "page views", "web visits"]
+      },
+      {
+        "id": "http-500-count",
+        "priority": 250,
+        "specificity": 80,
+        "metricId": "PGHTTP500",
+        "phrases": ["HTTP 5xx", "HTTP5xx", "HTTP 500", "HTTP500", "500错误", "500 错误", "500报错", "500 报错", "5xx错误", "5xx 错误"],
+        "patterns": ["500\\s*(?:错误|报错|异常|失败|状态码|响应码)", "(?:错误|报错|异常|失败|状态码|响应码)[^，。！？\\n]{0,12}500"]
+      },
+      {
+        "id": "http-400-count",
+        "priority": 250,
+        "specificity": 80,
+        "metricId": "PGHTTP400",
+        "phrases": ["HTTP 4xx", "HTTP4xx", "HTTP 400", "HTTP400", "400错误", "400 错误", "400报错", "400 报错", "4xx错误", "4xx 错误"],
+        "patterns": ["400\\s*(?:错误|报错|异常|失败|状态码|响应码)", "(?:错误|报错|异常|失败|状态码|响应码)[^，。！？\\n]{0,12}400"]
+      },
+      {
+        "id": "throughput-in",
+        "priority": 250,
+        "specificity": 85,
+        "metricId": "TPI",
+        "phrases": ["流入吞吐量", "流入吞吐", "入向吞吐量", "入向吞吐"]
+      },
+      {
+        "id": "throughput-out",
+        "priority": 250,
+        "specificity": 85,
+        "metricId": "TPO",
+        "phrases": ["流出吞吐量", "流出吞吐", "出向吞吐量", "出向吞吐"]
+      },
+      {
+        "id": "traffic-rate-trend",
+        "priority": 250,
+        "specificity": 85,
+        "metricId": "TPIO",
+        "semanticDomain": "traffic",
+        "phrases": ["流量趋势", "流量的趋势", "流量走势", "流量的走势", "流量速率"]
+      },
+      {
+        "id": "throughput-total",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "TPIO",
+        "semanticDomain": "throughput",
+        "phrases": ["总吞吐量", "总吞吐", "吞吐趋势", "带宽趋势", "吞吐量", "吞吐", "带宽", "throughput"]
+      },
+      {
+        "id": "traffic-total",
+        "priority": 150,
+        "specificity": 60,
+        "metricId": "BYTIO",
+        "semanticDomain": "traffic",
+        "phrases": ["累计流量", "流量总量", "流量大小", "字节流量", "字节数", "流量", "traffic", "bytes"]
+      },
+      {
+        "id": "packet-loss-in",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "PLI",
+        "phrases": ["丢包率", "丢包", "packet loss"]
+      },
+      {
+        "id": "retransmission-delay-in",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "RDTI",
+        "phrases": ["重传时延", "重传", "retransmission"]
+      },
+      {
+        "id": "connection-request-count-in",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "CONI",
+        "phrases": ["连接请求数", "建连请求数"]
+      },
+      {
+        "id": "failed-connection-count-in",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "RFCI",
+        "phrases": ["连接失败数", "失败连接数"]
+      },
+      {
+        "id": "concurrent-connection-count-in",
+        "priority": 200,
+        "specificity": 70,
+        "metricId": "CCNI",
+        "phrases": ["新建连接数", "连接数"]
+      }
+    ]
+  },
+  "rankingGrammar": {
+    "schemaVersion": "napm-ranking-grammar.v1",
+    "defaults": {
+      "topCount": 10
+    },
+    "operationRules": [
+      {
+        "id": "rank-bottom-cues",
+        "operation": "rank_bottom",
+        "direction": "asc",
+        "priority": 200,
+        "phrases": [
+          "最低",
+          "最少",
+          "最小",
+          "较少",
+          "更少",
+          "偏少"
+        ]
+      },
+      {
+        "id": "rank-top-cues",
+        "operation": "rank_top",
+        "direction": "desc",
+        "priority": 100,
+        "phrases": [
+          "最高",
+          "最多",
+          "最大",
+          "较多",
+          "更多",
+          "偏多",
+          "排行",
+          "排名",
+          "TopN",
+          "前N"
+        ],
+        "patterns": [
+          "\\btop\\s*\\d+",
+          "前\\s*N"
+        ]
+      }
+    ],
+    "countPatterns": [
+      {
+        "id": "top-prefix-count",
+        "pattern": "(?:top|前)\\s*(?<count>[0-9一二两三四五六七八九十百]+)\\s*(?:个|条)?",
+        "flags": "i"
+      },
+      {
+        "id": "extreme-count",
+        "pattern": "(?:最高|最多|最大|最低|最少|最小)\\s*的?\\s*(?<count>[0-9一二两三四五六七八九十百]+)\\s*(?:个|条)?",
+        "flags": "i"
+      }
+    ],
+    "singleResultCues": [
+      "谁",
+      "哪个",
+      "哪一个"
+    ],
+    "weakCues": [
+      "都有谁",
+      "有哪些"
+    ],
+    "rankingMetricClausePatterns": [
+      {
+        "id": "ranking-metric-clause",
+        "pattern": "按\\s*(?<metricText>[^，。！？,]{1,24}?)\\s*(?:排行|排名|排序)",
+        "flags": "i"
+      }
+    ]
+  },
   "queryContract": {
     "resolvedQueryRequired": true,
     "acceptedInputs": [
@@ -2255,6 +2462,25 @@
     }
   },
   "metrics": {
+    "semanticAliasesDeprecation": {
+      "status": "deprecated",
+      "canonicalMachineSource": "metricSemanticRules",
+      "forbiddenForProductionMatching": true,
+      "notes": "metrics.aliases is retained only as a compatibility/display projection during migration."
+    },
+    "executionOwnershipDeprecation": {
+      "status": "deprecated",
+      "canonicalRuntimeSource": "src/constants/objectMetricOwnership.js",
+      "forbiddenForNewExecutionAdmission": true,
+      "legacyFields": [
+        "ownershipRules",
+        "ownershipMatrix",
+        "catalog.*.compatibleObjectTypes",
+        "catalog.*.preferredObjectTypes",
+        "catalog.*.ownershipClass"
+      ],
+      "removalPhase": "Phase 8"
+    },
     "aliases": {
       "PKIO": [
         "数据包数量",

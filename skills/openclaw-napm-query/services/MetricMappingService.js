@@ -2,8 +2,8 @@
  * MetricMappingService.js
  *
  * 负责维护指标描述与指标编码之间的映射关系。
- * 优先从 `config/metrics-config.yml` 中加载指标定义；
- * 如果配置文件不存在或读取失败，则回退到内置默认指标表。
+ * 只从 Skill-local `config/metrics-config.yml` 加载合法指标定义。
+ * 配置缺失、不可读、不可解析或结构非法时 fail closed，禁止用内置表继续运行。
  *
  * 最近更新：2026-04-15
  */
@@ -20,8 +20,8 @@ const NodeCache = require('node-cache');
  */
 class MetricMappingService {
   /**
-   * 初始化指标映射服务
-   * 启动时先尝试加载配置文件，再补充少量运行期别名指标。
+   * 初始化指标映射服务。
+   * 启动时严格加载唯一 Metric Catalog，再补充不创建新 ID 的描述别名。
    */
   constructor() {
     /** @type {Map<string, string>} 指标描述 -> 指标编码 */
@@ -38,7 +38,8 @@ class MetricMappingService {
   }
 
   /**
-   * 补充少量配置文件中未显式声明、但语义侧会用到的指标别名。
+   * 补充少量语义侧会用到的指标描述别名。
+   * 只有 Catalog 已声明对应 code 时才注册，不能借别名创建合法指标 ID。
    */
   ensureSupplementalMetrics() {
     const supplementalMetrics = [
@@ -48,99 +49,79 @@ class MetricMappingService {
     ];
 
     supplementalMetrics.forEach((metric) => {
-      this.addMetric(metric.description, metric.code);
+      if (this.isValidMetricCode(metric.code)) {
+        this.addMetric(metric.description, metric.code);
+      }
     });
   }
 
   /**
-   * 从 YAML 配置文件加载指标定义。
+   * 从唯一 YAML Metric Catalog 加载指标定义。
    */
   loadMetricsFromConfigFile() {
-    try {
-      const configPath = path.join(__dirname, '../config/metrics-config.yml');
+    const configPath = path.join(__dirname, '../config/metrics-config.yml');
 
-      if (fs.existsSync(configPath)) {
-        const fileContents = fs.readFileSync(configPath, 'utf8');
-        const config = yaml.load(fileContents);
-
-        if (config && config.metrics) {
-          config.metrics.forEach((metric) => {
-            if (metric.code && metric.description) {
-              this.addMetric(metric.description, metric.code);
-            }
-          });
-        }
-
-        logger.info('Metrics loaded from config file', {
-          totalMetrics: this.validMetricCodes.size
-        });
-      } else {
-        logger.warn('Metrics config file not found, loading default metrics');
-        this.loadDefaultMetrics();
-      }
-    } catch (error) {
-      logger.error('Error loading metrics from config file', { error: error.message });
-      this.loadDefaultMetrics();
+    if (!fs.existsSync(configPath)) {
+      throw this.createCatalogError(
+        'METRIC_CATALOG_NOT_FOUND',
+        `Metric Catalog not found: ${configPath}`
+      );
     }
-  }
 
-  /**
-   * 加载内置默认指标定义。
-   * 这些定义只在配置文件缺失或解析失败时作为兜底使用。
-   */
-  loadDefaultMetrics() {
-    const defaultMetrics = [
-      { description: '吞吐量（流入）', code: 'TPI' },
-      { description: '吞吐量（流出）', code: 'TPO' },
-      { description: '吞吐量（总）', code: 'TPIO' },
-      { description: 'HTTP 500错误数', code: 'PGHTTP500' },
-      { description: 'HTTP 400错误数', code: 'PGHTTP400' },
-      { description: '页面响应时间', code: 'PGTME' },
-      { description: '页面数量', code: 'PGNPGE' },
-      { description: '连接建立时间（TCP服务器）', code: 'CSTI' },
-      { description: '慢页面百分比（客户端）', code: 'PGSLPCTS' },
-      { description: '网络响应时间（服务器）', code: 'NRTO' },
-      { description: '网络响应时间（客户端）', code: 'NRTI' },
-      { description: '页面访问数（服务器）', code: 'PGNPGC' },
-      { description: '流量（流入）', code: 'BYTI' },
-      { description: '流量（流出）', code: 'BYTO' },
-      { description: '流量（流入和流出）', code: 'BYTIO' },
-      { description: '丢包情况（流入）', code: 'PLI' },
-      { description: '丢包情况（流出）', code: 'PLO' },
-      { description: '重传时延（流出）', code: 'RDTO' },
-      { description: '有效吞吐（流入）', code: 'GPI' },
-      { description: '有效吞吐（流出）', code: 'GPO' },
-      { description: '连接请求数（TCP客户端）', code: 'CONO' },
-      { description: '连接请求数（TCP服务器）', code: 'CONI' },
-      { description: '连接失败数（TCP客户端）', code: 'RFCO' },
-      { description: '连接失败数（TCP服务器）', code: 'RFCI' },
-      { description: '新建连接数（TCP客户端）', code: 'CCNO' },
-      { description: '新建连接数（TCP服务器）', code: 'CCNI' },
-      { description: '连接失败率（TCP客户端）', code: 'RFRO' },
-      { description: '连接失败率（TCP服务器）', code: 'RFRI' },
-      { description: '首字节时间（TCP客户端）', code: 'T2FBI' },
-      { description: '首字节时间（TCP服务器）', code: 'T2FBO' },
-      { description: '事务数（客户端）', code: 'TRNO' },
-      { description: '事务数（服务器）', code: 'TRNI' },
-      { description: '包吞吐量（流入）', code: 'PKTI' },
-      { description: '包吞吐量（流出）', code: 'PKTO' },
-      { description: '包流量', code: 'PKIO' },
-      { description: '净荷（客户端）', code: 'FSI_B' },
-      { description: '净荷（服务器）', code: 'FSO_B' },
-      { description: '数据包净荷（客户端）', code: 'FSI_P' },
-      { description: '数据包净荷（服务器）', code: 'FSO_P' },
-      { description: '页面访问率', code: 'PGRT' },
-      { description: '慢页面率（客户端）', code: 'PGSLRTS' },
-      { description: 'HTTP 200数量', code: 'PGHTTP200' }
-    ];
+    let fileContents;
+    try {
+      fileContents = fs.readFileSync(configPath, 'utf8');
+    } catch (error) {
+      throw this.createCatalogError(
+        'METRIC_CATALOG_READ_FAILED',
+        `Metric Catalog could not be read: ${configPath}`,
+        error
+      );
+    }
 
-    defaultMetrics.forEach((metric) => {
-      this.addMetric(metric.description, metric.code);
+    let config;
+    try {
+      config = yaml.load(fileContents);
+    } catch (error) {
+      throw this.createCatalogError(
+        'METRIC_CATALOG_PARSE_FAILED',
+        `Metric Catalog could not be parsed: ${configPath}`,
+        error
+      );
+    }
+
+    const metrics = config?.metrics;
+    if (!Array.isArray(metrics) || metrics.length === 0) {
+      throw this.createCatalogError(
+        'METRIC_CATALOG_INVALID',
+        'Metric Catalog must contain a non-empty metrics array.'
+      );
+    }
+
+    metrics.forEach((metric, index) => {
+      const code = String(metric?.code || '').trim();
+      const description = String(metric?.description || '').trim();
+      if (!code || !description) {
+        throw this.createCatalogError(
+          'METRIC_CATALOG_INVALID',
+          `Metric Catalog entry at index ${index} requires non-empty code and description.`
+        );
+      }
+      this.addMetric(description, code);
     });
 
-    logger.info('Default metrics loaded', {
+    logger.info('Metrics loaded from canonical config file', {
       totalMetrics: this.validMetricCodes.size
     });
+  }
+
+  createCatalogError(code, message, cause = null) {
+    const error = new Error(message);
+    error.code = code;
+    if (cause) {
+      error.cause = cause;
+    }
+    return error;
   }
 
   /**

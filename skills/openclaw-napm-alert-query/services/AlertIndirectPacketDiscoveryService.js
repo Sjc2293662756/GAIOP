@@ -551,7 +551,14 @@ function getMetricLabel(code = '') {
     try {
       const fs = require('fs');
       const path = require('path');
-      const configPath = path.join(__dirname, '..', '..', '..', 'config', 'metrics-config.yml');
+      const configPath = path.join(
+        __dirname,
+        '..',
+        '..',
+        'openclaw-napm-query',
+        'config',
+        'metrics-config.yml'
+      );
       const text = fs.readFileSync(configPath, 'utf8');
       // 解析格式: "- code: XXX\n    description: 中文名\n"
       const re = /-\s+code:\s*(\S+)\s*\n\s+description:\s*(.+)/g;

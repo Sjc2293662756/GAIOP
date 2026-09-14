@@ -9,9 +9,9 @@ describe('NapmResolvedQueryResolverService', () => {
 
     expect(result.ok).toBe(true);
     expect(result.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
-      metric: 'PLI',
       metrics: ['PLI'],
       topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
@@ -39,7 +39,7 @@ describe('NapmResolvedQueryResolverService', () => {
     expect(result.ok).toBe(true);
     expect(result.intent).toMatchObject({
       service: 'topValues',
-      metric: 'PLI',
+      primaryMetric: 'PLI',
       groupType: 'IPAddress',
       topCount: 1
     });
@@ -53,8 +53,10 @@ describe('NapmResolvedQueryResolverService', () => {
 
     expect(result.ok).toBe(true);
     expect(result.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'TPIO',
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
       groups: [{ type: 'IPAddress' }],
       topCount: 10,
       start: 1779362880,
@@ -85,8 +87,8 @@ describe('NapmResolvedQueryResolverService', () => {
 
   test('should reject executable data resolvedQuery that only carries time inside timeRange', () => {
     const result = ResolverService.validateResolvedQueryTimeContract({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PLI',
       metrics: ['PLI'],
       topMetric: 'PLI',
       groups: [{ type: 'IPAddress' }],
@@ -109,22 +111,20 @@ describe('NapmResolvedQueryResolverService', () => {
     });
   });
 
-  test('should honor explicit last one hour prompt over default window', () => {
+  test('should not invent a default target object for a ranking prompt', () => {
     const result = ResolverService.resolvePrompt('最近一小时连接失败数最多的是谁？', {
       nowSeconds: 1779413580
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.resolvedQuery).toMatchObject({
-      service: 'topValues',
-      metric: 'RFCI',
-      metrics: ['RFCI'],
-      topMetric: 'RFCI',
-      groups: [{ type: 'IPAddress' }],
-      topCount: 1,
-      start: 1779409980,
-      end: 1779413580,
-      timeRange: { key: 'last1hour', displayText: '最近1小时' }
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'semantic_unresolved',
+      reasonCode: 'SEMANTIC_UNRESOLVED',
+      queryDraft: null,
+      resolvedQuery: null,
+      diagnostics: {
+        unresolvedSlots: ['targetObjectType']
+      }
     });
   });
 
@@ -135,8 +135,10 @@ describe('NapmResolvedQueryResolverService', () => {
 
     expect(result.ok).toBe(true);
     expect(result.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'TPIO',
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
       topCount: 10,
       start: 1779327180,
       end: 1779413580,
@@ -151,8 +153,10 @@ describe('NapmResolvedQueryResolverService', () => {
 
     expect(result.ok).toBe(true);
     expect(result.resolvedQuery).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'TPIO',
+      metrics: ['TPIO'],
+      topMetric: 'TPIO',
       topCount: 10,
       start: 1779638400,
       end: 1779677940,

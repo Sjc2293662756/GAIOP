@@ -7,12 +7,23 @@
 ## 生产链路
 
 1. 用户在企业微信提出 NAPM / 网络运维问题。
-2. OpenClaw Gateway 接收消息；`message_received` 先为入站 `messageId` 创建不可变 `turnId`，Agent Hook 到达后再把其 `runId` 绑定到同 scope、source prompt 匹配的同一 `RECEIVED` 轮次。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId`。缺少生命周期身份或绑定时在时间物化、校验和 Skill 调用之前 fail-closed。
-3. `WorkflowClassifierService` 结合 Object Ontology 和 Metric Semantic Normalizer 统一产出操作、对象和指标语义；上游据此构造包含时间范围、可选下钻路径或权威排行结果引用的 Query Draft，澄清续答则只传 `clarificationAnswer`。
-4. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
-5. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。只有 `EXECUTE_QUERY` 才把完整 Resolved Query 交给 Query Skill 和南向接口。
-6. Tool 和具有 run/message 身份的输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；`before_message_write` 的 OpenClaw 契约不提供该身份，因此不在身份缺失时终结或改写 Query Turn。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
-7. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
+2. OpenClaw Gateway 接收消息；`message_received` 为当前 run/message 创建不可变 `turnId` 绑定，并为每轮生成一份不可变 Turn Admission Decision。平台身份/能力等模型回答轮也必须生成明确 `MODEL_OWNED` Decision，不能走无 Decision 的快路径。`conversationKey` 只表示 scope，不表示当前或最新轮次；直接 Tool execute 还必须携带插件签发的可信 `traceId` 和 Hook 密封的准入/参数授权。缺少生命周期身份、准入授权或参数一致性时在时间物化、校验和 Skill 调用之前 fail-closed。
+3. `DomainIntentClassificationAdapter` 作为唯一 prompt-facing 领域分类边界，把既有分类器结果投影成带版本和来源的不可变结构；`TurnIntentResolver` 只消费同一进程 Adapter 实际签发且 schema/source/冻结结构验证通过的对象，复制或临时构造的 classification 不会选择 Tool。Turn Admission Coordinator 再把通用序号/详情/数量/时间追问与 Query、Alert 等领域权威结果匹配，固化 route、`expectedTool`、分类来源、来源 artifact 和原因码。准入发现候选后立即冻结来源，后续同 scope 新结果不会替换它。公共门禁只消费该决定做身份与 Tool 一致性检查；无权威上下文或最近结果尚未支持序号下钻时正式澄清，不回退到旧 Query 结果。
+4. `WorkflowClassifierService` 只组合 Object Ontology、配置驱动的 Metric Semantic Normalizer、Ranking Intent Parser 和统一时间解析结果，产出不可变 `napm-query-semantic.v1`。契约生命周期唯一枚举为 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`，顶层同时保存 `ambiguities[]`、`unresolvedSlots[]` 和 `reasonCode`；只有 `RESOLVED` 可进入 Query Draft assembly。`requestedMetrics[]` 与 `rankingMetric` 分开表达返回指标和排行依据，`primaryMetric` 可空；Resolver 只消费该契约，不从 raw prompt 重猜，也不提供默认对象补位。澄清续答只传 `clarificationAnswer`。
+5. Resolver 将已完成语义映射为唯一 `napm-resolved-query.v1`：`requestedMetrics[] -> metrics[]`、`rankingMetric -> topMetric`，不输出 `metric`。`topValues` 的 `topMetric` 与 `metrics[]` 独立；平均值和趋势只使用 `metrics[]`，趋势另带 `granularity`。Plugin、QueryValidator、Resolver 和 legacy Adapter 共同消费 `ResolvedQueryContract`，不各自维护 required/forbidden 字段表。
+6. 旧调用方携带单数 `metric` 时，只在明确的 Tool/Skill 输入边界调用一次 `LegacyMetricInputAdapter`；成功后删除 `metric` 并重新校验 canonical shape，冲突返回稳定 `LEGACY_METRIC_CONFLICT/LEGACY_METRIC_PARTIAL_CONFLICT`。新 Semantic 路径不调用 Adapter。
+7. `napm-skill-query` 的 Query Decision Policy 在 Hook 和直接 Tool execute 两条入口统一检查参数策略与高风险语义，包括应用/`TotalTraffic` 范围、`CompositeApplication`/一般对象清单和普通查询多 group 契约。普通查询多 group 默认失败，只有与静态 groups tree 验证一致的显式 `pathPlanning` 可执行。
+8. Query Turn Coordinator 保存 Draft、Attempts、一次修复预算、pending clarification、可下钻 `WebApplication`/`PageFamily` 权威结果投影、终态 `finalContent` 和交付声明。`EXECUTE_QUERY` 可进入数据执行；Static UNKNOWN 只有在 `EXECUTE_WITH_RUNTIME_CONFIRMATION` 下先经过 Runtime Metric Capability gate，确认支持后才进入南向接口。
+9. Tool 和输出 Hook 按当前 run/message 的可信绑定读取同一 Query Turn；Query Hook 只给最终规范化参数生成一次授权摘要，execute 不接受同一 trace 下替换过的对象、指标、时间或引用。route 创建后不可变，普通 `NAPM_QUERY` 的错误 Tool 会被阻断且不能改成 `OTHER_SKILL`。已进入 `EXECUTING` 的重叠 Tool 调用在处理重放 Draft 前返回执行中结果，不会产生第二次南向调用。普通查询的所有终态由 Coordinator exactly-once 交付，其他 Skill 继续使用各自工作流。
+10. 观枢AI基于当前轮权威结果回复用户或输出报告文件；流式 partial 仅是进度，不终结 Query Turn。
+
+11. Phase 6 将执行前所有确定性 Query 修复收口到 `AtomicQueryRepairService`：canonical Query 先生成可审计 plan，再在 clone 上原子应用；修复后必须重新通过 `ResolvedQueryContract`、`ResolvedQueryExecutableValidator`，Static `UNKNOWN` 还要重新经过 Runtime Capability。修复不改变用户指标、对象、service、排行依据或请求指标集合，NO_DATA 不触发修复。
+
+12. Phase 7 将已通过最终准入的 canonical Query 交给唯一 `NapmQuerySerializer` 显式映射为 NAPM transport params。Serializer 不读取 `metric`、不做 repair/admission/语义解析；`MetricExecutionKernel` 只按 `service` dispatch，不按 `queryModeKey` 路由、不从 `metrics[0]` 推导、不补默认值；NapmClient 只处理 transport-ready params。`pageViews` 继续复用独立 detail contract。
+
+13. Phase 7.1 验证并收口最后一米：`GroupBuilder.buildGroupParams()` 是唯一生产 group flatten 编码器，metrics 逗号 transport 编码只有 Serializer 一处；NapmClient 只做 HTTP。Kernel 旧 fallback 和无生产 caller 的旧 helper 已删除。语义/展示层保留的 metrics[0] 仅作提示，不参与执行参数；LegacyMetricInputAdapter 作为显式迁移边界暂保留。
+
+14. Phase 8 统一执行结果契约：`ExecutionOutcomeContract` 只定义 `SUCCESS/NO_DATA/VALIDATION_FAILURE/RUNTIME_CAPABILITY_FAILURE/SERIALIZATION_FAILURE/EXECUTION_FAILURE`，`ExecutionOutcomeMapper` 是跨 Gateway、Direct、Plugin、Narration 的唯一映射入口。`NO_DATA` 必须有真实 data request、成功传输、成功解析和零行证明；任何零调用失败均不得改写为空数据。
 
 普通用户查询不要绕过这条链路直接用 shell、curl 或 NetInside WebService 调用底层 API。
 
@@ -52,11 +63,9 @@
 - `napm-resolve-query` — 只构造并检查 `resolvedQuery`
 - `napm-mainflow-query` — 本地解析自然语言并执行完整查询链
 
-`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。直接执行要求可信 trace 同时绑定当前 scope、turn 和准确的 `napm-skill-query` toolName，既有 Query Turn route 必须为 `NAPM_QUERY`；任一不匹配都在 pending 恢复和时间物化前阻断。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP` 等对象名时，插件创建新 Query Turn、恢复 pending Draft、补入 `DefinedApp.argument` 后重新执行完整策略。
+`napm-skill-query` Tool adapter 接受 `queryDraft`，并在迁移期兼容同形的 `resolvedQuery`；澄清续答接受 `clarificationAnswer`。直接执行要求可信 trace 同时绑定当前 scope、turn 和准确的 `napm-skill-query` toolName，既有 Query Turn route 必须为 `NAPM_QUERY`，且 trace 必须包含当前 Turn Admission Decision 和最终 Query 参数的稳定摘要；任一不匹配都在 pending 恢复和时间物化前阻断。缺少必须由用户提供的对象名时返回正常澄清，不调用 Query Skill 或南向接口，并在 conversation scope 保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。下一轮用户只回复 `HTTP`、`支付平台` 等对象名时，只有 `resumePending()` 成功才会创建新 Query Turn 并重建 `EXECUTE_TOOL + napm-skill-query` 准入，再恢复 Draft、补入 `DefinedApp.argument` 并执行完整策略；无 pending 的同样短句不会因关键词或对象形态获得查询权限。
 
 普通查询的状态权威是 `QueryTurnCoordinator`：route 在 begin 后不可变；首次技术校验失败进入 `REPAIR_PENDING`，同一 attempt 重放幂等，只有一次结构修复预算，第二个失败终止；`recordResult`/`recordFailure` 只接受 `EXECUTING`，放弃修复和执行期 Skill 澄清使用专用迁移。Skill 的旧形状正常澄清会规范化为 `ok=true` 的 `clarification_required` 并以成功 attempt 进入 `CLARIFICATION`，不会成为执行失败。执行失败立即终止；所有 `TERMINAL` 记录 write-once。`RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都生成权威 `finalContent` 并只交付一次。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会终结为契约违规，`REPAIR_PENDING` 会终结为校验失败，`EXECUTING` 无结果会终结为执行失败；迟到结果不能覆盖终态。`EXECUTING` 重放在时间物化和校验前返回执行中结果，终态后的 Tool 重放返回已有权威结果，两者都不再执行 Query Skill 或南向请求。旧 `ConversationOperationState` 仍服务尚未迁移的其他工作流和历史上下文，但不再决定普通查询的修复、结果或最终交付。
-
-普通数据包分析的目标解析和下载确认由 packet 工作流自身管理。单 IP 直接进入 `criteria.ips`，不要求先查询业务组；业务组名称可显式传 `groupType="BusinessGroup"`、`groupArgument` 或 `businessGroupName`，也可直接出现在带时间和数据包词的请求中。对于“看一下最近一分钟服务器网段的数据包情况”这类未标注类型的名称，runtime 会将非 IP 候选修复为 BusinessGroup，再按 `businessGroups.Name → IpMembers → ips/ipRanges` 解析；名称清单查询不是用户必须事先执行的会话步骤。首次 `napm-packet-analysis` 预览只有在 `preview.ok=true`、`preview.empty=false` 且 `decision.next_action=CONFIRM_DOWNLOAD` 时，才允许同一 conversation scope 的下一轮确认意图恢复。确认意图按动作语义组合解析，不限于几个固定短句：支持确认/同意/允许/批准/开始/继续/执行/进行/请/可以/好的/按上一轮处理等承诺动作，与下载/导出/获取/保存/抓取/拉取/提取/落盘/分析/解析/解码/协议分析等数据包动作自由组合，并兼容中英文标点、连接词和常见英文表达。否定、状态询问、故障诊断、重试/替换目标或新 IP/时间范围不会继承上一轮。确认轮固定复用上一轮已经物化的目标与 Unix 秒级 `start/end`，删除相对 `timeRange`，由插件注入可信 `previewRiskAccepted=true`；模型传入的目标、时间或自带确认标志不能覆盖。确认轮 route 为 `OTHER_SKILL`，同一 `scope + turnId` 的重复 packet execute 合并为一次实际下载与 tshark 分析。下载后的 tshark 表格会在插件边界清洗为协议、端点、会话、DNS、HTTP、TLS 的中文摘要，过滤原始分隔线/表头；`malformed` 仅作为解析异常提示，不等同网络丢包。`SUGGEST_NARROW_TIME_RANGE`、空预览、非 packet 最近结果或缺少固定时间均不得进入该确认链。
 
 应用流量高风险策略消费统一的结构化操作、目标对象和指标语义，不在 Prompt Routing、插件或 Query Decision 中复制文本规则。趋势/平均值错映射到 `TotalTraffic` 时先澄清并规范化为 `DefinedApp` pending Draft；排行错映射到 `TotalTraffic` 时直接技术阻断，不允许查询全局口径；无 prompt 的 `overview/auto_apps` 视为不合规的 `CompositeApplication` 清单形状。
 
@@ -102,11 +111,33 @@ Query Skill CLI 本身仍只执行完整 Resolved Query，且不保存 Query Tur
 
 ## 关键配置文件
 
-- `config/napm-resolution-spec.v1.json` — 查询服务/模式/必填字段契约
+- `skills/openclaw-napm-query/config/napm-resolution-spec.v1.json` — 查询服务/模式/必填字段的唯一规范源；其中旧 execution ownership 字段已标记 deprecated
 - `config/inspection-report-rules.v1.json` — 巡检报告规则
 - `config/inspection-report-field-map.v1.json` — 巡检字段映射
-- `config/object-ontology.v1.json` — 对象本体定义
+- `skills/openclaw-napm-query/config/object-ontology.v1.json` — 对象本体唯一规范源
+- `skills/openclaw-napm-query/config/metrics-config.yml` — 合法 Metric ID 唯一目录；缺失、损坏或不可读时启动失败，不加载内置合法 ID 兜底
+- `skills/openclaw-napm-query/src/constants/objectMetricOwnership.js` — Object × Metric ownership 唯一运行时源；根目录同名文件仅为兼容薄转发
 - `openclaw.plugin.json` — 插件配置与工具契约
+
+### Phase 4 查询执行门禁
+
+ResolvedQueryExecutableValidator 是 Query 可执行性校验的唯一入口。它先校验 Metric Catalog 存在性，再按可信产品基线检查精确 service、group path、metric ownership。校验失败、指标未知或能力未知时，Gateway、Direct 和 Plugin 都必须在 metadata、Query Skill 和南向调用之前停止。它只校验 canonical Query，不重新解析 prompt。
+
+### Phase 5 Runtime Metric Capability
+
+`ResolvedQueryExecutionAdmissionService` 在 Static Validator 返回 `UNKNOWN` 后调用 `RuntimeMetricCapabilityService`。后者只接受带 `METRICS_FOR_GROUP` provider 的 metric capability check，复用 `NapmMetadataService.getMetricsForGroupPathEvidence()` 和 `GroupBuilder` 构造 `numGroups/groupTypeN/groupArgumentN`。运行时支持才放行数据查询；不支持返回 `RUNTIME_METRIC_UNSUPPORTED`，请求失败或响应异常返回 `RUNTIME_CAPABILITY_FAILURE`，两者数据调用均为 0。
+
+### Phase 6 Atomic Query Repair
+
+`AtomicQueryRepairService` 是 Query 修复的唯一执行者。它只接受 `napm-resolved-query.v1`，使用 reason code allowlist 生成 `path/before/after/source/semanticImpact` 计划，在隔离副本上一次应用并记录 before/after fingerprint。metadata/constraint 只能提供结构化安全建议，不能直接替换 canonical Query；任何语义替换或不一致建议 fail closed。`ResolvedQueryExecutionAdmissionService` 在修复后重新运行 Contract、Static 和必要的 Runtime gate；查询指纹变化会使 prepared proof 失效，运行时 capability 不跨请求缓存。
+
+### Phase 7 NAPM Serializer
+
+`NapmQuerySerializer` 是 canonical Query 到 NAPM transport params 的唯一转换入口。它显式构造不同 service 的参数，保持 `metrics[]` 顺序并独立发送 `topMetric`；不发送 `schemaVersion/queryModeKey/repair/runtime/proof` 等内部字段。Kernel 不再读取 legacy `metric`、默认 `topCount` 或拼接 metrics，NapmClient 不参与查询语义决策。
+
+### Phase 8 Unified Outcome
+
+执行层和对外结果统一携带 `outcome/stage/reasonCode/queryExecuted/dataRequestAttempted/dataRequestSucceeded/responseParseSucceeded/rowCount/issues`。语义生命周期仍独立使用 `RESOLVED/AMBIGUOUS/UNRESOLVED/UNSUPPORTED`。只有合法 Query 真正执行成功并返回空结果时才为 `NO_DATA`；Runtime、Serializer、南向或解析错误分别归入对应失败状态。
 
 ## 回答规则
 

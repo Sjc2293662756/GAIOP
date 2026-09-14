@@ -1,5 +1,6 @@
 const logger = require('../src/utils/logger');
 const { logAudit, buildSafeUrl, maskSensitiveParams } = require('../src/utils/auditLogger');
+const NapmQuerySerializer = require('./NapmQuerySerializer');
 
 class MetricExecutionKernel {
   constructor(context = {}) {
@@ -14,36 +15,15 @@ class MetricExecutionKernel {
     } = helpers;
     const {
       napmClient,
-      groupBuilder,
       queryValidator,
-      buildMetricCsv,
-      parseNapmPayload
+      parseNapmPayload,
+      serializer = NapmQuerySerializer
     } = this.context;
 
     logger.info('正在验证 metric kernel 请求参数...');
     queryValidator.validateGatewayRequest(queryRequest);
-
-    const params = {
-      type: queryRequest.service,
-      start: queryRequest.start,
-      end: queryRequest.end,
-      json: 'true'
-    };
-
-    if (queryRequest.service === 'topValues') {
-      params.topMetric = queryRequest.topMetric || queryRequest.metric;
-      params.metrics = buildMetricCsv(queryRequest, queryRequest.service);
-      params.topCount = queryRequest.topCount || 20;
-    } else if (queryRequest.service === 'averageValues') {
-      params.metrics = buildMetricCsv(queryRequest, queryRequest.service);
-    } else if (queryRequest.service === 'timeValues') {
-      params.metrics = buildMetricCsv(queryRequest, queryRequest.service);
-      params.granularity = queryRequest.granularity;
-    }
-
-    if (queryRequest.groups && queryRequest.groups.length > 0) {
-      Object.assign(params, groupBuilder.buildGroupParams(queryRequest.groups));
-    }
+    const serialized = serializer.serialize(queryRequest);
+    const params = serialized.params;
 
     logger.info('正在构建 metric kernel URL...');
     const fullParams = {
@@ -62,12 +42,21 @@ class MetricExecutionKernel {
       url
     }, requestContext);
 
-      logger.info('正在请求 metric kernel URL...');
+    logger.info('正在请求 metric kernel URL...');
+      response.dataRequestAttempted = true;
       const rawPayload = await napmClient.get(params);
+      response.dataRequestSucceeded = true;
       const csvText = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
       logger.info('NAPM metric payload received', { dataLength: csvText.length });
 
-    const data = parseNapmPayload(rawPayload);
+    let data;
+    try {
+      data = parseNapmPayload(rawPayload);
+      response.responseParseSucceeded = true;
+    } catch (error) {
+      response.responseParseSucceeded = false;
+      throw error;
+    }
     response.ok = true;
     response.service = queryRequest.service;
     response.data = data;

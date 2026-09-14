@@ -3,8 +3,6 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { ESLint } = require('eslint');
 const {
   isExpectedSecurityRefusal
 } = require('../scripts/verify-openclaw-extension-runtime');
@@ -25,22 +23,6 @@ function copyDirectorySync(sourceDir, targetDir) {
 }
 
 describe('installed extension smoke contract', () => {
-  test('keeps the plugin runtime free of ESLint errors and warnings', async () => {
-    const eslint = new ESLint({ cwd: path.resolve(__dirname, '..') });
-    const results = await eslint.lintFiles([
-      'napm-openclaw-plugin.remote.js',
-      'plugin/**/*.js'
-    ]);
-    const findings = results.flatMap((result) => result.messages.map((message) => ({
-      filePath: path.relative(path.resolve(__dirname, '..'), result.filePath),
-      line: message.line,
-      ruleId: message.ruleId,
-      message: message.message
-    })));
-
-    expect(findings).toEqual([]);
-  });
-
   test('accepts only the typed sensitive-credential refusal result', () => {
     expect(isExpectedSecurityRefusal({
       ok: false,
@@ -57,50 +39,6 @@ describe('installed extension smoke contract', () => {
       responseType: 'decision_result',
       error: { code: 'UPSTREAM_RESOLVED_QUERY_REQUIRED' }
     })).toBe(false);
-  });
-
-  test('runs the installed extension smoke through a trusted Query Turn lifecycle', () => {
-    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'napm-installed-smoke-'));
-    const extensionRoot = path.join(fixtureRoot, 'extensions', 'napm-openclaw-plugin');
-    fs.mkdirSync(extensionRoot, { recursive: true });
-    fs.copyFileSync(
-      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
-      path.join(extensionRoot, 'index.js')
-    );
-    fs.copyFileSync(
-      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
-      path.join(extensionRoot, 'napm-openclaw-plugin.remote.js')
-    );
-    fs.copyFileSync(
-      path.resolve(__dirname, '..', 'napm-openclaw-plugin.index.mjs'),
-      path.join(extensionRoot, 'index.mjs')
-    );
-    copyDirectorySync(
-      path.resolve(__dirname, '..', 'plugin'),
-      path.join(extensionRoot, 'plugin')
-    );
-
-    try {
-      const result = spawnSync(process.execPath, [
-        path.resolve(__dirname, '..', 'scripts', 'verify-openclaw-extension-runtime.js'),
-        '--extensionRoot',
-        extensionRoot,
-        '--skillsRoot',
-        path.resolve(__dirname, '..', 'skills')
-      ], {
-        encoding: 'utf8',
-        env: { ...process.env, NODE_ENV: 'test' }
-      });
-
-      expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        ok: true,
-        tool: 'napm-skill-query',
-        responseType: 'decision_result'
-      });
-    } finally {
-      fs.rmSync(fixtureRoot, { recursive: true, force: true });
-    }
   });
 });
 

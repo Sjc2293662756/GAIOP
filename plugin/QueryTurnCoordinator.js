@@ -19,6 +19,7 @@ const QUERY_PHASES = Object.freeze({
 const QUERY_ACTIONS = Object.freeze({
   ASK_CLARIFYING_QUESTION: 'ASK_CLARIFYING_QUESTION',
   EXECUTE_QUERY: 'EXECUTE_QUERY',
+  EXECUTE_WITH_RUNTIME_CONFIRMATION: 'EXECUTE_WITH_RUNTIME_CONFIRMATION',
   REJECT_QUERY: 'REJECT_QUERY'
 });
 
@@ -28,6 +29,7 @@ const QUERY_OUTCOMES = Object.freeze({
   NO_DATA: 'NO_DATA',
   REJECTION: 'REJECTION',
   VALIDATION_FAILURE: 'VALIDATION_FAILURE',
+  RUNTIME_CAPABILITY_FAILURE: 'RUNTIME_CAPABILITY_FAILURE',
   EXECUTION_FAILURE: 'EXECUTION_FAILURE',
   CONTRACT_VIOLATION: 'CONTRACT_VIOLATION'
 });
@@ -382,7 +384,10 @@ class QueryTurnCoordinator {
     if (!current || current.phase === QUERY_PHASES.TERMINAL) return clone(current);
     if (
       current.phase !== QUERY_PHASES.DECIDED
-      || current.action !== QUERY_ACTIONS.EXECUTE_QUERY
+      || ![
+        QUERY_ACTIONS.EXECUTE_QUERY,
+        QUERY_ACTIONS.EXECUTE_WITH_RUNTIME_CONFIRMATION
+      ].includes(current.action)
     ) {
       return clone(current);
     }
@@ -510,6 +515,40 @@ class QueryTurnCoordinator {
         : current.attempts,
       result: clone(result),
       finalContent: normalizeText(finalContent) || 'NAPM 查询执行失败，请稍后重试。',
+      updatedAt: this.now()
+    };
+    this._setTurn(key, next);
+    return clone(next);
+  }
+
+  recordExecutionValidationFailure({ scope, turnId, result = null, finalContent = '' } = {}) {
+    const key = this._key(scope, turnId);
+    const current = key ? this._freshTurn(key) : null;
+    if (
+      !current
+      || current.route !== QUERY_ROUTES.NAPM_QUERY
+      || current.phase !== QUERY_PHASES.EXECUTING
+    ) {
+      return clone(current);
+    }
+    const reasonCode = normalizeText(result?.error?.code || result?.reasonCode || 'RUNTIME_VALIDATION_FAILURE');
+    const terminalOutcome = result?.outcome === QUERY_OUTCOMES.RUNTIME_CAPABILITY_FAILURE
+      ? QUERY_OUTCOMES.RUNTIME_CAPABILITY_FAILURE
+      : QUERY_OUTCOMES.VALIDATION_FAILURE;
+    const next = {
+      ...current,
+      phase: QUERY_PHASES.TERMINAL,
+      action: QUERY_ACTIONS.REJECT_QUERY,
+      outcome: terminalOutcome,
+      decision: {
+        action: QUERY_ACTIONS.REJECT_QUERY,
+        outcome: terminalOutcome,
+        reasonCode,
+        southboundAllowed: false
+      },
+      attempts: this._completeExecutionAttempt(current.attempts, QUERY_ATTEMPT_STATUSES.FAILED, result),
+      result: clone(result),
+      finalContent: normalizeText(finalContent) || '当前运行时指标能力无法确认，本次查询未执行数据请求。',
       updatedAt: this.now()
     };
     this._setTurn(key, next);

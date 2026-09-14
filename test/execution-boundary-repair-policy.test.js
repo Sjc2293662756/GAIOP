@@ -115,7 +115,7 @@ describe('execution boundary repair policy', () => {
       }
     }, 'top ip');
 
-    expect(result.query.metric).toBe('TPIO');
+    expect(result.query.metric).toBeUndefined();
     expect(result.query.metrics).toEqual(['TPIO']);
     expect(result.query.groups).toEqual([{ type: 'IPAddress' }]);
   });

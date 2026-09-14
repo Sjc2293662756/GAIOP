@@ -41,6 +41,12 @@ const {
   TURN_INTENT_TYPES,
   resolveTurnIntent
 } = require('./plugin/TurnIntentResolver');
+const {
+  OUTPUT_TURN_AUTHORITIES,
+  OUTPUT_TURN_PROVENANCE,
+  OUTPUT_TURN_RESOLUTION_STATUS,
+  resolveOutputTurnContext
+} = require('./plugin/OutputTurnContextResolver');
 
 const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
   isPlatformIdentityPrompt,
@@ -72,7 +78,11 @@ const REQUIRED_NAPM_SKILL_RUNTIME_PATHS = Object.freeze([
   'openclaw-napm-query/services/PromptRoutingService.js',
   'openclaw-napm-query/services/QueryDecisionPolicy.js',
   'openclaw-napm-query/services/ResolutionSpecService.js',
+  'openclaw-napm-query/services/ResolvedQueryContract.js',
+  'openclaw-napm-query/services/LegacyMetricInputAdapter.js',
   'openclaw-napm-query/services/ResolvedQueryTimeRangeService.js',
+  'openclaw-napm-query/services/ExecutionOutcomeContract.js',
+  'openclaw-napm-query/services/ExecutionOutcomeMapper.js',
   'openclaw-napm-query/src/shared/timeResolver.js',
   'openclaw-napm-report/scripts/generate_napm_report.js',
   'openclaw-napm-packet-analysis/scripts/run_packet_analysis.js',
@@ -112,6 +122,10 @@ function resolveOpenClawSkillsRoot(options = {}) {
 }
 
 const OPENCLAW_SKILLS_ROOT = resolveOpenClawSkillsRoot();
+const getExecutionOutcomeMapper = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/ExecutionOutcomeMapper.js'
+));
 const {
   NapmObjectTargetResolver,
   TARGET_RESOLUTION_STATUS
@@ -145,6 +159,14 @@ const napmPageViewsContract = () => require(path.join(
   OPENCLAW_SKILLS_ROOT,
   'shared/NapmPageViewsContract.js'
 ));
+const napmResolvedQueryContract = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/ResolvedQueryContract.js'
+));
+const napmLegacyMetricInputAdapter = () => require(path.join(
+  OPENCLAW_SKILLS_ROOT,
+  'openclaw-napm-query/services/LegacyMetricInputAdapter.js'
+));
 const napmReportSkill = () => loadSkill('openclaw-napm-report', 'generate_napm_report.js');
 const napmPacketSkill = () => loadSkill('openclaw-napm-packet-analysis', 'run_packet_analysis.js');
 const napmAlertSkill = () => loadSkill('openclaw-napm-alert-query', 'run_alert_query.js');
@@ -159,6 +181,7 @@ function setAutomaticSummaryTargetResolver(resolver = null) {
 }
 const napmGuardState = new Map();
 const napmConversationState = new Map();
+const napmOutputTurnAdmissions = new Map();
 const napmSentMediaByConversation = new Map();
 const nativeCommandByScope = new Map();
 let cachedPromptRoutingService = null;
@@ -176,6 +199,14 @@ const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const OPENCLAW_NATIVE_COMMAND_TTL_MS = 30 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const TRUSTED_TOOL_CONTEXT_MAX_AGE_MS = REPORT_EXPORT_CACHE_MAX_AGE_MS;
+const OUTPUT_TURN_CONTEXT_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
+const OUTPUT_TURN_CLAIM_TTL_MS = 30 * 1000;
+const OUTPUT_TURN_DELIVERY_STATUS = Object.freeze({
+  ELIGIBLE: 'ELIGIBLE',
+  CLAIMED: 'CLAIMED',
+  FINALIZED: 'FINALIZED',
+  RETIRED: 'RETIRED'
+});
 const REPORT_SOURCE_TTL_MS = Number(process.env.NAPM_REPORT_SOURCE_TTL_MS) > 0
   ? Number(process.env.NAPM_REPORT_SOURCE_TTL_MS)
   : 30 * 60 * 1000;
@@ -200,7 +231,9 @@ const queryTurnCoordinator = new QueryTurnCoordinator({
   extractPageFamilyId: (row) => napmPageViewsContract().extractPageFamilyId(row)
 });
 const turnAdmissionCoordinator = new TurnAdmissionCoordinator();
-const queryContextResolver = new QueryContextResolver();
+const queryContextResolver = new QueryContextResolver({
+  resolvedQuerySchemaVersion: napmResolvedQueryContract().RESOLVED_QUERY_SCHEMA_VERSION
+});
 const alertContextResolver = new AlertContextResolver();
 const contextBoundaryResolver = new ContextBoundaryResolver();
 const assistantOutputLedger = new AssistantOutputLedger({
@@ -1740,7 +1773,7 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     return resolvedQuery;
   }
 
-  const next = cloneJsonObject(resolvedQuery);
+  let next = cloneJsonObject(resolvedQuery);
   const serviceName = String(next.service || '').trim();
   if (serviceName) {
     next.service = serviceName;
@@ -1815,24 +1848,16 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
     ? next.metrics
     : (typeof next.metrics === 'string' ? next.metrics.split(',') : []);
   const normalizedMetrics = [...new Set(metricList
-    .map((metric) => String(metric || '').trim())
+    .map((metric) => String(metric || '').trim().toUpperCase())
     .filter(Boolean))];
   if (normalizedMetrics.length > 0) {
     next.metrics = normalizedMetrics;
-  } else if (String(next.metric || '').trim()) {
-    next.metrics = [String(next.metric).trim()];
+  } else {
+    delete next.metrics;
   }
 
   if (String(next.topMetric || '').trim()) {
-    next.topMetric = String(next.topMetric).trim();
-  }
-  if (!String(next.metric || '').trim()) {
-    next.metric = next.topMetric || next.metrics?.[0] || next.metric;
-  } else {
-    next.metric = String(next.metric).trim();
-  }
-  if (serviceName === 'topValues' && !next.topMetric) {
-    next.topMetric = next.metric || next.metrics?.[0];
+    next.topMetric = String(next.topMetric).trim().toUpperCase();
   }
 
   if (serviceName === 'pageViews') {
@@ -1882,6 +1907,13 @@ function normalizeResolvedQueryForPlugin(resolvedQuery = undefined) {
       delete next[key];
     }
   });
+
+  const canonicalContract = napmResolvedQueryContract();
+  if (canonicalContract.getServiceContract(serviceName)) {
+    next.schemaVersion = String(next.schemaVersion || '').trim()
+      || canonicalContract.RESOLVED_QUERY_SCHEMA_VERSION;
+    next = canonicalContract.normalizeCanonicalShape(next);
+  }
 
   return next;
 }
@@ -2188,6 +2220,39 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
+  const earlyDeclaredTimeKey = getRelativeTimeRangeKey(normalizedResolvedQuery);
+  if (
+    earlyDeclaredTimeKey
+    && earlyDeclaredTimeKey !== 'custom'
+    && !isSupportedRelativeTimeRangeKey(earlyDeclaredTimeKey)
+  ) {
+    return {
+      ok: false,
+      reason: 'unsupported_time_range_key',
+      message: `Unsupported queryDraft timeRange.key=${earlyDeclaredTimeKey}; provide a concrete key such as last60minutes.`,
+      details: { timeRangeKey: earlyDeclaredTimeKey }
+    };
+  }
+
+  const canonicalContract = napmResolvedQueryContract();
+  const canonicalServiceContract = canonicalContract.getServiceContract(serviceName);
+  if (canonicalServiceContract) {
+    const canonicalValidation = canonicalContract.validateShape(normalizedResolvedQuery, {
+      phase: options?.phase
+    });
+    if (!canonicalValidation.ok) {
+      return {
+        ok: false,
+        reason: canonicalValidation.reason,
+        reasonCode: canonicalValidation.reasonCode,
+        message: canonicalValidation.message,
+        details: canonicalValidation.details || null,
+        resolvedQuery: canonicalValidation.query || normalizedResolvedQuery
+      };
+    }
+    normalizedResolvedQuery = canonicalValidation.query;
+  }
+
   const service = getResolutionSpecService();
   const serviceSpec = service && typeof service.getServiceSpec === 'function'
     ? service.getServiceSpec(serviceName)
@@ -2200,7 +2265,9 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  const requiredFields = Array.isArray(serviceSpec.required) ? serviceSpec.required : [];
+  const requiredFields = canonicalServiceContract
+    ? []
+    : (Array.isArray(serviceSpec.required) ? serviceSpec.required : []);
   const requiresRootStart = requiredFields.includes('start');
   const requiresRootEnd = requiredFields.includes('end');
   const rootStart = Number(normalizedResolvedQuery.start);
@@ -2228,7 +2295,7 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  if (serviceName === 'pageViews') {
+  if (serviceName === 'pageViews' && !canonicalServiceContract) {
     const pageViewsValidation = napmPageViewsContract().validatePageViewsQuery(
       normalizedResolvedQuery,
       { phase: options?.phase }
@@ -2305,25 +2372,13 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
     };
   }
 
-  if (serviceName === 'topValues') {
+  if (serviceName === 'topValues' && !canonicalServiceContract) {
     const topCount = normalizedResolvedQuery.topCount;
     if (topCount != null && (!Number.isInteger(Number(topCount)) || Number(topCount) <= 0)) {
       return {
         ok: false,
         reason: 'invalid_top_count',
         message: `queryDraft.topCount must be a positive integer; received ${topCount}.`
-      };
-    }
-    const metrics = Array.isArray(normalizedResolvedQuery.metrics)
-      ? normalizedResolvedQuery.metrics.map((metric) => String(metric || '').trim())
-      : [];
-    const topMetric = String(normalizedResolvedQuery.topMetric || '').trim();
-    if (topMetric && !metrics.includes(topMetric)) {
-      return {
-        ok: false,
-        reason: 'top_metric_not_in_metrics',
-        message: `queryDraft.topMetric=${topMetric} must also be present in queryDraft.metrics.`,
-        details: { topMetric, metrics }
       };
     }
   }
@@ -2350,7 +2405,12 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 
   const queryModeKey = String(normalizedResolvedQuery.queryModeKey || '').trim();
   const allowedQueryModes = Array.isArray(serviceSpec.queryModes) ? serviceSpec.queryModes : [];
-  if (queryModeKey && allowedQueryModes.length > 0 && !allowedQueryModes.includes(queryModeKey)) {
+  if (
+    !canonicalServiceContract
+    && queryModeKey
+    && allowedQueryModes.length > 0
+    && !allowedQueryModes.includes(queryModeKey)
+  ) {
     return {
       ok: false,
       reason: 'invalid_query_mode',
@@ -2390,9 +2450,12 @@ function validateResolvedQueryAgainstSpec(resolvedQuery, options = {}) {
 
 function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
   const validationReason = String(validation?.reason || '').trim();
+  const validationReasonCode = String(validation?.reasonCode || '').trim();
+  const stableValidationReason = validationReason
+    || validationReasonCode.toLowerCase();
   const validationDetails = isPlainObject(validation.details) ? validation.details : {};
   const clarificationQuestion = buildQueryScopeClarificationQuestion(
-    validationReason,
+    stableValidationReason,
     validationDetails
   );
   if (clarificationQuestion) {
@@ -2414,13 +2477,13 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
       },
       decision: {
         next_action: 'ASK_CLARIFYING_QUESTION',
-        reason: validationReason || 'query_scope_incomplete',
+        reason: stableValidationReason || 'query_scope_incomplete',
         clarifying_question: clarificationQuestion,
         message: clarificationQuestion
       },
       error: {
         code: validation?.code || 'QUERY_SCOPE_INCOMPLETE',
-        reason: validationReason || 'query_scope_incomplete',
+        reason: stableValidationReason || 'query_scope_incomplete',
         message: clarificationQuestion,
         retryable: false
       },
@@ -2440,17 +2503,26 @@ function buildResolvedQueryBoundaryFailureResult(validation = {}, args = {}) {
   const requiredFields = Array.isArray(serviceSpec?.required) ? serviceSpec.required : [];
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'UPSTREAM_QUERY_DRAFT_INVALID',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_boundary',
     responseType: 'BOUNDARY_VALIDATION_ERROR',
     prompt: normalizePrompt(args),
     decision: {
       next_action: 'REPAIR_QUERY_DRAFT',
-      reason: validation.reason || 'invalid_resolved_query',
+      reason: stableValidationReason || 'invalid_resolved_query',
       message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     error: {
       code: 'UPSTREAM_QUERY_DRAFT_INVALID',
-      reason: validation.reason || 'invalid_resolved_query',
+      reason: stableValidationReason || 'invalid_resolved_query',
       message: validation.message || 'queryDraft failed plugin boundary validation.'
     },
     allowedServices,
@@ -2484,11 +2556,14 @@ function buildQueryScopeClarificationQuestion(reason = '', details = {}) {
   return '';
 }
 
-function evaluatePluginQueryDecision(prompt = '', queryDraft = null, validation = undefined) {
+function evaluatePluginQueryDecision(prompt = '', queryDraft = null, validation = undefined, options = {}) {
   return napmQueryDecisionPolicy().evaluateQueryDecision({
     prompt,
     queryDraft,
-    validation
+    validation,
+    executableValidationContext: {
+      phase: options.phase || null
+    }
   });
 }
 
@@ -2561,6 +2636,15 @@ function buildLifecycleBindingFailureResult() {
   const displayText = buildLifecycleBindingFailureReply();
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'LIFECYCLE_TURN_BINDING_REQUIRED',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: 'LIFECYCLE_BINDING_REQUIRED',
     displayText,
@@ -2588,6 +2672,15 @@ function buildQueryToolAuthorizationFailureResult(code = '') {
     || '当前 Tool 未通过查询执行授权校验，已阻止查询执行。';
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: normalizedCode,
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: normalizedCode,
     displayText,
@@ -2603,6 +2696,15 @@ function buildClarificationContextMissingResult() {
   const displayText = '未找到可继续的查询澄清上下文，请重新发起完整查询。';
   return {
     ok: false,
+    outcome: 'VALIDATION_FAILURE',
+    stage: 'contract_validation',
+    reasonCode: 'CLARIFICATION_CONTEXT_MISSING',
+    queryExecuted: false,
+    dataRequestAttempted: false,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin_query_turn',
     responseType: 'CLARIFICATION_CONTEXT_MISSING',
     displayText,
@@ -2617,6 +2719,15 @@ function buildClarificationContextMissingResult() {
 function buildNapmSkillExecutionFailureResult(args = {}) {
   return {
     ok: false,
+    outcome: 'EXECUTION_FAILURE',
+    stage: 'execution',
+    reasonCode: 'NAPM_SKILL_EXECUTION_FAILED',
+    queryExecuted: true,
+    dataRequestAttempted: true,
+    dataRequestSucceeded: false,
+    responseParseSucceeded: false,
+    rowCount: null,
+    issues: [],
     source: 'napm_openclaw_plugin',
     responseType: 'SKILL_EXECUTION_ERROR',
     prompt: normalizePrompt(args),
@@ -2891,7 +3002,9 @@ function rememberSkillExecutionFailureForTurn(
 }
 
 function buildResolvedQueryFailureBlockReason(validation = {}, failureRecord = null) {
-  const message = validation.message || 'queryDraft failed plugin validation.';
+  const validationCode = String(validation?.reasonCode || validation?.code || '').trim();
+  const rawMessage = validation.message || 'queryDraft failed plugin validation.';
+  const message = validationCode ? `${validationCode}: ${rawMessage}` : rawMessage;
   if (String(validation?.reason || '').trim() === 'application_scope_mismatch') {
     if (String(validation?.details?.service || '').trim() === 'topValues') {
       if (failureRecord?.terminal || failureRecord?.phase === 'TERMINAL') {
@@ -2922,11 +3035,41 @@ function prepareSkillExecutionArgs(args = {}) {
   }
 
   if (isPlainObject(prepared.resolvedQuery)) {
+    if (Object.prototype.hasOwnProperty.call(prepared.resolvedQuery, 'metric')) {
+      const adaptation = napmLegacyMetricInputAdapter().adapt(prepared.resolvedQuery, {
+        phase: 'construction'
+      });
+      if (!adaptation.ok) {
+        prepared.legacyMetricAdaptation = adaptation;
+      } else {
+        prepared.resolvedQuery = adaptation.query;
+        appendPluginAuditEvent('napm_legacy_metric_input_adapted', {
+          traceId: normalizeTraceId(prepared?.traceId) || null,
+          service: adaptation.query?.service || null,
+          warnings: adaptation.warnings || []
+        });
+      }
+    }
     prepared.resolvedQuery = normalizeResolvedQueryForPlugin(prepared.resolvedQuery);
     prepared.queryDraft = prepared.resolvedQuery;
   }
 
   return applyPathPreflightToSkillArgs(prepared);
+}
+
+function validatePreparedResolvedQuery(preparedArgs = {}, options = {}) {
+  const adaptation = preparedArgs?.legacyMetricAdaptation;
+  if (adaptation && adaptation.ok === false) {
+    return {
+      ok: false,
+      reason: adaptation.reason,
+      reasonCode: adaptation.reasonCode,
+      message: adaptation.message,
+      details: adaptation.details || null,
+      resolvedQuery: null
+    };
+  }
+  return validateResolvedQueryAgainstSpec(preparedArgs?.resolvedQuery, options);
 }
 
 function buildCanonicalSkillToolParams(activePrompt = '', toolParams = {}) {
@@ -3310,6 +3453,316 @@ function getQueryTurnForContext(ctx = {}, conversationKey = '', guardState = nul
   };
 }
 
+function pruneOutputTurnAdmissions() {
+  const now = Date.now();
+  for (const [scope, admissions] of napmOutputTurnAdmissions.entries()) {
+    for (const [turnId, admission] of admissions.entries()) {
+      if (
+        admission?.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.CLAIMED
+        && Number(admission?.claimExpiresAt || 0) > 0
+        && now >= Number(admission.claimExpiresAt)
+      ) {
+        admissions.set(turnId, {
+          ...admission,
+          deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.RETIRED,
+          retiredAt: now,
+          retirementReason: 'claim_timeout',
+          updatedAt: now
+        });
+        continue;
+      }
+      if ((now - Number(admission?.updatedAt || 0)) > OUTPUT_TURN_CONTEXT_MAX_AGE_MS) {
+        admissions.delete(turnId);
+      }
+    }
+    if (admissions.size === 0) napmOutputTurnAdmissions.delete(scope);
+  }
+}
+
+function rememberOutputTurnAdmission(
+  conversationKey = '',
+  turnId = '',
+  state = null,
+  queryTurn = null
+) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = state?.turnAdmissionDecision;
+  if (!scope || !normalizedTurnId || !isPlainObject(admission)) return false;
+  pruneOutputTurnAdmissions();
+  let admissions = napmOutputTurnAdmissions.get(scope);
+  if (!admissions) {
+    admissions = new Map();
+    napmOutputTurnAdmissions.set(scope, admissions);
+  }
+  admissions.set(normalizedTurnId, Object.freeze({
+    scope,
+    turnId: normalizedTurnId,
+    route: String(state?.turnPolicy?.route || admission.route || '').trim(),
+    turnRoute: String(queryTurn?.route || '').trim(),
+    expectedTool: String(admission.expectedTool || '').trim() || null,
+    action: String(admission.action || '').trim() || null,
+    sourceRunId: normalizeTraceId(state?.runId),
+    sourceMessageId: normalizeTraceId(state?.messageId),
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE,
+    claimId: null,
+    claimedAt: null,
+    claimHook: null,
+    claimProvenance: null,
+    claimExpiresAt: null,
+    finalizedAt: null,
+    retiredAt: null,
+    updatedAt: Date.now()
+  }));
+  return true;
+}
+
+function clearOutputTurnAdmissions(conversationKey = '') {
+  const scope = String(conversationKey || '').trim();
+  return scope ? napmOutputTurnAdmissions.delete(scope) : false;
+}
+
+function getOutputTurnCandidates(conversationKey = '') {
+  const scope = String(conversationKey || '').trim();
+  if (!scope) return [];
+  pruneOutputTurnAdmissions();
+  const admissions = napmOutputTurnAdmissions.get(scope);
+  if (!admissions) return [];
+  const candidates = [];
+  for (const admission of admissions.values()) {
+    if (admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE) continue;
+    const turn = queryTurnCoordinator.get(scope, admission.turnId);
+    if (!turn || turn.conversationKey !== scope) continue;
+    const terminalOutputPending = turn.phase === QUERY_PHASES.TERMINAL
+      && !turn.deliveryClaimed
+      && Boolean(String(turn.finalContent || '').trim());
+    const eligible = turn.phase !== QUERY_PHASES.TERMINAL || terminalOutputPending;
+    if (!eligible) continue;
+    candidates.push({
+      scope,
+      turnId: admission.turnId,
+      turn,
+      route: admission.route,
+      turnRoute: admission.turnRoute,
+      expectedTool: admission.expectedTool,
+      sourceRunId: admission.sourceRunId,
+      sourceMessageId: admission.sourceMessageId,
+      eligible: true
+    });
+  }
+  return candidates;
+}
+
+function getOutputTurnAdmission(conversationKey = '', turnId = '') {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  if (!scope || !normalizedTurnId) return null;
+  pruneOutputTurnAdmissions();
+  return napmOutputTurnAdmissions.get(scope)?.get(normalizedTurnId) || null;
+}
+
+function claimOutputTurn({
+  conversationKey = '',
+  turnId = '',
+  claimId = '',
+  hook = '',
+  provenance = '',
+  outputFingerprint = ''
+} = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const normalizedClaimId = String(claimId || '').trim() || `claim-${crypto.randomUUID()}`;
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.CLAIMED) {
+    if (admission.claimId === normalizedClaimId) {
+      return { ok: true, idempotent: true, admission };
+    }
+    return { ok: false, code: 'OUTPUT_TURN_ALREADY_CLAIMED', admission };
+  }
+  if (admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE) {
+    return { ok: false, code: 'OUTPUT_TURN_NOT_ELIGIBLE', admission };
+  }
+  const now = Date.now();
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.CLAIMED,
+    claimId: normalizedClaimId,
+    claimedAt: now,
+    claimHook: String(hook || '').trim() || null,
+    claimProvenance: String(provenance || '').trim() || null,
+    outputFingerprint: String(outputFingerprint || '').trim() || null,
+    claimExpiresAt: now + OUTPUT_TURN_CLAIM_TTL_MS,
+    updatedAt: now
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
+}
+
+function finalizeOutputTurn({
+  conversationKey = '',
+  turnId = '',
+  claimId = '',
+  outputFingerprint = ''
+} = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.FINALIZED) {
+    return admission.claimId === String(claimId || '').trim()
+      ? { ok: true, idempotent: true, admission }
+      : { ok: false, code: 'OUTPUT_TURN_CLAIM_MISMATCH', admission };
+  }
+  if (
+    admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.CLAIMED
+    || !admission.claimId
+    || admission.claimId !== String(claimId || '').trim()
+    || (
+      outputFingerprint
+      && admission.outputFingerprint
+      && admission.outputFingerprint !== String(outputFingerprint).trim()
+    )
+  ) {
+    return { ok: false, code: 'OUTPUT_TURN_CLAIM_MISMATCH', admission };
+  }
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.FINALIZED,
+    finalizedAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
+}
+
+function retireOutputTurn({ conversationKey = '', turnId = '', reason = '' } = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.RETIRED) {
+    return { ok: true, idempotent: true, admission };
+  }
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.RETIRED,
+    retiredAt: Date.now(),
+    retirementReason: String(reason || '').trim() || null,
+    updatedAt: Date.now()
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
+}
+
+function buildOutputTurnResolutionContext(
+  ctx = {},
+  conversationKey = '',
+  guardState = null,
+  conversationState = null
+) {
+  const scope = String(conversationKey || '').trim();
+  const hasIdentity = hasLifecycleIdentity(ctx);
+  const exact = hasIdentity
+    ? getQueryTurnForContext(ctx, scope, guardState, conversationState)
+    : { turnId: '', turn: null };
+  const exactRoute = hasIdentity && guardState
+    ? getTurnPolicyRoute(guardState)
+    : '';
+  const strongBinding = exact.turnId && exact.turn && exactRoute
+    ? {
+        scope,
+        turnId: exact.turnId,
+        turn: exact.turn,
+        route: exactRoute,
+        expectedTool: guardState?.turnAdmissionDecision?.expectedTool || null,
+        sourceRunId: guardState?.runId || ctx?.runId || '',
+        sourceMessageId: guardState?.messageId || ctx?.messageId || '',
+        provenance: normalizeTraceId(ctx?.runId)
+          ? OUTPUT_TURN_PROVENANCE.RUN_BOUND
+          : (normalizeTraceId(ctx?.messageId)
+            ? OUTPUT_TURN_PROVENANCE.MESSAGE_BOUND
+            : OUTPUT_TURN_PROVENANCE.TURN_TOKEN)
+      }
+    : null;
+  return resolveOutputTurnContext({
+    scope,
+    strongBinding,
+    candidates: getOutputTurnCandidates(scope)
+  });
+}
+
+function buildOutputTurnResolutionFailureReply(resolution = null) {
+  const code = String(resolution?.code || '').trim();
+  if (code === 'OUTPUT_TURN_AMBIGUOUS') {
+    return '当前回复无法唯一确认所属的会话轮次，已停止未经验证的输出。\n请重新发起请求。';
+  }
+  return '当前回复无法确认所属的会话轮次，已停止未经验证的输出。\n请重新发起请求。';
+}
+
+function buildOutputTurnResolutionAudit(resolution = null) {
+  return {
+    status: resolution?.status || null,
+    code: resolution?.code || null,
+    provenance: resolution?.context?.provenance || null,
+    authority: resolution?.context?.authority || null,
+    turnId: resolution?.context?.turnId || null,
+    route: resolution?.context?.route || null,
+    candidateCount: resolution?.details?.candidateCount ?? null
+  };
+}
+
+function buildOutputAttemptId(event = {}, message = null, ctx = {}) {
+  return String(
+    event?.outputId
+    || event?.messageId
+    || event?.id
+    || message?.id
+    || ctx?.outputId
+    || ctx?.messageId
+    || `output-${crypto.randomUUID()}`
+  ).trim();
+}
+
+function buildOutputFingerprint(text = '') {
+  return crypto.createHash('sha256')
+    .update(String(text || ''), 'utf8')
+    .digest('hex');
+}
+
+function isFinalModelOwnedOutput(event = {}, message = null) {
+  if (message && messageContainsToolCall(message)) return false;
+  if (isStreamingPreviewMessageEvent(event) || isStreamingPreviewMessageEvent(message)) return false;
+  const text = message ? extractMessageText(message) : extractTextContent(event?.content);
+  return Boolean(String(text || '').trim());
+}
+
+function claimModelOwnedOutput({
+  resolution = null,
+  conversationKey = '',
+  hook = '',
+  event = {},
+  message = null,
+  ctx = {}
+} = {}) {
+  if (
+    !resolution?.ok
+    || resolution.context?.route !== TURN_POLICY_ROUTES.MODEL_OWNED
+    || !isFinalModelOwnedOutput(event, message)
+  ) {
+    return { ok: false, skipped: true };
+  }
+  const text = message ? extractMessageText(message) : extractTextContent(event?.content);
+  return claimOutputTurn({
+    conversationKey,
+    turnId: resolution.context.turnId,
+    claimId: buildOutputAttemptId(event, message, ctx),
+    hook,
+    provenance: resolution.context.provenance,
+    outputFingerprint: buildOutputFingerprint(text)
+  });
+}
+
 function isPendingClarificationAnswer(content = '', pending = null) {
   const text = String(content || '').trim();
   if (!text || !pending || text.length > 128 || /[\r\n]/.test(text)) return false;
@@ -3428,6 +3881,7 @@ function clearNapmConversationScope(ctx = {}) {
   const summary = {
     scope,
     conversationState: napmConversationState.delete(scope),
+    outputTurnAdmissions: clearOutputTurnAdmissions(scope),
     operationRecords: napmOperationState.clearScope(scope),
     queryTurns: queryTurnCoordinator.clearScope(scope),
     assistantOutputs: assistantOutputLedger.clearScope(scope),
@@ -6722,7 +7176,7 @@ function buildExecutionTraceReplyFromRememberedRecord(record = null) {
   const result = record.result;
   const resolvedQuery = record.resolvedQuery || result.resolvedQuery || {};
   const service = String(resolvedQuery.service || result.service || '').trim() || 'unknown';
-  const metric = String(resolvedQuery.topMetric || resolvedQuery.metric || '').trim();
+  const metric = String(resolvedQuery.topMetric || resolvedQuery.metrics?.find(Boolean) || '').trim();
   const groups = Array.isArray(resolvedQuery.groups)
     ? resolvedQuery.groups
       .map((group) => String(group?.argument || group?.type || '').trim())
@@ -7103,16 +7557,38 @@ function makeTextReplyFromSkillResult(result) {
 }
 
 function makeToolResult(result, reportSourceId = '') {
-  const displayText = buildUserFacingSkillText(result);
+  const service = String(result?.service || result?.resolvedQuery?.service || '').trim();
+  const responseType = String(result?.responseType || '').trim();
+  const queryService = new Set([
+    'topValues',
+    'averageValues',
+    'timeValues',
+    'pageViews',
+    'groups',
+    'metrics'
+  ]).has(service);
+  const executionLike = Boolean(
+    result?.outcome
+    || result?.dataRequestAttempted
+    || result?.dataRequestSucceeded
+    || Boolean(result?.executionOutcome)
+    || (queryService && result?.error && responseType !== 'clarification_required')
+  );
+  const normalizedResult = executionLike
+    ? getExecutionOutcomeMapper().mapResult(result, {
+        assumeSuccessfulExecution: false
+      })
+    : result;
+  const displayText = buildUserFacingSkillText(normalizedResult);
   return {
     content: [
       {
         type: 'text',
-        text: appendReportSourceId(displayText || JSON.stringify(result, null, 2), reportSourceId)
+        text: appendReportSourceId(displayText || JSON.stringify(normalizedResult, null, 2), reportSourceId)
       }
     ],
-    isError: Boolean(result?.ok === false || result?.error),
-    details: result,
+    isError: Boolean(normalizedResult?.ok === false || normalizedResult?.error),
+    details: normalizedResult,
     metadata: reportSourceId ? { reportSourceId } : undefined
   };
 }
@@ -7221,9 +7697,11 @@ function createSkillToolDefinition() {
   const resolutionSpecService = getResolutionSpecService();
   const requiredFieldsByService = allowedServices
     .map((serviceName) => {
-      const required = resolutionSpecService?.getServiceSpec
-        ? resolutionSpecService.getServiceSpec(serviceName)?.required
-        : null;
+      const canonicalServiceContract = napmResolvedQueryContract().getServiceContract(serviceName);
+      const required = canonicalServiceContract?.required
+        || (resolutionSpecService?.getServiceSpec
+          ? resolutionSpecService.getServiceSpec(serviceName)?.required
+          : null);
       return Array.isArray(required) && required.length > 0
         ? `${serviceName} requires ${required.join(', ')}`
         : '';
@@ -7250,8 +7728,19 @@ function createSkillToolDefinition() {
         intent: { type: 'object', description: 'Optional structured intent object.', additionalProperties: true },
         queryDraft: {
           type: 'object',
-          description: 'Structured query interpretation evaluated by QueryDecisionPolicy. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to a Resolved Query.',
+          description: 'Canonical structured query interpretation evaluated by QueryDecisionPolicy. Metric services use schemaVersion=napm-resolved-query.v1, metrics[], and topMetric only for topValues. It may omit a user-supplied object argument; only an EXECUTE_QUERY decision promotes it to execution.',
           properties: {
+            schemaVersion: { type: 'string', enum: ['napm-resolved-query.v1'] },
+            service: { type: 'string', enum: allowedServices },
+            queryModeKey: { type: 'string' },
+            metrics: { type: 'array', items: { type: 'string' } },
+            topMetric: { type: 'string' },
+            groups: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            topCount: { type: 'number' },
+            granularity: { type: 'number' },
+            start: { type: 'number' },
+            end: { type: 'number' },
+            timeRange: { type: 'object', additionalProperties: true },
             resultReference: resultReferenceSchema
           },
           additionalProperties: true
@@ -7266,8 +7755,9 @@ function createSkillToolDefinition() {
               description: 'Service declared by napm-resolution-spec.v1.json. Use timeValues for trends, not timeseries/trend/series.'
             },
             queryModeKey: { type: 'string' },
+            schemaVersion: { type: 'string' },
             metrics: { type: 'array', items: { type: 'string' } },
-            metric: { type: 'string' },
+            metric: { type: 'string', description: 'Deprecated legacy compatibility input. The boundary adapter removes it before canonical validation.' },
             topMetric: { type: 'string' },
             groups: {
               type: 'array',
@@ -7498,6 +7988,7 @@ function createSkillToolDefinition() {
         if (currentQueryTurn?.phase === 'TERMINAL') {
           const failedOutcomes = new Set([
             QUERY_OUTCOMES.VALIDATION_FAILURE,
+            QUERY_OUTCOMES.RUNTIME_CAPABILITY_FAILURE,
             QUERY_OUTCOMES.EXECUTION_FAILURE,
             QUERY_OUTCOMES.CONTRACT_VIOLATION
           ]);
@@ -7665,8 +8156,8 @@ function createSkillToolDefinition() {
         );
         const { applyTimeOverride } = require(timeResolverPath);
         applyTimeOverride(preparedArgs.resolvedQuery);
-        const validation = validateResolvedQueryAgainstSpec(
-          preparedArgs?.resolvedQuery,
+        const validation = validatePreparedResolvedQuery(
+          preparedArgs,
           getResolvedQueryValidationOptions(preparedArgs)
         );
         if (isPlainObject(validation.resolvedQuery)) {
@@ -7682,7 +8173,8 @@ function createSkillToolDefinition() {
         const queryDecision = evaluatePluginQueryDecision(
           semanticPrompt,
           preparedArgs?.resolvedQuery,
-          validation
+          validation,
+          { phase: 'execution' }
         );
         appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
           traceId,
@@ -7818,6 +8310,22 @@ function createSkillToolDefinition() {
             },
             result,
             finalContent: String(result?.displayText || clarifyingQuestion).trim()
+          });
+        } else if (
+          result?.outcome === QUERY_OUTCOMES.VALIDATION_FAILURE
+          || result?.error?.category === 'RUNTIME_CAPABILITY'
+        ) {
+          queryTurnCoordinator.recordExecutionValidationFailure({
+            scope: conversationKey,
+            turnId,
+            result,
+            finalContent: String(
+              result?.displayText
+              || result?.summary?.displayText
+              || result?.error?.userMessage
+              || result?.error?.message
+              || '当前运行时指标能力无法确认，本次查询未执行数据请求。'
+            ).trim()
           });
         } else if (result?.ok === false || result?.error) {
           queryTurnCoordinator.recordFailure({
@@ -8643,7 +9151,7 @@ function buildNapmRoutingSystemContext(opts = {}) {
   // ── GENERAL BOUNDARY (always) ──
   rules.push(
     'You handle only system monitoring, NAPM query, anomaly diagnosis, and result interpretation. Non-monitoring (weather/chat/entertainment) → briefly redirect.',
-    'OpenClaw upstream owns Query Draft construction. napm-skill-query evaluates the Query Decision; only EXECUTE_QUERY reaches the Query Skill and southbound API.',
+    'OpenClaw upstream owns Query Draft construction. napm-skill-query evaluates the Query Decision; EXECUTE_QUERY reaches data execution directly, while EXECUTE_WITH_RUNTIME_CONFIRMATION enters the Query Skill runtime capability gate first.',
     'Accepted input: ' + acceptedInputs + ' (Tool adapter uses queryDraft with resolvedQuery as a legacy alias). Every NAPM data query must call napm-skill-query, including queries that need a user clarification. Raw prompt alone is not accepted.',
     '',
     'Time: relative queries use a concrete key such as last30minutes, last1hour, last2hours, last24hours, today, or yesterday; placeholders such as lastNminutes are invalid. Plugin execute computes root start/end from the server clock. Fixed queries use minute-aligned root start/end with executionOptions.timeMode="fixed". Missing time must fail.',
@@ -8858,7 +9366,7 @@ const plugin = {
               end: packetDownloadContext.criteria.end
             });
           }
-          queryTurnCoordinator.begin({
+          const queryTurn = queryTurnCoordinator.begin({
             scope: conversationKey,
             turnId,
             runId: normalizeTraceId(ctx?.runId),
@@ -8873,6 +9381,7 @@ const plugin = {
             resumedFromClarification: Boolean(resumedTurn),
             clarificationAnswer: resumedTurn ? content : ''
           });
+          rememberOutputTurnAdmission(conversationKey, turnId, nextState, queryTurn);
           if (ctx?.messageId) {
             queryTurnCoordinator.bindRun({
               scope: conversationKey,
@@ -9782,8 +10291,8 @@ const plugin = {
           const canonicalResolvedGroup = String(canonicalSkillParams?.resolvedQuery?.groups?.[0]?.type || '').trim();
           const canonicalResolvedQueryJson = JSON.stringify(normalizeObject(canonicalSkillParams?.resolvedQuery) || null);
           const resolvedQueryValidation = resultReferenceResolution.ok
-            ? validateResolvedQueryAgainstSpec(
-                canonicalSkillParams?.resolvedQuery,
+            ? validatePreparedResolvedQuery(
+                canonicalSkillParams,
                 { phase: 'construction' }
               )
             : resultReferenceResolution;
@@ -9825,7 +10334,8 @@ const plugin = {
           const constructionQueryDecision = evaluatePluginQueryDecision(
             querySemanticPrompt,
             canonicalSkillParams?.resolvedQuery,
-            resolvedQueryValidation
+            resolvedQueryValidation,
+            { phase: 'construction' }
           );
           appendPluginAuditEvent('napm_plugin_query_decision_evaluated', {
             traceId,
@@ -10023,31 +10533,62 @@ const plugin = {
         if (isNativeCommandTurn(ctx)) {
           return undefined;
         }
-        if (!hasLifecycleIdentity(ctx)) {
-          appendPluginAuditEvent('lifecycle_identity_missing', {
-            hook: 'message_sending',
-            conversationKey: getConversationKey(ctx) || null
-          });
-          return { cancel: true };
-        }
-
         const conversationKey = getConversationKey(ctx);
-        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
-        const guardState = getGuardState(ctx);
-        const initialQueryTurnContext = getQueryTurnForContext(
+        const hasIdentity = hasLifecycleIdentity(ctx);
+        const conversationState = hasIdentity && conversationKey
+          ? napmConversationState.get(conversationKey)
+          : null;
+        const guardState = hasIdentity ? getGuardState(ctx) : null;
+        const outputTurnResolution = buildOutputTurnResolutionContext(
           ctx,
           conversationKey,
           guardState,
           conversationState
         );
-        if (!initialQueryTurnContext.turnId || !initialQueryTurnContext.turn) {
-          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+        appendPluginAuditEvent('output_turn_context_resolved', {
+          hook: 'message_sending',
+          conversationKey: conversationKey || null,
+          ...buildOutputTurnResolutionAudit(outputTurnResolution)
+        });
+        if (!outputTurnResolution.ok) {
+          appendPluginAuditEvent('output_turn_context_blocked', {
             hook: 'message_sending',
             conversationKey: conversationKey || null,
+            ...buildOutputTurnResolutionAudit(outputTurnResolution),
             context: buildAuditContextSnapshot(ctx)
           });
           return { cancel: true };
         }
+        const outputTurnContext = outputTurnResolution.context;
+        const modelOwnedClaim = claimModelOwnedOutput({
+          resolution: outputTurnResolution,
+          conversationKey,
+          hook: 'message_sending',
+          event,
+          ctx
+        });
+        if (outputTurnResolution.context.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            if (!modelOwnedClaim.ok && !modelOwnedClaim.skipped) {
+              appendPluginAuditEvent('output_turn_claim_blocked', {
+                hook: 'message_sending',
+                conversationKey: conversationKey || null,
+                turnId: outputTurnContext.turnId || null,
+                code: modelOwnedClaim.code || 'OUTPUT_TURN_CLAIM_FAILED'
+              });
+              return { cancel: true };
+            }
+            return undefined;
+          }
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
+            return { content: buildGeneralOutOfScopeReply() };
+          }
+          return { cancel: true };
+        }
+        const initialQueryTurnContext = {
+          turnId: outputTurnContext.turnId,
+          turn: outputTurnContext.turn
+        };
         const turnId = initialQueryTurnContext.turnId;
         const outgoingText = extractTextContent(event?.content);
         const activePromptForReport = selectActivePromptText(conversationState, guardState, outgoingText);
@@ -10477,27 +11018,75 @@ const plugin = {
         if (role !== 'assistant') {
           return undefined;
         }
-        if (!hasLifecycleIdentity(ctx)) {
-          appendPluginAuditEvent('lifecycle_identity_missing', {
-            hook: 'before_message_write',
-            conversationKey: getConversationKey(ctx) || null
-          });
-          return undefined;
-        }
         const lifecycleConversationKey = getConversationKey(ctx);
-        const lifecycleGuardState = getGuardState(ctx);
-        const lifecycleTurnContext = getQueryTurnForContext(
+        const hasIdentity = hasLifecycleIdentity(ctx);
+        const lifecycleGuardState = hasIdentity ? getGuardState(ctx) : null;
+        const lifecycleConversationState = hasIdentity && lifecycleConversationKey
+          ? napmConversationState.get(lifecycleConversationKey)
+          : null;
+        const outputTurnResolution = buildOutputTurnResolutionContext(
           ctx,
           lifecycleConversationKey,
           lifecycleGuardState,
-          null
+          lifecycleConversationState
         );
-        if (!lifecycleTurnContext.turnId || !lifecycleTurnContext.turn) {
-          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+        appendPluginAuditEvent('output_turn_context_resolved', {
+          hook: 'before_message_write',
+          conversationKey: lifecycleConversationKey || null,
+          ...buildOutputTurnResolutionAudit(outputTurnResolution)
+        });
+        const outputCandidates = getOutputTurnCandidates(lifecycleConversationKey);
+        const hasNapmCandidate = outputCandidates.some((candidate) => (
+          candidate.turnRoute === QUERY_ROUTES.NAPM_QUERY
+        ));
+        if (!outputTurnResolution.ok) {
+          appendPluginAuditEvent('output_turn_context_blocked', {
             hook: 'before_message_write',
             conversationKey: lifecycleConversationKey || null,
+            ...buildOutputTurnResolutionAudit(outputTurnResolution),
             context: buildAuditContextSnapshot(ctx)
           });
+          return {
+            message: buildAssistantTextMessage(
+              hasNapmCandidate
+                ? buildLifecycleBindingFailureReply()
+                : buildOutputTurnResolutionFailureReply(outputTurnResolution),
+              message
+            )
+          };
+        }
+        const outputTurnContext = outputTurnResolution.context;
+        const modelOwnedClaim = claimModelOwnedOutput({
+          resolution: outputTurnResolution,
+          conversationKey: lifecycleConversationKey,
+          hook: 'before_message_write',
+          event,
+          message,
+          ctx
+        });
+        if (outputTurnContext.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            if (!modelOwnedClaim.ok && !modelOwnedClaim.skipped) {
+              appendPluginAuditEvent('output_turn_claim_blocked', {
+                hook: 'before_message_write',
+                conversationKey: lifecycleConversationKey || null,
+                turnId: outputTurnContext.turnId || null,
+                code: modelOwnedClaim.code || 'OUTPUT_TURN_CLAIM_FAILED'
+              });
+              return {
+                message: buildAssistantTextMessage(
+                  buildOutputTurnResolutionFailureReply(outputTurnResolution),
+                  message
+                )
+              };
+            }
+            return undefined;
+          }
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
+            return {
+              message: buildAssistantTextMessage(buildGeneralOutOfScopeReply(), message)
+            };
+          }
           return {
             message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
           };
@@ -10828,6 +11417,7 @@ module.exports.__test__ = {
   resolveQueryResultReference,
   resolvePageViewsResultReference,
   validateResolvedQueryAgainstSpec,
+  validatePreparedResolvedQuery,
   applyPathPreflightToResolvedQuery,
   buildCanonicalSkillToolParams,
   buildBusinessObjectInventoryResolvedQuery,
@@ -10867,6 +11457,7 @@ module.exports.__test__ = {
   buildPacketFinalReply,
   normalizePacketToolParams,
   parsePacketDownloadConfirmationIntent,
+  makeToolResult,
   buildReportDataForExport,
   buildReportInputForExport,
   auditReportExportSourceResolved,
@@ -10888,6 +11479,15 @@ module.exports.__test__ = {
   buildMediaDedupeKey,
   getGuardState,
   getActiveTurnId,
+  resolveOutputTurnContext,
+  buildOutputTurnResolutionContext,
+  getOutputTurnCandidates,
+  claimOutputTurn,
+  finalizeOutputTurn,
+  retireOutputTurn,
+  outputTurnDeliveryStatus: OUTPUT_TURN_DELIVERY_STATUS,
+  outputTurnResolutionStatus: OUTPUT_TURN_RESOLUTION_STATUS,
+  outputTurnProvenance: OUTPUT_TURN_PROVENANCE,
   getNapmResolvedQueryResolverService,
   resolvePromptWithAudit,
   runMainflowQuery,

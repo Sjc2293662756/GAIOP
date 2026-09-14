@@ -37,7 +37,9 @@ class MetadataExecutionKernel {
         ...groupBuilder.buildGroupParams(metadataGroups)
       };
       attachDebugRequestInfo(metadataParams);
+      response.dataRequestAttempted = true;
       const metadataMetrics = await napmMetadataService.getMetricsForGroupPath(metadataGroups);
+      response.dataRequestSucceeded = true;
       const ownedMetrics = filterMetricInventoryForOwnership(metadataGroups, metadataMetrics);
       response.ok = true;
       response.service = queryRequest.service;
@@ -63,7 +65,9 @@ class MetadataExecutionKernel {
       instanceProviderMetadata = await napmMetadataService.resolveObjectInstanceProviderMetadata(firstType);
       if (instanceProviderMetadata) {
         assertMetadataInventoryArgumentContract(firstType, firstArgument, instanceProviderMetadata);
+        response.dataRequestAttempted = true;
         namedList = await napmMetadataService.listObjectInstances(firstType, firstArgument);
+        response.dataRequestSucceeded = true;
         metadataTypeForDebug = instanceProviderMetadata.apiType;
       }
 
@@ -139,8 +143,17 @@ class MetadataExecutionKernel {
       url
     }, requestContext);
 
+    response.dataRequestAttempted = true;
     const rawPayload = await napmClient.get(params);
-    const data = parseNapmPayload(rawPayload);
+    response.dataRequestSucceeded = true;
+    let data;
+    try {
+      data = parseNapmPayload(rawPayload);
+      response.responseParseSucceeded = true;
+    } catch (error) {
+      response.responseParseSucceeded = false;
+      throw error;
+    }
     response.ok = true;
     response.service = queryRequest.service;
     response.data = data;

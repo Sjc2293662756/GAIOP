@@ -1,8 +1,28 @@
-const {
-  classifyApplicationCatalogPrompt
-} = require('./ApplicationCatalogSemanticRules');
+'use strict';
+
 const MetricSemanticNormalizerService = require('./MetricSemanticNormalizerService');
 const ObjectOntologyService = require('./ObjectOntologyService');
+const RankingIntentParserService = require('./RankingIntentParserService');
+const TimeRangeService = require('./ResolvedQueryTimeRangeService');
+
+const SEMANTIC_SCHEMA_VERSION = 'napm-query-semantic.v1';
+const SEMANTIC_STATUS = Object.freeze({
+  RESOLVED: 'RESOLVED',
+  AMBIGUOUS: 'AMBIGUOUS',
+  UNRESOLVED: 'UNRESOLVED',
+  UNSUPPORTED: 'UNSUPPORTED'
+});
+
+const REQUIRED_SLOTS_BY_OPERATION = Object.freeze({
+  rank_top: Object.freeze(['operation', 'targetObjectType', 'rankingMetric', 'topCount', 'direction']),
+  rank_bottom: Object.freeze(['operation', 'targetObjectType', 'rankingMetric', 'topCount', 'direction']),
+  timeseries: Object.freeze(['operation', 'targetObjectType', 'requestedMetrics']),
+  average: Object.freeze(['operation', 'targetObjectType', 'requestedMetrics']),
+  detail_list: Object.freeze(['operation', 'targetObjectType']),
+  metadata_list: Object.freeze(['operation', 'targetObjectType']),
+  drilldown: Object.freeze(['operation', 'targetObjectType']),
+  overview: Object.freeze(['operation'])
+});
 
 function normalizePromptText(prompt = '') {
   return String(prompt || '').trim();
@@ -25,10 +45,6 @@ function hasDrilldownIntent(text = '') {
 
 function hasOverviewIntent(text = '') {
   return /(整体|总体|概览|总览|overall|overview|global|怎么样|情况|状态)/i.test(text);
-}
-
-function hasRankingIntent(text = '') {
-  return /(最大|最高|最多|较多|更多|偏多|最小|最低|最少|较少|更少|偏少|top\s*\d*|TopN|排行|排名|是谁|哪个|哪一个)/i.test(text);
 }
 
 function hasTrendIntent(text = '') {
@@ -62,142 +78,336 @@ function matchAlertPacketIntent(text = '') {
   return eventMatch ? { eventId: eventMatch[1] } : null;
 }
 
-function inferInventoryObjectType(text = '') {
-  const ontologyMatch = ObjectOntologyService.classifyObjectText(text);
-  if (ontologyMatch.objectType) {
-    return ontologyMatch.objectType;
+function buildTimeIntent(text = '') {
+  const explicit = TimeRangeService.hasExplicitTimeRangeExpression(text);
+  return {
+    key: TimeRangeService.inferTimeRangeKeyFromPrompt(text),
+    explicit,
+    source: 'ResolvedQueryTimeRangeService'
+  };
+}
+
+function freezeAmbiguities(items = []) {
+  return Object.freeze(items.map((item) => Object.freeze({
+    ...item,
+    candidates: Object.freeze(Array.isArray(item.candidates)
+      ? item.candidates.map((candidate) => (
+        candidate && typeof candidate === 'object'
+          ? Object.freeze({ ...candidate })
+          : candidate
+      ))
+      : [])
+  })));
+}
+
+function deriveSemanticLifecycle({
+  operation = null,
+  direction = null,
+  targetObjectType = null,
+  requestedMetrics = [],
+  rankingMetric = null,
+  topCount = null,
+  metricSemantic,
+  objectIntent,
+  rankingIntent
+} = {}) {
+  const requiredSlots = REQUIRED_SLOTS_BY_OPERATION[operation] || ['operation'];
+  const ambiguities = [];
+
+  if (requiredSlots.includes('targetObjectType') && objectIntent?.ambiguous === true) {
+    ambiguities.push({
+      slot: 'targetObjectType',
+      candidates: Array.isArray(objectIntent.candidates) ? objectIntent.candidates : []
+    });
+  }
+  const metricSlot = requiredSlots.includes('rankingMetric')
+    ? 'rankingMetric'
+    : (requiredSlots.includes('requestedMetrics') ? 'requestedMetrics' : null);
+  if (metricSlot && metricSemantic?.status === 'ambiguous') {
+    ambiguities.push({
+      slot: metricSlot,
+      candidates: Array.isArray(metricSemantic.candidates)
+        ? metricSemantic.candidates.map((metricId) => ({ metricId }))
+        : []
+    });
+  }
+  if (
+    requiredSlots.some((slot) => ['operation', 'direction', 'topCount'].includes(slot))
+    && rankingIntent?.status === 'ambiguous'
+  ) {
+    ambiguities.push({
+      slot: 'operation',
+      candidates: Array.isArray(rankingIntent.candidates) ? rankingIntent.candidates : []
+    });
   }
 
-  const applicationCatalog = classifyApplicationCatalogPrompt(text);
-  return applicationCatalog.objectType || null;
+  const ambiguousSlots = new Set(ambiguities.map((item) => item.slot));
+  const values = {
+    operation,
+    direction,
+    targetObjectType,
+    requestedMetrics,
+    rankingMetric,
+    topCount
+  };
+  const unresolvedSlots = requiredSlots.filter((slot) => {
+    if (ambiguousSlots.has(slot)) return false;
+    const value = values[slot];
+    if (slot === 'requestedMetrics') return !Array.isArray(value) || value.length === 0;
+    if (slot === 'topCount') return !Number.isInteger(Number(value)) || Number(value) <= 0;
+    return value === null || value === undefined || value === '';
+  });
+
+  if (ambiguities.length > 0) {
+    return {
+      status: SEMANTIC_STATUS.AMBIGUOUS,
+      ambiguities: freezeAmbiguities(ambiguities),
+      unresolvedSlots: Object.freeze(unresolvedSlots),
+      reasonCode: 'SEMANTIC_AMBIGUOUS'
+    };
+  }
+  if (unresolvedSlots.length > 0) {
+    return {
+      status: SEMANTIC_STATUS.UNRESOLVED,
+      ambiguities: Object.freeze([]),
+      unresolvedSlots: Object.freeze(unresolvedSlots),
+      reasonCode: 'SEMANTIC_UNRESOLVED'
+    };
+  }
+  if (operation === 'rank_bottom') {
+    return {
+      status: SEMANTIC_STATUS.UNSUPPORTED,
+      ambiguities: Object.freeze([]),
+      unresolvedSlots: Object.freeze([]),
+      reasonCode: 'RANK_BOTTOM_UNSUPPORTED'
+    };
+  }
+  return {
+    status: SEMANTIC_STATUS.RESOLVED,
+    ambiguities: Object.freeze([]),
+    unresolvedSlots: Object.freeze([]),
+    reasonCode: null
+  };
+}
+
+function buildSemanticContract({
+  operation = null,
+  direction = null,
+  targetObjectType = null,
+  metricSemantic,
+  objectIntent,
+  rankingIntent,
+  timeIntent,
+  confidence = 0
+} = {}) {
+  const requestedMetrics = metricSemantic?.status === 'resolved'
+    ? metricSemantic.requestedMetrics.slice()
+    : [];
+  const primaryMetric = metricSemantic?.status === 'resolved'
+    ? metricSemantic.primaryMetric
+    : null;
+  const isRanking = operation === 'rank_top' || operation === 'rank_bottom';
+  const rankingMetric = isRanking
+    ? (metricSemantic?.rankingMetric || primaryMetric || null)
+    : null;
+  const lifecycle = deriveSemanticLifecycle({
+    operation,
+    direction,
+    targetObjectType,
+    requestedMetrics,
+    rankingMetric,
+    topCount: isRanking ? rankingIntent?.topCount || null : null,
+    metricSemantic,
+    objectIntent,
+    rankingIntent
+  });
+  const objectSourceType = targetObjectType && targetObjectType !== objectIntent?.objectType
+    ? 'workflow_classifier_context'
+    : 'object_ontology';
+  return Object.freeze({
+    schemaVersion: SEMANTIC_SCHEMA_VERSION,
+    status: lifecycle.status,
+    operation,
+    direction,
+    targetObjectType,
+    primaryMetric,
+    requestedMetrics: Object.freeze(requestedMetrics),
+    rankingMetric,
+    topCount: isRanking ? rankingIntent?.topCount || null : null,
+    timeIntent: Object.freeze({ ...(timeIntent || {}) }),
+    confidence,
+    ambiguities: lifecycle.ambiguities,
+    unresolvedSlots: lifecycle.unresolvedSlots,
+    reasonCode: lifecycle.reasonCode,
+    source: Object.freeze({
+      object: Object.freeze({
+        type: objectSourceType,
+        schemaVersion: ObjectOntologyService.loadOntology().version,
+        status: objectIntent?.ambiguous === true
+          ? 'ambiguous'
+          : (targetObjectType ? 'resolved' : 'unresolved'),
+        candidates: Object.freeze(Array.isArray(objectIntent?.candidates)
+          ? objectIntent.candidates.slice()
+          : [])
+      }),
+      metric: Object.freeze({
+        ...(metricSemantic?.source || {}),
+        status: metricSemantic?.status || 'unresolved',
+        candidates: Object.freeze(Array.isArray(metricSemantic?.candidates)
+          ? metricSemantic.candidates.slice()
+          : []),
+        matchedRuleIds: Object.freeze(Array.isArray(metricSemantic?.matchedRuleIds)
+          ? metricSemantic.matchedRuleIds.slice()
+          : [])
+      }),
+      ranking: Object.freeze({
+        ...(rankingIntent?.source || {}),
+        status: rankingIntent?.status || 'unresolved',
+        matchedRuleIds: Object.freeze(Array.isArray(rankingIntent?.matchedRuleIds)
+          ? rankingIntent.matchedRuleIds.slice()
+          : [])
+      })
+    })
+  });
+}
+
+function buildResult(base, semanticContract, metricSemantic) {
+  return {
+    ...base,
+    operation: semanticContract.operation,
+    direction: semanticContract.direction,
+    targetObjectType: semanticContract.targetObjectType,
+    primaryMetric: semanticContract.primaryMetric,
+    requestedMetrics: semanticContract.requestedMetrics,
+    rankingMetric: semanticContract.rankingMetric,
+    topCount: semanticContract.topCount,
+    timeIntent: semanticContract.timeIntent,
+    metricSemantic: metricSemantic?.status === 'resolved' ? metricSemantic : null,
+    semanticContract
+  };
 }
 
 function classifyWorkflow(prompt = '') {
   const text = normalizePromptText(prompt);
-  if (!text) {
-    return {
-      workflowType: null,
-      confidence: 0,
-      targetObjectType: null,
-      metricSemantic: null,
-      reason: 'empty_prompt'
-    };
-  }
-
-  const targetObjectType = inferInventoryObjectType(text);
-  const metricSemantic = MetricSemanticNormalizerService.resolveMetricSemantic(text);
-  const structuredIntent = {
+  const objectIntent = ObjectOntologyService.classifyObjectText(text);
+  const rankingIntent = RankingIntentParserService.parseRankingIntent(text);
+  const targetObjectType = objectIntent.objectType || null;
+  const metricSemantic = MetricSemanticNormalizerService.resolveMetricSemantic(text, {
     targetObjectType,
-    metricSemantic
+    rankingMetricText: rankingIntent?.rankingMetricClause?.metricText || '',
+    rankingMetricRange: rankingIntent?.rankingMetricClause?.metricRange || null
+  });
+  const timeIntent = buildTimeIntent(text);
+
+  const finalize = (base, operation, direction = null, confidence = base.confidence || 0) => {
+    const semanticContract = buildSemanticContract({
+      operation,
+      direction,
+      targetObjectType: base.targetObjectType === undefined ? targetObjectType : base.targetObjectType,
+      metricSemantic,
+      objectIntent,
+      rankingIntent,
+      timeIntent,
+      confidence
+    });
+    return buildResult(base, semanticContract, metricSemantic);
   };
+
+  if (!text) {
+    return finalize({ workflowType: null, confidence: 0, reason: 'empty_prompt' }, null);
+  }
 
   const alertPacketIntent = matchAlertPacketIntent(text);
   if (alertPacketIntent) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'alert_packet_analysis',
       confidence: 1,
       eventId: alertPacketIntent.eventId,
       reason: 'alert_packet_event_intent'
-    };
+    }, null, null, 1);
   }
 
   if (hasPageViewDetailIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'page_view_detail',
-      operation: 'detail_list',
       targetObjectType: targetObjectType || 'PageFamily',
       confidence: 0.95,
       reason: 'page_view_detail_intent'
-    };
+    }, 'detail_list', null, 0.95);
   }
 
   if (hasRankedResultPageDrilldownIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'metric_topn',
-      operation: 'drilldown',
-      drilldownRequested: true,
       targetObjectType: 'PageFamily',
+      drilldownRequested: true,
       requiresResultReference: true,
       confidence: 0.95,
       reason: 'ranked_result_page_drilldown_intent'
-    };
+    }, 'drilldown', null, 0.95);
   }
 
   if (hasDrilldownIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'drilldown_catalog',
       confidence: 0.9,
       reason: 'drilldown_catalog_intent'
-    };
+    }, 'metadata_list', null, 0.9);
   }
 
   if (hasMetricInventoryIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'metric_inventory',
       confidence: 0.9,
       reason: 'metric_inventory_intent'
-    };
+    }, 'metadata_list', null, 0.9);
   }
 
   if (hasTrendIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'metric_timeseries',
       confidence: 0.85,
       reason: 'trend_intent'
-    };
+    }, 'timeseries', null, 0.85);
   }
 
   if (hasAverageIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'metric_average',
       confidence: 0.85,
       reason: 'average_intent'
-    };
+    }, 'average', null, 0.85);
   }
 
-  if (hasRankingIntent(text)) {
-    return {
-      ...structuredIntent,
+  if (rankingIntent.status === 'resolved') {
+    return finalize({
       workflowType: 'metric_topn',
-      confidence: 0.85,
+      confidence: 0.9,
       reason: 'ranking_intent'
-    };
+    }, rankingIntent.operation, rankingIntent.direction, 0.9);
   }
 
-  if (hasInventoryIntent(text)) {
-    if (targetObjectType) {
-      return {
-        ...structuredIntent,
-        workflowType: 'object_inventory',
-        confidence: 0.92,
-        targetObjectType,
-        reason: 'object_inventory_intent'
-      };
-    }
+  if (hasInventoryIntent(text) && targetObjectType) {
+    return finalize({
+      workflowType: 'object_inventory',
+      confidence: 0.92,
+      reason: 'object_inventory_intent'
+    }, 'metadata_list', null, 0.92);
   }
 
   if (hasOverviewIntent(text)) {
-    return {
-      ...structuredIntent,
+    return finalize({
       workflowType: 'overview',
       confidence: 0.7,
       reason: 'overview_intent'
-    };
+    }, 'overview', null, 0.7);
   }
 
-  return {
-    ...structuredIntent,
+  return finalize({
     workflowType: null,
     confidence: 0.2,
     reason: 'workflow_unresolved'
-  };
+  }, null, null, 0.2);
 }
 
 function isObjectInventoryPrompt(prompt = '') {
@@ -205,6 +415,10 @@ function isObjectInventoryPrompt(prompt = '') {
 }
 
 module.exports = {
+  SEMANTIC_SCHEMA_VERSION,
+  SEMANTIC_STATUS,
+  buildSemanticContract,
+  deriveSemanticLifecycle,
   classifyWorkflow,
   isObjectInventoryPrompt,
   normalizePromptText

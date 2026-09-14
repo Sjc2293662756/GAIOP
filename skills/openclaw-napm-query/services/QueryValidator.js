@@ -1,7 +1,5 @@
 const logger = require('../src/utils/logger');
-const {
-  validatePageViewsQuery
-} = require('../../shared/NapmPageViewsContract');
+const ResolvedQueryContract = require('./ResolvedQueryContract');
 
 const VALID_SERVICES = new Set([
   'topValues',
@@ -25,6 +23,42 @@ class QueryValidator {
   validateCore(request, mode = 'query') {
     const target = request && typeof request === 'object' ? request : {};
     const errors = [];
+
+    const canonicalServiceContract = ResolvedQueryContract.getServiceContract(target.service);
+    if (canonicalServiceContract) {
+      const canonicalValidation = ResolvedQueryContract.validateShape(target);
+      if (!canonicalValidation.ok) {
+        const querySummary = {
+          service: target.service || null,
+          start: Number.isFinite(Number(target.start)) ? Number(target.start) : null,
+          end: Number.isFinite(Number(target.end)) ? Number(target.end) : null,
+          metricCount: Array.isArray(target.metrics) ? target.metrics.length : 0,
+          groupTypes: Array.isArray(target.groups)
+            ? target.groups.map((group) => String(group?.type || '').trim()).filter(Boolean)
+            : []
+        };
+        logger.error(
+          mode === 'gateway' ? 'Structured query validation failed' : 'Query validation failed',
+          { errors: [canonicalValidation.message], querySummary }
+        );
+        const error = new Error(canonicalValidation.message);
+        error.code = 'QUERY_SHAPE_INVALID';
+        error.details = {
+          mode,
+          errors: [canonicalValidation.message],
+          reasonCodes: [canonicalValidation.reasonCode],
+          service: target.service || null
+        };
+        throw error;
+      }
+      Object.keys(target).forEach((field) => delete target[field]);
+      Object.assign(target, canonicalValidation.query);
+      logger.info(
+        mode === 'gateway' ? 'Structured query validation passed' : 'Query validation passed',
+        { service: target.service }
+      );
+      return target;
+    }
 
     if (!target.service) {
       errors.push('Service type is required');
@@ -69,41 +103,12 @@ class QueryValidator {
       errors.push(`Invalid service type: ${target.service}`);
     }
 
-    if (target.service === 'topValues') {
-      if (!target.metric) {
-        errors.push('Metric is required for topValues service');
-      }
-      if (!target.topCount || target.topCount <= 0) {
-        target.topCount = 20;
-      }
-    }
-
-    if (target.service === 'averageValues' || target.service === 'timeValues') {
-      if (!Array.isArray(target.metrics) || target.metrics.length === 0) {
-        errors.push('Metrics array is required for averageValues and timeValues services');
-      }
-    }
-
-    if (target.service === 'timeValues' && !target.granularity) {
-      errors.push('Granularity is required for timeValues service');
-    }
-
-    if (target.service === 'pageViews') {
-      const detailValidation = validatePageViewsQuery(target, { validateTime: false });
-      if (!detailValidation.ok) {
-        errors.push(detailValidation.message);
-      } else {
-        target.pageFamilyId = detailValidation.query.pageFamilyId;
-        target.maxLimit = detailValidation.query.maxLimit;
-      }
-    }
-
     if (errors.length > 0) {
       const querySummary = {
         service: target.service || null,
         start: Number.isFinite(Number(target.start)) ? Number(target.start) : null,
         end: Number.isFinite(Number(target.end)) ? Number(target.end) : null,
-        metricCount: Array.isArray(target.metrics) ? target.metrics.length : (target.metric ? 1 : 0),
+        metricCount: Array.isArray(target.metrics) ? target.metrics.length : 0,
         groupTypes: Array.isArray(target.groups)
           ? target.groups.map((group) => String(group?.type || '').trim()).filter(Boolean)
           : []
@@ -118,7 +123,8 @@ class QueryValidator {
       error.details = {
         mode,
         errors,
-        service: target.service || null
+        service: target.service || null,
+        reasonCodes: []
       };
       throw error;
     }

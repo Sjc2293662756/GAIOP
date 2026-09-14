@@ -77,13 +77,14 @@ describe('RequirementParserService multilevel execution fallback', () => {
     ]);
     expect(directSpy).toHaveBeenCalledTimes(1);
     expect(directSpy.mock.calls[0][0]).toMatchObject({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: 'PGNPGE',
+      metrics: ['PGNPGE'],
       topMetric: 'PGNPGE'
     });
   });
 
-  test('should fallback multilevel averageValues to topValues when upstream path is unsupported', async () => {
+  test('should reject an unverified multilevel averageValues path before fallback execution', async () => {
     jest.spyOn(RequirementParserService, 'reviewGatewayRequestMetadata').mockResolvedValue({
       metricsForGroup: [
         { id: 'PGNPGC', label: 'Page hits server' }
@@ -140,20 +141,13 @@ describe('RequirementParserService multilevel execution fallback', () => {
       ]
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.service).toBe('topValues');
-    expect(result.warnings).toEqual([
-      expect.objectContaining({
-        code: 'MULTILEVEL_SERVICE_COMPATIBILITY_FALLBACK'
-      })
-    ]);
-    expect(directSpy).toHaveBeenCalledTimes(2);
-    expect(directSpy.mock.calls[0][0].service).toBe('averageValues');
-    expect(directSpy.mock.calls[1][0]).toMatchObject({
-      service: 'topValues',
-      metric: 'PGNPGC',
-      topMetric: 'PGNPGC'
+    expect(result).toMatchObject({
+      ok: false,
+      outcome: 'VALIDATION_FAILURE',
+      error: { code: 'RUNTIME_METRIC_UNSUPPORTED' },
+      executableValidation: { status: 'UNKNOWN' }
     });
+    expect(directSpy).not.toHaveBeenCalled();
   });
 
   test('should not treat raw multilevel groups response as stable inventory when fallback finds no rows', async () => {

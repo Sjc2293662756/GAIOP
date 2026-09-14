@@ -169,7 +169,7 @@ async function executeOverviewPlan({
         const groupValues = extractTopGroupValues(
           rootResult.data,
           targetType,
-          executionItem.query.metrics || [executionItem.query.metric],
+          executionItem.query.metrics || [],
           Math.min(Number(childPlan.maxChildQueries || 0), remainingChildBudget)
         );
 

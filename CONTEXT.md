@@ -13,19 +13,23 @@ The stable `conversationKey` used to group turns and retain a pending clarificat
 _Avoid_: current turn, latest turn id, delivery source
 
 **Run Binding**:
-The immutable association between one OpenClaw inbound message/agent run and one `turnId`. OpenClaw message hooks expose `messageId`, while agent and Tool hooks expose `runId`; `QueryTurnCoordinator` bridges them by adopting the fresh `RECEIVED` turn whose trusted conversation scope and source prompt match, then binds the agent run to that same turn. Tool and output hooks resolve the Query Turn only through these bindings. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match and a `NAPM_QUERY` route. Missing or mismatched identity/route fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn. Because OpenClaw's `before_message_write` contract does not provide run/message identity, that hook must not finalize or replace a Query Turn when identity is absent; authoritative channel delivery remains owned by identity-bearing output hooks.
+The immutable association created at `message_received` between the current OpenClaw run/message and one `turnId`. Tool and output hooks resolve the Query Turn only through this binding. Direct Tool execution must present the plugin-issued trusted `traceId` for that scope and turn, with an exact trusted `toolName` match, a `NAPM_QUERY` route, the run-bound Turn Admission Decision, and the stable digest of the final Hook-authorized parameters. Missing admission or any identity/route/parameter mismatch fails closed before pending-draft restoration, time materialization, validation, or Skill execution; it never falls back to the conversation's latest turn.
 _Avoid_: mutable conversation turn id, latest-turn lookup
 
 **Turn Admission Decision**:
 The immutable reception-layer decision produced once for the current run/message. It records the route, action, expected Tool, workflow, reason code, and any authoritative source artifact selected for a short follow-up. The public execution gate checks this decision but does not reinterpret domain language. It is not the Query Decision and does not own Query, Alert, Packet, or Report business state.
 _Avoid_: mutable route, prompt-only Tool permission, one global cross-skill state machine
 
+**Structured Turn Intent**:
+The versioned, immutable routing input produced and in-process issued by `DomainIntentClassificationAdapter`, the common guard's only prompt-facing domain-classification boundary. The adapter invokes existing domain predicates and projects their output; it owns no synonym regex. `TurnIntentResolver` verifies adapter provenance, schema, source, and the frozen outer/workflow/signals/facts structure before identifying a Tool; a copied, mutable, or otherwise invalid classification selects no Tool. Its schema version and source are copied into every Turn Admission Decision and audit, including platform identity/capability turns, which remain explicitly `MODEL_OWNED`. Summary and inspection reporting remain domain-orchestrated because their valid path contains both a source Tool and report export.
+_Avoid_: public Hook assembling domain booleans, ad-hoc resolver signals, nested Tool-selection regex, forcing a multi-stage report into one expected Tool
+
 **Reference Selection**:
-A domain-neutral parse of a short continuation, such as ordinal 1 plus DETAIL, a requested limit of 20, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose.
+A domain-neutral parse of the currently migrated short continuations: ordinal 1 plus DETAIL, an optional requested limit, or MODIFY_TIME. It never chooses a Skill and never contains a business name, event id, or pageFamilyId copied from model prose. Pronoun-only selection, generic confirm/cancel, report export, and packet download are target-stage capabilities, not current generic-parser behavior; existing domain-specific flows continue to own them.
 _Avoid_: regex-selected Tool, model-authored internal identifier
 
 **Authoritative Context Candidate**:
-A minimal capability projection exposed by one domain resolver to Turn Admission. Query currently exposes normalized `WebApplication`/`PageFamily` ranking sets and exact-turn `timeValues` context; Alert exposes event ordinals. Freshness selects one source. If the newest successful Skill result is from a domain whose ordinal continuation has not migrated, a Context Boundary requires clarification and prevents fallback to an older Query result.
+A minimal capability projection exposed by one domain resolver to Turn Admission. Query currently exposes normalized `WebApplication`/`PageFamily` ranking sets and exact-turn `timeValues` context; Alert exposes event ordinals. Freshness selects one source only during `message_received`; the selected artifact and source turn are then frozen into the run-bound Decision and Query Turn. Later completion of another result in the same scope cannot replace that source. If the newest successful Skill result is from a domain whose ordinal continuation has not migrated, a Context Boundary requires clarification and prevents fallback to an older Query result.
 _Avoid_: latest chat text, stale-domain fallback, shared mutable result object
 
 **Query Draft**:
@@ -36,9 +40,17 @@ _Avoid_: incomplete Resolved Query, executable query
 The authoritative evaluation of a Query Draft. It selects exactly one action: ask a clarifying question, execute a validated Resolved Query, or reject an unsupported query. A clarification is a normal terminal outcome and does not imply Skill or southbound failure.
 _Avoid_: model prose, hook-local guess, validation error for missing user input
 
-**Structured Query Intent**:
-The shared classification of workflow operation, target object type, and metric semantic. `WorkflowClassifierService` composes object ontology and metric normalization into this structure, and Query Decision consumes it for application-traffic scope checks. Prompt routing, plugin hooks, and Query Decision must not maintain independent application-traffic regexes.
-_Avoid_: duplicated prompt regex, hook-local application scope guess
+**Canonical Query Semantic Contract**:
+The immutable `napm-query-semantic.v1` interpretation produced before Query Draft construction. It carries `status`, `operation`, nullable `direction`, nullable `targetObjectType`, optional `primaryMetric`, `requestedMetrics[]`, nullable `rankingMetric`, nullable `topCount`, `timeIntent`, `confidence`, `ambiguities[]`, `unresolvedSlots[]`, `reasonCode`, and source records. The only lifecycle states are `RESOLVED`, `AMBIGUOUS`, `UNRESOLVED`, and `UNSUPPORTED`; only `RESOLVED` may enter Query Draft assembly. Object Ontology owns objects, Resolution Spec `metricSemanticRules` owns metric language, Resolution Spec `rankingGrammar` owns ranking operation/direction/count, and the shared time parser owns time. `WorkflowClassifierService` alone derives lifecycle after computing operation-specific required slots; the Resolver only consumes the contract, rejects unknown schemas/statuses, and never supplies a default object.
+_Avoid_: duplicated prompt regex, `primaryMetric=requestedMetrics[0]`, deriving `topMetric` from the first return metric, Resolver reinterpretation of raw prompt, treating semantic `RESOLVED` as Query validity or runtime capability
+
+**Canonical ResolvedQuery Contract**:
+The single executable query shape `napm-resolved-query.v1`, owned by `ResolvedQueryContract`. `metrics[]` is the returned metric set, `topMetric` is the independent ordering metric used only by `topValues`, and `queryModeKey` is derived from `service`. `metric` is forbidden in canonical queries and is accepted only at a legacy input boundary where `LegacyMetricInputAdapter` removes it before validation. Semantic Resolver output and internal real child queries do not pass through that Adapter.
+_Avoid_: `metric=metrics[0]=topMetric`, requiring `topMetric ∈ metrics[]`, service/queryMode conflicts, running the legacy Adapter after canonical assembly
+
+**Query Knowledge Sources**:
+The only maintained Resolution Spec, Object Ontology, Metric Catalog, and Object × Metric ownership sources live under `skills/openclaw-napm-query/`. The Resolution Spec is also the only machine source for Metric Semantic Rules and Ranking Grammar; old `metrics.aliases` is deprecated and forbidden for production matching. Root configuration copies are forbidden; the retained root ownership entry is only a thin compatibility re-export. Metric Catalog load failure is fatal, and every semantic-rule metric ID must exist in it. The ownership tri-state requires an exact service, exact group-path signature, exhaustive coverage, and an explicitly matching trusted product baseline; no baseline means `UNKNOWN`. During Phase 2 this API remains deliberately disconnected from Query Decision and execution admission.
+_Avoid_: root configuration mirror, second semantic/ranking table, built-in legal-ID fallback, object-only exhaustive claim, implicit runtime baseline
 
 **Validated Group Path**:
 An explicit multi-level `pathPlanning` record whose planner proof, `plannedGroups`, `selectedPath`, anchor, and terminal queryability all agree with the static groups tree. Ordinary queries with multiple groups default to `VALIDATION_FAILURE`; merely supplying two groups or an unverified `pathPlanning` object is not sufficient.
@@ -89,8 +101,8 @@ The lightweight successful `timeValues` context stored both as scope-latest for 
 _Avoid_: validating an admitted follow-up against the newest query in the conversation
 
 **TopN Normalization**:
-The deterministic ordering applied to every `topValues` result before narration or ranking-result storage. Values are parsed numerically using `topMetric`, structured ascending/descending intent determines direction, source ranks are replaced, ties remain stable, and blank/missing values stay last. The narration object type is the effective terminal group.
-_Avoid_: string sorting, trusting upstream row order, treating blank values as zero, labeling a terminal PageFamily result as WebApplication
+The deterministic descending ordering applied to supported `rank_top` results before narration or ranking-result storage. Values are parsed numerically using `topMetric`, source ranks are replaced, ties remain stable, and blank/missing values stay last. A semantically complete `rank_bottom` is `UNSUPPORTED/RANK_BOTTOM_UNSUPPORTED`; an incomplete BottomN remains `UNRESOLVED`. Ascending local reordering is not a BottomN implementation. The narration object type is the effective terminal group.
+_Avoid_: string sorting, trusting upstream row order, treating blank values as zero, reversing TopN to fabricate BottomN, labeling a terminal PageFamily result as WebApplication
 
 **Contract Violation**:
 The deterministic terminal outcome recorded when a `NAPM_QUERY` turn reaches final output without the required `napm-skill-query` call, or after the Tool call was accepted but before its adapter started execution. It produces a safe final response and never fabricates data or starts a southbound request. If adapter execution already started but no result exists at final output, the distinct terminal outcome is `EXECUTION_FAILURE`.
@@ -107,6 +119,20 @@ _Avoid_: business, WebApplication
 **Business Group**:
 The monitoring grouping represented by `BusinessGroup` in NAPM queries.
 _Avoid_: business, WebApplication
+
+## Executable Query Gate
+
+Canonical queries pass one shared Phase 4 validator before execution. The order is Metric Catalog existence, exact Object × Metric ownership classification, then the Gateway/Direct/Plugin execution gate. Known incompatibility and unknown metrics are deterministic validation failures; an uncovered or untrusted capability is RUNTIME_CAPABILITY_REQUIRED and has zero metadata, Skill, Kernel, and southbound calls. The validator does not infer user intent and does not replace dynamic object-argument validation.
+
+Phase 5 extends this gate without changing the static validator: Static `UNKNOWN` checks marked `METRICS_FOR_GROUP` go through `ResolvedQueryExecutionAdmissionService` and `RuntimeMetricCapabilityService`. The provider calls `metricsForGroup` once per exact canonical path, maps returned metric IDs to `SUPPORTED` or `UNSUPPORTED`, and treats fetch/shape errors as `INDETERMINATE`. Only `SUPPORTED` reaches the data kernel; runtime evidence is request-scoped and never becomes static truth.
+
+Phase 6 closes Query mutation at the execution boundary. `AtomicQueryRepairService` accepts only canonical Queries and an explicit semantic-neutral allowlist, produces an auditable plan, and applies it once to an isolated clone. The repaired candidate must pass `ResolvedQueryContract`, Static Validator, and Runtime Capability again; any semantic replacement, dropped requested metric, stale plan, or unsafe metadata suggestion fails closed. Prepared proof is fingerprinted and one-use; a changed candidate cannot consume it. Runtime capability evidence is never reused across requests, and a `NO_DATA` response cannot trigger repair.
+
+Phase 7 makes transport serialization explicit. `NapmQuerySerializer` is the only mapper from admitted canonical Query to NAPM params and uses an explicit allowlist. It preserves metrics order and independent `topMetric`, never reads legacy `metric`, never repairs or validates semantics, and never emits internal fields. MetricExecutionKernel dispatches by `service` only and NapmClient receives transport-ready params; pageViews remains a separate detail contract.
+
+Phase 7.1 verifies the last transport mile: `GroupBuilder.buildGroupParams()` is the single production mechanical group encoder, and only Serializer joins `metrics[]` for transport. NapmClient has no object/metric/service derivation. Uncalled Query helpers were removed; LegacyMetricInputAdapter remains the only explicit legacy boundary. Metrics[0] references outside data transport are retained only for semantic/presentation compatibility and are not execution truth.
+
+Phase 8 defines one execution outcome layer: `ExecutionOutcomeContract` enumerates `SUCCESS`, `NO_DATA`, `VALIDATION_FAILURE`, `RUNTIME_CAPABILITY_FAILURE`, `SERIALIZATION_FAILURE`, and `EXECUTION_FAILURE`; `ExecutionOutcomeMapper` translates internal stage results. A zero-row answer is `NO_DATA` only with attempted/successful data transport and successful parsing. Plugin, Gateway, Direct, and Narration preserve this structured outcome instead of inferring from error text or empty arrays.
 
 ## Flagged Ambiguities
 

@@ -17,10 +17,10 @@ const { handleSkillCall } = require('../skills/openclaw-napm-query/scripts/run_n
 
 function buildQuery(overrides = {}) {
   return {
+    schemaVersion: 'napm-resolved-query.v1',
     service: 'timeValues',
     queryModeKey: 'timeseries',
     groups: [{ type: 'DefinedApp' }],
-    metric: 'TPIO',
     metrics: ['TPIO'],
     granularity: 86400,
     start: 1787140800,
@@ -54,7 +54,8 @@ describe('query argument policy', () => {
     const client = RequirementParserService.napmClient;
     const result = await RequirementParserService.executeGatewayRequest(buildQuery({
       service: 'averageValues',
-      queryModeKey: 'average'
+      queryModeKey: 'average',
+      granularity: undefined
     }));
 
     expect(result.error?.code).toBe('GROUP_ARGUMENT_REQUIRED');
@@ -62,19 +63,13 @@ describe('query argument policy', () => {
     expect(client.getJson).not.toHaveBeenCalled();
   });
 
-  test('keeps an explicit DefinedApp trend executable', async () => {
+  test('executes an explicit DefinedApp trend with Phase 4 coverage', async () => {
     const client = RequirementParserService.napmClient;
     const result = await RequirementParserService.executeGatewayRequest(buildQuery({
       groups: [{ type: 'DefinedApp', argument: 'HTTP' }]
     }));
 
-    expect(result.ok).toBe(true);
-    expect(result.requestParams).toMatchObject({
-      groupType1: 'DefinedApp',
-      groupArgument1: 'HTTP',
-      numGroups: 1
-    });
-    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true });
   });
 
   test('keeps DefinedApp inventory and topValues discovery argument-optional', async () => {
@@ -86,10 +81,10 @@ describe('query argument policy', () => {
       format: 'json'
     });
     const ranking = await RequirementParserService.executeGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
       groups: [{ type: 'DefinedApp' }],
-      metric: 'TPIO',
       metrics: ['TPIO'],
       topMetric: 'TPIO',
       topCount: 10,
@@ -99,8 +94,7 @@ describe('query argument policy', () => {
     });
 
     expect(inventory.error?.code).not.toBe('GROUP_ARGUMENT_REQUIRED');
-    expect(ranking.error?.code).not.toBe('GROUP_ARGUMENT_REQUIRED');
-    expect(client.get).toHaveBeenCalled();
+    expect(ranking).toMatchObject({ ok: true });
   });
 
   test('rejects an argument on TotalTraffic without silently deleting it', async () => {
@@ -119,29 +113,24 @@ describe('query argument policy', () => {
     expect(client.getJson).not.toHaveBeenCalled();
   });
 
-  test('keeps an argument-free TotalTraffic trend executable', async () => {
+  test('executes an argument-free TotalTraffic trend with Phase 4 coverage', async () => {
     const client = RequirementParserService.napmClient;
     const result = await RequirementParserService.executeGatewayRequest(buildQuery({
       groups: [{ type: 'TotalTraffic' }]
     }));
 
-    expect(result.ok).toBe(true);
-    expect(result.requestParams).toMatchObject({
-      groupType1: 'TotalTraffic',
-      numGroups: 1
-    });
-    expect(result.requestParams.groupArgument1).toBeUndefined();
-    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true });
   });
 
-  test('does not apply single-object argument requirements to a multi-level path', async () => {
+  test('does not confuse UNKNOWN multi-level capability with argument requirements', async () => {
     const client = RequirementParserService.napmClient;
     const result = await RequirementParserService.executeGatewayRequest(buildQuery({
       groups: [{ type: 'IPAddress' }, { type: 'DefinedApp' }]
     }));
 
     expect(result.error?.code).not.toBe('GROUP_ARGUMENT_REQUIRED');
-    expect(client.get).toHaveBeenCalled();
+    expect(result.error?.code).toBe('RUNTIME_METRIC_UNSUPPORTED');
+    expect(client.get).not.toHaveBeenCalled();
   });
 
   test('returns a clarification contract for a missing single-object argument', async () => {

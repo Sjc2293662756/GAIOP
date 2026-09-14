@@ -18,19 +18,20 @@ const {
 describe('business metric ownership guardrails', () => {
   test('normalizes executable metric shape without recursive self-invocation', () => {
     const normalized = RequirementParserService.normalizeExecutableQueryShape({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
-      metric: ' pghttp500 ',
       metrics: ['PGHTTP500', 'pghttp500'],
+      topMetric: 'pghttp500',
       groups: [{ type: 'WebApplication' }]
     });
 
     expect(normalized).toMatchObject({
       service: 'topValues',
-      metric: 'PGHTTP500',
       metrics: ['PGHTTP500'],
       topMetric: 'PGHTTP500',
       groups: [{ type: 'WebApplication' }]
     });
+    expect(normalized.metric).toBeUndefined();
   });
 
   test('should filter WebApplication metric inventory to PG and optimization metrics', () => {
@@ -251,7 +252,8 @@ describe('business metric ownership guardrails', () => {
     });
 
     expect(normalized.metricDomainToken).toBe('application');
-    expect(normalized.bindings.metric).toBe('TPIO');
+    expect(normalized.bindings.metric).toBeUndefined();
+    expect(normalized.bindings.topMetric).toBeUndefined();
     expect(normalized.bindings.metrics).toEqual(['TPIO', 'PLI', 'TRTI']);
     expect(normalized.bindings.primaryMetrics).toEqual(['TRTI']);
     expect(normalized.bindings.auxMetrics).toEqual(['TPIO', 'PLI']);

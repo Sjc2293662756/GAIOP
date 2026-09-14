@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 
 const NapmClient = require('./NapmClient');
+const GroupBuilder = require('./GroupBuilder');
 const DimensionMappingService = require('./DimensionMappingService');
 const MetadataTruthSourcePolicy = require('./MetadataTruthSourcePolicy');
 const ObjectMetadataRegistry = require('./ObjectMetadataRegistry');
@@ -539,9 +540,7 @@ class NapmMetadataService {
    * @returns {array} - 指标列表
    */
   async getMetricsForGroupPath(groups = []) {
-    const normalizedGroups = Array.isArray(groups)
-      ? groups.filter(item => item && item.type).map(item => ({ type: item.type, argument: item.argument }))
-      : [];
+    const normalizedGroups = this.normalizeMetricsForGroupPathGroups(groups);
 
     if (normalizedGroups.length === 0) {
       return [];
@@ -553,19 +552,7 @@ class NapmMetadataService {
       return cached;
     }
 
-    const params = {
-      type: 'metricsForGroup',
-      json: 'true',
-      numGroups: normalizedGroups.length
-    };
-
-    normalizedGroups.forEach((group, index) => {
-      const position = index + 1;
-      params[`groupType${position}`] = group.type;
-      if (group.argument) {
-        params[`groupArgument${position}`] = group.argument;
-      }
-    });
+    const params = this.buildMetricsForGroupPathParams(normalizedGroups);
 
     const raw = await this.napmClient.getJson(params);
     const normalized = Array.isArray(raw)
@@ -580,13 +567,103 @@ class NapmMetadataService {
     return normalized;
   }
 
+  normalizeMetricsForGroupPathGroups(groups = []) {
+    return Array.isArray(groups)
+      ? groups
+        .filter(item => item && item.type)
+        .map(item => ({ type: item.type, argument: item.argument }))
+      : [];
+  }
+
+  buildMetricsForGroupPathParams(groups = []) {
+    return {
+      type: 'metricsForGroup',
+      json: 'true',
+      ...GroupBuilder.buildGroupParams(groups)
+    };
+  }
+
+  /**
+   * Runtime capability provider that preserves malformed responses as indeterminate.
+   * This path intentionally has no cross-request cache; the existing normalized API
+   * above remains unchanged for legacy metadata review callers.
+   */
+  async getMetricsForGroupPathEvidence(groups = []) {
+    const normalizedGroups = this.normalizeMetricsForGroupPathGroups(groups);
+    if (normalizedGroups.length === 0) {
+      return {
+        ok: false,
+        status: 'INDETERMINATE',
+        reasonCode: 'RUNTIME_GROUP_PATH_INVALID',
+        supportedMetricIds: [],
+        params: null
+      };
+    }
+
+    const params = this.buildMetricsForGroupPathParams(normalizedGroups);
+    let raw;
+    try {
+      raw = await this.napmClient.getJson(params);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'INDETERMINATE',
+        reasonCode: 'RUNTIME_CAPABILITY_FETCH_FAILED',
+        supportedMetricIds: [],
+        params,
+        error: error?.message || String(error)
+      };
+    }
+
+    if (!Array.isArray(raw)) {
+      return {
+        ok: false,
+        status: 'INDETERMINATE',
+        reasonCode: 'RUNTIME_CAPABILITY_RESPONSE_INVALID',
+        supportedMetricIds: [],
+        params,
+        responseType: raw === null ? 'null' : typeof raw
+      };
+    }
+
+    const metricIdOf = (item) => String(
+      item?.id
+      ?? item?.Id
+      ?? item?.ID
+      ?? ''
+    ).trim();
+    const malformed = raw.some((item) => (
+      !item || typeof item !== 'object' || Array.isArray(item)
+      || !metricIdOf(item)
+    ));
+    if (malformed) {
+      return {
+        ok: false,
+        status: 'INDETERMINATE',
+        reasonCode: 'RUNTIME_CAPABILITY_RESPONSE_INVALID',
+        supportedMetricIds: [],
+        params
+      };
+    }
+
+    return {
+      ok: true,
+      status: 'SUPPORTED_LIST',
+      reasonCode: 'RUNTIME_CAPABILITY_RESPONSE_OK',
+      supportedMetricIds: Array.from(new Set(
+        raw.map((item) => metricIdOf(item).toUpperCase()).filter(Boolean)
+      )),
+      params
+    };
+  }
+
   /**
    * 审查查询的有效性
    * 检查分组、指标、时间粒度等是否有效
    * @param {object} query - 查询对象
    * @returns {object} - 审查结果，包含 issues 和 suggestions
    */
-  async reviewQuery(query) {
+  async reviewQuery(query, options = {}) {
     const issues = [];
     const suggestions = [];
 
@@ -638,10 +715,12 @@ class NapmMetadataService {
         }
       }
 
-      const metricsForGroup = await this.getMetricsForGroupPath(query.groups);
-      result.metricsForGroup = metricsForGroup;
-      if (metricsForGroup.length === 0) {
-        issues.push(`metrics_for_group_empty:${firstGroup.type}`);
+      if (options.skipMetricsForGroup !== true) {
+        const metricsForGroup = await this.getMetricsForGroupPath(query.groups);
+        result.metricsForGroup = metricsForGroup;
+        if (metricsForGroup.length === 0) {
+          issues.push(`metrics_for_group_empty:${firstGroup.type}`);
+        }
       }
     }
 
@@ -657,10 +736,11 @@ class NapmMetadataService {
       }
     }
 
-    if (query.metric && result.metricsForGroup && result.metricsForGroup.length > 0) {
-      const matchedMetric = result.metricsForGroup.some(item => item.id === query.metric);
+    const queryMetric = query.topMetric || query.metrics?.find(Boolean) || null;
+    if (queryMetric && result.metricsForGroup && result.metricsForGroup.length > 0) {
+      const matchedMetric = result.metricsForGroup.some(item => item.id === queryMetric);
       if (!matchedMetric) {
-        issues.push(`metric_not_supported_for_group:${query.metric}`);
+        issues.push(`metric_not_supported_for_group:${queryMetric}`);
         suggestions.push({
           type: 'metrics_for_group',
           values: result.metricsForGroup.slice(0, 30)
@@ -1131,6 +1211,3 @@ class NapmMetadataService {
 }
 
 module.exports = new NapmMetadataService();
-
-
-

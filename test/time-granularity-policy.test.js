@@ -102,7 +102,6 @@ describe('shared automatic time granularity policy', () => {
   });
 
   test('both resolution specs publish the same duration policy', () => {
-    const rootSpec = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'napm-resolution-spec.v1.json'), 'utf8'));
     const skillSpec = JSON.parse(fs.readFileSync(path.join(
       __dirname,
       '..',
@@ -121,7 +120,6 @@ describe('shared automatic time granularity policy', () => {
       ]
     };
 
-    expect(rootSpec.time.automaticGranularityPolicy).toEqual(expectedPolicy);
     expect(skillSpec.time.automaticGranularityPolicy).toEqual(expectedPolicy);
   });
 });

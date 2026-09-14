@@ -143,7 +143,7 @@ describe('NAPM plugin structured query authority', () => {
     );
 
     expect(result).toMatchObject({ block: true });
-    expect(result.blockReason).toContain('topMetric');
+    expect(result.blockReason).toContain('metrics[]');
   });
 
   test('allows one construction repair and stops a second failure in the same turn', async () => {

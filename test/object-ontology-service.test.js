@@ -64,6 +64,10 @@ describe('ObjectOntologyService', () => {
       objectType: 'CompositeApplication',
       ambiguous: false
     });
+    expect(ObjectOntologyService.classifyObjectText('网络时延最高的前5个IP')).toMatchObject({
+      objectType: 'IPAddress',
+      ambiguous: false
+    });
   });
 
   test('should default plain application wording to DefinedApp', () => {

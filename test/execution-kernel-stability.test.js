@@ -26,27 +26,29 @@ describe('execution kernel stability', () => {
       service: 'topValues',
       start: 1779413040,
       end: 1779499440,
-      metric: 'PLI',
-      topMetric: 'PLI',
+      metric: 'PGTME',
+      topMetric: 'PGTME',
       topCount: 10,
-      groups: [{ type: 'IPAddress' }]
+      groups: [{ type: 'WebApplication' }]
     });
 
     expect(result.ok).toBe(true);
     expect(result.error).toBeNull();
     expect(result.requestParams).toMatchObject({
       type: 'topValues',
-      metrics: 'PLI',
-      topMetric: 'PLI',
+      metrics: 'PGTME',
+      topMetric: 'PGTME',
       topCount: 10,
-      groupType1: 'IPAddress',
+      groupType1: 'WebApplication',
       numGroups: 1
     });
   });
 
   test('should return QUERY_SHAPE_INVALID instead of TypeError when metrics cannot be derived', async () => {
     const result = await RequirementParserService.executeDirectGatewayRequest({
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'averageValues',
+      queryModeKey: 'average',
       start: 1779413040,
       end: 1779499440,
       groups: [{ type: 'IPAddress' }]
@@ -54,9 +56,9 @@ describe('execution kernel stability', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({
-      code: 'QUERY_SHAPE_INVALID'
+      code: 'METRICS_REQUIRED'
     });
-    expect(result.error.message).toContain('Metrics array is required');
+    expect(result.error.message).toContain('metrics[] is required');
   });
 
   test('should keep PageFamily groupArguments argumentType errors as metadata contract errors', async () => {

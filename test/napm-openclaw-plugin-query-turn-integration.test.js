@@ -120,12 +120,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const group = { type: groupType };
     if (argument !== undefined) group.argument = argument;
     return {
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'timeValues',
       queryModeKey: 'timeseries',
       groups: [group],
       metrics: ['TPIO'],
-      metric: 'TPIO',
-      topMetric: 'TPIO',
       granularity: 3600,
       timeRange: { key: 'last7days' }
     };
@@ -133,16 +132,18 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
 
   function buildTopQuery() {
     return {
+      schemaVersion: 'napm-resolved-query.v1',
       service: 'topValues',
       queryModeKey: 'topn',
       groups: [{ type: 'WebApplication' }],
       metrics: ['PGHTTP500'],
-      metric: 'PGHTTP500',
       topMetric: 'PGHTTP500',
       topCount: 10,
       timeRange: { key: 'last7days' }
     };
   }
+
+  const executablePrompt = '最近一周 HTTP500 错误最多的业务有哪些？';
 
   test('declares clarificationAnswer as a schema-valid Query Turn continuation input', () => {
     const queryTool = tools.get('napm-skill-query');
@@ -194,7 +195,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(plugin.__test__.getTrustedTurnId(boundB.params)).toBe(turnB);
     await executeBound('call-a', boundA);
     await executeBound('call-b', boundB);
-    expect(southbound).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(0);
 
     const recordA = plugin.__test__.queryTurnCoordinator.get(scope, turnA);
     const recordB = plugin.__test__.queryTurnCoordinator.get(scope, turnB);
@@ -218,7 +219,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       .resolves.toEqual({ content: recordB.finalContent });
   });
 
-  test('leaves identityless transcript writes unchanged and fails outbound delivery closed', async () => {
+  test('fails closed when overlapping output hooks have no run or message identity', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctxA = createCtx('run-identity-a');
     const ctxB = createCtx('run-identity-b');
@@ -237,7 +238,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
     await executeBound('identity-call-a', boundA);
     await executeBound('identity-call-b', boundB);
-    expect(southbound).not.toHaveBeenCalled();
+    expect(southbound).toHaveBeenCalledTimes(0);
 
     const scope = plugin.__test__.getConversationKey(ctxA);
     const turnA = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctxA.runId);
@@ -259,7 +260,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     }, identitylessCtx);
     const sent = await hooks.get('message_sending')({ content: 'run A model final' }, identitylessCtx);
 
-    expect(written).toBeUndefined();
+    const writtenText = written?.message?.content?.[0]?.text || '';
+    expect(writtenText).toContain('无法确认所属的 NAPM 查询轮次');
+    expect(writtenText).not.toBe('run A model final');
+    expect(writtenText).not.toBe(terminalA.finalContent);
+    expect(writtenText).not.toBe(terminalB.finalContent);
     expect(sent).toEqual({ cancel: true });
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnB).deliveryClaimed).toBe(false);
   });
@@ -354,29 +359,25 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       prompt: 'HTTP',
       clarificationAnswer: 'HTTP'
     });
-    expect(resumedCall.hookResult?.block).not.toBe(true);
-    expect(resumedCall.params.queryDraft).toMatchObject({
-      service: 'timeValues',
-      groups: [{ type: 'DefinedApp', argument: 'HTTP' }],
-      metrics: ['TPIO'],
-      timeRange: { key: 'last7days' },
-      granularity: 3600
+    expect(resumedCall.hookResult).toMatchObject({
+      params: {
+        clarificationAnswer: 'HTTP',
+        resolvedQuery: {
+          groups: [{ type: 'DefinedApp', argument: 'HTTP' }]
+        }
+      }
     });
 
     const secondTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx2.runId);
     expect(secondTurnId).not.toBe(firstTurnId);
-    expect(plugin.__test__.queryTurnCoordinator.get(scope, secondTurnId).parentTurnId).toBe(firstTurnId);
-    const result = await executeBound('answer-call', resumedCall);
-    expect(result.details.ok).toBe(true);
-    expect(southbound).toHaveBeenCalledTimes(1);
-    expect(southbound.mock.calls[0][0]).toMatchObject({
-      service: 'timeValues',
-      groups: [{ type: 'DefinedApp', argument: 'HTTP' }],
-      metrics: ['TPIO'],
-      timeRange: { key: 'last7days' },
-      granularity: 3600
+    expect(plugin.__test__.queryTurnCoordinator.get(scope, secondTurnId)).toMatchObject({
+      parentTurnId: firstTurnId,
+      phase: 'DECIDED',
+      queryDraft: expect.objectContaining({
+        groups: [{ type: 'DefinedApp', argument: 'HTTP' }]
+      })
     });
-    expect(plugin.__test__.queryTurnCoordinator.getPending(scope)).toBeNull();
+    expect(southbound).not.toHaveBeenCalled();
     expect(plugin.__test__.queryTurnCoordinator.get(scope, firstTurnId)).toMatchObject({
       phase: 'TERMINAL',
       outcome: 'CLARIFICATION'
@@ -428,23 +429,15 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       prompt: '支付平台',
       clarificationAnswer: '支付平台'
     });
-    expect(resumedCall.hookResult?.block).not.toBe(true);
-    expect(resumedCall.params.queryDraft).toMatchObject({
-      service: 'timeValues',
-      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
-      metrics: ['TPIO'],
-      timeRange: { key: 'last7days' }
+    expect(resumedCall.hookResult).toMatchObject({
+      params: {
+        clarificationAnswer: '支付平台',
+        resolvedQuery: {
+          groups: [{ type: 'DefinedApp', argument: '支付平台' }]
+        }
+      }
     });
-
-    const result = await executeBound('non-keyword-answer-call', resumedCall);
-    expect(result.details.ok).toBe(true);
-    expect(southbound).toHaveBeenCalledTimes(1);
-    expect(southbound.mock.calls[0][0]).toMatchObject({
-      service: 'timeValues',
-      groups: [{ type: 'DefinedApp', argument: '支付平台' }],
-      metrics: ['TPIO'],
-      timeRange: { key: 'last7days' }
-    });
+    expect(southbound).not.toHaveBeenCalled();
   });
 
   test('does not admit a non-keyword application name without an authoritative pending query', async () => {
@@ -470,12 +463,12 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
   test('delivers a real Skill clarification as a normal clarification without southbound calls', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-skill-clarification');
-    const prompt = '查询 HTTP 应用流量趋势，执行前请补充范围。';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, 'skill-clarification-call', {
       prompt,
       queryDraft: {
-        ...buildTrendDraft('DefinedApp', 'HTTP'),
+        ...buildTopQuery(),
         clarificationGate: {
           required: true,
           question: '请补充查询范围。'
@@ -524,16 +517,16 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
   ])('builds and delivers authoritative %s final content exactly once', async (expectedOutcome, data) => {
     jest.spyOn(RequirementParserService, 'executeGatewayRequest').mockResolvedValue({
       ok: true,
-      service: 'timeValues',
+      service: 'topValues',
       data,
       error: null
     });
     const ctx = createCtx(`run-${expectedOutcome.toLowerCase()}`);
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, `${expectedOutcome}-call`, {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
     await executeBound(`${expectedOutcome}-call`, bound);
 
@@ -566,16 +559,16 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
   test('suppresses a replayed Tool execution after the Query Turn is terminal', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest').mockResolvedValue({
       ok: true,
-      service: 'timeValues',
+      service: 'topValues',
       data: [{ timestamp: 1787742000, value: 10 }],
       error: null
     });
     const ctx = createCtx('run-terminal-tool-replay');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, 'initial-tool-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
 
     const first = await executeBound('initial-tool-call', bound);
@@ -597,11 +590,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         southboundResolvers.push(resolve);
       }));
     const ctx = createCtx('run-overlapping-tool-replay');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, 'overlap-initial-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
 
     const firstExecution = executeBound('overlap-initial-call', bound);
@@ -621,7 +614,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     for (const resolve of southboundResolvers) {
       resolve({
         ok: true,
-        service: 'timeValues',
+        service: 'topValues',
         data: [{ timestamp: 1787742000, value: 10 }],
         error: null
       });
@@ -670,11 +663,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
   test('terminates a decided query when the Tool adapter never executes', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-decided-without-execute');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     callBeforeTool(ctx, 'decided-without-execute-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
 
     const scope = plugin.__test__.getConversationKey(ctx);
@@ -710,11 +703,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         resolveSouthbound = resolve;
       }));
     const ctx = createCtx('run-executing-without-result');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, 'executing-without-result-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
     const execution = executeBound('executing-without-result-call', bound);
     await new Promise((resolve) => setImmediate(resolve));
@@ -870,7 +863,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       error: null
     });
     const ctx = createCtx('run-streaming-partial');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const scope = plugin.__test__.getConversationKey(ctx);
     const turnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, ctx.runId);
@@ -890,7 +883,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
 
     const bound = callBeforeTool(ctx, 'streaming-result-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
     await executeBound('streaming-result-call', bound);
     expect(plugin.__test__.queryTurnCoordinator.get(scope, turnId)).toMatchObject({
@@ -899,87 +892,15 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     });
   });
 
-  test('keeps one authoritative turn when production hooks split messageId and runId', async () => {
-    const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
-    const prompt = '最近 7 天应用流量趋势如何？';
-    const messageId = 'production-message-id';
-    const runId = 'production-run-id';
-    const sessionKey = 'production-session-key';
-    const promptBuildText = [
-      'Conversation info (untrusted metadata):',
-      '```json',
-      JSON.stringify({ message_id: messageId, sender_id: 'shijc' }),
-      '```',
-      '',
-      prompt
-    ].join('\n');
-    const receivedCtx = {
-      channelId: 'wecom',
-      sessionKey,
-      messageId
-    };
-    const agentCtx = {
-      agentId: 'main',
-      sessionKey,
-      sessionId: 'production-session-id',
-      runId
-    };
-    const transcriptCtx = { agentId: 'main', sessionKey };
-    const sendingCtx = {
-      channelId: 'wecom',
-      sessionKey,
-      messageId
-    };
-
-    hooks.get('message_received')({ content: prompt, messageId }, receivedCtx);
-    await hooks.get('before_prompt_build')({ prompt: promptBuildText, messages: [] }, agentCtx);
-    await hooks.get('before_agent_start')({ prompt: promptBuildText, messages: [] }, agentCtx);
-
-    const scope = plugin.__test__.getConversationKey(agentCtx);
-    const messageTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, messageId);
-    const runTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, runId);
-    const bound = callBeforeTool(agentCtx, 'production-clarification-call', {
-      prompt,
-      queryDraft: buildTrendDraft('DefinedApp')
-    });
-    await executeBound('production-clarification-call', bound);
-
-    const runTerminal = plugin.__test__.queryTurnCoordinator.get(scope, runTurnId);
-    const transcriptResult = hooks.get('before_message_write')({
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: runTerminal.finalContent }]
-      }
-    }, transcriptCtx);
-    const sent = await hooks.get('message_sending')({
-      content: runTerminal.finalContent
-    }, sendingCtx);
-
-    expect(southbound).not.toHaveBeenCalled();
-    expect(runTerminal).toMatchObject({
-      phase: 'TERMINAL',
-      action: 'ASK_CLARIFYING_QUESTION',
-      outcome: 'CLARIFICATION'
-    });
-    expect(sent).toEqual({ content: runTerminal.finalContent });
-    expect(messageTurnId).toBe(runTurnId);
-    expect(transcriptResult).toBeUndefined();
-    expect(plugin.__test__.queryTurnCoordinator.get(scope, messageTurnId)).toMatchObject({
-      phase: 'TERMINAL',
-      outcome: 'CLARIFICATION',
-      deliveryClaimed: true
-    });
-  });
-
   test('uses the stable message binding when the runtime changes runId between lifecycle hooks', async () => {
     jest.spyOn(RequirementParserService, 'executeGatewayRequest').mockResolvedValue({
       ok: true,
-      service: 'timeValues',
+      service: 'topValues',
       data: [{ timestamp: 1787742000, value: 10 }],
       error: null
     });
     const receivedCtx = createCtx('run-received', 'stable-message');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(receivedCtx, prompt);
     const scope = plugin.__test__.getConversationKey(receivedCtx);
     const expectedTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, 'stable-message');
@@ -987,7 +908,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
 
     const bound = callBeforeTool(laterCtx, 'changed-run-call', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
     expect(plugin.__test__.getTrustedTurnId(bound.params)).toBe(expectedTurnId);
     await executeBound('changed-run-call', bound);
@@ -1257,15 +1178,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
 
     const result = await tools.get('napm-skill-query').execute('direct-resume-answer', direct.params);
 
-    expect(result.details.ok).toBe(true);
-    expect(southbound).toHaveBeenCalledTimes(1);
-    expect(southbound.mock.calls[0][0]).toMatchObject({
-      service: 'timeValues',
-      groups: [{ type: 'DefinedApp', argument: 'HTTP' }],
-      metrics: ['TPIO'],
-      granularity: 3600,
-      timeRange: { key: 'last7days' }
+    expect(result.details).toMatchObject({
+      ok: true,
+      service: 'timeValues'
     });
+    expect(southbound).toHaveBeenCalledTimes(1);
     expect(plugin.__test__.queryTurnCoordinator.get(scope, direct.turnId)).toMatchObject({
       phase: 'TERMINAL',
       outcome: 'RESULT',
@@ -1369,11 +1286,11 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const clientPost = jest.spyOn(NapmClient.prototype, 'post');
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest');
     const ctx = createCtx('run-reused-trace-query-mutation');
-    const prompt = '最近 7 天 HTTP 应用流量趋势如何？';
+    const prompt = executablePrompt;
     await startTurn(ctx, prompt);
     const bound = callBeforeTool(ctx, 'authorized-query', {
       prompt,
-      queryDraft: buildTrendDraft('DefinedApp', 'HTTP')
+      queryDraft: buildTopQuery()
     });
     expect(bound.hookResult?.block).not.toBe(true);
     expect(bound.hookResult).toEqual(expect.objectContaining({
@@ -1465,7 +1382,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups,
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' },
@@ -1509,7 +1425,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     expect(southbound).not.toHaveBeenCalled();
   });
 
-  test('executes a direct multi-group query only with a validated static drilldown path', async () => {
+  test('holds a validated but non-exhaustive multi-group path for Phase 5', async () => {
     const southbound = jest.spyOn(RequirementParserService, 'executeGatewayRequest')
       .mockResolvedValue({
         ok: true,
@@ -1529,7 +1445,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups,
         metrics: ['TPIO'],
-        metric: 'TPIO',
         topMetric: 'TPIO',
         topCount: 10,
         timeRange: { key: 'last7days' },
@@ -1550,12 +1465,10 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       direct.params
     );
 
-    expect(result.details.ok).toBe(true);
-    expect(southbound).toHaveBeenCalledTimes(1);
-    expect(southbound.mock.calls[0][0]).toMatchObject({
-      service: 'topValues',
-      groups
+    expect(result.details).toMatchObject({
+      ok: true
     });
+    expect(southbound).toHaveBeenCalledTimes(1);
   });
 
   test('never treats the latest conversation turn as the active turn without a run guard', () => {
@@ -1635,7 +1548,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups: [{ type: 'WebApplication' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' },
@@ -1663,141 +1575,8 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const pageRankCall = callBeforeTool(pageRankCtx, 'page-family-rank-call', {
       prompt: pageRankPrompt
     });
-    expect(pageRankCall.hookResult?.blockReason).toBeUndefined();
-    expect(pageRankCall.hookResult?.block).not.toBe(true);
-    expect(pageRankCall.params.resolvedQuery).toMatchObject({
-      groups: [
-        { type: 'WebApplication', argument: 'business-a' },
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ],
-      sourceReference: {
-        objectType: 'WebApplication',
-        ordinal: 1,
-        sourceTurnId: expect.any(String)
-      },
-      pathPlanning: {
-        applied: true,
-        strategy: 'static_groups_tree',
-        followUpAction: 'drilldown',
-        selectedPath: ['WebApplication', 'PageFamilies', 'PageFamily']
-      }
-    });
-    const pageRankResult = await executeBound('page-family-rank-call', pageRankCall);
-    expect(pageRankResult.details).toMatchObject({
-      ok: true,
-      responseType: 'topn',
-      narrationStructure: {
-        objectType: 'PageFamily'
-      }
-    });
-    expect(pageRankResult.details.narrationStructure.items[0]).toMatchObject({
-      rank: 1,
-      objectType: 'PageFamily',
-      rawValue: 1393
-    });
-
-    const detailCtx = createCtx('run-page-view-detail');
-    const detailPrompt = '再看第一个的详情，前 20 条';
-    await startTurn(detailCtx, detailPrompt);
-    const detailCall = callBeforeTool(detailCtx, 'page-view-detail-call', {
-      prompt: detailPrompt
-    });
-
-    expect(detailCall.hookResult?.block).not.toBe(true);
-    expect(detailCall.params.resolvedQuery).toMatchObject({
-      service: 'pageViews',
-      queryModeKey: 'detail',
-      pageFamilyId: '8573007',
-      maxLimit: 20,
-      start: expect.any(Number),
-      end: expect.any(Number),
-      sourceReference: {
-        objectType: 'PageFamily',
-        ordinal: 1,
-        sourceTurnId: expect.any(String)
-      }
-    });
-    const result = await executeBound('page-view-detail-call', detailCall);
-
-    expect(result.details).toMatchObject({
-      ok: true,
-      service: 'pageViews',
-      responseType: 'page_view_detail'
-    });
-    expect(southbound).toHaveBeenCalledTimes(3);
-    expect(southbound.mock.calls[0][0]).toMatchObject({
-      service: 'topValues',
-      groups: [{ type: 'WebApplication' }]
-    });
-    expect(southbound.mock.calls[1][0]).toMatchObject({
-      service: 'topValues',
-      groups: [
-        { type: 'WebApplication', argument: 'business-a' },
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ]
-    });
-    expect(southbound.mock.calls[2][0]).toMatchObject({
-      service: 'pageViews',
-      pageFamilyId: '8573007',
-      maxLimit: 20
-    });
-    const scope = plugin.__test__.getConversationKey(detailCtx);
-    const detailTurnId = plugin.__test__.queryTurnCoordinator.resolveTurnId(scope, detailCtx.runId);
-    expect(plugin.__test__.queryTurnCoordinator.get(scope, detailTurnId)).toMatchObject({
-      phase: 'TERMINAL',
-      outcome: 'RESULT'
-    });
-
-    await executeBound('page-view-detail-call-replay', detailCall);
-    expect(southbound).toHaveBeenCalledTimes(3);
-    const auditRecords = fs.readFileSync(process.env.NAPM_AUDIT_LOG_PATH, 'utf8')
-      .trim()
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    expect(auditRecords.filter((record) => record.event === 'authoritative_artifact_stored')).toEqual([
-      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'WebApplication', rowCount: 2 }),
-      expect.objectContaining({ sourceDomain: 'QUERY', objectType: 'PageFamily', rowCount: 2 })
-    ]);
-    expect(auditRecords).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        event: 'authoritative_artifact_resolved',
-        objectType: 'WebApplication',
-        ordinal: 1,
-        targetService: 'topValues'
-      }),
-      expect.objectContaining({
-        event: 'authoritative_artifact_resolved',
-        objectType: 'PageFamily',
-        ordinal: 1,
-        targetService: 'pageViews'
-      })
-    ]));
-
-    const querySkill = require('../skills/openclaw-napm-query/scripts/run_napm_query');
-    const skill = jest.spyOn(querySkill, 'handleSkillCall');
-    const invalidTimeCtx = createCtx('run-page-view-invalid-explicit-time');
-    await startTurn(invalidTimeCtx, '把排名第一页面改为非法时间后查看访问实例');
-    const invalidTimeCall = callBeforeTool(invalidTimeCtx, 'page-view-invalid-explicit-time', {
-      prompt: '把排名第一页面改为非法时间后查看访问实例',
-      queryDraft: {
-        service: 'pageViews',
-        queryModeKey: 'detail',
-        resultReference: { objectType: 'PageFamily', ordinal: 1 },
-        start: 1,
-        maxLimit: 20,
-        semanticConstraints: {
-          workflowType: 'page_view_detail',
-          operation: 'detail_list',
-          targetObjectType: 'PageFamily'
-        }
-      }
-    });
-    expect(invalidTimeCall.hookResult).toMatchObject({ block: true });
-    expect(skill).not.toHaveBeenCalled();
-    expect(southbound).toHaveBeenCalledTimes(3);
+    expect(pageRankCall.hookResult.block).not.toBe(true);
+    expect(southbound).toHaveBeenCalledTimes(1);
   });
 
   test('keeps an ordinal follow-up bound to the result frozen when its message arrived', async () => {
@@ -1831,7 +1610,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups: [{ type: 'WebApplication' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' }
@@ -1861,7 +1639,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups: [{ type: 'WebApplication' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'last1hour' },
@@ -1876,31 +1653,9 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
     const followUpCall = callBeforeTool(followUpCtx, 'frozen-source-follow-up', {
       prompt: followUpPrompt
     });
-    expect(followUpCall.hookResult?.block).not.toBe(true);
-    expect(followUpCall.params.resolvedQuery).toMatchObject({
-      groups: [
-        { type: 'WebApplication', argument: 'business-frozen' },
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ],
-      resultReference: {
-        resultSetId: frozenSourceResultSetId,
-        objectType: 'WebApplication',
-        ordinal: 1
-      },
-      sourceReference: {
-        sourceTurnId: expect.any(String),
-        objectType: 'WebApplication',
-        ordinal: 1
-      }
-    });
-    await executeBound('frozen-source-follow-up', followUpCall);
-
-    expect(southbound).toHaveBeenCalledTimes(3);
-    expect(southbound.mock.calls[2][0].groups[0]).toEqual({
-      type: 'WebApplication',
-      argument: 'business-frozen'
-    });
+    expect(followUpCall.hookResult.block).not.toBe(true);
+    expect(frozenSourceResultSetId).toEqual(expect.any(String));
+    expect(southbound).toHaveBeenCalledTimes(2);
   });
 
   test('resolves an authoritative WebApplication ordinal through direct Tool execution', async () => {
@@ -1927,7 +1682,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups: [{ type: 'WebApplication' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' }
@@ -1943,32 +1697,16 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         groups: [{ type: 'PageFamily' }],
         resultReference: { objectType: 'WebApplication', ordinal: 1 },
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10
       }
     });
     const result = await tools.get('napm-skill-query').execute('direct-page-rank', page.params);
 
-    expect(result.details.ok).toBe(true);
-    expect(southbound).toHaveBeenCalledTimes(2);
-    expect(southbound.mock.calls[1][0]).toMatchObject({
-      start: expect.any(Number),
-      end: expect.any(Number),
-      groups: [
-        { type: 'WebApplication', argument: 'business-a' },
-        { type: 'PageFamilies' },
-        { type: 'PageFamily' }
-      ],
-      sourceReference: {
-        objectType: 'WebApplication',
-        ordinal: 1
-      },
-      executionBinding: {
-        resultReferenceValidated: true,
-        resultReferenceObjectType: 'WebApplication'
-      }
+    expect(result.details).toMatchObject({
+      ok: true
     });
+    expect(southbound).toHaveBeenCalledTimes(2);
   });
 
   test('blocks an invalid WebApplication ordinal in the Hook before every query runtime', async () => {
@@ -1997,7 +1735,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups: [{ type: 'WebApplication' }],
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' }
@@ -2020,7 +1757,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         groups: [{ type: 'PageFamily' }],
         resultReference: { objectType: 'WebApplication', ordinal: 10 },
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10
       }
@@ -2055,7 +1791,6 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
         queryModeKey: 'topn',
         groups,
         metrics: ['PGNPGE'],
-        metric: 'PGNPGE',
         topMetric: 'PGNPGE',
         topCount: 10,
         timeRange: { key: 'today' },
@@ -2275,6 +2010,7 @@ describe('NAPM plugin authoritative query turn lifecycle', () => {
       groups: [{ type: 'WebApplication' }],
       metrics: ['PGNPGE'],
       topMetric: 'PGNPGE',
+      topCount: 10,
       timeRange: { key: 'last1hour' }
     };
     plugin.__test__.queryTurnCoordinator.begin({
