@@ -29,7 +29,7 @@ branch: codex/napm-turn-decision-phase1
 code commit: a3aa39a
 docs commit: a903ca3
 current remote: 1.1.0-rc.60
-rc.61 package: not built
+rc.61 package: NAPM_skill-1.1.0-rc.61-4af35d6d.zip
 ```
 
 修改前备份：
@@ -222,33 +222,38 @@ Node syntax check: passed
 
 ## 10. 发布和部署状态
 
-本轮只完成本地实现和提交：
+本轮已完成本地实现、统一打包和正式部署：
 
 ```text
-rc.61 package: not built
-staged verification: not run for rc.61
-dry-run: not run for rc.61
-formal deployment: not performed
-remote restart: not performed
+rc.61 package: built
+staged verification: passed
+dry-run: passed
+formal deployment: passed
+remote restart: installer controlled and service recovery passed
 ```
 
-远端当前仍是：
+远端当前为：
 
 ```text
-1.1.0-rc.60
+1.1.0-rc.61
+
+发布信息：
+
+```text
+commit: 4af35d6db6b7061342786e8b2bf8b2267c97f99d
+sha256: 3ace059e9403f68355edcde1244ca69606775bccdd096ec5be41762091d654bd
+backup: /home/netinside/.openclaw/deploy_backups/20260914_131958_napm_1.1.0-rc.61_4af35d6d/
+```
+
+部署后验证：
+
+- workspace / extension manifest 均为 rc.61；
+- Gateway active；
+- system watcher active；
+- 8 个生产 Tool 注册完整；
+- lifecycle smoke 通过。
 ```
 
 ## 11. 后续发布前置条件
 
-审核通过后才执行：
-
-1. 升级版本号并构建 rc.61；
-2. 运行完整本地质量门禁；
-3. 上传完整 ZIP；
-4. 远端 staged 验证；
-5. installer dry-run；
-6. 正式安装和自动回滚检查；
-7. Web 连续三轮问候验收；
-8. NAPM_QUERY fail-closed 回归验收。
-
-本报告不代表 rc.61 已部署。
+部署后仍需人工完成真实 Web 连续三轮问候和 NAPM_QUERY 业务验收；本次未执行真实南向业务查询。
