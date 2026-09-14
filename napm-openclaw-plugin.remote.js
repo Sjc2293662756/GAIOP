@@ -198,6 +198,13 @@ const OPENCLAW_NATIVE_COMMAND_TTL_MS = 30 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const TRUSTED_TOOL_CONTEXT_MAX_AGE_MS = REPORT_EXPORT_CACHE_MAX_AGE_MS;
 const OUTPUT_TURN_CONTEXT_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
+const OUTPUT_TURN_CLAIM_TTL_MS = 30 * 1000;
+const OUTPUT_TURN_DELIVERY_STATUS = Object.freeze({
+  ELIGIBLE: 'ELIGIBLE',
+  CLAIMED: 'CLAIMED',
+  FINALIZED: 'FINALIZED',
+  RETIRED: 'RETIRED'
+});
 const REPORT_SOURCE_TTL_MS = Number(process.env.NAPM_REPORT_SOURCE_TTL_MS) > 0
   ? Number(process.env.NAPM_REPORT_SOURCE_TTL_MS)
   : 30 * 60 * 1000;
@@ -3604,6 +3611,20 @@ function pruneOutputTurnAdmissions() {
   const now = Date.now();
   for (const [scope, admissions] of napmOutputTurnAdmissions.entries()) {
     for (const [turnId, admission] of admissions.entries()) {
+      if (
+        admission?.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.CLAIMED
+        && Number(admission?.claimExpiresAt || 0) > 0
+        && now >= Number(admission.claimExpiresAt)
+      ) {
+        admissions.set(turnId, {
+          ...admission,
+          deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.RETIRED,
+          retiredAt: now,
+          retirementReason: 'claim_timeout',
+          updatedAt: now
+        });
+        continue;
+      }
       if ((now - Number(admission?.updatedAt || 0)) > OUTPUT_TURN_CONTEXT_MAX_AGE_MS) {
         admissions.delete(turnId);
       }
@@ -3637,6 +3658,14 @@ function rememberOutputTurnAdmission(
     action: String(admission.action || '').trim() || null,
     sourceRunId: normalizeTraceId(state?.runId),
     sourceMessageId: normalizeTraceId(state?.messageId),
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE,
+    claimId: null,
+    claimedAt: null,
+    claimHook: null,
+    claimProvenance: null,
+    claimExpiresAt: null,
+    finalizedAt: null,
+    retiredAt: null,
     updatedAt: Date.now()
   }));
   return true;
@@ -3655,6 +3684,7 @@ function getOutputTurnCandidates(conversationKey = '') {
   if (!admissions) return [];
   const candidates = [];
   for (const admission of admissions.values()) {
+    if (admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE) continue;
     const turn = queryTurnCoordinator.get(scope, admission.turnId);
     if (!turn || turn.conversationKey !== scope) continue;
     const terminalOutputPending = turn.phase === QUERY_PHASES.TERMINAL
@@ -3675,6 +3705,108 @@ function getOutputTurnCandidates(conversationKey = '') {
     });
   }
   return candidates;
+}
+
+function getOutputTurnAdmission(conversationKey = '', turnId = '') {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  if (!scope || !normalizedTurnId) return null;
+  pruneOutputTurnAdmissions();
+  return napmOutputTurnAdmissions.get(scope)?.get(normalizedTurnId) || null;
+}
+
+function claimOutputTurn({
+  conversationKey = '',
+  turnId = '',
+  claimId = '',
+  hook = '',
+  provenance = '',
+  outputFingerprint = ''
+} = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const normalizedClaimId = String(claimId || '').trim() || `claim-${crypto.randomUUID()}`;
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.CLAIMED) {
+    if (admission.claimId === normalizedClaimId) {
+      return { ok: true, idempotent: true, admission };
+    }
+    return { ok: false, code: 'OUTPUT_TURN_ALREADY_CLAIMED', admission };
+  }
+  if (admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.ELIGIBLE) {
+    return { ok: false, code: 'OUTPUT_TURN_NOT_ELIGIBLE', admission };
+  }
+  const now = Date.now();
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.CLAIMED,
+    claimId: normalizedClaimId,
+    claimedAt: now,
+    claimHook: String(hook || '').trim() || null,
+    claimProvenance: String(provenance || '').trim() || null,
+    outputFingerprint: String(outputFingerprint || '').trim() || null,
+    claimExpiresAt: now + OUTPUT_TURN_CLAIM_TTL_MS,
+    updatedAt: now
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
+}
+
+function finalizeOutputTurn({
+  conversationKey = '',
+  turnId = '',
+  claimId = '',
+  outputFingerprint = ''
+} = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.FINALIZED) {
+    return admission.claimId === String(claimId || '').trim()
+      ? { ok: true, idempotent: true, admission }
+      : { ok: false, code: 'OUTPUT_TURN_CLAIM_MISMATCH', admission };
+  }
+  if (
+    admission.deliveryStatus !== OUTPUT_TURN_DELIVERY_STATUS.CLAIMED
+    || !admission.claimId
+    || admission.claimId !== String(claimId || '').trim()
+    || (
+      outputFingerprint
+      && admission.outputFingerprint
+      && admission.outputFingerprint !== String(outputFingerprint).trim()
+    )
+  ) {
+    return { ok: false, code: 'OUTPUT_TURN_CLAIM_MISMATCH', admission };
+  }
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.FINALIZED,
+    finalizedAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
+}
+
+function retireOutputTurn({ conversationKey = '', turnId = '', reason = '' } = {}) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = getOutputTurnAdmission(scope, normalizedTurnId);
+  if (!admission) return { ok: false, code: 'OUTPUT_TURN_ADMISSION_MISSING' };
+  if (admission.deliveryStatus === OUTPUT_TURN_DELIVERY_STATUS.RETIRED) {
+    return { ok: true, idempotent: true, admission };
+  }
+  const next = {
+    ...admission,
+    deliveryStatus: OUTPUT_TURN_DELIVERY_STATUS.RETIRED,
+    retiredAt: Date.now(),
+    retirementReason: String(reason || '').trim() || null,
+    updatedAt: Date.now()
+  };
+  napmOutputTurnAdmissions.get(scope).set(normalizedTurnId, next);
+  return { ok: true, idempotent: false, admission: next };
 }
 
 function buildOutputTurnResolutionContext(
@@ -3732,6 +3864,57 @@ function buildOutputTurnResolutionAudit(resolution = null) {
     route: resolution?.context?.route || null,
     candidateCount: resolution?.details?.candidateCount ?? null
   };
+}
+
+function buildOutputAttemptId(event = {}, message = null, ctx = {}) {
+  return String(
+    event?.outputId
+    || event?.messageId
+    || event?.id
+    || message?.id
+    || ctx?.outputId
+    || ctx?.messageId
+    || `output-${crypto.randomUUID()}`
+  ).trim();
+}
+
+function buildOutputFingerprint(text = '') {
+  return crypto.createHash('sha256')
+    .update(String(text || ''), 'utf8')
+    .digest('hex');
+}
+
+function isFinalModelOwnedOutput(event = {}, message = null) {
+  if (message && messageContainsToolCall(message)) return false;
+  if (isStreamingPreviewMessageEvent(event) || isStreamingPreviewMessageEvent(message)) return false;
+  const text = message ? extractMessageText(message) : extractTextContent(event?.content);
+  return Boolean(String(text || '').trim());
+}
+
+function claimModelOwnedOutput({
+  resolution = null,
+  conversationKey = '',
+  hook = '',
+  event = {},
+  message = null,
+  ctx = {}
+} = {}) {
+  if (
+    !resolution?.ok
+    || resolution.context?.route !== TURN_POLICY_ROUTES.MODEL_OWNED
+    || !isFinalModelOwnedOutput(event, message)
+  ) {
+    return { ok: false, skipped: true };
+  }
+  const text = message ? extractMessageText(message) : extractTextContent(event?.content);
+  return claimOutputTurn({
+    conversationKey,
+    turnId: resolution.context.turnId,
+    claimId: buildOutputAttemptId(event, message, ctx),
+    hook,
+    provenance: resolution.context.provenance,
+    outputFingerprint: buildOutputFingerprint(text)
+  });
 }
 
 function isPendingClarificationAnswer(content = '', pending = null) {
@@ -10125,8 +10308,24 @@ const plugin = {
           return { cancel: true };
         }
         const outputTurnContext = outputTurnResolution.context;
+        const modelOwnedClaim = claimModelOwnedOutput({
+          resolution: outputTurnResolution,
+          conversationKey,
+          hook: 'message_sending',
+          event,
+          ctx
+        });
         if (outputTurnResolution.context.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
           if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            if (!modelOwnedClaim.ok && !modelOwnedClaim.skipped) {
+              appendPluginAuditEvent('output_turn_claim_blocked', {
+                hook: 'message_sending',
+                conversationKey: conversationKey || null,
+                turnId: outputTurnContext.turnId || null,
+                code: modelOwnedClaim.code || 'OUTPUT_TURN_CLAIM_FAILED'
+              });
+              return { cancel: true };
+            }
             return undefined;
           }
           if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
@@ -10581,8 +10780,30 @@ const plugin = {
           };
         }
         const outputTurnContext = outputTurnResolution.context;
+        const modelOwnedClaim = claimModelOwnedOutput({
+          resolution: outputTurnResolution,
+          conversationKey: lifecycleConversationKey,
+          hook: 'before_message_write',
+          event,
+          message,
+          ctx
+        });
         if (outputTurnContext.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
           if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            if (!modelOwnedClaim.ok && !modelOwnedClaim.skipped) {
+              appendPluginAuditEvent('output_turn_claim_blocked', {
+                hook: 'before_message_write',
+                conversationKey: lifecycleConversationKey || null,
+                turnId: outputTurnContext.turnId || null,
+                code: modelOwnedClaim.code || 'OUTPUT_TURN_CLAIM_FAILED'
+              });
+              return {
+                message: buildAssistantTextMessage(
+                  buildOutputTurnResolutionFailureReply(outputTurnResolution),
+                  message
+                )
+              };
+            }
             return undefined;
           }
           if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
@@ -10978,6 +11199,10 @@ module.exports.__test__ = {
   resolveOutputTurnContext,
   buildOutputTurnResolutionContext,
   getOutputTurnCandidates,
+  claimOutputTurn,
+  finalizeOutputTurn,
+  retireOutputTurn,
+  outputTurnDeliveryStatus: OUTPUT_TURN_DELIVERY_STATUS,
   outputTurnResolutionStatus: OUTPUT_TURN_RESOLUTION_STATUS,
   outputTurnProvenance: OUTPUT_TURN_PROVENANCE,
   getNapmResolvedQueryResolverService,

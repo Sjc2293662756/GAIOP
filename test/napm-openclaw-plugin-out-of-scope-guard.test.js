@@ -174,8 +174,6 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     hooks.get('message_received')({ content: prompt }, inboundCtx);
     await hooks.get('before_prompt_build')({ prompt }, inboundCtx);
 
-    await expect(hooks.get('message_sending')({ content: reply }, outputCtx))
-      .resolves.toBeUndefined();
     expect(hooks.get('before_message_write')({
       message: {
         role: 'assistant',
@@ -209,6 +207,90 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
 
     expect(sending.content).toContain('不在当前技能范围内');
     expect(writing.message.content[0].text).toContain('不在当前技能范围内');
+  });
+
+  test('consumes each sequential scope-only MODEL_OWNED output before the next turn', () => {
+    const { hooks } = createApiHarness();
+    const baseCtx = createWeComCtx('sequential-scope-model-owned');
+    const outputCtx = {
+      channelId: baseCtx.channelId,
+      accountId: baseCtx.accountId,
+      conversationId: baseCtx.conversationId,
+      sessionKey: baseCtx.sessionKey,
+      sessionId: baseCtx.sessionId
+    };
+    const prompts = ['你好？', '你是？', '你可以做些什么？'];
+
+    prompts.forEach((prompt, index) => {
+      const inboundCtx = {
+        ...baseCtx,
+        runId: `sequential-run-${index}`,
+        messageId: `sequential-message-${index}`
+      };
+      hooks.get('message_received')({ content: prompt }, inboundCtx);
+      const result = hooks.get('before_message_write')({
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: `模型回答-${index}` }]
+        }
+      }, outputCtx);
+      expect(result).toBeUndefined();
+      expect(plugin.__test__.getOutputTurnCandidates(
+        plugin.__test__.getConversationKey(outputCtx)
+      )).toHaveLength(0);
+    });
+  });
+
+  test('keeps output claim and finalization idempotent and turn-bound', () => {
+    const { hooks } = createApiHarness();
+    const ctx = createWeComCtx('claim-idempotency');
+    hooks.get('message_received')({ content: '你好？' }, ctx);
+    const scope = plugin.__test__.getConversationKey(ctx);
+    const turnId = plugin.__test__.getGuardState(ctx).turnId;
+
+    const firstClaim = plugin.__test__.claimOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-one',
+      hook: 'before_message_write',
+      provenance: 'RUN_BOUND'
+    });
+    const duplicateClaim = plugin.__test__.claimOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-one',
+      hook: 'before_message_write',
+      provenance: 'RUN_BOUND'
+    });
+    const wrongClaim = plugin.__test__.claimOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-two',
+      hook: 'message_sending',
+      provenance: 'MESSAGE_BOUND'
+    });
+    const finalized = plugin.__test__.finalizeOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-one'
+    });
+    const duplicateFinalize = plugin.__test__.finalizeOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-one'
+    });
+    const wrongFinalize = plugin.__test__.finalizeOutputTurn({
+      conversationKey: scope,
+      turnId,
+      claimId: 'claim-two'
+    });
+
+    expect(firstClaim).toMatchObject({ ok: true, idempotent: false });
+    expect(duplicateClaim).toMatchObject({ ok: true, idempotent: true });
+    expect(wrongClaim).toMatchObject({ ok: false, code: 'OUTPUT_TURN_ALREADY_CLAIMED' });
+    expect(finalized).toMatchObject({ ok: true, idempotent: false });
+    expect(duplicateFinalize).toMatchObject({ ok: true, idempotent: true });
+    expect(wrongFinalize).toMatchObject({ ok: false, code: 'OUTPUT_TURN_CLAIM_MISMATCH' });
   });
 
   test('fails closed instead of borrowing a MODEL_OWNED route during overlapping turns', async () => {
