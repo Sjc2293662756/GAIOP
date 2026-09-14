@@ -208,27 +208,34 @@ napm-openclaw-plugin.remote.js
 新增 candidate 生命周期字段：
 
 ```text
-outputDeliveredAt
-outputDeliveryProvenance
-retired
+claimId
+claimedAt
+claimHook
+claimProvenance
+finalizedAt
+retiredAt
+deliveryStatus = ELIGIBLE / CLAIMED / FINALIZED / RETIRED
 ```
 
 增加只读/写入边界：
 
 ```text
-markOutputTurnDelivered(scope, turnId, provenance)
+claimOutputTurn(scope, turnId, outputAttempt)
+finalizeOutputTurn(scope, turnId, outputAttempt)
+retireOutputTurn(scope, turnId)
 ```
 
 `getOutputTurnCandidates()` 排除：
 
 ```text
-retired=true
-outputDeliveredAt 已存在
+deliveryStatus=CLAIMED
+deliveryStatus=FINALIZED
+deliveryStatus=RETIRED
 ```
 
 ### 7.2 何时可以退休 candidate
 
-只有以下条件全部满足才允许退休：
+只有以下条件全部满足才允许进入 `CLAIMED`：
 
 ```text
 route = MODEL_OWNED
@@ -238,6 +245,8 @@ resolution = RESOLVED
 没有被 cancel
 当前输出确实被 Hook 接受
 ```
+
+`CLAIMED` 不等于 `DELIVERED`，更不等于用户已经收到。只有存在可信的后续成功事件，才允许进入 `FINALIZED`，再进入 `RETIRED`。
 
 不能在以下情况下退休：
 
@@ -259,8 +268,20 @@ Web 端主要经过此路径，因此必须在：
 ```text
 MODEL_OWNED + UNIQUE_SCOPE_RESOLUTION
 → 确认非流式 assistant final
-→ markOutputTurnDelivered()
+→ claimOutputTurn()
 → 原样保留消息
+```
+
+这里的语义是：
+
+```text
+Plugin 已接受该 output，并将其从普通 scope candidate 集合中暂时排除。
+```
+
+不是：
+
+```text
+已经完成 channel/WebSocket delivery
 ```
 
 #### `message_sending`
@@ -269,11 +290,12 @@ MODEL_OWNED + UNIQUE_SCOPE_RESOLUTION
 
 ```text
 MODEL_OWNED + STRONG_TURN_BINDING
-→ 发送接受
-→ markOutputTurnDelivered()
+→ 发送前通过 message_sending
+→ 不能直接称为 delivery success
+→ 若存在同一 output 的 message_sent/after-delivery 事件，再 finalizeOutputTurn()
 ```
 
-两处必须使用同一份 candidate 状态，避免重复交付或提前退休。
+两个 Hook 必须使用同一份 candidate/claim 状态，避免重复领取或提前退休。
 
 ## 8. 并发安全要求
 
@@ -453,4 +475,336 @@ OpenClaw message-hook-mappers、dispatch、before_message_write 上下文传递�
 Web UI、NAPM Query Skill、Semantic、Metric、Query Gate。
 
 本文件只记录现状和方案，不代表 rc.61 已实施。
+```
+
+## 14. CPT 二次设计核验结论
+
+### 14.1 CPT 建议中确认正确的部分
+
+以下意见与当前项目事实一致，已纳入修订方案：
+
+1. `before_message_write` 的“允许继续”不能直接命名为 `delivered`；
+2. `message_sending` 是发送前修改/取消 Hook，不等于发送成功；
+3. candidate 生命周期应至少区分 `CLAIMED` 与 `FINALIZED/RETIRED`；
+4. 必须考虑 Claim 后下游失败、超时和重复调用；
+5. Claim 不能成为第二套 route truth；
+6. 不能使用 latest claim 或 latest turn 作为输出归属；
+7. 必须设计幂等和错误恢复。
+
+### 14.2 需要结合本项目修正的部分
+
+```text
+CPT 建议“需要 Claim/Finalization”是正确方向，
+但当前项目还不能直接断言 Web 存在 after-delivery 成功回调。
+```
+
+因此当前不能设计成：
+
+```text
+before_message_write
+→ mark delivered
+```
+
+也不能设计成：
+
+```text
+message_sending 返回允许
+→ 视为 delivered
+```
+
+修订后的现实语义是：
+
+```text
+before_message_write = Plugin accepted / transcript-write admission
+message_sending = pre-channel-send mutation/cancel
+message_sent = OpenClaw 某些 delivery path 的成功后事件，但 Web 是否经过该事件：当前未证明
+```
+
+## 15. 当前项目真实 Hook 语义
+
+### 15.1 `before_message_write`
+
+OpenClaw runtime 的 `runBeforeMessageWrite()` 是同步 Hook：
+
+```text
+Hook 返回 { message }
+  → 替换待写入 transcript 的消息
+
+Hook 返回 { block: true }
+  → 阻止消息写入
+```
+
+它证明的最高语义是：
+
+```text
+PLUGIN_ACCEPTED_FOR_TRANSCRIPT_WRITE
+```
+
+它不证明：
+
+```text
+已经发送到 WebSocket
+用户已经看到
+channel delivery 成功
+```
+
+### 15.2 `message_sending`
+
+OpenClaw 的 `runMessageSending()` 是发送前修改/取消 Hook：
+
+```text
+Hook 返回 { content }
+  → 修改即将发送的内容
+
+Hook 返回 { cancel: true }
+  → 取消发送
+```
+
+它证明的最高语义是：
+
+```text
+PRE_SEND_ACCEPTED
+```
+
+它不等于：
+
+```text
+SEND_SUCCESS
+```
+
+### 15.3 `message_sent / after-delivery`
+
+OpenClaw runtime 中存在 `message_sent` 事件和部分 channel delivery 回调，但当前 Web 的 `buildMessageSendingBeforeDeliver()` 路径是否必然触发可用于本 candidate 的 `message_sent`：
+
+```text
+UNKNOWN / NOT PROVEN
+```
+
+因此 rc.61 不能把 `message_sent` 当作已确认的 Web 最终化点，必须先做真实 Web Hook 回放核验。
+
+## 16. 修订后的 candidate 状态机
+
+```text
+ELIGIBLE
+  ↓  before_message_write / message_sending 成功领取
+CLAIMED
+  ↓  同一 output 的可信成功事件
+FINALIZED
+  ↓  清理或 TTL
+RETIRED
+```
+
+### 16.1 状态含义
+
+| 状态 | 含义 | 是否参与普通 scope candidate resolution |
+|---|---|---:|
+| `ELIGIBLE` | 尚未被当前 output 领取 | 是 |
+| `CLAIMED` | 已被某个 output attempt 领取，暂时排除其他普通 scope 解析 | 否 |
+| `FINALIZED` | 同一 output 已确认完成最终化 | 否 |
+| `RETIRED` | 已清理/过期，不再参与任何解析 | 否 |
+
+### 16.2 Claim 不等于 Delivered
+
+```text
+CLAIMED
+≠
+DELIVERED
+```
+
+`CLAIMED` 只表示：
+
+```text
+Plugin 已接受当前 output attempt，
+并暂时不让该 candidate 被下一轮 scope-only 解析再次领取。
+```
+
+## 17. Transition Table
+
+| Current State | Event | Preconditions | Next State | 可参与新的 scope resolution |
+|---|---|---|---|---:|
+| `ELIGIBLE` | `before_message_write` accepted | MODEL_OWNED、唯一解析、非流式、无 toolCall、产生 claimId | `CLAIMED` | 否 |
+| `ELIGIBLE` | `message_sending` accepted | 强绑定或同一 output claim、未 cancel | `CLAIMED` | 否 |
+| `CLAIMED` | `message_sent/after-delivery` success | 能证明同一 output attempt | `FINALIZED` | 否 |
+| `CLAIMED` | downstream cancel/failure | 能证明同一 output attempt | `ELIGIBLE` 或进入短期 recovery lease | 是/按 lease |
+| `CLAIMED` | timeout | 无成功回调且超过 claim TTL | `RETIRED` 或按安全策略恢复 | 否 |
+| `FINALIZED` | duplicate finalize | 同一 claimId | 保持 `FINALIZED` | 否 |
+| `FINALIZED` | wrong-turn finalize | claimId/turnId 不一致 | 拒绝 | 否 |
+| 任意 | `/new` / scope clear | scope 匹配 | `RETIRED`/删除 | 否 |
+| 任意未终态 | expiry | 超过 OutputTurn TTL | `RETIRED` | 否 |
+
+如果当前 Web 没有可靠的下游失败/成功回调，`CLAIMED` 必须有有限 TTL，不能永久卡住 scope。
+
+## 18. Claim 的身份和幂等
+
+Claim 只能绑定：
+
+```text
+scope
+turnId
+claimId
+claimHook
+claimProvenance
+output fingerprint（如果可取得）
+claimedAt
+```
+
+Claim 不重新决定：
+
+```text
+route
+expectedTool
+semantic intent
+NAPM authority
+```
+
+这些仍由 immutable `TurnAdmissionDecision` 和 Query Turn 提供。
+
+幂等要求：
+
+```text
+claim(A, outputX) + claim(A, outputX) → 第二次返回已有 claim，不重复领取
+finalize(A, outputX) + finalize(A, outputX) → 保持 FINALIZED
+claim(A, outputX) + finalize(B, outputX) → 拒绝
+claim(A, outputX) + claim(B, outputX) → 拒绝
+```
+
+如果两个 Hook 没有共享稳定的 output attempt identity：
+
+```text
+不能把第二个 Hook 的“最近 claim”当作同一 output 的证明。
+```
+
+## 19. 两个 Hook 的 TOCTOU 风险
+
+必须避免：
+
+```text
+before_message_write
+  → 立即 FINALIZED/RETIRED
+
+message_sending
+  → 再次解析同一 scope
+  → 0 candidate
+  → UNRESOLVED
+```
+
+因此修订为：
+
+```text
+before_message_write
+  → CLAIMED，不直接 FINALIZED
+
+message_sending / message_sent
+  → 只有能证明同一 output 才继续 finalize
+```
+
+若 Web 实际只经过 `before_message_write`，则 Web 兼容路径的最高语义是：
+
+```text
+PLUGIN_ACCEPTED + CLAIMED
+```
+
+不能在文案、审计或设计中称为用户已收到。
+
+## 20. Truth Source 职责划分
+
+| Record/Function | Stores | Authoritative for | Must not decide |
+|---|---|---|---|
+| `TurnAdmissionDecision` | route、action、expectedTool、source | 当前轮 route truth | channel delivery |
+| `QueryTurnCoordinator` | turn phase、attempt、finalContent、Query delivery claim | NAPM Query lifecycle/result | Web output transport |
+| `OutputTurnAdmission` | scope、turnId、claim/finalization timestamps、provenance | 输出 candidate/claim 索引与审计 | route、semantic intent、NAPM authority |
+| `OutputTurnContextResolver` | Strong/Claim/Unique Scope resolution | 当前输出归属解析 | 重新分类 prompt |
+| OpenClaw delivery callback | channel delivery outcome（若存在） | 实际发送成功/失败 | NAPM Query route |
+
+目标是：
+
+```text
+route truth = TurnAdmissionDecision
+turn lifecycle truth = QueryTurnCoordinator
+candidate claim truth = OutputTurnAdmission
+channel delivery truth = OpenClaw delivery callback（若可用）
+```
+
+不能让 OutputAdmission 成为第二套 route truth。
+
+## 21. CPT 建议与本项目的最终判断
+
+| CPT 建议 | 判断 | 项目化结论 |
+|---|---|---|
+| 不要把 before_message_write accepted 直接叫 delivered | 正确 | 改为 CLAIMED/PLUGIN_ACCEPTED |
+| 需要 claim/finalization 两阶段 | 正确 | 作为 rc.61 设计基线 |
+| 检查 message_sent/after-delivery | 正确 | Web 是否存在需要真实验证，当前 NOT PROVEN |
+| claim 必须绑定同一 output | 正确 | 禁止 latest claim |
+| claim/finalize 必须幂等 | 正确 | 纳入测试 |
+| QueryTurnCoordinator 是否复用 | 部分正确 | 当前 QueryTurn 没有 MODEL_OWNED delivery terminal；不直接改 Query 状态机，先用独立 OutputAdmission |
+| 立即删除 candidate | 不正确 | 只能从普通 candidate 集合退出，record 保留用于 claim/finalize/recovery |
+| message_sending accepted 等于 delivery success | 不正确 | 它是发送前 Hook，不是成功回调 |
+
+## 22. rc.61 最小修改边界（实施前）
+
+### 需要修改
+
+- `napm-openclaw-plugin.remote.js`：OutputAdmission claim/finalization/recovery；
+- `getOutputTurnCandidates()`：只返回 `ELIGIBLE`；
+- 两个输出 Hook：共用 claim 状态；
+- 必要时新增 OutputAttempt identity/fingerprint；
+- 补充 Web 连续三轮、双 Hook TOCTOU、下游失败、TTL、幂等测试。
+
+### 明确不修改
+
+- `QueryTurnCoordinator` 的 Query 状态机核心语义；
+- NAPM Query Skill、Semantic、Metric、Object×Metric、Runtime Capability；
+- `NapmQuerySerializer`、NapmClient、南向接口；
+- Web 前端 UI；
+- BUG-A Query Gate；
+- BUG-B；
+- 不直接修改 OpenClaw 远端 bundle。
+
+### 长期平台修改
+
+另开 OpenClaw 平台变更：
+
+```text
+message-hook-mappers
+dispatch
+before_message_write context
+```
+
+补齐 runId/messageId 或可信 OutputTurnContext token；不与 rc.61 Plugin candidate claim 混成一个变更。
+
+## 23. 本轮最终结论
+
+```text
+CPT 的核心审核意见正确。
+
+上一版方案“Hook 接受后直接 markOutputTurnDelivered”不够严谨，已修订为：
+
+ELIGIBLE
+  → CLAIMED / PLUGIN_ACCEPTED
+  → FINALIZED（只有可信成功事件）
+  → RETIRED
+```
+
+当前项目事实：
+
+```text
+before_message_write：同步写入前 Hook，不是 delivery success
+message_sending：发送前修改/取消 Hook，不是 delivery success
+message_sent/after-delivery：runtime 存在，但 Web 是否必经，UNKNOWN/NOT PROVEN
+```
+
+因此本轮不实施 rc.61，等待确认：
+
+1. OpenClaw Web 是否提供稳定的 output/message/delivery identity；
+2. Web 是否触发 `message_sent` 或等价成功回调；
+3. Claim 后失败/超时的恢复方式；
+4. 是否采用独立 OutputAdmission 状态，而不是改 QueryTurnCoordinator。
+
+```text
+Runtime code modified: NO
+rc.61 built: NO
+deployed: NO
+remote restarted: NO
+BUG-A modified: NO
+BUG-B modified: NO
 ```
