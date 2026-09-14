@@ -158,6 +158,127 @@ describe('napm-openclaw-plugin out-of-scope guard', () => {
     }, ctx)).toBeUndefined();
   });
 
+  test('preserves a MODEL_OWNED greeting when output hooks expose only scope identity', async () => {
+    const { hooks } = createApiHarness();
+    const inboundCtx = createWeComCtx('split-model-owned');
+    const outputCtx = {
+      channelId: inboundCtx.channelId,
+      accountId: inboundCtx.accountId,
+      conversationId: inboundCtx.conversationId,
+      sessionKey: inboundCtx.sessionKey,
+      sessionId: inboundCtx.sessionId
+    };
+    const prompt = '你好？';
+    const reply = '你好，我是观枢AI。';
+
+    hooks.get('message_received')({ content: prompt }, inboundCtx);
+    await hooks.get('before_prompt_build')({ prompt }, inboundCtx);
+
+    await expect(hooks.get('message_sending')({ content: reply }, outputCtx))
+      .resolves.toBeUndefined();
+    expect(hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: reply }]
+      }
+    }, outputCtx)).toBeUndefined();
+  });
+
+  test('keeps explicit out-of-scope handling route-bound with scope-only output hooks', async () => {
+    const { hooks } = createApiHarness();
+    const inboundCtx = createWeComCtx('split-out-of-scope');
+    const outputCtx = {
+      channelId: inboundCtx.channelId,
+      accountId: inboundCtx.accountId,
+      conversationId: inboundCtx.conversationId,
+      sessionKey: inboundCtx.sessionKey,
+      sessionId: inboundCtx.sessionId
+    };
+    const prompt = '今天天气怎么样？';
+
+    hooks.get('message_received')({ content: prompt }, inboundCtx);
+    await hooks.get('before_prompt_build')({ prompt }, inboundCtx);
+
+    const sending = await hooks.get('message_sending')({ content: '今天晴。' }, outputCtx);
+    const writing = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '今天晴。' }]
+      }
+    }, outputCtx);
+
+    expect(sending.content).toContain('不在当前技能范围内');
+    expect(writing.message.content[0].text).toContain('不在当前技能范围内');
+  });
+
+  test('fails closed instead of borrowing a MODEL_OWNED route during overlapping turns', async () => {
+    const { hooks } = createApiHarness();
+    const firstCtx = createWeComCtx('overlap-model-owned-a');
+    const secondCtx = {
+      ...createWeComCtx('overlap-model-owned-b'),
+      channelId: firstCtx.channelId,
+      accountId: firstCtx.accountId,
+      conversationId: firstCtx.conversationId,
+      sessionKey: firstCtx.sessionKey,
+      sessionId: firstCtx.sessionId
+    };
+    const outputCtx = {
+      channelId: firstCtx.channelId,
+      accountId: firstCtx.accountId,
+      conversationId: firstCtx.conversationId,
+      sessionKey: firstCtx.sessionKey,
+      sessionId: firstCtx.sessionId
+    };
+
+    hooks.get('message_received')({ content: '你好？' }, firstCtx);
+    hooks.get('message_received')({ content: '你是谁？' }, secondCtx);
+
+    const written = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '我是观枢AI。' }]
+      }
+    }, outputCtx);
+    const sent = await hooks.get('message_sending')({ content: '我是观枢AI。' }, outputCtx);
+
+    expect(written?.message?.content?.[0]?.text).toMatch(/无法.*确认/);
+    expect(sent).toEqual({ cancel: true });
+  });
+
+  test('does not allow a scope-only MODEL_OWNED fallback to bypass an active NAPM turn', async () => {
+    const { hooks } = createApiHarness();
+    const napmCtx = createWeComCtx('overlap-napm');
+    const modelCtx = {
+      ...createWeComCtx('overlap-napm-model'),
+      channelId: napmCtx.channelId,
+      accountId: napmCtx.accountId,
+      conversationId: napmCtx.conversationId,
+      sessionKey: napmCtx.sessionKey,
+      sessionId: napmCtx.sessionId
+    };
+    const outputCtx = {
+      channelId: napmCtx.channelId,
+      accountId: napmCtx.accountId,
+      conversationId: napmCtx.conversationId,
+      sessionKey: napmCtx.sessionKey,
+      sessionId: napmCtx.sessionId
+    };
+
+    hooks.get('message_received')({ content: '最近业务访问较慢的前5个业务都有谁？' }, napmCtx);
+    hooks.get('message_received')({ content: '你好？' }, modelCtx);
+
+    const written = hooks.get('before_message_write')({
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '我是观枢AI。' }]
+      }
+    }, outputCtx);
+    const sent = await hooks.get('message_sending')({ content: '我是观枢AI。' }, outputCtx);
+
+    expect(written?.message?.content?.[0]?.text).toMatch(/无法.*确认/);
+    expect(sent).toEqual({ cancel: true });
+  });
+
   test.each([
     ['short-identity', '你是？'],
     ['formal-short-identity', '您是？'],

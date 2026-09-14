@@ -42,6 +42,12 @@ const {
   TURN_INTENT_TYPES,
   resolveTurnIntent
 } = require('./plugin/TurnIntentResolver');
+const {
+  OUTPUT_TURN_AUTHORITIES,
+  OUTPUT_TURN_PROVENANCE,
+  OUTPUT_TURN_RESOLUTION_STATUS,
+  resolveOutputTurnContext
+} = require('./plugin/OutputTurnContextResolver');
 
 const NAPM_DIRECT_SKILL_MODE = true;
 const domainIntentClassificationAdapter = createDomainIntentClassificationAdapter({
@@ -171,6 +177,7 @@ function setAutomaticSummaryTargetResolver(resolver = null) {
 }
 const napmGuardState = new Map();
 const napmConversationState = new Map();
+const napmOutputTurnAdmissions = new Map();
 const napmSentMediaByConversation = new Map();
 const nativeCommandByScope = new Map();
 let cachedGroupPathPlannerService = null;
@@ -190,6 +197,7 @@ const SENT_MEDIA_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
 const OPENCLAW_NATIVE_COMMAND_TTL_MS = 30 * 1000;
 const REPORT_EXPORT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const TRUSTED_TOOL_CONTEXT_MAX_AGE_MS = REPORT_EXPORT_CACHE_MAX_AGE_MS;
+const OUTPUT_TURN_CONTEXT_MAX_AGE_MS = RESULT_CACHE_MAX_AGE_MS;
 const REPORT_SOURCE_TTL_MS = Number(process.env.NAPM_REPORT_SOURCE_TTL_MS) > 0
   ? Number(process.env.NAPM_REPORT_SOURCE_TTL_MS)
   : 30 * 60 * 1000;
@@ -3592,6 +3600,140 @@ function getQueryTurnForContext(ctx = {}, conversationKey = '', guardState = nul
   };
 }
 
+function pruneOutputTurnAdmissions() {
+  const now = Date.now();
+  for (const [scope, admissions] of napmOutputTurnAdmissions.entries()) {
+    for (const [turnId, admission] of admissions.entries()) {
+      if ((now - Number(admission?.updatedAt || 0)) > OUTPUT_TURN_CONTEXT_MAX_AGE_MS) {
+        admissions.delete(turnId);
+      }
+    }
+    if (admissions.size === 0) napmOutputTurnAdmissions.delete(scope);
+  }
+}
+
+function rememberOutputTurnAdmission(
+  conversationKey = '',
+  turnId = '',
+  state = null,
+  queryTurn = null
+) {
+  const scope = String(conversationKey || '').trim();
+  const normalizedTurnId = normalizeTurnId(turnId);
+  const admission = state?.turnAdmissionDecision;
+  if (!scope || !normalizedTurnId || !isPlainObject(admission)) return false;
+  pruneOutputTurnAdmissions();
+  let admissions = napmOutputTurnAdmissions.get(scope);
+  if (!admissions) {
+    admissions = new Map();
+    napmOutputTurnAdmissions.set(scope, admissions);
+  }
+  admissions.set(normalizedTurnId, Object.freeze({
+    scope,
+    turnId: normalizedTurnId,
+    route: String(state?.turnPolicy?.route || admission.route || '').trim(),
+    turnRoute: String(queryTurn?.route || '').trim(),
+    expectedTool: String(admission.expectedTool || '').trim() || null,
+    action: String(admission.action || '').trim() || null,
+    sourceRunId: normalizeTraceId(state?.runId),
+    sourceMessageId: normalizeTraceId(state?.messageId),
+    updatedAt: Date.now()
+  }));
+  return true;
+}
+
+function clearOutputTurnAdmissions(conversationKey = '') {
+  const scope = String(conversationKey || '').trim();
+  return scope ? napmOutputTurnAdmissions.delete(scope) : false;
+}
+
+function getOutputTurnCandidates(conversationKey = '') {
+  const scope = String(conversationKey || '').trim();
+  if (!scope) return [];
+  pruneOutputTurnAdmissions();
+  const admissions = napmOutputTurnAdmissions.get(scope);
+  if (!admissions) return [];
+  const candidates = [];
+  for (const admission of admissions.values()) {
+    const turn = queryTurnCoordinator.get(scope, admission.turnId);
+    if (!turn || turn.conversationKey !== scope) continue;
+    const terminalOutputPending = turn.phase === QUERY_PHASES.TERMINAL
+      && !turn.deliveryClaimed
+      && Boolean(String(turn.finalContent || '').trim());
+    const eligible = turn.phase !== QUERY_PHASES.TERMINAL || terminalOutputPending;
+    if (!eligible) continue;
+    candidates.push({
+      scope,
+      turnId: admission.turnId,
+      turn,
+      route: admission.route,
+      turnRoute: admission.turnRoute,
+      expectedTool: admission.expectedTool,
+      sourceRunId: admission.sourceRunId,
+      sourceMessageId: admission.sourceMessageId,
+      eligible: true
+    });
+  }
+  return candidates;
+}
+
+function buildOutputTurnResolutionContext(
+  ctx = {},
+  conversationKey = '',
+  guardState = null,
+  conversationState = null
+) {
+  const scope = String(conversationKey || '').trim();
+  const hasIdentity = hasLifecycleIdentity(ctx);
+  const exact = hasIdentity
+    ? getQueryTurnForContext(ctx, scope, guardState, conversationState)
+    : { turnId: '', turn: null };
+  const exactRoute = hasIdentity && guardState
+    ? getTurnPolicyRoute(guardState)
+    : '';
+  const strongBinding = exact.turnId && exact.turn && exactRoute
+    ? {
+        scope,
+        turnId: exact.turnId,
+        turn: exact.turn,
+        route: exactRoute,
+        expectedTool: guardState?.turnAdmissionDecision?.expectedTool || null,
+        sourceRunId: guardState?.runId || ctx?.runId || '',
+        sourceMessageId: guardState?.messageId || ctx?.messageId || '',
+        provenance: normalizeTraceId(ctx?.runId)
+          ? OUTPUT_TURN_PROVENANCE.RUN_BOUND
+          : (normalizeTraceId(ctx?.messageId)
+            ? OUTPUT_TURN_PROVENANCE.MESSAGE_BOUND
+            : OUTPUT_TURN_PROVENANCE.TURN_TOKEN)
+      }
+    : null;
+  return resolveOutputTurnContext({
+    scope,
+    strongBinding,
+    candidates: getOutputTurnCandidates(scope)
+  });
+}
+
+function buildOutputTurnResolutionFailureReply(resolution = null) {
+  const code = String(resolution?.code || '').trim();
+  if (code === 'OUTPUT_TURN_AMBIGUOUS') {
+    return '当前回复无法唯一确认所属的会话轮次，已停止未经验证的输出。\n请重新发起请求。';
+  }
+  return '当前回复无法确认所属的会话轮次，已停止未经验证的输出。\n请重新发起请求。';
+}
+
+function buildOutputTurnResolutionAudit(resolution = null) {
+  return {
+    status: resolution?.status || null,
+    code: resolution?.code || null,
+    provenance: resolution?.context?.provenance || null,
+    authority: resolution?.context?.authority || null,
+    turnId: resolution?.context?.turnId || null,
+    route: resolution?.context?.route || null,
+    candidateCount: resolution?.details?.candidateCount ?? null
+  };
+}
+
 function isPendingClarificationAnswer(content = '', pending = null) {
   const text = String(content || '').trim();
   if (!text || !pending || text.length > 128 || /[\r\n]/.test(text)) return false;
@@ -3710,6 +3852,7 @@ function clearNapmConversationScope(ctx = {}) {
   const summary = {
     scope,
     conversationState: napmConversationState.delete(scope),
+    outputTurnAdmissions: clearOutputTurnAdmissions(scope),
     operationRecords: napmOperationState.clearScope(scope),
     queryTurns: queryTurnCoordinator.clearScope(scope),
     assistantOutputs: assistantOutputLedger.clearScope(scope),
@@ -8856,7 +8999,7 @@ const plugin = {
 
         if (conversationKey) {
           napmConversationState.set(conversationKey, nextState);
-          queryTurnCoordinator.begin({
+          const queryTurn = queryTurnCoordinator.begin({
             scope: conversationKey,
             turnId,
             runId: normalizeTraceId(ctx?.runId),
@@ -8870,6 +9013,7 @@ const plugin = {
             resumedFromClarification: Boolean(resumedTurn),
             clarificationAnswer: resumedTurn ? content : ''
           });
+          rememberOutputTurnAdmission(conversationKey, turnId, nextState, queryTurn);
           if (ctx?.messageId) {
             queryTurnCoordinator.bindRun({
               scope: conversationKey,
@@ -9954,31 +10098,46 @@ const plugin = {
         if (isNativeCommandTurn(ctx)) {
           return undefined;
         }
-        if (!hasLifecycleIdentity(ctx)) {
-          appendPluginAuditEvent('lifecycle_identity_missing', {
-            hook: 'message_sending',
-            conversationKey: getConversationKey(ctx) || null
-          });
-          return { cancel: true };
-        }
-
         const conversationKey = getConversationKey(ctx);
-        const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
-        const guardState = getGuardState(ctx);
-        const initialQueryTurnContext = getQueryTurnForContext(
+        const hasIdentity = hasLifecycleIdentity(ctx);
+        const conversationState = hasIdentity && conversationKey
+          ? napmConversationState.get(conversationKey)
+          : null;
+        const guardState = hasIdentity ? getGuardState(ctx) : null;
+        const outputTurnResolution = buildOutputTurnResolutionContext(
           ctx,
           conversationKey,
           guardState,
           conversationState
         );
-        if (!initialQueryTurnContext.turnId || !initialQueryTurnContext.turn) {
-          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+        appendPluginAuditEvent('output_turn_context_resolved', {
+          hook: 'message_sending',
+          conversationKey: conversationKey || null,
+          ...buildOutputTurnResolutionAudit(outputTurnResolution)
+        });
+        if (!outputTurnResolution.ok) {
+          appendPluginAuditEvent('output_turn_context_blocked', {
             hook: 'message_sending',
             conversationKey: conversationKey || null,
+            ...buildOutputTurnResolutionAudit(outputTurnResolution),
             context: buildAuditContextSnapshot(ctx)
           });
           return { cancel: true };
         }
+        const outputTurnContext = outputTurnResolution.context;
+        if (outputTurnResolution.context.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            return undefined;
+          }
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
+            return { content: buildGeneralOutOfScopeReply() };
+          }
+          return { cancel: true };
+        }
+        const initialQueryTurnContext = {
+          turnId: outputTurnContext.turnId,
+          turn: outputTurnContext.turn
+        };
         const turnId = initialQueryTurnContext.turnId;
         const outgoingText = extractTextContent(event?.content);
         const activePromptForReport = selectActivePromptText(conversationState, guardState, outgoingText);
@@ -10384,33 +10543,61 @@ const plugin = {
         if (role !== 'assistant') {
           return undefined;
         }
-        if (!hasLifecycleIdentity(ctx)) {
-          appendPluginAuditEvent('lifecycle_identity_missing', {
-            hook: 'before_message_write',
-            conversationKey: getConversationKey(ctx) || null
-          });
-          return {
-            message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
-          };
-        }
         const lifecycleConversationKey = getConversationKey(ctx);
-        const lifecycleGuardState = getGuardState(ctx);
-        const lifecycleTurnContext = getQueryTurnForContext(
+        const hasIdentity = hasLifecycleIdentity(ctx);
+        const lifecycleGuardState = hasIdentity ? getGuardState(ctx) : null;
+        const lifecycleConversationState = hasIdentity && lifecycleConversationKey
+          ? napmConversationState.get(lifecycleConversationKey)
+          : null;
+        const outputTurnResolution = buildOutputTurnResolutionContext(
           ctx,
           lifecycleConversationKey,
           lifecycleGuardState,
-          null
+          lifecycleConversationState
         );
-        if (!lifecycleTurnContext.turnId || !lifecycleTurnContext.turn) {
-          appendPluginAuditEvent('lifecycle_turn_binding_missing', {
+        appendPluginAuditEvent('output_turn_context_resolved', {
+          hook: 'before_message_write',
+          conversationKey: lifecycleConversationKey || null,
+          ...buildOutputTurnResolutionAudit(outputTurnResolution)
+        });
+        const outputCandidates = getOutputTurnCandidates(lifecycleConversationKey);
+        const hasNapmCandidate = outputCandidates.some((candidate) => (
+          candidate.turnRoute === QUERY_ROUTES.NAPM_QUERY
+        ));
+        if (!outputTurnResolution.ok) {
+          appendPluginAuditEvent('output_turn_context_blocked', {
             hook: 'before_message_write',
             conversationKey: lifecycleConversationKey || null,
+            ...buildOutputTurnResolutionAudit(outputTurnResolution),
             context: buildAuditContextSnapshot(ctx)
           });
+          return {
+            message: buildAssistantTextMessage(
+              hasNapmCandidate
+                ? buildLifecycleBindingFailureReply()
+                : buildOutputTurnResolutionFailureReply(outputTurnResolution),
+              message
+            )
+          };
+        }
+        const outputTurnContext = outputTurnResolution.context;
+        if (outputTurnContext.authority === OUTPUT_TURN_AUTHORITIES.ROUTE_IDENTITY_ONLY) {
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.MODEL_OWNED) {
+            return undefined;
+          }
+          if (outputTurnContext.route === TURN_POLICY_ROUTES.EXPLICIT_OUT_OF_SCOPE) {
+            return {
+              message: buildAssistantTextMessage(buildGeneralOutOfScopeReply(), message)
+            };
+          }
           return {
             message: buildAssistantTextMessage(buildLifecycleBindingFailureReply(), message)
           };
         }
+        const lifecycleTurnContext = {
+          turnId: outputTurnContext.turnId,
+          turn: outputTurnContext.turn
+        };
         if (messageContainsToolCall(message)) {
           const conversationKey = getConversationKey(ctx);
           const conversationState = conversationKey ? napmConversationState.get(conversationKey) : null;
@@ -10788,6 +10975,11 @@ module.exports.__test__ = {
   buildMediaDedupeKey,
   getGuardState,
   getActiveTurnId,
+  resolveOutputTurnContext,
+  buildOutputTurnResolutionContext,
+  getOutputTurnCandidates,
+  outputTurnResolutionStatus: OUTPUT_TURN_RESOLUTION_STATUS,
+  outputTurnProvenance: OUTPUT_TURN_PROVENANCE,
   getNapmResolvedQueryResolverService,
   resolvePromptWithAudit,
   runMainflowQuery,
