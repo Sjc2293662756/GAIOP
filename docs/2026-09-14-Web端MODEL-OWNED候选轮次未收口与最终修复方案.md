@@ -625,7 +625,7 @@ Plugin 已接受当前 output attempt，
 | `ELIGIBLE` | `before_message_write` accepted | MODEL_OWNED、唯一解析、非流式、无 toolCall、产生 claimId | `CLAIMED` | 否 |
 | `ELIGIBLE` | `message_sending` accepted | 强绑定或同一 output claim、未 cancel | `CLAIMED` | 否 |
 | `CLAIMED` | `message_sent/after-delivery` success | 能证明同一 output attempt | `FINALIZED` | 否 |
-| `CLAIMED` | downstream cancel/failure | 能证明同一 output attempt | `ELIGIBLE` 或进入短期 recovery lease | 是/按 lease |
+| `CLAIMED` | downstream cancel/failure | 能证明同一 output attempt | `CLAIM_FAILED` / `ABANDONED` / `RECOVERY_PENDING` | 否；只允许同一 output retry |
 | `CLAIMED` | timeout | 无成功回调且超过 claim TTL | `RETIRED` 或按安全策略恢复 | 否 |
 | `FINALIZED` | duplicate finalize | 同一 claimId | 保持 `FINALIZED` | 否 |
 | `FINALIZED` | wrong-turn finalize | claimId/turnId 不一致 | 拒绝 | 否 |
