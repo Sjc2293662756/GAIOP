@@ -474,7 +474,7 @@ OpenClaw message-hook-mappers、dispatch、before_message_write 上下文传递�
 不涉及：
 Web UI、NAPM Query Skill、Semantic、Metric、Query Gate。
 
-本文件只记录现状和方案，不代表 rc.61 已实施。
+本文件记录现状、方案和当前本地实施状态；rc.61 尚未打包或部署。
 ```
 
 ## 14. CPT 二次设计核验结论
@@ -793,7 +793,7 @@ message_sending：发送前修改/取消 Hook，不是 delivery success
 message_sent/after-delivery：runtime 存在，但 Web 是否必经，UNKNOWN/NOT PROVEN
 ```
 
-因此本轮不实施 rc.61，等待确认：
+因此 rc.61 运行代码已在本地实施，但仍需确认：
 
 1. OpenClaw Web 是否提供稳定的 output/message/delivery identity；
 2. Web 是否触发 `message_sent` 或等价成功回调；
@@ -801,10 +801,55 @@ message_sent/after-delivery：runtime 存在，但 Web 是否必经，UNKNOWN/NO
 4. 是否采用独立 OutputAdmission 状态，而不是改 QueryTurnCoordinator。
 
 ```text
-Runtime code modified: NO
+Runtime code modified: YES
 rc.61 built: NO
 deployed: NO
 remote restarted: NO
 BUG-A modified: NO
 BUG-B modified: NO
 ```
+
+## 24. 本地实施记录
+
+本地已完成 Claim 生命周期实现，提交：
+
+```text
+a3aa39a fix: finalize model-owned output claims safely
+```
+
+实现内容：
+
+- `ELIGIBLE → CLAIMED → FINALIZED/RETIRED` 状态；
+- `CLAIMED` 不再参与普通 scope candidate resolution；
+- `CLAIMED` 不被称为 delivered；
+- claim/finalize 同一 claimId 幂等；
+- 错误 turn/claim finalize 被拒绝；
+- claim TTL 到期转为 `RETIRED`，不回到 generic `ELIGIBLE`；
+- `/new` / scope clear 清理 Output Admission；
+- NAPM_QUERY 仍保持 fail-closed。
+
+验证结果：
+
+```text
+158 suites / 1345 tests passed
+lint: passed
+runtime contract: passed
+git diff --check: passed
+Node syntax check: passed
+```
+
+备份：
+
+```text
+C:\Users\20693\AppData\Local\Temp\napm-rc61-pre-claim-20260914-114637
+```
+
+本地实施后：
+
+```text
+rc.61 built: NO
+deployed: NO
+remote restarted: NO
+```
+
+下一步只有在审核通过后，才执行版本升级、打包、staged、dry-run 和正式部署。
