@@ -934,15 +934,15 @@ Functions Explicitly Not Changed:
 BUG-A Query Gate、Query Contract、Semantic/Object/Metric、Runtime Capability、Serializer、Direct Tool trace authority。
 
 Code Modified: YES（本轮已进入实施阶段）
-Runtime Deployed: NO
-Remote Restarted: NO
+Runtime Deployed: YES（rc.60）
+Remote Restarted: YES（由 install-release.sh 自动恢复）
 BUG-A Modified: NO
 BUG-B Modified: NO
 ```
 
 ## 25. 本轮实施记录
 
-本轮已按上述方案完成本地实现，未部署远端。
+本轮先完成本地实现，随后按统一发布流程部署远端。
 
 ### 25.1 新增模块
 
@@ -1024,13 +1024,37 @@ verify:runtime-contract：passed
 git diff --check：passed
 ```
 
-本轮仍未：
+实现阶段未：
 
 ```text
-部署
-打包
-连接或修改远端服务器
-重启 Gateway / watcher
+远端部署
+```
+
+### 25.5 rc.60 部署记录
+
+```text
+version: 1.1.0-rc.60
+commit: 574f42a8991807d7e6b640f8f55f5e8546efefee
+package: NAPM_skill-1.1.0-rc.60-574f42a8.zip
+sha256: 9f4f1b01831a908f47fd2e914a5a0a063a30650ffce3ec751b1be24a8f293c5b
+```
+
+部署验证：
+
+- 远端 SHA-256 与本地一致；
+- staged release verification 通过；
+- installer dry-run 从 rc.59 升级到 rc.60 通过；
+- 正式安装成功，未触发回滚；
+- workspace / extension manifest 均为 rc.60；
+- Gateway active；
+- system watcher active；
+- 8 个生产 Tool 注册完整；
+- lifecycle smoke 通过。
+
+自动回滚备份：
+
+```text
+/home/netinside/.openclaw/deploy_backups/20260914_103341_napm_1.1.0-rc.60_574f42a8/
 ```
 
 备份目录：
@@ -1051,4 +1075,4 @@ C:\Users\20693\AppData\Local\Temp\napm-model-owned-pre-20260914-100656
 6. 当前 scope admission 记录是否会在 `/new` 和过期后清理；
 7. OpenClaw 真实 split-hook 上下文是否与测试夹具一致。
 
-本轮实现完成，等待审核后再决定是否提交、打包或部署。
+rc.60 已部署完成；真实企业微信业务问候和 NAPM 查询验收仍需人工验证。
