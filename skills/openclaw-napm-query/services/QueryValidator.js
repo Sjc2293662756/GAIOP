@@ -1,4 +1,7 @@
 const logger = require('../src/utils/logger');
+const {
+  validatePageViewsQuery
+} = require('../../shared/NapmPageViewsContract');
 
 const VALID_SERVICES = new Set([
   'topValues',
@@ -6,7 +9,8 @@ const VALID_SERVICES = new Set([
   'timeValues',
   'groups',
   'metrics',
-  'alertsSummary'
+  'alertsSummary',
+  'pageViews'
 ]);
 
 class QueryValidator {
@@ -82,6 +86,16 @@ class QueryValidator {
 
     if (target.service === 'timeValues' && !target.granularity) {
       errors.push('Granularity is required for timeValues service');
+    }
+
+    if (target.service === 'pageViews') {
+      const detailValidation = validatePageViewsQuery(target, { validateTime: false });
+      if (!detailValidation.ok) {
+        errors.push(detailValidation.message);
+      } else {
+        target.pageFamilyId = detailValidation.query.pageFamilyId;
+        target.maxLimit = detailValidation.query.maxLimit;
+      }
     }
 
     if (errors.length > 0) {

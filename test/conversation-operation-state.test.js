@@ -93,9 +93,34 @@ describe('ConversationOperationState', () => {
       sourceTool: 'napm-skill-query',
       resolvedQuery
     });
+    expect(store.getQueryContext('wecom:account:a', 'turn-a')).toMatchObject({
+      turnId: 'turn-a',
+      resolvedQuery
+    });
 
     store.clearScope('wecom:account:a');
     expect(store.getLatestQueryContext('wecom:account:a')).toBeNull();
+    expect(store.getQueryContext('wecom:account:a', 'turn-a')).toBeNull();
+  });
+
+  test('keeps query contexts addressable by turn when a newer turn completes', () => {
+    store.rememberQueryContext({
+      scope: 'wecom:account:a',
+      turnId: 'turn-old',
+      sourceTool: 'napm-skill-query',
+      resolvedQuery: { service: 'timeValues', metrics: ['TPIO'] }
+    });
+    now += 1;
+    store.rememberQueryContext({
+      scope: 'wecom:account:a',
+      turnId: 'turn-new',
+      sourceTool: 'napm-skill-query',
+      resolvedQuery: { service: 'timeValues', metrics: ['BYTIO'] }
+    });
+
+    expect(store.getQueryContext('wecom:account:a', 'turn-old')?.resolvedQuery.metrics)
+      .toEqual(['TPIO']);
+    expect(store.getLatestQueryContext('wecom:account:a')?.turnId).toBe('turn-new');
   });
 
   test('expires lightweight query context after its dedicated lifetime', () => {

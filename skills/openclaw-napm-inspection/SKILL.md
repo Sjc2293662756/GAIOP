@@ -65,6 +65,8 @@ The result separates:
 - `contextWindows`: optional recent 1-day and recent 1-hour status ranges;
 - legacy `recentHour`/`recentDay` aliases for backward compatibility.
 
+Automatic `timeValues` granularity is selected by the shared duration policy: `t <= 6h` uses 1 minute, `6h < t <= 3d` uses 5 minutes, `3d < t < 3600000s` uses 1 hour, and `t >= 3600000s` uses 1 day. A valid explicit granularity remains authoritative at request construction, while a valid API response granularity remains authoritative for the rendered time axis.
+
 Traffic analysis and business performance findings must come from query rows and must include `evidenceRefs` or query evidence. The report skill must only render this data; it must not re-query NAPM or invent conclusions.
 
 ## CLI

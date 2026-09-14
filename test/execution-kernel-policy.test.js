@@ -39,6 +39,43 @@ describe('execution kernel policy', () => {
     })).toBe('metric');
   });
 
+  test('should route page visit detail workflow to the detail kernel', () => {
+    expect(ExecutionKernelPolicy.resolveExecutionKernel({
+      service: 'pageViews',
+      semanticConstraints: {
+        workflowType: 'page_view_detail',
+        operation: 'detail_list'
+      }
+    })).toBe('detail');
+  });
+
+  test('should reject a metric workflow drifting to pageViews', async () => {
+    const result = await RequirementParserService.executeDirectGatewayRequest({
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      start: 1779413040,
+      end: 1779499440,
+      pageFamilyId: '8573007',
+      maxLimit: 20,
+      semanticConstraints: {
+        workflowType: 'metric_topn',
+        operation: 'metric_query',
+        targetObjectType: 'PageFamily'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      code: 'WORKFLOW_SERVICE_CONTRACT_MISMATCH',
+      details: {
+        workflowType: 'metric_topn',
+        service: 'pageViews',
+        expectedKernel: 'metric',
+        actualKernel: 'detail'
+      }
+    });
+  });
+
   test('should reject object inventory drift to topValues', async () => {
     const result = await RequirementParserService.executeDirectGatewayRequest({
       service: 'topValues',

@@ -45,4 +45,28 @@ describe('QueryValidator execution-time contract', () => {
       expect(error.details.errors).toContain('Start and end timestamps must be positive integer Unix seconds');
     }
   });
+
+  test('accepts pageViews without metric or group fields and applies the default limit', () => {
+    expect(QueryValidator.validate({
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      start: 1785310980,
+      end: 1785314580,
+      pageFamilyId: '8573007'
+    })).toMatchObject({
+      pageFamilyId: '8573007',
+      maxLimit: 20
+    });
+  });
+
+  test('rejects PageFamilyDetail as a synthetic group for pageViews', () => {
+    expect(() => QueryValidator.validate({
+      service: 'pageViews',
+      queryModeKey: 'detail',
+      start: 1785310980,
+      end: 1785314580,
+      pageFamilyId: '8573007',
+      groups: [{ type: 'PageFamilyDetail' }]
+    })).toThrow(expect.objectContaining({ code: 'QUERY_SHAPE_INVALID' }));
+  });
 });

@@ -18,6 +18,7 @@ case "$EXTENSION_STAGE/" in
 esac
 
 for required_path in \
+  "$RELEASE_ROOT/index.js" \
   "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" \
   "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" \
   "$RELEASE_ROOT/napm-openclaw-plugin.package.json" \
@@ -30,8 +31,19 @@ for required_path in \
   }
 done
 
+INDEX_HASH="$(sha256sum "$RELEASE_ROOT/index.js" | awk '{print $1}')"
+REMOTE_HASH="$(sha256sum "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" | awk '{print $1}')"
+[[ "$INDEX_HASH" == "$REMOTE_HASH" ]] || {
+  echo "Release entrypoint mismatch: index.js=$INDEX_HASH remote.js=$REMOTE_HASH" >&2
+  exit 1
+}
+grep -Eq "new URL\\('./index\\.js'" "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" || {
+  echo "Release index.mjs does not load ./index.js" >&2
+  exit 1
+}
+
 mkdir -p "$EXTENSION_STAGE/plugin"
-install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" "$EXTENSION_STAGE/index.js"
+install -m 0644 "$RELEASE_ROOT/index.js" "$EXTENSION_STAGE/index.js"
 install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.remote.js" "$EXTENSION_STAGE/napm-openclaw-plugin.remote.js"
 install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.index.mjs" "$EXTENSION_STAGE/index.mjs"
 install -m 0644 "$RELEASE_ROOT/napm-openclaw-plugin.package.json" "$EXTENSION_STAGE/package.json"

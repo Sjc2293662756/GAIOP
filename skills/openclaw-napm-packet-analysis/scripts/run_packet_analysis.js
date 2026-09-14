@@ -9,6 +9,13 @@ const { spawn } = require('child_process');
 const { URL } = require('url');
 const https = require('https');
 const http = require('http');
+const TimeRangeService = require('../../openclaw-napm-query/services/ResolvedQueryTimeRangeService');
+const {
+  buildPageViewsParams,
+  extractPageFamilyDetailId: extractSharedPageFamilyDetailId,
+  extractPageFamilyId: extractSharedPageFamilyId,
+  normalizePageViewRows
+} = require('../../shared/NapmPageViewsContract');
 
 const DEFAULT_MODE = 'build_url_only';
 const DOWNLOAD_MODES = new Set(['download_only', 'preview_download', 'download_analyze', 'preview_download_analyze']);
@@ -16,6 +23,8 @@ const PREVIEW_MODES = new Set(['preview_only', 'preview_download', 'preview_down
 const ANALYZE_MODES = new Set(['analyze_file', 'download_analyze', 'preview_download_analyze']);
 const BUSINESS_TOP_METRICS = ['PGNPGE', 'PGTME', 'PGNSLPGE', 'PGSLPCT', 'PGHTTP400', 'PGHTTP500'];
 const PAGE_FAMILY_TOP_METRICS = ['PGNPGE', 'PGNOBJE', 'PGHTTP200', 'PGHTTP300', 'PGHTTP400', 'PGHTTP500'];
+const BUSINESS_GROUP_NAME_FIELD = 'Name';
+const BUSINESS_GROUP_MEMBERS_FIELD = 'IpMembers';
 const PACKET_COUNT_KEYS = [
   'packetCount',
   'packetsCount',
@@ -79,6 +88,38 @@ async function main() {
   }
 
   const task = resolved.task;
+  if (task.needsBusinessGroupResolution) {
+    const businessGroupResolution = await resolveBusinessGroupPacketIps(task);
+    task.businessGroupResolution = businessGroupResolution;
+    if (!businessGroupResolution.ok) {
+      writeJson({
+        ok: false,
+        mode: task.mode,
+        downloadType: task.downloadType,
+        criteria: task.criteria,
+        businessGroupResolution,
+        error: businessGroupResolution.error,
+        decision: {
+          next_action: 'CLARIFICATION_REQUIRED',
+          reason: businessGroupResolution.error && businessGroupResolution.error.code,
+          message: businessGroupResolution.error && businessGroupResolution.error.message,
+        },
+        summary: {
+          title: '工作组数据包成员解析失败',
+          highlights: [businessGroupResolution.error && businessGroupResolution.error.message].filter(Boolean),
+        },
+      });
+      return;
+    }
+    task.criteria = { ...task.criteria, ...businessGroupResolution.criteriaPatch };
+    task.urls = buildUrls({
+      host: task.host,
+      criteria: task.criteria,
+      downloadType: task.downloadType,
+      showFullUrls: task.showFullUrls,
+    });
+  }
+
   if (task.needsBusinessInstanceResolution) {
     const businessResolution = await resolveBusinessPacketInstance(task);
     task.businessResolution = businessResolution;
@@ -94,6 +135,7 @@ async function main() {
         preview: null,
         download: null,
         analysis: null,
+        businessGroupResolution: task.businessGroupResolution || null,
         businessResolution,
         error: businessResolution.ok ? null : businessResolution.error,
         decision: businessResolution.ok
@@ -155,6 +197,7 @@ async function main() {
     preview: null,
     download: null,
     analysis: null,
+    businessGroupResolution: task.businessGroupResolution || null,
     businessResolution: task.businessResolution || null,
     error: null,
     decision: null,
@@ -363,11 +406,33 @@ function resolveQuery(query) {
     };
   }
 
-  const criteria = normalizeCriteria(query.criteria || query);
+  const nestedCriteria = isPlainObject(query.criteria) ? query.criteria : {};
+  const rawCriteria = {
+    ...(isPlainObject(query) ? query : {}),
+    ...nestedCriteria,
+  };
+  delete rawCriteria.criteria;
+  for (const controlKey of [
+    'mode', 'downloadType', 'analysis', 'filePolicy', 'forceDownload',
+    'previewRiskAccepted', 'showFullUrls', 'url', 'file', 'queryFile', 'queryJson',
+    'traceId', 'packetQuery',
+  ]) {
+    delete rawCriteria[controlKey];
+  }
+  for (const nestedCriteriaKey of ['host', 'downloadType', 'forceDownload', 'previewRiskAccepted', 'prompt']) {
+    if (Object.prototype.hasOwnProperty.call(nestedCriteria, nestedCriteriaKey)) {
+      rawCriteria[nestedCriteriaKey] = nestedCriteria[nestedCriteriaKey];
+    }
+  }
+  const normalized = normalizeCriteria(rawCriteria);
+  const timeResolution = resolvePacketTimeRange(query, normalized);
+  if (!timeResolution.ok) return timeResolution;
+  const criteria = timeResolution.criteria;
   const validation = validateCriteria(criteria, mode);
   if (!validation.ok) return validation;
 
   const needsBusinessInstanceResolution = shouldResolveBusinessPacketInstance(criteria);
+  const needsBusinessGroupResolution = shouldResolveBusinessGroupPacketInstance(criteria);
   const downloadType = needsBusinessInstanceResolution
     ? 'DownServlet'
     : (query.downloadType || criteria.downloadType || 'packetsDown');
@@ -389,6 +454,7 @@ function resolveQuery(query) {
       urls,
       showFullUrls,
       needsBusinessInstanceResolution,
+      needsBusinessGroupResolution,
       analysis: normalizeAnalysisOptions(query.analysis),
       filePolicy: normalizeFilePolicy(query.filePolicy),
       forceDownload: Boolean(query.forceDownload || criteria.forceDownload),
@@ -397,8 +463,83 @@ function resolveQuery(query) {
   };
 }
 
+function resolvePacketTimeRange(query = {}, criteria = {}) {
+  const source = isPlainObject(query) ? query : {};
+  const nested = isPlainObject(criteria.timeRange)
+    ? criteria.timeRange
+    : (isPlainObject(source.timeRange) ? source.timeRange : {});
+  // Nested timeRange.start/end are declarative metadata only. Executable packet
+  // timestamps must come from root-level start/end or the shared resolver.
+  const explicitStart = criteria.start ?? source.start;
+  const explicitEnd = criteria.end ?? source.end;
+  const timeRangeKey = String(
+    nested.key
+      || criteria.timeRangeKey
+      || source.timeRangeKey
+      || ''
+  ).trim();
+
+  if (explicitStart != null || explicitEnd != null) {
+    const start = normalizeTimestamp(explicitStart);
+    const end = normalizeTimestamp(explicitEnd);
+    if (!start || !end || end <= start) {
+      return failResolve('PACKET_TIME_RANGE_INVALID', 'start 和 end 必须是有效的 Unix 秒级时间戳，且 end 必须大于 start。');
+    }
+    return {
+      ok: true,
+      criteria: {
+        ...criteria,
+        start,
+        end,
+        timeRange: {
+          ...nested,
+          key: timeRangeKey || nested.key || 'custom',
+          displayText: nested.displayText || (timeRangeKey ? timeRangeKey : '自定义时间范围'),
+          start,
+          end,
+        },
+      },
+    };
+  }
+
+  const prompt = String(source.prompt || criteria.prompt || '').trim();
+  const resolved = timeRangeKey
+    ? TimeRangeService.resolveKnownTimeRangeKey(timeRangeKey)
+    : TimeRangeService.resolvePromptTimeRange(prompt);
+  if (!resolved) {
+    if (timeRangeKey) {
+      return failResolve('PACKET_TIME_RANGE_UNSUPPORTED', `不支持的数据包时间范围：${timeRangeKey}。`);
+    }
+    return {
+      ok: true,
+      criteria,
+    };
+  }
+
+  return {
+    ok: true,
+    criteria: {
+      ...criteria,
+      start: resolved.start,
+      end: resolved.end,
+      timeRange: {
+        ...nested,
+        key: resolved.key,
+        requestedKey: resolved.requestedKey || resolved.key,
+        displayText: nested.displayText || resolved.displayText,
+        start: resolved.start,
+        end: resolved.end,
+        source: resolved.source || 'time_range_resolver',
+        alignment: resolved.alignment || 'minute_floor',
+      },
+    },
+  };
+}
+
 function normalizeCriteria(input) {
   const criteria = { ...input };
+  const preserveResolvedBusinessGroupMembers = criteria.__businessGroupMembersResolved === true;
+  delete criteria.__businessGroupMembersResolved;
   delete criteria.UserName;
   delete criteria.userName;
   delete criteria.username;
@@ -419,11 +560,124 @@ function normalizeCriteria(input) {
   if (criteria.start != null) criteria.start = normalizeTimestamp(criteria.start);
   if (criteria.end != null) criteria.end = normalizeTimestamp(criteria.end);
 
+  const groupType = String(criteria.groupType || criteria.objectType || '').trim();
+  const explicitBusinessGroupName = criteria.businessGroupName
+    || criteria.businessGroup
+    || ((/^BusinessGroup$/i.test(groupType) || /(?:业务组|工作组|业务分组)/.test(groupType))
+      ? criteria.groupArgument
+      : '');
+  // Models occasionally put a workgroup name into ipRanges because the
+  // target was described as a "network segment". When the prompt establishes
+  // a BusinessGroup scope, promote that value to the canonical group target
+  // and clear the direct-IP fields so discovery cannot be skipped.
+  const promptBusinessGroupName = extractBusinessGroupNameFromPrompt(criteria.prompt);
+  const invalidDirectTargets = [
+    ...criteria.ips.filter((value) => !isValidIPv4(value)),
+    ...criteria.ipRanges.filter((value) => !isValidIPv4Range(value)),
+  ];
+  const unqualifiedPromptBusinessGroupName = extractUnqualifiedBusinessGroupNameFromPacketPrompt(
+    criteria.prompt,
+    invalidDirectTargets
+  );
+  const inferredBusinessGroupName = explicitBusinessGroupName
+    || promptBusinessGroupName
+    || unqualifiedPromptBusinessGroupName
+    || ((/(?:业务组|工作组|业务分组)/i.test(String(criteria.prompt || ''))
+      && invalidDirectTargets.length === 1)
+      ? invalidDirectTargets[0]
+      : '');
+
+  if (inferredBusinessGroupName && typeof inferredBusinessGroupName !== 'object') {
+    criteria.businessGroupName = String(inferredBusinessGroupName).trim();
+    criteria.groupType = 'BusinessGroup';
+    if (!criteria.groupArgument) criteria.groupArgument = criteria.businessGroupName;
+    if (preserveResolvedBusinessGroupMembers) {
+      criteria.ips = criteria.ips.filter(isValidIPv4);
+      criteria.ipRanges = criteria.ipRanges.filter(isValidIPv4Range);
+    } else {
+      criteria.ips = [];
+      criteria.ipRanges = [];
+    }
+  }
+
   if (criteria.instanceId && !String(criteria.instanceId).startsWith('PATH1/')) {
     criteria.instanceId = normalizeInstanceId(criteria.instanceId);
   }
   if (!criteria.instanceId && criteria.resultName) criteria.instanceId = normalizeInstanceId(criteria.resultName);
   return criteria;
+}
+
+function extractBusinessGroupNameFromPrompt(prompt = '') {
+  const text = String(prompt || '').trim();
+  if (!text || !/(?:业务组|工作组|业务分组)/i.test(text)) return '';
+
+  const quoted = text.match(/(?:业务组|工作组|业务分组)\s*[“"「『‘']\s*([^”"」』’']+?)\s*[”"」』’']/i);
+  if (quoted && quoted[1]) return quoted[1].trim();
+
+  const labelled = text.match(/(?:业务组|工作组|业务分组)\s*[:：]?\s*([^\s，。,。；;！？!?]+)/i);
+  return labelled && labelled[1] ? labelled[1].trim() : '';
+}
+
+/**
+ * Infer a named BusinessGroup when the user omits the words "业务组/工作组".
+ *
+ * Users commonly say "看一下最近一分钟服务器网段的数据包情况" after
+ * learning the group name from the UI. The model may then omit groupType or
+ * place the name in ipRanges. Treat only a non-IP target around an explicit
+ * packet noun and relative time as a candidate; the businessGroups lookup
+ * remains the authority and rejects names that do not exist.
+ */
+function extractUnqualifiedBusinessGroupNameFromPacketPrompt(prompt = '', invalidDirectTargets = []) {
+  const text = String(prompt || '').trim();
+  if (!text || !/(?:数据包|报文|抓包|原始包|pcap|packets?|capture)/i.test(text)) {
+    return '';
+  }
+
+  const directCandidate = Array.isArray(invalidDirectTargets) && invalidDirectTargets.length === 1
+    ? String(invalidDirectTargets[0] || '').trim()
+    : '';
+  const looksLikeIpv4Token = /^\d{1,3}(?:\.\d{1,3}){1,3}(?:-\d{1,3}(?:\.\d{1,3}){1,3})?$/;
+  if (
+    directCandidate
+    && !looksLikeIpv4Token.test(directCandidate)
+    && !/(?:数据包|报文|抓包|情况|分析|查看|查询)/i.test(directCandidate)
+  ) {
+    return directCandidate;
+  }
+
+  const duration = '(?:\\d+|[一二两三四五六七八九十百]+)\\s*(?:秒|分钟|小时|天|seconds?|minutes?|hours?|days?)';
+  const packetNoun = '(?:数据包(?:情况|信息|详情)?|报文(?:情况|信息|详情)?|抓包(?:情况|信息|详情)?|(?:pcap|packets?|capture))';
+  const actionPrefix = '(?:请|帮我|麻烦|看一下|看下|查看|分析|查询|检查|了解|统计|获取|关注|please|show|check|analy[sz]e|inspect)';
+
+  // Form: "最近五分钟服务器网段的数据包情况".
+  const afterDuration = text.match(new RegExp(
+    `(?:^|${actionPrefix})\\s*(?:最近|近|过去|last|past)\\s*${duration}\\s*([^，。！？!?；;]+?)\\s*(?:的)?${packetNoun}`,
+    'i'
+  ));
+  // Form: "服务器网段最近五分钟的数据包情况".
+  const beforeDuration = text.match(new RegExp(
+    `(?:^|${actionPrefix})\\s*([^，。！？!?；;]+?)\\s*(?:最近|近|过去|last|past)\\s*${duration}\\s*(?:的)?${packetNoun}`,
+    'i'
+  ));
+  const rawCandidate = afterDuration?.[1] || beforeDuration?.[1] || '';
+  const candidate = String(rawCandidate)
+    .replace(/^(?:请|帮我|麻烦|看一下|看下|查看|分析|查询|检查|了解|统计|获取|关注|please|show|check|analy[sz]e|inspect)\s*/i, '')
+    .replace(/^(?:这个|该|上述|当前)\s*/i, '')
+    .replace(/(?:的|这个|该)\s*$/i, '')
+    .trim();
+
+  if (!candidate || /^(?:数据包|报文|抓包|情况|信息|详情|分析|查看|查询)$/i.test(candidate)) {
+    return '';
+  }
+  if (looksLikeIpv4Token.test(candidate) || isValidIPv4(candidate) || isValidIPv4Range(candidate)) {
+    return '';
+  }
+  return candidate;
+}
+
+function isValidIPv4Range(value = '') {
+  const parts = String(value || '').split('-').map((part) => part.trim());
+  return parts.length === 2 && parts.every(isValidIPv4);
 }
 
 function validateCriteria(criteria, mode) {
@@ -434,6 +688,14 @@ function validateCriteria(criteria, mode) {
     if (criteria.end <= criteria.start) {
       return failResolve('PACKET_TIME_RANGE_INVALID', 'end 必须大于 start。');
     }
+    const invalidIps = criteria.ips.filter((value) => !isValidIPv4(value));
+    const invalidRanges = criteria.ipRanges.filter((value) => !isValidIPv4Range(value));
+    if (invalidIps.length > 0 || invalidRanges.length > 0) {
+      return failResolve(
+        'PACKET_TARGET_INVALID',
+        `ips/ipRanges 包含无效目标：${[...invalidIps, ...invalidRanges].join('、')}。请传入单个 IPv4 或“起始 IPv4-结束 IPv4”范围。`
+      );
+    }
     const maxRange = Number(process.env.PACKET_MAX_TIME_RANGE_SECONDS || 3600);
     if (maxRange > 0 && criteria.end - criteria.start > maxRange) {
       return failResolve('PACKET_TIME_RANGE_TOO_LARGE', `时间范围超过限制：${maxRange} 秒。`);
@@ -441,11 +703,19 @@ function validateCriteria(criteria, mode) {
     const hasPacketCondition = criteria.ips.length || criteria.ipRanges.length || criteria.id || Number.isFinite(criteria.top);
     const hasDownServletCondition = criteria.instanceId;
     const hasBusinessPacketCondition = criteria.businessName || criteria.pageFamilyId || criteria.pageFamilyDetailId || criteria.resultName;
-    if (!hasPacketCondition && !hasDownServletCondition && !hasBusinessPacketCondition) {
-      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top、instanceId、businessName、pageFamilyId 或 pageFamilyDetailId 之一。');
+    const hasBusinessGroupCondition = criteria.businessGroupName;
+    if (!hasPacketCondition && !hasDownServletCondition && !hasBusinessPacketCondition && !hasBusinessGroupCondition) {
+      return failResolve('PACKET_QUERY_REQUIRED', '需要 ips、ipRanges、id、top、instanceId、businessName、pageFamilyId、pageFamilyDetailId 或 BusinessGroup 之一。');
     }
   }
   return { ok: true };
+}
+
+function shouldResolveBusinessGroupPacketInstance(criteria = {}) {
+  if (!criteria || criteria.ips?.length || criteria.ipRanges?.length) {
+    return false;
+  }
+  return Boolean(String(criteria.businessGroupName || '').trim());
 }
 
 function shouldResolveBusinessPacketInstance(criteria = {}) {
@@ -620,6 +890,199 @@ async function resolveBusinessPacketInstance(task) {
   };
 }
 
+function buildBusinessGroupsUrl(host) {
+  const url = new URL('/webservice/NetInside', host);
+  appendRuntimeAuthQueryParams(url);
+  url.searchParams.set('type', 'businessGroups');
+  url.searchParams.set('csv', 'true');
+  return url.toString();
+}
+
+function isValidIPv4(value = '') {
+  const parts = String(value || '').split('.');
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    const number = Number(part);
+    return number >= 0 && number <= 255;
+  });
+}
+
+function parseCsvRecords(text = '') {
+  const source = String(text || '').replace(/^\uFEFF/, '');
+  const records = [];
+  let record = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') {
+      if (inQuotes && source[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (character === ',' && !inQuotes) {
+      record.push(field.trim());
+      field = '';
+    } else if ((character === '\n' || character === '\r') && !inQuotes) {
+      if (character === '\r' && source[index + 1] === '\n') index += 1;
+      record.push(field.trim());
+      field = '';
+      if (record.some((value) => value !== '')) records.push(record);
+      record = [];
+    } else {
+      field += character;
+    }
+  }
+
+  if (field !== '' || record.length > 0) {
+    record.push(field.trim());
+    if (record.some((value) => value !== '')) records.push(record);
+  }
+  return records;
+}
+
+function parseBusinessGroupsCsv(text = '') {
+  const records = parseCsvRecords(text);
+  if (records.length < 2) return [];
+  const headers = records[0].map((header, index) => {
+    const value = String(header || '').trim();
+    return index === 0 ? value.replace(/^\uFEFF/, '') : value;
+  });
+  if (!headers.some(Boolean)) return [];
+  return records.slice(1).map((values) => {
+    const row = {};
+    headers.forEach((header, index) => {
+      if (header) row[header] = values[index] == null ? '' : values[index];
+    });
+    return row;
+  });
+}
+
+function getCsvField(row, fieldName) {
+  if (!row || typeof row !== 'object') return '';
+  if (Object.prototype.hasOwnProperty.call(row, fieldName)) return String(row[fieldName] || '');
+  const expected = String(fieldName || '').toLowerCase();
+  const key = Object.keys(row).find((candidate) => candidate.toLowerCase() === expected);
+  return key ? String(row[key] || '') : '';
+}
+
+function parseBusinessGroupIpMembers(value = '') {
+  const ips = [];
+  const ipRanges = [];
+  const invalidMembers = [];
+  const seenIps = new Set();
+  const seenRanges = new Set();
+
+  for (const rawMember of String(value || '').split(',')) {
+    const member = rawMember.trim();
+    if (!member) continue;
+    if (member.includes('-')) {
+      const rangeParts = member.split('-').map((part) => part.trim());
+      if (rangeParts.length === 2 && rangeParts.every(isValidIPv4)) {
+        const normalizedRange = `${rangeParts[0]}-${rangeParts[1]}`;
+        if (!seenRanges.has(normalizedRange)) {
+          seenRanges.add(normalizedRange);
+          ipRanges.push(normalizedRange);
+        }
+      } else {
+        invalidMembers.push(member);
+      }
+      continue;
+    }
+    if (isValidIPv4(member)) {
+      if (!seenIps.has(member)) {
+        seenIps.add(member);
+        ips.push(member);
+      }
+    } else {
+      invalidMembers.push(member);
+    }
+  }
+
+  return { ips, ipRanges, invalidMembers };
+}
+
+async function resolveBusinessGroupPacketIps(task) {
+  const criteria = task.criteria || {};
+  const businessGroupName = String(criteria.businessGroupName || '').trim();
+  const url = buildBusinessGroupsUrl(task.host);
+  const response = await requestNetInsideText(url, 'business_groups');
+  const rows = response.ok ? parseBusinessGroupsCsv(response.text) : [];
+  const step = {
+    name: 'business_groups',
+    path: ['businessGroups', 'IpMembers'],
+    url: publicPacketUrl(url, task.showFullUrls),
+    ok: response.ok,
+    statusCode: response.statusCode,
+    rowCount: rows.length,
+  };
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [step],
+      error: {
+        code: 'BUSINESS_GROUP_QUERY_FAILED',
+        message: response.message || '工作组清单查询失败。',
+      },
+    };
+  }
+
+  const matchedRow = rows.find((row) => getCsvField(row, BUSINESS_GROUP_NAME_FIELD).trim() === businessGroupName);
+  if (!matchedRow) {
+    return {
+      ok: false,
+      businessGroupName,
+      steps: [{ ...step, matchedName: null }],
+      error: {
+        code: 'BUSINESS_GROUP_NOT_FOUND',
+        message: `businessGroups 清单中未找到名称为“${businessGroupName}”的工作组。`,
+      },
+    };
+  }
+
+  const members = parseBusinessGroupIpMembers(getCsvField(matchedRow, BUSINESS_GROUP_MEMBERS_FIELD));
+  const resolution = {
+    ok: members.ips.length > 0 || members.ipRanges.length > 0,
+    businessGroupName,
+    path: ['businessGroups', 'IpMembers'],
+    memberIpCount: members.ips.length,
+    memberIpRangeCount: members.ipRanges.length,
+    memberCount: members.ips.length + members.ipRanges.length,
+    memberIps: members.ips,
+    memberIpRanges: members.ipRanges,
+    invalidMembers: members.invalidMembers,
+    steps: [{
+      ...step,
+      matchedName: getCsvField(matchedRow, BUSINESS_GROUP_NAME_FIELD).trim(),
+      memberIpCount: members.ips.length,
+      memberIpRangeCount: members.ipRanges.length,
+      invalidMembers: members.invalidMembers,
+    }],
+  };
+
+  if (!resolution.ok) {
+    resolution.error = {
+      code: 'BUSINESS_GROUP_PACKET_MEMBER_NOT_FOUND',
+      message: `工作组“${businessGroupName}”的 IpMembers 没有可用的 IP 或 IP 范围。`,
+    };
+    return resolution;
+  }
+
+  resolution.criteriaPatch = {
+    ips: members.ips,
+    ipRanges: members.ipRanges,
+    groupType: 'BusinessGroup',
+    groupArgument: businessGroupName,
+    businessGroupName,
+  };
+  return resolution;
+}
+
 function businessResolveFailure(code, message, steps = []) {
   return {
     ok: false,
@@ -629,8 +1092,8 @@ function businessResolveFailure(code, message, steps = []) {
 }
 
 function buildPageViewsPreview(rows = [], context = {}) {
-  const normalizedRows = rows
-    .map((row, index) => normalizePageViewPreviewRow(row, index))
+  const normalizedRows = normalizePageViewRows(rows)
+    .map((row, index) => ({ ...row, index }))
     .filter((row) => row.pageFamilyDetailId);
   const uniqueClientIps = Array.from(new Set(normalizedRows.map((row) => row.clientIp).filter(Boolean)));
   const statusCounts = {};
@@ -647,27 +1110,6 @@ function buildPageViewsPreview(rows = [], context = {}) {
     statusCounts,
     rows: normalizedRows.slice(0, 50),
     selectionHint: '选择 clientIp 或 pageViewIndex 后，可继续构造 DownServlet 下载链接。',
-  };
-}
-
-function normalizePageViewPreviewRow(row, index) {
-  const detailId = extractPageFamilyDetailId(row);
-  return {
-    index,
-    startTime: row && (row.startTime || row.StartTime || row.time || row.timestamp) || null,
-    page: row && (row.page || row.Page || row.url || row.uri) || null,
-    clientIp: row && (row.clientIp || row.clientIP || row.ClientIp || row.client || row.originatingIp) || null,
-    serverIp: row && (row.serverIp || row.serverIP || row.ServerIp || row.server) || null,
-    originatingIp: row && (row.originatingIp || row.OriginatingIp) || null,
-    httpStatus: row && (row.httpStatus || row.HttpStatus || row.status || row.responseCode) || null,
-    http400S: row && (row.http400S || row.Http400S) || 0,
-    http500S: row && (row.http500S || row.Http500S) || 0,
-    pageTime: row && (row.pageTime || row.PageTime) || null,
-    pageTraffic: row && (row.pageTraffic || row.PageTraffic) || null,
-    requestTraffic: row && (row.requestTraffic || row.RequestTraffic) || null,
-    userAgent: row && (row.userAgent || row.UserAgent) || null,
-    pageFamilyDetailId: detailId,
-    instanceId: detailId ? normalizeInstanceId(detailId) : null,
   };
 }
 
@@ -707,29 +1149,58 @@ function buildPageFamilyTopValuesUrl(host, criteria = {}, businessName = '') {
 function buildPageViewsUrl(host, criteria = {}, pageFamilyId = '') {
   const url = new URL('/webservice/NetInside', host);
   appendRuntimeAuthQueryParams(url);
-  url.searchParams.set('type', 'pageViews');
-  url.searchParams.set('start', String(criteria.start));
-  url.searchParams.set('end', String(criteria.end));
-  url.searchParams.set('json', 'true');
-  url.searchParams.set('pageFamilyId', String(pageFamilyId));
-  url.searchParams.set('maxLimit', String(criteria.maxLimit == null ? 'undefined' : criteria.maxLimit));
+  const params = buildPageViewsParams({
+    service: 'pageViews',
+    queryModeKey: 'detail',
+    start: criteria.start,
+    end: criteria.end,
+    pageFamilyId,
+    maxLimit: criteria.maxLimit
+  }, { validateTime: false });
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
   return url.toString();
 }
 
-async function requestNetInsideJson(url, stepName) {
+async function requestNetInsideText(url, stepName) {
   try {
     const response = await httpRequest(url, { responseType: 'text' });
-    const text = response.body.toString('utf8').trim();
-    const parsed = parseMaybeJson(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return {
         ok: false,
-        rows: [],
         message: `${stepName} HTTP 状态码 ${response.statusCode}。`,
         statusCode: response.statusCode,
-        textSample: text.slice(0, 500),
+        text: response.body.toString('utf8'),
       };
     }
+    return {
+      ok: true,
+      statusCode: response.statusCode,
+      text: response.body.toString('utf8'),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: null,
+      text: '',
+      message: error.message,
+    };
+  }
+}
+
+async function requestNetInsideJson(url, stepName) {
+  const response = await requestNetInsideText(url, stepName);
+  const text = response.text.trim();
+  const parsed = parseMaybeJson(text);
+  if (!response.ok) {
+    return {
+      ok: false,
+      rows: [],
+      message: response.message,
+      statusCode: response.statusCode,
+      textSample: text.slice(0, 500),
+    };
+  }
+  try {
     const rows = normalizeRowsFromPayload(parsed);
     return {
       ok: true,
@@ -743,6 +1214,7 @@ async function requestNetInsideJson(url, stepName) {
       ok: false,
       rows: [],
       message: error.message,
+      statusCode: response.statusCode,
     };
   }
 }
@@ -750,7 +1222,7 @@ async function requestNetInsideJson(url, stepName) {
 function normalizeRowsFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
-  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
+  for (const key of ['rows', 'data', 'result', 'results', 'items', 'list', 'topValues']) {
     if (Array.isArray(payload[key])) return payload[key];
   }
   if (payload.data && typeof payload.data === 'object') {
@@ -811,34 +1283,11 @@ function extractPageFamilyLabel(row) {
 }
 
 function extractPageFamilyId(row) {
-  if (!row || typeof row !== 'object') return '';
-  const direct = row.pageFamilyId || row.pageFamilyID || row.id;
-  if (direct && /^\d+$/.test(String(direct))) return String(direct);
-  const groupPath = String(row.groupPath || row.path || row.group_path || '').trim();
-  const match = groupPath.match(/page\s+(\d+)\//i)
-    || groupPath.match(/pageFamilyId[=: ]+(\d+)/i)
-    || groupPath.match(/PageFamily[^\d]+(\d+)/i);
-  return match ? match[1] : '';
+  return extractSharedPageFamilyId(row);
 }
 
 function extractPageFamilyDetailId(row) {
-  if (!row) return '';
-  if (typeof row === 'string') return extractDetailIdFromText(row, false);
-  if (Array.isArray(row)) {
-    for (let index = row.length - 1; index >= 0; index -= 1) {
-      const found = extractDetailIdFromText(row[index], false);
-      if (found) return found;
-    }
-    return '';
-  }
-  if (typeof row !== 'object') return '';
-  const direct = row.pageFamilyDetailId || row.pageFamilyDetailID || row.resultName || row.instanceId;
-  if (direct) return extractDetailIdFromText(direct, true);
-  for (const value of Object.values(row).reverse()) {
-    const found = extractPageFamilyDetailId(value);
-    if (found) return found;
-  }
-  return '';
+  return extractSharedPageFamilyDetailId(row);
 }
 
 function extractDetailIdFromText(value, loose = false) {
@@ -896,8 +1345,8 @@ async function requestPreview(task) {
     const text = response.body.toString('utf8').trim();
     const parsed = parseMaybeJson(text);
     const responseBytes = Buffer.byteLength(response.body);
-    const empty = isEmptyPreview(parsed, text);
     const overview = normalizePreviewOverview(parsed, task.criteria);
+    const empty = isEmptyPreview(parsed, text, overview);
     const risk = assessPacketDownloadRisk(overview, task.criteria, task.filePolicy);
     return {
       ok: response.statusCode >= 200 && response.statusCode < 300,
@@ -931,6 +1380,7 @@ async function requestPreview(task) {
 
 function normalizePreviewOverview(parsed, criteria = {}) {
   const rows = previewRowsFromPayload(parsed);
+  const trafficSummary = summarizeNetInsidePreview(parsed, criteria);
   const durationSeconds = Number(criteria.end) > Number(criteria.start)
     ? Number(criteria.end) - Number(criteria.start)
     : null;
@@ -948,6 +1398,7 @@ function normalizePreviewOverview(parsed, criteria = {}) {
     packetCount,
     estimatedBytes,
     estimatedSizeText: estimatedBytes != null ? formatBytes(estimatedBytes) : null,
+    rowCount: rows.length,
     durationSeconds,
     avgBytesPerSecond: estimatedBytes != null && durationSeconds > 0
       ? estimatedBytes / durationSeconds
@@ -959,6 +1410,7 @@ function normalizePreviewOverview(parsed, criteria = {}) {
     topConversations: summarizePreviewRows(rows, ['conversation', 'flow', 'session', 'srcDst', 'pair']),
     timeBuckets: extractPreviewCollection(parsed, ['timeBuckets', 'timeline', 'series', 'chartData']),
     trafficDistribution: extractPreviewCollection(parsed, ['flowDistribution', 'trafficDistribution', 'distribution']),
+    trafficSummary,
     rawFieldHints: {
       packetCountField: packetCountMatch.path,
       sizeField: estimatedBytesMatch.path,
@@ -1140,6 +1592,8 @@ function normalizeSizeBytes(value) {
 }
 
 function previewRowsFromPayload(payload) {
+  const conversationDataset = findNetInsidePreviewDataset(payload, ['TA', 'TB']);
+  if (conversationDataset) return conversationDataset.rows;
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== 'object') return [];
   for (const key of ['rows', 'data', 'result', 'results', 'items', 'list']) {
@@ -1147,6 +1601,202 @@ function previewRowsFromPayload(payload) {
   }
   if (payload.data && typeof payload.data === 'object') return previewRowsFromPayload(payload.data);
   return [];
+}
+
+function netInsidePreviewDatasets(payload) {
+  if (Array.isArray(payload)) {
+    return payload.filter((item) => item
+      && typeof item === 'object'
+      && Array.isArray(item.columnIds)
+      && Array.isArray(item.rows));
+  }
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['data', 'result', 'results']) {
+    const datasets = netInsidePreviewDatasets(payload[key]);
+    if (datasets.length > 0) return datasets;
+  }
+  return [];
+}
+
+function findNetInsidePreviewDataset(payload, requiredColumns = []) {
+  const expected = requiredColumns.map((column) => String(column).toUpperCase());
+  return netInsidePreviewDatasets(payload).find((dataset) => {
+    const columns = new Set(dataset.columnIds.map((column) => String(column).toUpperCase()));
+    return expected.every((column) => columns.has(column));
+  }) || null;
+}
+
+function netInsideRowValue(row, key) {
+  if (!row || typeof row !== 'object') return null;
+  if (row.comparableValues && row.comparableValues[key] != null) {
+    return row.comparableValues[key];
+  }
+  if (row.values && row.values[key] != null) return row.values[key];
+  return row[key] != null ? row[key] : null;
+}
+
+function netInsideRowText(row, key) {
+  if (!row || typeof row !== 'object') return '';
+  const value = row.values && row.values[key] != null
+    ? row.values[key]
+    : row[key];
+  return value == null ? '' : String(value).trim();
+}
+
+function ipv4ToNumber(value) {
+  if (!isValidIPv4(value)) return null;
+  return String(value).split('.').reduce((number, part) => (number * 256) + Number(part), 0);
+}
+
+function buildPacketTargetMatcher(criteria = {}) {
+  const ips = new Set(toArray(criteria.ips).filter(isValidIPv4).map(String));
+  const ranges = toArray(criteria.ipRanges)
+    .filter(isValidIPv4Range)
+    .map((range) => {
+      const [first, second] = String(range).split('-').map((part) => ipv4ToNumber(part.trim()));
+      return { start: Math.min(first, second), end: Math.max(first, second) };
+    });
+  return (value) => {
+    const text = String(value || '').trim();
+    if (ips.has(text)) return true;
+    const numeric = ipv4ToNumber(text);
+    return numeric != null && ranges.some((range) => numeric >= range.start && numeric <= range.end);
+  };
+}
+
+function createTrafficDirection() {
+  return { conversationCount: 0, bytes: 0, hasKnownBytes: false };
+}
+
+function addTrafficDirection(direction, bytes) {
+  direction.conversationCount += 1;
+  if (bytes != null) {
+    direction.bytes += bytes;
+    direction.hasKnownBytes = true;
+  }
+}
+
+function finalizeTrafficDirection(direction) {
+  const hasBytes = direction.hasKnownBytes || direction.conversationCount === 0;
+  const bytes = hasBytes ? direction.bytes : null;
+  return {
+    conversationCount: direction.conversationCount,
+    bytes,
+    sizeText: bytes != null ? formatBytes(bytes) : null,
+  };
+}
+
+function summarizeNetInsidePreview(payload, criteria = {}) {
+  const conversationDataset = findNetInsidePreviewDataset(payload, ['TA', 'TB', 'Data']);
+  if (!conversationDataset) return null;
+
+  const endpointDataset = findNetInsidePreviewDataset(payload, ['TN', 'Data']);
+  const isTarget = buildPacketTargetMatcher(criteria);
+  const directions = {
+    outbound: createTrafficDirection(),
+    inbound: createTrafficDirection(),
+    internal: createTrafficDirection(),
+    unmatched: createTrafficDirection(),
+  };
+  const endpointNames = new Set();
+  const derivedMembers = new Map();
+  const conversations = [];
+  let trafficBytes = 0;
+  let hasTrafficBytes = false;
+
+  for (const row of conversationDataset.rows) {
+    const sourceIp = netInsideRowText(row, 'TA');
+    const destinationIp = netInsideRowText(row, 'TB');
+    const bytes = normalizeSizeBytes(netInsideRowValue(row, 'Data'));
+    if (sourceIp) endpointNames.add(sourceIp);
+    if (destinationIp) endpointNames.add(destinationIp);
+    if (bytes != null) {
+      trafficBytes += bytes;
+      hasTrafficBytes = true;
+    }
+
+    const sourceIsTarget = isTarget(sourceIp);
+    const destinationIsTarget = isTarget(destinationIp);
+    const direction = sourceIsTarget && destinationIsTarget
+      ? 'internal'
+      : sourceIsTarget
+        ? 'outbound'
+        : destinationIsTarget
+          ? 'inbound'
+          : 'unmatched';
+    addTrafficDirection(directions[direction], bytes);
+
+    const targetMembers = new Set([
+      sourceIsTarget ? sourceIp : '',
+      destinationIsTarget ? destinationIp : '',
+    ].filter(Boolean));
+    for (const ip of targetMembers) {
+      const member = derivedMembers.get(ip) || {
+        ip,
+        bytes: 0,
+        hasKnownBytes: false,
+        conversationCount: 0,
+      };
+      member.conversationCount += 1;
+      if (bytes != null) {
+        member.bytes += bytes;
+        member.hasKnownBytes = true;
+      }
+      derivedMembers.set(ip, member);
+    }
+
+    if (sourceIp && destinationIp) {
+      conversations.push({
+        sourceIp,
+        destinationIp,
+        bytes,
+        sizeText: bytes != null ? formatBytes(bytes) : null,
+        direction,
+      });
+    }
+  }
+
+  const endpointRows = endpointDataset
+    ? endpointDataset.rows.filter((row) => netInsideRowText(row, 'TN'))
+    : [];
+  const endpointMembers = endpointRows
+    .map((row) => {
+      const ip = netInsideRowText(row, 'TN');
+      const bytes = normalizeSizeBytes(netInsideRowValue(row, 'Data'));
+      const conversationCount = asFiniteNumber(netInsideRowValue(row, 'IPConv'));
+      return {
+        ip,
+        bytes,
+        sizeText: bytes != null ? formatBytes(bytes) : null,
+        conversationCount: conversationCount == null ? null : Math.floor(conversationCount),
+      };
+    })
+    .filter((member) => isTarget(member.ip));
+  const fallbackMembers = Array.from(derivedMembers.values()).map((member) => ({
+    ip: member.ip,
+    bytes: member.hasKnownBytes ? member.bytes : null,
+    sizeText: member.hasKnownBytes ? formatBytes(member.bytes) : null,
+    conversationCount: member.conversationCount,
+  }));
+  const topGroupMembers = (endpointMembers.length > 0 ? endpointMembers : fallbackMembers)
+    .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1)
+      || (right.conversationCount ?? -1) - (left.conversationCount ?? -1)
+      || left.ip.localeCompare(right.ip))
+    .slice(0, 5);
+  const topConversations = conversations
+    .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1))
+    .slice(0, 5);
+
+  return {
+    conversationCount: conversationDataset.rows.length,
+    endpointCount: endpointRows.length || endpointNames.size,
+    trafficBytes: hasTrafficBytes ? trafficBytes : null,
+    trafficSizeText: hasTrafficBytes ? formatBytes(trafficBytes) : null,
+    directions: Object.fromEntries(Object.entries(directions)
+      .map(([key, value]) => [key, finalizeTrafficDirection(value)])),
+    topGroupMembers,
+    topConversations,
+  };
 }
 
 function summarizePreviewRows(rows = [], labelKeys = []) {
@@ -2007,6 +2657,17 @@ function buildSummary(result) {
   const highlights = [];
   if (result.urls && result.urls.preview) highlights.push(`预览 URL 已生成：${result.urls.preview}`);
   if (result.urls && result.urls.download) highlights.push(`下载 URL 已生成：${result.urls.download}`);
+  if (result.businessGroupResolution && result.businessGroupResolution.ok) {
+    const resolution = result.businessGroupResolution;
+    const memberParts = [
+      resolution.memberIpCount ? `${resolution.memberIpCount} 个成员 IP` : null,
+      resolution.memberIpRangeCount ? `${resolution.memberIpRangeCount} 个 IP 范围` : null,
+    ].filter(Boolean);
+    const invalidSuffix = resolution.invalidMembers && resolution.invalidMembers.length > 0
+      ? `，${resolution.invalidMembers.length} 个成员值无效`
+      : '';
+    highlights.push(`工作组 ${resolution.businessGroupName} 已解析：${memberParts.join('、') || '无有效成员'}${invalidSuffix}。`);
+  }
   if (result.businessResolution && result.businessResolution.ok && !result.businessResolution.previewOnly) {
     highlights.push(`业务数据包实例已解析：pageFamilyId=${result.businessResolution.pageFamilyId}，pageFamilyDetailId=${result.businessResolution.pageFamilyDetailId}`);
   }
@@ -2046,6 +2707,19 @@ function buildNarrationInput(result) {
     mode: result.mode,
     ok: result.ok,
     criteria: result.criteria,
+    businessGroupResolution: result.businessGroupResolution ? {
+      ok: result.businessGroupResolution.ok,
+      businessGroupName: result.businessGroupResolution.businessGroupName,
+      path: result.businessGroupResolution.path,
+      memberIpCount: result.businessGroupResolution.memberIpCount,
+      memberIpRangeCount: result.businessGroupResolution.memberIpRangeCount,
+      memberCount: result.businessGroupResolution.memberCount,
+      memberIps: result.businessGroupResolution.memberIps,
+      memberIpRanges: result.businessGroupResolution.memberIpRanges,
+      invalidMembers: result.businessGroupResolution.invalidMembers,
+      steps: result.businessGroupResolution.steps,
+      error: result.businessGroupResolution.error,
+    } : null,
     businessResolution: result.businessResolution ? summarizeBusinessResolution(result.businessResolution) : null,
     urls: result.urls,
     preview: summarizePreview(result.preview),
@@ -2163,6 +2837,16 @@ function formatPreviewSummary(preview) {
   if (preview.empty) return '预览结果为空。';
   const overview = preview.overview || {};
   const risk = preview.risk || {};
+  const trafficSummary = overview.trafficSummary;
+  if (trafficSummary && typeof trafficSummary === 'object') {
+    const endpointText = trafficSummary.endpointCount != null
+      ? `，涉及 ${formatInteger(trafficSummary.endpointCount)} 个端点`
+      : '';
+    const trafficText = trafficSummary.trafficSizeText
+      ? `，预览流量 ${trafficSummary.trafficSizeText}`
+      : '';
+    return `预览命中 ${formatInteger(trafficSummary.conversationCount)} 条通信记录${endpointText}${trafficText}。`;
+  }
   const packetText = overview.packetCount != null ? `${formatInteger(overview.packetCount)} 个包` : '包数未知';
   const sizeText = overview.estimatedBytes != null ? overview.estimatedSizeText || formatBytes(overview.estimatedBytes) : '大小未知';
   if (risk.level) {
@@ -2200,9 +2884,12 @@ function parseMaybeJson(text) {
   }
 }
 
-function isEmptyPreview(parsed, text) {
+function isEmptyPreview(parsed, text, overview = null) {
   if (parsed == null) return true;
   if (typeof parsed === 'string') return parsed.trim() === '';
+  const conversationDataset = findNetInsidePreviewDataset(parsed, ['TA', 'TB']);
+  if (conversationDataset) return conversationDataset.rows.length === 0;
+  if (overview && Number(overview.rowCount) > 0) return false;
   if (Array.isArray(parsed)) return parsed.length === 0;
   if (typeof parsed === 'object') {
     if (Array.isArray(parsed.data)) return parsed.data.length === 0;
@@ -2500,6 +3187,36 @@ async function handleSkillCall(params = {}) {
 
     const task = resolved.task;
 
+    if (task.needsBusinessGroupResolution) {
+      const businessGroupResolution = await resolveBusinessGroupPacketIps(task);
+      task.businessGroupResolution = businessGroupResolution;
+      if (!businessGroupResolution.ok) {
+        const result = buildPacketResult(task, startedAt, {
+          businessGroupResolution,
+          ok: false,
+          error: businessGroupResolution.error,
+          decision: {
+            next_action: 'CLARIFICATION_REQUIRED',
+            reason: businessGroupResolution.error?.code,
+            message: businessGroupResolution.error?.message,
+          },
+        });
+        result.summary = {
+          title: '工作组数据包成员解析失败',
+          highlights: [businessGroupResolution.error?.message].filter(Boolean),
+        };
+        result.narrationInput = buildNarrationInput(result);
+        return result;
+      }
+      task.criteria = { ...task.criteria, ...businessGroupResolution.criteriaPatch };
+      task.urls = buildUrls({
+        host: task.host,
+        criteria: task.criteria,
+        downloadType: task.downloadType,
+        showFullUrls: task.showFullUrls,
+      });
+    }
+
     // Business packet instance resolution
     if (task.needsBusinessInstanceResolution) {
       const businessResolution = await resolveBusinessPacketInstance(task);
@@ -2557,6 +3274,7 @@ function buildPacketResult(task, startedAt, overrides = {}) {
     preview: null,
     download: null,
     analysis: null,
+    businessGroupResolution: task.businessGroupResolution || null,
     businessResolution: task.businessResolution || null,
     error: null,
     decision: null,
@@ -2665,11 +3383,21 @@ module.exports = {
   normalizeCriteria,
   validateCriteria,
   buildUrls,
+  resolvePacketTimeRange,
   buildBusinessTopValuesUrl,
+  buildBusinessGroupsUrl,
   buildPageFamilyTopValuesUrl,
   buildPageViewsUrl,
   buildPageViewsPreview,
+  requestNetInsideText,
   shouldResolveBusinessPacketInstance,
+  shouldResolveBusinessGroupPacketInstance,
+  resolveBusinessGroupPacketIps,
+  parseBusinessGroupsCsv,
+  parseBusinessGroupIpMembers,
+  extractBusinessGroupNameFromPrompt,
+  isValidIPv4,
+  isValidIPv4Range,
   extractBusinessName,
   extractPageFamilyId,
   extractPageFamilyLabel,

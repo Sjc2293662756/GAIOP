@@ -109,6 +109,7 @@ describe('InspectionReportDataService', () => {
   test.each([
     ['最近7天巡检', 'last7days', ['last1day', 'last1hour']],
     ['最近30天巡检', 'last30days', ['last1day', 'last1hour']],
+    ['最近一个月巡检', 'last30days', ['last1day', 'last1hour']],
     ['最近一年巡检', 'last365days', ['last1day', 'last1hour']],
     ['当前季度巡检', 'currentQuarter', ['last1day', 'last1hour']]
   ])('builds a primary window and context windows for %s', (prompt, key, contextKeys) => {
@@ -121,6 +122,69 @@ describe('InspectionReportDataService', () => {
     expect(contract.reportWindow).toMatchObject({ key, timezone: 'Asia/Shanghai', explicit: true });
     expect(contract.primaryWindow.durationSeconds).toBeGreaterThan(86400);
     expect(contract.contextWindows.map((item) => item.key)).toEqual(contextKeys);
+  });
+
+  test('builds a custom primary window for an explicitly named quarter', () => {
+    const contract = __test__.resolveInspectionWindowContract({
+      prompt: '2026年第一季度巡检'
+    }, {
+      nowSeconds: 1786093000,
+      timezone: 'Asia/Shanghai'
+    });
+
+    expect(contract).toMatchObject({
+      explicit: true,
+      reportWindow: {
+        key: 'custom',
+        mode: 'custom',
+        start: 1767196800,
+        end: 1774972740,
+        timezone: 'Asia/Shanghai'
+      },
+      businessWindow: {
+        key: 'custom',
+        start: 1767196800,
+        end: 1774972740
+      }
+    });
+  });
+
+  test('keeps a named natural month in calendar mode', () => {
+    const contract = __test__.resolveInspectionWindowContract({
+      prompt: '上个月巡检'
+    }, {
+      nowSeconds: 1786093000,
+      timezone: 'Asia/Shanghai'
+    });
+
+    expect(contract.reportWindow).toMatchObject({
+      key: 'previousMonth',
+      mode: 'calendar',
+      boundary: 'local_month',
+      explicit: true
+    });
+  });
+
+  test('keeps the default business window when no report time was requested', () => {
+    const contract = __test__.resolveInspectionWindowContract({
+      prompt: '给我系统巡检报告'
+    }, {
+      nowSeconds: 1786093000,
+      timezone: 'Asia/Shanghai'
+    });
+
+    expect(contract.explicit).toBe(false);
+    expect(contract.primaryWindow.key).toBe('last1hour');
+    expect(contract.businessWindow.key).toBe('last7days');
+  });
+
+  test('rejects explicit inspection time wording that cannot be resolved', () => {
+    expect(() => __test__.resolveInspectionWindowContract({
+      prompt: '2026年第5季度巡检'
+    }, {
+      nowSeconds: 1786093000,
+      timezone: 'Asia/Shanghai'
+    })).toThrow(expect.objectContaining({ code: 'INSPECTION_TIME_RANGE_UNRECOGNIZED' }));
   });
 
   test('passes the selected window contract into reportData while retaining legacy traffic aliases', async () => {

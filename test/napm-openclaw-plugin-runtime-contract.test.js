@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { ESLint } = require('eslint');
 const {
   isExpectedSecurityRefusal
 } = require('../scripts/verify-openclaw-extension-runtime');
@@ -24,6 +25,22 @@ function copyDirectorySync(sourceDir, targetDir) {
 }
 
 describe('installed extension smoke contract', () => {
+  test('keeps the plugin runtime free of ESLint errors and warnings', async () => {
+    const eslint = new ESLint({ cwd: path.resolve(__dirname, '..') });
+    const results = await eslint.lintFiles([
+      'napm-openclaw-plugin.remote.js',
+      'plugin/**/*.js'
+    ]);
+    const findings = results.flatMap((result) => result.messages.map((message) => ({
+      filePath: path.relative(path.resolve(__dirname, '..'), result.filePath),
+      line: message.line,
+      ruleId: message.ruleId,
+      message: message.message
+    })));
+
+    expect(findings).toEqual([]);
+  });
+
   test('accepts only the typed sensitive-credential refusal result', () => {
     expect(isExpectedSecurityRefusal({
       ok: false,
@@ -49,6 +66,14 @@ describe('installed extension smoke contract', () => {
     fs.copyFileSync(
       path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
       path.join(extensionRoot, 'index.js')
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.remote.js'),
+      path.join(extensionRoot, 'napm-openclaw-plugin.remote.js')
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, '..', 'napm-openclaw-plugin.index.mjs'),
+      path.join(extensionRoot, 'index.mjs')
     );
     copyDirectorySync(
       path.resolve(__dirname, '..', 'plugin'),
@@ -271,7 +296,9 @@ describe('NAPM plugin in-process Skill execution contract', () => {
         installedPlugin,
         installedHarness,
         `minimal-extension-${objectType}`,
-        `列出${objectName}`,
+        objectType === 'WebApplication'
+          ? '现在系统中有哪些业务？'
+          : '现在系统中有哪些应用？',
         {
           service: 'groups',
           queryModeKey: 'metadata',

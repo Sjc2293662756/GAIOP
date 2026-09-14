@@ -30,14 +30,20 @@
 - 自然语言理解、对象识别、指标识别和 Query Draft 构造由 OpenClaw 上游负责。
 - `conversationKey` 只作 scope。`message_received` 先绑定入站 `messageId`，Agent Hook 再按同 scope 和 source prompt 把 `runId` 绑定到同一不可变 `turnId`。Tool 和有生命周期身份的输出 Hook 必须使用该绑定，不得读取会话最新轮次；缺少身份或绑定时 fail-closed。`before_message_write` 缺少 run/message 身份时不改写 Assistant 消息，以免删除 `toolCall` 或写入错误通用文案。
 - Query Turn route 在创建后不可变。普通 `NAPM_QUERY` 只接受 `napm-skill-query`；错误的其他生产 NAPM Tool 会被阻断，不会执行南向调用或把轮次改成 `OTHER_SKILL`。开发诊断 resolver Tool 仍仅受显式开关控制。
-- `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 必须携带插件签发的可信 `traceId`，解析出 scope/turn，并确认可信 `toolName=napm-skill-query` 和 Query Turn `route=NAPM_QUERY`，否则在 pending 恢复、时间物化和校验前 fail-closed；它同样执行应用/`TotalTraffic` 范围、对象清单和普通查询多 group 等高风险检查。多 group 只有在 planner proof、plannedGroups、selectedPath、anchor 与静态 groups tree 一致时可执行，否则 Query Skill、NapmClient 和南向调用均为 0。
+- `napm-skill-query` Tool adapter 使用 Query Decision Policy 处理必填用户参数；澄清是正常结果，不是 Tool 错误。直接调用 Tool execute 必须携带插件签发的可信 `traceId`，解析出 scope/turn，并确认可信 `toolName=napm-skill-query` 和 Query Turn `route=NAPM_QUERY`，否则在 pending 恢复、时间物化和校验前 fail-closed；它同样执行应用/`TotalTraffic` 范围、对象清单和普通查询多 group 等高风险检查。多 group 只有在 planner proof、plannedGroups、selectedPath、anchor 与静态 groups tree 一致、终端对象符合结构化意图且可信引用明确授权下钻时可执行，否则 Query Skill、NapmClient 和南向调用均为 0。
 - 应用流量检查使用 `WorkflowClassifierService` 的结构化 workflow/object/metric 意图；对象范围由 Object Ontology 统一识别，指标语义由 Metric Semantic Normalizer 统一识别，插件与 Policy 不维护平行正则。
-- 缺对象名的澄清会保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。用户下一轮只回复名称时，模型传 `clarificationAnswer`，插件恢复 pending Draft 并补入声明的 `groups[n].argument`，然后重新执行完整策略。
-- Query Turn Coordinator 是普通查询 Draft、Attempts、一次修复预算、pending、终态 `finalContent` 和 delivery claim 的唯一权威源。旧 `ConversationOperationState` 不再提供普通查询修复或结果交付。
+- 业务页面访问量先按 `WebApplication` 排行。后续“排名第 N 的业务访问了什么”传 `resultReference={objectType:"WebApplication",ordinal:N}`，插件从冻结结果集中补入业务名后才允许下钻到 `PageFamily`。页面访问实例详情使用 `pageViews/detail`，不使用 `PageFamilyDetail` group；“详细查看排名第 N 个页面”传 `resultReference={objectType:"PageFamily",ordinal:N}`，插件解析 `pageFamilyId` 并继承时间。两类引用缺失、过期、跨 scope、类型错误或越界时均在 Skill 和南向调用前失败。
+- TopN 结果在进入 Query Turn 和叙述前按 `topMetric` 数值及结构化方向排序并重排 rank，空白或缺失指标值置于末尾。叙述对象类型取实际终端 group，确保首轮显示业务、第二轮才显示页面族。
+- `pageViews` 请求只包含时间、可信 `pageFamilyId` 和受校验的 `maxLimit`；缺省 20，本地保护上限 200。共享契约位于 `skills/shared/NapmPageViewsContract.js`，Query、Fault Diagnosis 和 Packet Analysis 必须复用，禁止发送字符串 `undefined`。插件侧 Coordinator 通过依赖注入使用该契约，不能相对引用 extension 目录外的 Skill 文件。
+- 缺对象名的澄清会保存 Query Decision Policy 规范化后的 pending Query Draft；应用问题误构为 `TotalTraffic` 时会先改为 `DefinedApp`。用户下一轮只回复名称时，模型传 `clarificationAnswer`。只有 `resumePending()` 成功才会把新 run/message 的 Decision 重建为 `EXECUTE_TOOL + napm-skill-query`，恢复 Draft、补入声明的 `groups[n].argument` 并重新执行完整策略；不依赖名称是否包含 NAPM 关键词，无 pending 时保持 `MODEL_OWNED` 并在 Skill/Client/南向之前阻断。
+- Query Turn Coordinator 是普通查询 Draft、Attempts、一次修复预算、pending、`WebApplication`/`PageFamily` 最小排行投影、终态 `finalContent` 和 delivery claim 的唯一权威源。旧 `ConversationOperationState` 不再提供普通查询修复或结果交付。
 - 首次技术校验失败进入 `REPAIR_PENDING`；同 attempt 幂等，只允许一次修复，第二个失败终止；`recordResult`/`recordFailure` 只允许从 `EXECUTING` 迁移，放弃修复和执行期 Skill 澄清使用专用迁移。Skill 正常澄清被规范化为成功的 `CLARIFICATION` Tool 结果。执行失败立即终止。所有 terminal write-once，流式 partial 不终结轮次；`EXECUTING` 重放在处理 Draft 前返回执行中结果，终态 Tool 重放仅返回已有结果，均不再调用 Skill 或南向接口。
 - `RESULT`、`NO_DATA`、澄清、拒绝、失败和 `CONTRACT_VIOLATION` 都由 Coordinator 生成最终内容并 exactly-once 交付。非流式最终输出到达时，`RECEIVED` 无 Decision/Attempt 或 `DECIDED` 但适配器未开始执行会记录契约违规，`REPAIR_PENDING` 会记录校验失败，`EXECUTING` 无结果会记录执行失败；后到结果不得覆盖终态。其他 Skill 的轮次不由普通查询 Coordinator 抢交付。
-- NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。
+- NAPM Query Skill 只执行完整 Resolved Query 并返回结构化结果、摘要和叙述输入，不保存 Query Turn。`pageViews` 的 `RESULT/NO_DATA` 也由 Query Turn 生成并 exactly-once 交付。
 - 普通用户问题不要使用 shell、curl 或直接 NetInside WebService 调用。
+- 普通数据包“分析”请求先由 `napm-packet-analysis` 预览；若结果要求 `CONFIRM_DOWNLOAD`，用户下一轮可用自然表达确认，例如“确认下载，进行分析”“请把刚才预览的数据包下载下来并做协议解析”“上一轮预览没有问题，直接执行下载分析”“好的，继续”等。插件按同一会话的待确认上下文和动作语义解析确认，不依赖几个固定短句；否定、状态询问、故障诊断、重试/替换目标或新 IP/时间范围不会继承上一轮。插件只从同一会话最近的有效 packet 预览恢复目标和固定 `start/end`，并注入可信确认；不重新计算“最近 5 分钟”，也不接受模型自行设置 `previewRiskAccepted`。高风险 `SUGGEST_NARROW_TIME_RANGE` 必须先缩小时间范围，不能用普通确认绕过。
+- 业务组目标不要求先查询“有哪些工作组”：单 IP 直接使用 `criteria.ips`；未标注类型但带时间和数据包词的非 IP 名称（例如“服务器网段”）由 packet runtime 修复为 `BusinessGroup`，再查询 `businessGroups → IpMembers`。显式 `groupType/groupArgument/businessGroupName` 仍然优先；确认下载时沿用预览已展开的成员和固定时间窗口。
+- 同一 packet Query Turn 的重叠或重复 Tool 调用只执行一次 Skill。下载成功后的确定性答复读取实际 `analysis`，至少说明协议分析状态和可用的包数，并按结果展示清洗后的协议分布、端点、会话、DNS、HTTP 与 TLS SNI 摘要；不输出 tshark 原始分隔线、`Filter:` 或空表头，`malformed` 只作为解析异常提示。
 
 ## 本机关键路径
 

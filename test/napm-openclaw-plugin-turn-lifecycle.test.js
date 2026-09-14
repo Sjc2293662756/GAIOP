@@ -66,6 +66,19 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
     };
   }
 
+  function authorizeDirectQuery(event, ctx) {
+    const traceId = plugin.__test__.bindTrustedToolContext(event, ctx);
+    const conversationKey = plugin.__test__.getTrustedConversationKey(event.params);
+    const turnId = plugin.__test__.getTrustedTurnId(event.params);
+    expect(plugin.__test__.authorizeTrustedToolContext(traceId, event.params, {
+      conversationKey,
+      turnId,
+      route: 'napm_candidate',
+      action: 'EXECUTE_TOOL',
+      expectedTool: 'napm-skill-query'
+    })).toBe(true);
+  }
+
   function buildDefinedAppResult() {
     const rows = [
       { label: '回溯238', value: '回溯238', type: 'DefinedApp', applicationType: 2 },
@@ -421,7 +434,7 @@ describe('NAPM plugin turn-aware result and message lifecycle', () => {
         }
       }
     };
-    plugin.__test__.bindTrustedToolContext(event, ctx);
+    authorizeDirectQuery(event, ctx);
     const result = await tool.execute('invalid-service-call', event.params);
 
     expect(result.isError).toBe(true);

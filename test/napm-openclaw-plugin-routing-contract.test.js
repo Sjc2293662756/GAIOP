@@ -82,6 +82,46 @@ describe('NAPM cross-skill routing contract', () => {
       timeRange: { key: 'last1hour' }
     });
     expect(faultResult).toMatchObject({ block: true });
+    expect(faultResult.blockReason).toContain('EXPECTED_TOOL_MISMATCH');
     expect(faultResult.blockReason).toContain('napm-fault-diagnosis');
+  });
+
+  test('admits the structured fault-diagnosis Tool selected for a named target', async () => {
+    const hooks = new Map();
+    plugin.register({
+      config: {},
+      logger: { info() {}, warn() {}, error() {} },
+      registerTool() {},
+      registerCommand() {},
+      registerHook(name, handler) {
+        const names = Array.isArray(name) ? name : [name];
+        names.forEach((item) => hooks.set(item, handler));
+      }
+    });
+    const ctx = {
+      channelId: 'wecom',
+      accountId: 'fault-routing-contract',
+      conversationId: 'fault-routing-contract',
+      sessionKey: 'fault-routing-contract',
+      runId: 'fault-routing-contract',
+      messageId: 'fault-routing-contract-message'
+    };
+    const prompt = '分析支付web的报错原因';
+    hooks.get('message_received')({ content: prompt }, ctx);
+    await hooks.get('before_prompt_build')({ prompt }, ctx);
+
+    expect(plugin.__test__.getGuardState(ctx).turnAdmissionDecision).toMatchObject({
+      expectedTool: 'napm-fault-diagnosis',
+      classificationSchemaVersion: 'napm.domain-intent-classification.v1',
+      classificationSource: 'existing-domain-classifier-adapter'
+    });
+
+    const result = hooks.get('before_tool_call')({
+      toolName: 'napm-fault-diagnosis',
+      params: { prompt, description: prompt, timeRange: { key: 'last1hour' } }
+    }, ctx);
+
+    expect(result?.block).not.toBe(true);
+    expect(result?.params?.traceId).toMatch(/^napm-/);
   });
 });

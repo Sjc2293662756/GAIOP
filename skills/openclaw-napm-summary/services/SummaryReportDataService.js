@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  isLegacyFaultDiagnosisResult,
+  buildLegacyFaultDiagnosisReportData
+} = require('../../openclaw-napm-report/services/FaultDiagnosisReportDataAdapter');
+
 /**
  * Build the standardized reportData object consumed by openclaw-napm-report.
  *
@@ -28,6 +33,9 @@ class SummaryReportDataService {
    * @param {object} options — overrides: format, title, systemName, sourceQuestion
    */
   buildReportData(result = {}, options = {}) {
+    if (isLegacyFaultDiagnosisResult(result)) {
+      return buildLegacyFaultDiagnosisReportData(result, options);
+    }
     const scope = isPlainObject(result.scope) ? result.scope : { type: 'global', label: '全局' };
 
     // ── Fault diagnosis: output diagnostic_report shape ──
@@ -94,6 +102,9 @@ class SummaryReportDataService {
    * Build diagnostic_report shaped reportData for the fault analysis template.
    */
   buildFaultDiagnosisReportData(result = {}, options = {}) {
+    if (isLegacyFaultDiagnosisResult(result)) {
+      return buildLegacyFaultDiagnosisReportData(result, options);
+    }
     const scope = isPlainObject(result.scope) ? result.scope : { type: 'fault', label: '故障分析' };
     const timeRange = isPlainObject(result.timeRange) ? result.timeRange : {};
     const fault = isPlainObject(result.fault) ? result.fault : {};

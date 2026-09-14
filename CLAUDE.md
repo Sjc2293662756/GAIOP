@@ -29,14 +29,19 @@ npx eslint skills/openclaw-napm-query/scripts/**/*.js skills/openclaw-napm-query
 ```
 WeChat → OpenClaw Gateway (:18789) → napm-openclaw-plugin.remote.js
   → message_received binds run/message to an immutable Query Turn
+  → TurnAdmissionCoordinator + domain context resolvers select route/expectedTool
   → napm-skill-query(queryDraft | clarificationAnswer)
   → QueryDecisionPolicy → QueryTurnCoordinator
+  → business TopN → authoritative WebApplication resultReference → PageFamily TopN
+  → page TopN → authoritative PageFamily resultReference → pageFamilyId → pageViews
   → EXECUTE_QUERY only → loadSkill() in-process require() → skill/scripts/run_*.js
   → skill services → NapmClient (axios) → NetInside NAPM WebService
   → authoritative finalContent → exactly-once Chinese reply back to WeChat
 ```
 
 `conversationKey` is only a scope. Tool and output hooks resolve the immutable `turnId` bound to the current run/message and must not read the conversation's latest turn; missing lifecycle identity or binding fails closed. A Query Turn's route is immutable after creation, so another Tool or Tool result cannot reclassify a `NAPM_QUERY` as `OTHER_SKILL`. `QueryTurnCoordinator` owns ordinary-query drafts, attempts, the one-repair budget, pending clarifications, terminal content, and delivery claims. `ConversationOperationState` is not the authority for ordinary-query repair, result, or final delivery.
+
+`TurnAdmissionCoordinator` is the shared reception layer, not a cross-skill business state machine. `ReferenceSelectionParser` extracts generic ordinal/detail/limit/time-change selections, while Query and Alert resolvers expose only authoritative domain artifacts. The immutable decision fixes the route, expected Tool, source artifact, and reason code for the current run. Query time changes resolve the exact source turn captured by that decision, never the scope-latest Query. A newer result from a not-yet-migrated domain creates a clarification boundary so the plugin cannot silently fall back to an older Query ranking.
 
 ### Plugin: `napm-openclaw-plugin.remote.js`
 
@@ -47,18 +52,24 @@ A monolithic plugin loaded by OpenClaw Gateway. It:
 3. Evaluates Query Drafts at both Hook and direct Tool-execute boundaries, then records attempts, pending clarification, terminal content, and exactly-once delivery in `QueryTurnCoordinator`
 4. Loads each skill's `scripts/run_*.js` in-process via `require()`; this implementation detail is not a deployment or hot-reload contract
 5. Maintains compatibility state for non-query workflows and applies time overrides before complete Resolved Queries execute
+6. Keeps Packet, Report, Inspection, Summary, and Fault domain state in their existing workflows while a conservative context boundary prevents unsafe ordinal fallback during staged migration
 
 Skills are not spawned as subprocesses; they run in the Gateway process. Runtime changes are installed only through the approved complete release package. Do not infer that copying one file makes all plugin and Coordinator changes live, and do not perform an ad hoc restart outside the approved deployment workflow.
 
 ### Query Turn contract
 
 - `message_received` creates a `turnId` and immutable run/message binding. Overlapping runs in one conversation remain isolated.
-- Direct Tool execution requires a plugin-issued trusted `traceId` that resolves to the same scope, turn, and exact `napm-skill-query` tool identity; the existing turn route must be `NAPM_QUERY`. Missing or mismatched identity/route fails before pending-draft restoration, time materialization, validation, Skill loading, or any southbound request.
+- Direct Tool execution requires a plugin-issued trusted `traceId` that resolves to the same scope, turn, and exact `napm-skill-query` tool identity; the existing turn route must be `NAPM_QUERY`. The Query Hook seals the final normalized parameters and current Turn Admission Decision into that trusted context. Missing admission or a changed parameter digest fails before pending-draft restoration, time materialization, validation, Skill loading, or any southbound request.
+- `DomainIntentClassificationAdapter` is the only prompt-facing domain-classification entry used by the common guard. It adapts existing predicates into a versioned, immutable classification without adding synonyms. `TurnIntentResolver` accepts only objects actually issued by that in-process adapter after schema, source, and outer/nested immutability checks; invalid or copied objects select no Tool. Platform identity/capability turns also receive an immutable `MODEL_OWNED` Turn Admission Decision instead of bypassing admission. Single-Tool turns get an `expectedTool`; multi-stage summary/inspection reporting remains explicitly domain-orchestrated. A short ordinal/time follow-up freezes its source artifact/turn when the message arrives, so later results in the same scope cannot replace it.
 - The route chosen when the turn is created is immutable. A production `NAPM_QUERY` accepts only `napm-skill-query`; a wrong NAPM Tool is blocked without southbound execution or route mutation. Opt-in resolver tools remain development diagnostics.
 - A first technical validation failure enters `REPAIR_PENDING` and consumes the one-repair budget. Replaying the same attempt id is idempotent; a second failed construction terminates. `recordResult` and `recordFailure` accept only `EXECUTING`; abandoned repair and execution-time Skill clarification use dedicated transitions. Execution failure terminates immediately.
 - A Tool replay while the turn is already `EXECUTING` returns `QUERY_EXECUTION_IN_PROGRESS` before processing the replayed Draft. It cannot revalidate, change state, start a second attempt, or call southbound again.
-- After clarification, a name-only reply such as `HTTP` is sent as `clarificationAnswer`; the plugin restores the policy-normalized pending Query Draft and fills `DefinedApp.argument` before reevaluating the full policy. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
-- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` supplies structured workflow, object, and metric semantics for application-traffic scope checks; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` carries a planner-produced path whose groups and selected path match a queryable path in the static groups tree.
+- After clarification, a name-only reply such as `HTTP` or `支付平台` is sent as `clarificationAnswer`. Only a successful `QueryTurnCoordinator.resumePending()` authorizes the new run: the plugin rebuilds its immutable admission as `EXECUTE_TOOL + napm-skill-query`, restores the policy-normalized pending Query Draft, and fills `DefinedApp.argument` before reevaluating the full policy. Keyword matching never grants this continuation authority; without a live pending Query the same short text remains `MODEL_OWNED` with zero southbound calls. An application draft incorrectly mapped to `TotalTraffic` is normalized to `DefinedApp` before it is retained.
+- Hook and direct execute paths enforce the same high-risk checks. `WorkflowClassifierService` supplies structured workflow, object, and metric semantics for application-traffic scope checks; the plugin and `QueryDecisionPolicy` must not add parallel prompt regexes. Ordinary queries with multiple groups fail validation unless `pathPlanning` matches a queryable static-tree path, the effective terminal group matches the structured intent, and a plugin-validated result reference explicitly authorizes the drilldown.
+- “Which businesses have the most page visits?” remains `topValues + WebApplication + PGNPGE`. A later ordinal business follow-up resolves a frozen `WebApplication` row, fills its argument, and builds the validated `WebApplication > PageFamilies > PageFamily` path. Page visit instances then use `service=pageViews` and `queryModeKey=detail`, not a synthetic `PageFamilyDetail` group, after a frozen `PageFamily` ordinal resolves to `pageFamilyId`.
+- `WebApplication` and `PageFamily` result references have a separate 30-minute TTL. Missing, expired, cross-scope, wrong-type, and out-of-range references fail before time materialization with zero Skill, `NapmClient`, or southbound calls. Caller-supplied provenance and validation flags are stripped; only the plugin can authorize the path.
+- `topValues` rows are normalized numerically by `topMetric` and structured direction before Query Turn storage and narration. Ranks are reassigned, blank/missing values remain last, and narration labels the effective terminal group.
+- `QueryTurnCoordinator` receives the shared page-family ID extractor through dependency injection. The installed extension contains plugin files but no partial Skill tree, so coordinator modules must not import `../skills/*` by relative path.
 - `CLARIFICATION`, `RESULT`, `NO_DATA`, `REJECTION`, `VALIDATION_FAILURE`, `EXECUTION_FAILURE`, and `CONTRACT_VIOLATION` all have write-once authoritative `finalContent`. A legacy-shaped Skill clarification is normalized to a successful `clarification_required` Tool result and completes the execution attempt as `CLARIFICATION`, never `EXECUTION_FAILURE`. Streaming partial output does not terminate a turn; a Tool replay after terminal returns the existing authoritative result without another Skill or southbound call.
 - A non-streaming final cannot leave an ordinary query nonterminal. `RECEIVED` without a Decision/Attempt and `DECIDED` without adapter execution terminate as contract violations; `REPAIR_PENDING` terminates as a validation failure; `EXECUTING` without a result terminates as an execution failure. A late adapter result cannot overwrite that outcome.
 - Other Skills retain their own delivery workflows; the ordinary-query Coordinator only owns `NAPM_QUERY` turns.
@@ -83,6 +94,10 @@ The query skill (`openclaw-napm-query`) is the most complex — its `services/` 
 - **NapmMetadataService.js** — metadata/catalog lookups with local cache
 - **OpenClawNarrationContractService.js** — converts query results into Chinese narration input
 - **NapmResolvedQueryResolverService.js** — resolves structured queries into executable form
+- **PageViewsExecutionKernel.js** — executes and normalizes per-visit `pageViews` detail requests
+- **TopValuesResultNormalizerService.js** — numerically orders TopN rows, places missing values last, and assigns authoritative ranks
+
+Cross-skill page detail primitives live in `skills/shared/NapmPageViewsContract.js`. It owns `pageFamilyId`, `maxLimit`, request construction, detail-row normalization, and `pageFamilyDetailId` extraction for Query, Fault Diagnosis, and Packet Analysis.
 
 ### `src/` location
 

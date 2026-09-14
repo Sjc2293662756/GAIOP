@@ -141,11 +141,52 @@ describe('NAPM plugin OpenClaw native-command isolation', () => {
       mediaUrl: 'https://example.test/old-report.docx'
     }, ctx)?.fresh).toHaveLength(1);
 
+    plugin.__test__.queryTurnCoordinator.begin({
+      scope,
+      turnId: 'rank-source-turn',
+      route: 'NAPM_QUERY',
+      queryDraft: {
+        service: 'topValues',
+        groups: [{ type: 'WebApplication' }],
+        topMetric: 'PGNPGE'
+      }
+    });
+    plugin.__test__.queryTurnCoordinator.recordDecision({
+      scope,
+      turnId: 'rank-source-turn',
+      decision: {
+        action: 'EXECUTE_QUERY',
+        southboundAllowed: true,
+        queryDraft: {
+          service: 'topValues',
+          groups: [{ type: 'WebApplication' }],
+          topMetric: 'PGNPGE'
+        }
+      }
+    });
+    plugin.__test__.queryTurnCoordinator.beginExecution({
+      scope,
+      turnId: 'rank-source-turn',
+      attemptId: 'rank-source-execution'
+    });
+    plugin.__test__.queryTurnCoordinator.recordResult({
+      scope,
+      turnId: 'rank-source-turn',
+      result: {
+        ok: true,
+        data: [{ group: { key: 'WebApplication', argument: 'business-a' } }]
+      }
+    });
+    expect(plugin.__test__.queryTurnCoordinator.getLatestResultReference(scope)).toMatchObject({
+      objectType: 'WebApplication'
+    });
+
     receive(ctx, command);
 
     expect(plugin.__test__.getLatestRememberedSkillRecord(scope)).toBeNull();
     expect(plugin.__test__.isFreshReportExportResult(scope)).toBe(false);
     expect(plugin.__test__.getTrustedConversationKey(trustedParams)).toBe('');
+    expect(plugin.__test__.queryTurnCoordinator.getLatestResultReference(scope)).toBeNull();
     expect(plugin.__test__.dedupeOutgoingMediaForConversation({
       mediaUrl: 'https://example.test/old-report.docx'
     }, ctx)?.fresh).toHaveLength(1);
